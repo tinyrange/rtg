@@ -14,14 +14,17 @@ jobs:
           - runner: ubuntu-latest
             target: linux/amd64
             cc: cc
+            cflags: ""
             suffix: ""
           - runner: macos-latest
             target: darwin/arm64
             cc: cc
+            cflags: ""
             suffix: ""
           - runner: windows-latest
             target: windows/386
             cc: gcc
+            cflags: -Wl,--stack,8388608
             suffix: .exe
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -48,8 +51,8 @@ jobs:
       - name: C self-hosting (3-stage)
         run: |
           ./build/rtg${{ matrix.suffix }} -T c/64 -o build/stage1_c.c ./std/compiler/
-          ${{ matrix.cc }} build/stage1_c.c -o build/stage1_c${{ matrix.suffix }}
+          ${{ matrix.cc }} build/stage1_c.c ${{ matrix.cflags }} -o build/stage1_c${{ matrix.suffix }}
           ./build/stage1_c${{ matrix.suffix }} -T c/64 -o build/stage2_c.c compiler
-          ${{ matrix.cc }} build/stage2_c.c -o build/stage2_c${{ matrix.suffix }}
+          ${{ matrix.cc }} build/stage2_c.c ${{ matrix.cflags }} -o build/stage2_c${{ matrix.suffix }}
           ./build/stage2_c${{ matrix.suffix }} -T c/64 -o build/stage3_c.c compiler
           cmp build/stage2_c.c build/stage3_c.c
