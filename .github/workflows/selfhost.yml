@@ -39,8 +39,10 @@ jobs:
       - name: Native self-hosting (3-stage)
         run: |
           ./build/rtg${{ matrix.suffix }} -T ${{ matrix.target }} -o build/stage1${{ matrix.suffix }} ./std/compiler/
-          ./build/stage1${{ matrix.suffix }} -T ${{ matrix.target }} -o build/stage2${{ matrix.suffix }} compiler
-          ./build/stage2${{ matrix.suffix }} -T ${{ matrix.target }} -o build/stage3${{ matrix.suffix }} compiler
+          ./build/stage1${{ matrix.suffix }} -T ${{ matrix.target }} -o build/stageN${{ matrix.suffix }} compiler
+          mv build/stageN${{ matrix.suffix }} build/stage2${{ matrix.suffix }}
+          ./build/stage2${{ matrix.suffix }} -T ${{ matrix.target }} -o build/stageN${{ matrix.suffix }} compiler
+          mv build/stageN${{ matrix.suffix }} build/stage3${{ matrix.suffix }}
           cmp build/stage2${{ matrix.suffix }} build/stage3${{ matrix.suffix }}
 
       - name: C self-hosting (3-stage)
