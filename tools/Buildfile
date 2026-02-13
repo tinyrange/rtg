@@ -1,0 +1,73 @@
+default: build
+
+build:
+  sh go build -o build/rtg ./std/compiler/
+
+selfhost: build
+  sh ./build/rtg -o build/stage1 ./std/compiler/
+  sh ./build/stage1 -o build/stage2 compiler
+  sh ./build/stage2 -o build/stage3 compiler
+  sh cmp build/stage2 build/stage3 && echo "PASS: self-hosting OK"
+
+selfhost-i386: build
+  sh ./build/rtg -T linux/386 -o build/stage1_i386 ./std/compiler/
+  sh ./build/stage1_i386 -T linux/386 -o build/stage2_i386 compiler
+  sh ./build/stage2_i386 -T linux/386 -o build/stage3_i386 compiler
+  sh cmp build/stage2_i386 build/stage3_i386 && echo "PASS: i386 self-hosting OK"
+
+selfhost-c: build
+  sh ./build/rtg -T c/64 -o build/stage1_c.c ./std/compiler/
+  sh ${CC:-cc} build/stage1_c.c -o build/stage1_c
+  sh ./build/stage1_c -T c/64 -o build/stage2_c.c compiler
+  sh ${CC:-cc} build/stage2_c.c -o build/stage2_c
+  sh ./build/stage2_c -T c/64 -o build/stage3_c.c compiler
+  sh cmp build/stage2_c.c build/stage3_c.c && echo "PASS: C backend self-hosting OK"
+
+selfhost-wasm: build
+  sh ./build/rtg -T wasi/wasm32 -o build/stage1.wasm ./std/compiler/
+  sh wasmtime --dir=. build/stage1.wasm -- -T wasi/wasm32 -o build/stage2.wasm compiler
+  sh wasmtime --dir=. build/stage2.wasm -- -T wasi/wasm32 -o build/stage3.wasm compiler
+  sh cmp build/stage2.wasm build/stage3.wasm && echo "PASS: wasm self-hosting OK"
+
+selfhost-win386: build
+  sh ./build/rtg -T windows/386 -o build/stage1.exe ./std/compiler/
+  sh wine build/stage1.exe -T windows/386 -o build/stage2.exe compiler
+  sh wine build/stage2.exe -T windows/386 -o build/stage3.exe compiler
+  sh cmp build/stage2.exe build/stage3.exe && echo "PASS: windows/386 self-hosting OK"
+
+crosscompile-wasm-native: build
+  sh ./build/rtg -T wasi/wasm32 -o build/cross_stage1.wasm ./std/compiler/
+  sh wasmtime --dir=. build/cross_stage1.wasm -- -T linux/amd64 -o build/cross_stage2 compiler
+  sh chmod +x build/cross_stage2
+  sh ./build/cross_stage2 -o build/cross_stage3 compiler
+  sh ./build/cross_stage3 -o build/cross_stage4 compiler
+  sh cmp build/cross_stage3 build/cross_stage4 && echo "PASS: wasm->native cross-compile OK"
+
+test: build
+  sh ./build/rtg tests/stringstest/main.go -o build/stringstest && build/stringstest
+  sh ./build/rtg tests/filepathtest/main.go -o build/filepathtest && build/filepathtest
+  sh ./build/rtg tests/sorttest/main.go -o build/sorttest && build/sorttest
+  sh ./build/rtg tests/exectest/main.go -o build/exectest && build/exectest
+
+test-i386: build
+  sh ./build/rtg -T linux/386 tests/hello386/main.go -o build/hello386 && build/hello386
+  sh ./build/rtg -T linux/386 tests/write386/main.go -o build/write386 && build/write386
+  sh ./build/rtg -T linux/386 tests/stringstest/main.go -o build/stringstest_386 && build/stringstest_386
+  sh ./build/rtg -T linux/386 tests/filepathtest/main.go -o build/filepathtest_386 && build/filepathtest_386
+  sh ./build/rtg -T linux/386 tests/sorttest/main.go -o build/sorttest_386 && build/sorttest_386
+
+test-build: build
+  sh ./build/rtg tools/build.go -o build/build
+  sh ./build/build --list
+  sh ./build/build test
+
+sizes:
+  sh ./tools/compiler_sizes.sh
+
+playground: build
+  sh ./build/rtg -T wasi/wasm32 -tags no_embed_std -o web/compiler.wasm ./std/compiler/
+  sh bash web/build.sh
+
+clean:
+  sh rm -f build/stage* build/stage*_c.c build/stage*_c build/rtg build/rtg-build build/rtg_from_i386 build/*_386 build/hello386 build/write386 build/stringstest build/filepathtest build/sorttest build/exectest build/build build/cross_stage* build/*.wasm build/*.exe
+  sh rm -rf build/size_bins build/compiler_sizes.csv

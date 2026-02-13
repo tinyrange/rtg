@@ -1,0 +1,1109 @@
+//go:build !no_backend_c
+
+package main
+
+import (
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+)
+
+type cDispatchEntry struct {
+	typeID   int
+	methodID int
+	funcID   int
+}
+
+func cQuote(s string) string {
+	bp := &strings.Builder{}
+	bp.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '\\':
+			bp.WriteString("\\\\")
+		case '"':
+			bp.WriteString("\\\"")
+		case '\n':
+			bp.WriteString("\\n")
+		case '\r':
+			bp.WriteString("\\r")
+		case '\t':
+			bp.WriteString("\\t")
+		default:
+			if c < 32 || c > 126 {
+				hex := "0123456789abcdef"
+				bp.WriteString("\\x")
+				bp.WriteByte(hex[(c>>4)&0xf])
+				bp.WriteByte(hex[c&0xf])
+			} else {
+				bp.WriteByte(c)
+			}
+		}
+	}
+	bp.WriteByte('"')
+	return bp.String()
+}
+
+func cBareMethod(name string) string {
+	dot := -1
+	i := len(name) - 1
+	for i >= 0 {
+		if name[i] == '.' {
+			dot = i
+			break
+		}
+		i = i - 1
+	}
+	if dot < 0 || dot+1 >= len(name) {
+		return name
+	}
+	return name[dot+1:]
+}
+
+func cTypeNamesSorted(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func cMethodNamesSorted(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func cMangleSymbol(name string) string {
+	hex := "0123456789abcdef"
+	bp := &strings.Builder{}
+	bp.WriteString("rtg_fn_")
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			bp.WriteByte(c)
+		} else {
+			bp.WriteByte('_')
+			bp.WriteByte(hex[(c>>4)&0xf])
+			bp.WriteByte(hex[c&0xf])
+		}
+	}
+	return bp.String()
+}
+
+func cWritef(b *strings.Builder, format string, a ...interface{}) {
+	b.WriteString(fmt.Sprintf(format, a...))
+}
+
+func generateCSource(irmod *IRModule, outputPath string) error {
+	bits := targetCModel
+	if bits == 0 {
+		bits = 64
+	}
+	if bits != 16 && bits != 32 && bits != 64 {
+		return fmt.Errorf("invalid C profile: %d", bits)
+	}
+
+	wordBytes := bits / 8
+	shiftMask := bits - 1
+	signedWord := "long long"
+	unsignedWord := "unsigned long long"
+	i32Type := "int"
+	u32Type := "unsigned int"
+	if bits == 32 {
+		signedWord = "long"
+		unsignedWord = "unsigned long"
+	} else if bits == 16 {
+		signedWord = "int"
+		unsignedWord = "unsigned int"
+		i32Type = "long"
+		u32Type = "unsigned long"
+	}
+
+	funcIdx := make(map[string]int)
+	for i, f := range irmod.Funcs {
+		funcIdx[f.Name] = i
+	}
+	funcSyms := make([]string, len(irmod.Funcs))
+	for i, f := range irmod.Funcs {
+		funcSyms[i] = cMangleSymbol(f.Name)
+	}
+	mainIdx, ok := funcIdx["main.main"]
+	if !ok {
+		return fmt.Errorf("main.main not found")
+	}
+
+	// String literal interning.
+	litIdx := make(map[string]int)
+	var literals []string
+
+	for _, f := range irmod.Funcs {
+		for _, in := range f.Code {
+			if in.Op == OP_CONST_STR {
+				s := decodeStringLiteral(in.Name)
+				if _, ok := litIdx[s]; !ok {
+					litIdx[s] = len(literals)
+					literals = append(literals, s)
+				}
+			}
+		}
+	}
+
+	// Method name interning for interface dispatch.
+	methodID := make(map[string]int)
+	var methods []string
+	for _, f := range irmod.Funcs {
+		for _, in := range f.Code {
+			if in.Op == OP_IFACE_CALL {
+				name := cBareMethod(in.Name)
+				if _, ok := methodID[name]; !ok {
+					methodID[name] = len(methods)
+					methods = append(methods, name)
+				}
+			}
+		}
+	}
+	errorMethodID, ok := methodID["Error"]
+	if !ok {
+		errorMethodID = len(methods)
+		methodID["Error"] = errorMethodID
+		methods = append(methods, "Error")
+	}
+	stringMethodID, ok := methodID["String"]
+	if !ok {
+		stringMethodID = len(methods)
+		methodID["String"] = stringMethodID
+		methods = append(methods, "String")
+	}
+
+	// Build dispatch table: type_id + method_name -> function index.
+	var dispatch []cDispatchEntry
+	typesSorted := cTypeNamesSorted(irmod.TypeIDs)
+	methodsSorted := cMethodNamesSorted(irmod.MethodTable)
+	for _, tname := range typesSorted {
+		tid := irmod.TypeIDs[tname]
+		prefix := tname + "."
+		for _, mname := range methodsSorted {
+			if !strings.HasPrefix(mname, prefix) {
+				continue
+			}
+			fqn := irmod.MethodTable[mname]
+			idx, ok := funcIdx[fqn]
+			if !ok {
+				continue
+			}
+			bare := mname[len(prefix):]
+			mid, ok := methodID[bare]
+			if !ok {
+				mid = len(methods)
+				methodID[bare] = mid
+				methods = append(methods, bare)
+			}
+			dispatch = append(dispatch, cDispatchEntry{
+				typeID:   tid,
+				methodID: mid,
+				funcID:   idx,
+			})
+		}
+	}
+	// dispatch is already deterministic: type names and method names are traversed in sorted order.
+
+	bytesToStringIdx := -1
+	if idx, ok := funcIdx["runtime.BytesToString"]; ok {
+		bytesToStringIdx = idx
+	}
+	stringToBytesIdx := -1
+	if idx, ok := funcIdx["runtime.StringToBytes"]; ok {
+		stringToBytesIdx = idx
+	}
+	intToStringIdx := -1
+	if idx, ok := funcIdx["runtime.IntToString"]; ok {
+		intToStringIdx = idx
+	}
+
+	bp := &strings.Builder{}
+	bp.WriteString("/* Generated by rtg -T c. */\n")
+	bp.WriteString("#if defined(__SIZE_TYPE__)\n")
+	bp.WriteString("typedef __SIZE_TYPE__ rtg_size;\n")
+	bp.WriteString("#else\n")
+	bp.WriteString("typedef unsigned int rtg_size;\n")
+	bp.WriteString("#endif\n")
+	cWritef(bp, "#define RTG_PTR_BITS %d\n", bits)
+	cWritef(bp, "#define RTG_WORD_BYTES %d\n", wordBytes)
+	cWritef(bp, "#define RTG_SHIFT_MASK %d\n", shiftMask)
+	bp.WriteString("#if defined(__SIZEOF_POINTER__)\n")
+	bp.WriteString("#if (__SIZEOF_POINTER__ * 8) != RTG_PTR_BITS\n")
+	bp.WriteString("#if (__SIZEOF_POINTER__ * 8) == 16\n")
+	bp.WriteString("#error \"rtg pointer-width mismatch: compiler target is 16-bit; regenerate with -T c/16\"\n")
+	bp.WriteString("#elif (__SIZEOF_POINTER__ * 8) == 32\n")
+	bp.WriteString("#error \"rtg pointer-width mismatch: compiler target is 32-bit; regenerate with -T c/32\"\n")
+	bp.WriteString("#elif (__SIZEOF_POINTER__ * 8) == 64\n")
+	bp.WriteString("#error \"rtg pointer-width mismatch: compiler target is 64-bit; regenerate with -T c/64\"\n")
+	bp.WriteString("#else\n")
+	bp.WriteString("#error \"rtg pointer-width mismatch: compiler target pointer width is not 16/32/64\"\n")
+	bp.WriteString("#endif\n")
+	bp.WriteString("#endif\n")
+	bp.WriteString("#endif\n")
+	cWritef(bp, "typedef %s rtg_sword;\n", signedWord)
+	cWritef(bp, "typedef %s rtg_word;\n", unsignedWord)
+	cWritef(bp, "typedef %s rtg_i32;\n", i32Type)
+	cWritef(bp, "typedef %s rtg_u32;\n\n", u32Type)
+	if bits == 16 {
+		bp.WriteString("enum { RTG_STACK_MAX = 4096 };\n")
+	} else {
+		bp.WriteString("enum { RTG_STACK_MAX = 1 << 20 };\n")
+	}
+	bp.WriteString("static rtg_word g_stack[RTG_STACK_MAX];\n")
+	bp.WriteString("static int g_sp = 0;\n")
+	cWritef(bp, "static rtg_word g_globals[%d];\n\n", len(irmod.Globals))
+
+	// argc/argv globals (always needed, even with custom host)
+	bp.WriteString("static int g_argc;\n")
+	bp.WriteString("static char** g_argv;\n\n")
+
+	bp.WriteString("static rtg_size rtg_strlen(const char* s) {\n")
+	bp.WriteString("  rtg_size n = 0;\n")
+	bp.WriteString("  while (s[n] != 0) n++;\n")
+	bp.WriteString("  return n;\n")
+	bp.WriteString("}\n\n")
+
+	// ------ BEGIN: default host implementation, replaceable via RTG_CUSTOM_HOST ------
+	bp.WriteString("/*\n")
+	bp.WriteString(" * Default host implementation. Define RTG_CUSTOM_HOST before including\n")
+	bp.WriteString(" * this file (or compiling it) and provide your own implementations of\n")
+	bp.WriteString(" * the rtg_host_* functions for targets like DOS, bare-metal, etc.\n")
+	bp.WriteString(" * See the list of required signatures below.\n")
+	bp.WriteString(" */\n")
+	bp.WriteString("#ifndef RTG_CUSTOM_HOST\n\n")
+
+	// Includes and platform macros
+	bp.WriteString("#include <stdio.h>\n")
+	bp.WriteString("#include <stdlib.h>\n")
+	bp.WriteString("#include <string.h>\n\n")
+	bp.WriteString("#ifdef _WIN32\n")
+	bp.WriteString("  #include <direct.h>\n")
+	bp.WriteString("  #include <windows.h>\n")
+	bp.WriteString("  #define rtg_mkdir(p) _mkdir(p)\n")
+	bp.WriteString("  #define rtg_rmdir(p) _rmdir(p)\n")
+	bp.WriteString("  #define rtg_getcwd(b,n) _getcwd(b,(int)(n))\n")
+	bp.WriteString("  #define rtg_popen(c,m) _popen(c,m)\n")
+	bp.WriteString("  #define rtg_pclose(f) _pclose(f)\n")
+	bp.WriteString("#else\n")
+	if bits == 16 {
+		bp.WriteString("  #if !defined(__CC65__)\n")
+		bp.WriteString("  #include <sys/stat.h>\n")
+		bp.WriteString("  #include <unistd.h>\n")
+		bp.WriteString("  #include <dirent.h>\n")
+		bp.WriteString("  #define rtg_mkdir(p) mkdir(p,0755)\n")
+		bp.WriteString("  #define rtg_rmdir(p) rmdir(p)\n")
+		bp.WriteString("  #define rtg_getcwd(b,n) getcwd(b,n)\n")
+		bp.WriteString("  #define rtg_popen(c,m) popen(c,m)\n")
+		bp.WriteString("  #define rtg_pclose(f) pclose(f)\n")
+		bp.WriteString("  #else\n")
+		bp.WriteString("  #define rtg_mkdir(p) (-1)\n")
+		bp.WriteString("  #define rtg_rmdir(p) (-1)\n")
+		bp.WriteString("  #define rtg_getcwd(b,n) (NULL)\n")
+		bp.WriteString("  #define rtg_popen(c,m) (NULL)\n")
+		bp.WriteString("  #define rtg_pclose(f) (-1)\n")
+		bp.WriteString("  #endif\n")
+	} else {
+		bp.WriteString("  #include <sys/stat.h>\n")
+		bp.WriteString("  #include <unistd.h>\n")
+		bp.WriteString("  #include <dirent.h>\n")
+		bp.WriteString("  #define rtg_mkdir(p) mkdir(p,0755)\n")
+		bp.WriteString("  #define rtg_rmdir(p) rmdir(p)\n")
+		bp.WriteString("  #define rtg_getcwd(b,n) getcwd(b,n)\n")
+		bp.WriteString("  #define rtg_popen(c,m) popen(c,m)\n")
+		bp.WriteString("  #define rtg_pclose(f) pclose(f)\n")
+	}
+	bp.WriteString("#endif\n\n")
+
+	// fd table
+	bp.WriteString("static FILE* rtg_fd_table[256];\n")
+	bp.WriteString("static int rtg_fd_next = 3;\n\n")
+
+	// rtg_host_init
+	bp.WriteString("static void rtg_host_init(void) {\n")
+	bp.WriteString("  rtg_fd_table[0] = stdin;\n")
+	bp.WriteString("  rtg_fd_table[1] = stdout;\n")
+	bp.WriteString("  rtg_fd_table[2] = stderr;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_write_str (for internal error messages)
+	bp.WriteString("static void rtg_host_write_str(const char* s, rtg_size n) {\n")
+	bp.WriteString("  fwrite(s, 1, n, stderr);\n")
+	bp.WriteString("  fflush(stderr);\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_exit
+	bp.WriteString("static void rtg_host_exit(int code) {\n")
+	bp.WriteString("  exit(code);\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_read
+	bp.WriteString("static rtg_sword rtg_host_read(rtg_word fd, rtg_word buf, rtg_word len) {\n")
+	bp.WriteString("  FILE* f = rtg_fd_table[(int)fd];\n")
+	bp.WriteString("  if (!f) return -1;\n")
+	bp.WriteString("  return (rtg_sword)fread((void*)(rtg_size)buf, 1, (rtg_size)len, f);\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_write
+	bp.WriteString("static rtg_sword rtg_host_write(rtg_word fd, rtg_word buf, rtg_word len) {\n")
+	bp.WriteString("  FILE* f = rtg_fd_table[(int)fd];\n")
+	bp.WriteString("  rtg_sword n;\n")
+	bp.WriteString("  if (!f) return -1;\n")
+	bp.WriteString("  n = (rtg_sword)fwrite((const void*)(rtg_size)buf, 1, (rtg_size)len, f);\n")
+	bp.WriteString("  fflush(f);\n")
+	bp.WriteString("  return n;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_open
+	bp.WriteString("static rtg_sword rtg_host_open(rtg_word pathw, rtg_word flags) {\n")
+	bp.WriteString("  const char* path = (const char*)(rtg_size)pathw;\n")
+	bp.WriteString("  int fl = (int)flags;\n")
+	bp.WriteString("  const char* mode;\n")
+	bp.WriteString("  FILE* f;\n")
+	bp.WriteString("  int fd;\n")
+	bp.WriteString("  if ((fl & 1) && (fl & 64)) mode = \"wb\";\n")
+	bp.WriteString("  else if (fl & 1) mode = \"wb\";\n")
+	bp.WriteString("  else if (fl & 2) mode = \"r+b\";\n")
+	bp.WriteString("  else mode = \"rb\";\n")
+	bp.WriteString("  f = fopen(path, mode);\n")
+	bp.WriteString("  if (!f) return -2;\n")
+	bp.WriteString("  fd = rtg_fd_next++;\n")
+	bp.WriteString("  if (fd >= 256) { fclose(f); return -1; }\n")
+	bp.WriteString("  rtg_fd_table[fd] = f;\n")
+	bp.WriteString("  return (rtg_sword)fd;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_close
+	bp.WriteString("static rtg_sword rtg_host_close(rtg_word fdw) {\n")
+	bp.WriteString("  int fd = (int)fdw;\n")
+	bp.WriteString("  if (fd < 3 || fd >= 256 || !rtg_fd_table[fd]) return -1;\n")
+	bp.WriteString("  fclose(rtg_fd_table[fd]);\n")
+	bp.WriteString("  rtg_fd_table[fd] = 0;\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_stat
+	bp.WriteString("static rtg_sword rtg_host_stat(rtg_word pathw) {\n")
+	bp.WriteString("  const char* path = (const char*)(rtg_size)pathw;\n")
+	bp.WriteString("  FILE* f = fopen(path, \"rb\");\n")
+	bp.WriteString("  if (f) { fclose(f); return 0; }\n")
+	bp.WriteString("#if !defined(__CC65__)\n")
+	bp.WriteString("#ifdef _WIN32\n")
+	bp.WriteString("  { DWORD a = GetFileAttributesA(path); if (a != INVALID_FILE_ATTRIBUTES) return 0; }\n")
+	bp.WriteString("#else\n")
+	bp.WriteString("  { DIR* d = opendir(path); if (d) { closedir(d); return 0; } }\n")
+	bp.WriteString("#endif\n")
+	bp.WriteString("#endif\n")
+	bp.WriteString("  return -2;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_mkdir
+	bp.WriteString("static rtg_sword rtg_host_mkdir(rtg_word pathw) {\n")
+	bp.WriteString("  int rv = rtg_mkdir((const char*)(rtg_size)pathw);\n")
+	bp.WriteString("  if (rv != 0) return -17;\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_chmod
+	bp.WriteString("static rtg_sword rtg_host_chmod(rtg_word pathw, rtg_word mode) {\n")
+	bp.WriteString("#ifdef _WIN32\n")
+	bp.WriteString("  (void)pathw; (void)mode; return 0;\n")
+	bp.WriteString("#else\n")
+	bp.WriteString("  int rv = chmod((const char*)(rtg_size)pathw, (int)mode);\n")
+	bp.WriteString("  if (rv != 0) return -1;\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("#endif\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_rmdir
+	bp.WriteString("static rtg_sword rtg_host_rmdir(rtg_word pathw) {\n")
+	bp.WriteString("  int rv = rtg_rmdir((const char*)(rtg_size)pathw);\n")
+	bp.WriteString("  if (rv != 0) return -1;\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_unlink
+	bp.WriteString("static rtg_sword rtg_host_unlink(rtg_word pathw) {\n")
+	bp.WriteString("  int rv = remove((const char*)(rtg_size)pathw);\n")
+	bp.WriteString("  if (rv != 0) return -1;\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_getcwd
+	bp.WriteString("static rtg_sword rtg_host_getcwd(rtg_word buf, rtg_word bufsz) {\n")
+	bp.WriteString("  char* rv = rtg_getcwd((char*)(rtg_size)buf, (rtg_size)bufsz);\n")
+	bp.WriteString("  if (!rv) return -1;\n")
+	bp.WriteString("  return (rtg_sword)rtg_strlen((const char*)(rtg_size)buf);\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_alloc
+	bp.WriteString("static rtg_sword rtg_host_alloc(rtg_word size) {\n")
+	bp.WriteString("  rtg_size sz = (rtg_size)size;\n")
+	bp.WriteString("  void* p;\n")
+	bp.WriteString("  if (sz == 0) sz = 1;\n")
+	bp.WriteString("  p = malloc(sz);\n")
+	bp.WriteString("  if (!p) return 0;\n")
+	bp.WriteString("  memset(p, 0, sz);\n")
+	bp.WriteString("  return (rtg_sword)(rtg_size)p;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_getenv
+	bp.WriteString("static rtg_sword rtg_host_getenv(rtg_word keyw) {\n")
+	bp.WriteString("  char* val = getenv((const char*)(rtg_size)keyw);\n")
+	bp.WriteString("  if (!val) return 0;\n")
+	bp.WriteString("  return (rtg_sword)(rtg_size)val;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_opendir
+	bp.WriteString("#if !defined(__CC65__)\n")
+	bp.WriteString("#ifdef _WIN32\n")
+	bp.WriteString("static rtg_sword rtg_host_opendir(rtg_word pathw) {\n")
+	bp.WriteString("  const char* path = (const char*)(rtg_size)pathw;\n")
+	bp.WriteString("  char pattern[1024];\n")
+	bp.WriteString("  HANDLE h;\n")
+	bp.WriteString("  WIN32_FIND_DATAA* fd;\n")
+	bp.WriteString("  int plen = (int)rtg_strlen(path);\n")
+	bp.WriteString("  if (plen + 3 >= 1024) return -1;\n")
+	bp.WriteString("  memcpy(pattern, path, plen);\n")
+	bp.WriteString("  pattern[plen] = '\\\\'; pattern[plen+1] = '*'; pattern[plen+2] = 0;\n")
+	bp.WriteString("  fd = (WIN32_FIND_DATAA*)malloc(sizeof(WIN32_FIND_DATAA) + sizeof(HANDLE));\n")
+	bp.WriteString("  if (!fd) return -1;\n")
+	bp.WriteString("  h = FindFirstFileA(pattern, fd);\n")
+	bp.WriteString("  if (h == INVALID_HANDLE_VALUE) { free(fd); return -1; }\n")
+	bp.WriteString("  *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA)) = h;\n")
+	bp.WriteString("  return (rtg_sword)(rtg_size)fd;\n")
+	bp.WriteString("}\n")
+	bp.WriteString("static rtg_sword rtg_host_readdir(rtg_word handlew, rtg_word buf, rtg_word bufsz, rtg_word isDirBufW) {\n")
+	bp.WriteString("  WIN32_FIND_DATAA* fd = (WIN32_FIND_DATAA*)(rtg_size)handlew;\n")
+	bp.WriteString("  char* out = (char*)(rtg_size)buf;\n")
+	bp.WriteString("  rtg_size bufLen = (rtg_size)bufsz;\n")
+	bp.WriteString("  char* isDirBuf = (char*)(rtg_size)isDirBufW;\n")
+	bp.WriteString("  HANDLE h;\n")
+	bp.WriteString("  rtg_size nameLen;\n")
+	bp.WriteString("  if (!fd) return 0;\n")
+	bp.WriteString("  h = *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA));\n")
+	bp.WriteString("  nameLen = rtg_strlen(fd->cFileName);\n")
+	bp.WriteString("  if (nameLen == 0) return 0;\n")
+	bp.WriteString("  if (nameLen > bufLen) nameLen = bufLen;\n")
+	bp.WriteString("  memcpy(out, fd->cFileName, nameLen);\n")
+	bp.WriteString("  if (isDirBuf) *isDirBuf = (fd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;\n")
+	bp.WriteString("  if (!FindNextFileA(h, fd)) fd->cFileName[0] = 0;\n")
+	bp.WriteString("  return (rtg_sword)nameLen;\n")
+	bp.WriteString("}\n")
+	bp.WriteString("static rtg_sword rtg_host_closedir(rtg_word handlew) {\n")
+	bp.WriteString("  WIN32_FIND_DATAA* fd = (WIN32_FIND_DATAA*)(rtg_size)handlew;\n")
+	bp.WriteString("  HANDLE h;\n")
+	bp.WriteString("  if (!fd) return 0;\n")
+	bp.WriteString("  h = *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA));\n")
+	bp.WriteString("  FindClose(h);\n")
+	bp.WriteString("  free(fd);\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("}\n")
+	bp.WriteString("#else\n")
+	// POSIX
+	bp.WriteString("static rtg_sword rtg_host_opendir(rtg_word pathw) {\n")
+	bp.WriteString("  DIR* d = opendir((const char*)(rtg_size)pathw);\n")
+	bp.WriteString("  if (!d) return -1;\n")
+	bp.WriteString("  return (rtg_sword)(rtg_size)d;\n")
+	bp.WriteString("}\n")
+	bp.WriteString("static rtg_sword rtg_host_readdir(rtg_word handlew, rtg_word buf, rtg_word bufsz, rtg_word isDirBufW) {\n")
+	bp.WriteString("  DIR* d = (DIR*)(rtg_size)handlew;\n")
+	bp.WriteString("  char* out = (char*)(rtg_size)buf;\n")
+	bp.WriteString("  rtg_size bufLen = (rtg_size)bufsz;\n")
+	bp.WriteString("  char* isDirBuf = (char*)(rtg_size)isDirBufW;\n")
+	bp.WriteString("  struct dirent* ent;\n")
+	bp.WriteString("  rtg_size nameLen;\n")
+	bp.WriteString("  if (!d) return 0;\n")
+	bp.WriteString("  ent = readdir(d);\n")
+	bp.WriteString("  if (!ent) return 0;\n")
+	bp.WriteString("  nameLen = rtg_strlen(ent->d_name);\n")
+	bp.WriteString("  if (nameLen > bufLen) nameLen = bufLen;\n")
+	bp.WriteString("  memcpy(out, ent->d_name, nameLen);\n")
+	bp.WriteString("  if (isDirBuf) *isDirBuf = (ent->d_type == 4) ? 1 : 0;\n")
+	bp.WriteString("  return (rtg_sword)nameLen;\n")
+	bp.WriteString("}\n")
+	bp.WriteString("static rtg_sword rtg_host_closedir(rtg_word handlew) {\n")
+	bp.WriteString("  DIR* d = (DIR*)(rtg_size)handlew;\n")
+	bp.WriteString("  if (d) closedir(d);\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("}\n")
+	bp.WriteString("#endif\n")
+	bp.WriteString("#else\n")
+	// CC65/no-dirent fallback
+	bp.WriteString("static rtg_sword rtg_host_opendir(rtg_word p) { (void)p; return -1; }\n")
+	bp.WriteString("static rtg_sword rtg_host_readdir(rtg_word h, rtg_word b, rtg_word n, rtg_word d) { (void)h;(void)b;(void)n;(void)d; return 0; }\n")
+	bp.WriteString("static rtg_sword rtg_host_closedir(rtg_word h) { (void)h; return 0; }\n")
+	bp.WriteString("#endif\n\n")
+
+	// rtg_host_system
+	bp.WriteString("static rtg_sword rtg_host_system(rtg_word cmdw) {\n")
+	bp.WriteString("  return (rtg_sword)system((const char*)(rtg_size)cmdw);\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_popen
+	bp.WriteString("static rtg_sword rtg_host_popen(rtg_word cmdw) {\n")
+	bp.WriteString("  FILE* f = rtg_popen((const char*)(rtg_size)cmdw, \"r\");\n")
+	bp.WriteString("  int fd;\n")
+	bp.WriteString("  if (!f) return -1;\n")
+	bp.WriteString("  fd = rtg_fd_next++;\n")
+	bp.WriteString("  if (fd >= 256) { rtg_pclose(f); return -1; }\n")
+	bp.WriteString("  rtg_fd_table[fd] = f;\n")
+	bp.WriteString("  return (rtg_sword)fd;\n")
+	bp.WriteString("}\n\n")
+
+	// rtg_host_pclose
+	bp.WriteString("static rtg_sword rtg_host_pclose(rtg_word fdw) {\n")
+	bp.WriteString("  int fd = (int)fdw;\n")
+	bp.WriteString("  int rv;\n")
+	bp.WriteString("  if (fd < 3 || fd >= 256 || !rtg_fd_table[fd]) return -1;\n")
+	bp.WriteString("  rv = rtg_pclose(rtg_fd_table[fd]);\n")
+	bp.WriteString("  rtg_fd_table[fd] = 0;\n")
+	bp.WriteString("  return (rtg_sword)rv;\n")
+	bp.WriteString("}\n\n")
+
+	bp.WriteString("#endif /* RTG_CUSTOM_HOST */\n\n")
+
+	// ------ Dispatch function: calls individual rtg_host_* functions ------
+	bp.WriteString("static rtg_sword rtg_host_call(rtg_word num, rtg_word a0, rtg_word a1, rtg_word a2, rtg_word a3, rtg_word a4, rtg_word a5) {\n")
+	bp.WriteString("  (void)a4; (void)a5;\n")
+	bp.WriteString("  switch ((int)num) {\n")
+	bp.WriteString("  case 0:  return rtg_host_read(a0, a1, a2);\n")
+	bp.WriteString("  case 1:  return rtg_host_write(a0, a1, a2);\n")
+	bp.WriteString("  case 2:  return rtg_host_open(a0, a1);\n")
+	bp.WriteString("  case 3:  return rtg_host_close(a0);\n")
+	bp.WriteString("  case 4:  return rtg_host_stat(a0);\n")
+	bp.WriteString("  case 5:  return rtg_host_mkdir(a0);\n")
+	bp.WriteString("  case 6:  return rtg_host_rmdir(a0);\n")
+	bp.WriteString("  case 7:  return rtg_host_unlink(a0);\n")
+	bp.WriteString("  case 8:  return rtg_host_getcwd(a0, a1);\n")
+	bp.WriteString("  case 9:  rtg_host_exit((int)a0); return 0;\n")
+	bp.WriteString("  case 10: return rtg_host_alloc(a1);\n")
+	bp.WriteString("  case 11: return (rtg_sword)g_argc;\n")
+	bp.WriteString("  case 12: return ((int)a0 >= g_argc) ? 0 : (rtg_sword)(rtg_size)g_argv[(int)a0];\n")
+	bp.WriteString("  case 13: return rtg_host_getenv(a0);\n")
+	bp.WriteString("  case 14: return rtg_host_opendir(a0);\n")
+	bp.WriteString("  case 15: return rtg_host_readdir(a0, a1, a2, a3);\n")
+	bp.WriteString("  case 16: return rtg_host_closedir(a0);\n")
+	bp.WriteString("  case 17: return rtg_host_system(a0);\n")
+	bp.WriteString("  case 18: return rtg_host_popen(a0);\n")
+	bp.WriteString("  case 19: return rtg_host_pclose(a0);\n")
+	bp.WriteString("  case 20: return rtg_host_chmod(a0, a1);\n")
+	bp.WriteString("  default: return -1;\n")
+	bp.WriteString("  }\n")
+	bp.WriteString("}\n\n")
+
+	// ------ Helper functions that use rtg_host_* ------
+	bp.WriteString("static void rtg_write_str(const char* s) {\n")
+	bp.WriteString("  rtg_host_write_str(s, rtg_strlen(s));\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static void rtg_check_ptr_bits(void) {\n")
+	bp.WriteString("#if !defined(__SIZEOF_POINTER__)\n")
+	bp.WriteString("  if (((int)(sizeof(void*) * 8)) != RTG_PTR_BITS) {\n")
+	bp.WriteString("    rtg_write_str(\"rtg pointer-width mismatch: compiler does not expose __SIZEOF_POINTER__; regenerate with matching -T c/<bits> profile\\n\");\n")
+	bp.WriteString("    rtg_host_exit(1);\n")
+	bp.WriteString("  }\n")
+	bp.WriteString("#endif\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static void rtg_fail(const char* msg) {\n")
+	bp.WriteString("  rtg_write_str(\"rtg c backend error: \");\n")
+	bp.WriteString("  rtg_write_str(msg);\n")
+	bp.WriteString("  rtg_write_str(\"\\n\");\n")
+	bp.WriteString("  rtg_host_exit(1);\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static void rtg_push(rtg_word v) {\n")
+	bp.WriteString("  if (g_sp >= RTG_STACK_MAX) rtg_fail(\"operand stack overflow\");\n")
+	bp.WriteString("  g_stack[g_sp++] = v;\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static rtg_word rtg_pop(void) {\n")
+	bp.WriteString("  if (g_sp <= 0) rtg_fail(\"operand stack underflow\");\n")
+	bp.WriteString("  return g_stack[--g_sp];\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static rtg_word rtg_alloc(rtg_word sz) {\n")
+	bp.WriteString("  char* p;\n")
+	bp.WriteString("  if (sz == 0) sz = 1;\n")
+	bp.WriteString("  p = malloc((rtg_size)sz);\n")
+	bp.WriteString("  if (!p) rtg_fail(\"malloc failed\");\n")
+	bp.WriteString("  return (rtg_word)(rtg_size)p;\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static rtg_word rtg_load(rtg_word addr, int size) {\n")
+	bp.WriteString("  if (addr == 0) return 0;\n")
+	bp.WriteString("  if (size == 1) return (rtg_word)(*(unsigned char*)(rtg_size)addr);\n")
+	bp.WriteString("  {\n")
+	bp.WriteString("    rtg_word v = 0;\n")
+	bp.WriteString("    int i;\n")
+	bp.WriteString("    unsigned char* p = (unsigned char*)(rtg_size)addr;\n")
+	bp.WriteString("    unsigned char* out = (unsigned char*)&v;\n")
+	bp.WriteString("    for (i = 0; i < RTG_WORD_BYTES; i++) out[i] = p[i];\n")
+	bp.WriteString("    return v;\n")
+	bp.WriteString("  }\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static void rtg_memzero(rtg_word addr, int n) {\n")
+	bp.WriteString("  int i;\n")
+	bp.WriteString("  unsigned char* p = (unsigned char*)(rtg_size)addr;\n")
+	bp.WriteString("  for (i = 0; i < n; i++) p[i] = 0;\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static void rtg_store(rtg_word addr, rtg_word v, int size) {\n")
+	bp.WriteString("  if (addr == 0) return;\n")
+	bp.WriteString("  if (size == 1) { *(unsigned char*)(rtg_size)addr = (unsigned char)(v & 0xffu); return; }\n")
+	bp.WriteString("  {\n")
+	bp.WriteString("    int i;\n")
+	bp.WriteString("    unsigned char* p = (unsigned char*)(rtg_size)addr;\n")
+	bp.WriteString("    unsigned char* in = (unsigned char*)&v;\n")
+	bp.WriteString("    for (i = 0; i < RTG_WORD_BYTES; i++) p[i] = in[i];\n")
+	bp.WriteString("  }\n")
+	bp.WriteString("}\n\n")
+	bp.WriteString("static int rtg_prefix(const char* s, const char* p) {\n")
+	bp.WriteString("  while (*p) { if (*s != *p) return 0; s++; p++; }\n")
+	bp.WriteString("  return 1;\n")
+	bp.WriteString("}\n\n")
+
+	bp.WriteString("struct rtg_strhdr { rtg_word data; rtg_word len; };\n")
+	for i, lit := range literals {
+		cWritef(bp, "static const unsigned char g_lit_data_%d[] = {", i)
+		if len(lit) == 0 {
+			bp.WriteString("0")
+		} else {
+			for j := 0; j < len(lit); j++ {
+				if j%16 == 0 {
+					bp.WriteString("\n  ")
+				}
+				cWritef(bp, "%d", int(lit[j]))
+				if j+1 < len(lit) {
+					bp.WriteString(",")
+				}
+			}
+		}
+		bp.WriteString("\n};\n")
+		cWritef(bp, "static struct rtg_strhdr g_lit_hdr_%d;\n", i)
+	}
+	bp.WriteString("\nstatic void rtg_init_literals(void) {\n")
+	for i, lit := range literals {
+		cWritef(bp, "  g_lit_hdr_%d.data = (rtg_word)(rtg_size)g_lit_data_%d;\n", i, i)
+		cWritef(bp, "  g_lit_hdr_%d.len = (rtg_word)%d;\n", i, len(lit))
+	}
+	bp.WriteString("}\n\n")
+
+	// Forward declarations for direct calls.
+	for i := range irmod.Funcs {
+		bp.WriteString("static void ")
+		bp.WriteString(funcSyms[i])
+		bp.WriteString("(void);\n")
+	}
+	bp.WriteString("\n")
+
+	bp.WriteString("static void rtg_call_func(int idx) {\n")
+	bp.WriteString("  switch (idx) {\n")
+	for i := range irmod.Funcs {
+		cWritef(bp, "    case %d: ", i)
+		bp.WriteString(funcSyms[i])
+		bp.WriteString("(); return;\n")
+	}
+	bp.WriteString("    default: rtg_fail(\"bad function index\");\n")
+	bp.WriteString("  }\n")
+	bp.WriteString("}\n\n")
+
+	cWritef(bp, "static const char* g_method_names[%d] = {\n", len(methods))
+	for _, m := range methods {
+		cWritef(bp, "  %s,\n", cQuote(m))
+	}
+	bp.WriteString("};\n")
+	cWritef(bp, "static const int g_error_method_id = %d;\n", errorMethodID)
+	cWritef(bp, "static const int g_string_method_id = %d;\n", stringMethodID)
+	cWritef(bp, "static const int g_int_to_string_idx = %d;\n", intToStringIdx)
+	cWritef(bp, "static const int g_dispatch_count = %d;\n", len(dispatch))
+	bp.WriteString("static const struct { int type_id; int method_id; int func_id; } g_dispatch[] = {\n")
+	for _, d := range dispatch {
+		cWritef(bp, "  {%d, %d, %d},\n", d.typeID, d.methodID, d.funcID)
+	}
+	bp.WriteString("};\n\n")
+
+	bp.WriteString("static int rtg_find_dispatch(int typeID, int methodID) {\n")
+	bp.WriteString("  int i;\n")
+	bp.WriteString("  for (i = 0; i < g_dispatch_count; i++) {\n")
+	bp.WriteString("    if (g_dispatch[i].type_id == typeID && g_dispatch[i].method_id == methodID) return g_dispatch[i].func_id;\n")
+	bp.WriteString("  }\n")
+	bp.WriteString("  return -1;\n")
+	bp.WriteString("}\n\n")
+
+	bp.WriteString("static rtg_word rtg_tostring(rtg_word v) {\n")
+	bp.WriteString("  rtg_word first;\n")
+	bp.WriteString("  rtg_word concrete;\n")
+	bp.WriteString("  int fi;\n")
+	bp.WriteString("  if (v == 0) return 0;\n")
+	bp.WriteString("  if (v < 4096) {\n")
+	bp.WriteString("    if (g_int_to_string_idx < 0) return 0;\n")
+	bp.WriteString("    rtg_push(v);\n")
+	bp.WriteString("    rtg_call_func(g_int_to_string_idx);\n")
+	bp.WriteString("    return rtg_pop();\n")
+	bp.WriteString("  }\n")
+	bp.WriteString("  first = rtg_load(v, RTG_WORD_BYTES);\n")
+	bp.WriteString("  if (first >= 256) return v;\n")
+	bp.WriteString("  concrete = rtg_load(v + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
+	bp.WriteString("  if (first == 1) {\n")
+	bp.WriteString("    if (g_int_to_string_idx < 0) return 0;\n")
+	bp.WriteString("    rtg_push(concrete);\n")
+	bp.WriteString("    rtg_call_func(g_int_to_string_idx);\n")
+	bp.WriteString("    return rtg_pop();\n")
+	bp.WriteString("  }\n")
+	bp.WriteString("  if (first == 2) return concrete;\n")
+	bp.WriteString("  fi = rtg_find_dispatch((int)first, g_error_method_id);\n")
+	bp.WriteString("  if (fi >= 0) { rtg_push(concrete); rtg_call_func(fi); return rtg_pop(); }\n")
+	bp.WriteString("  fi = rtg_find_dispatch((int)first, g_string_method_id);\n")
+	bp.WriteString("  if (fi >= 0) { rtg_push(concrete); rtg_call_func(fi); return rtg_pop(); }\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("}\n\n")
+
+	bp.WriteString("static void rtg_builtin_composite(int fieldCount) {\n")
+	bp.WriteString("  rtg_word* tmp;\n")
+	bp.WriteString("  rtg_word p;\n")
+	bp.WriteString("  int i;\n")
+	bp.WriteString("  if (fieldCount <= 0) { rtg_push(0); return; }\n")
+	bp.WriteString("  tmp = (rtg_word*)malloc((rtg_size)fieldCount * (rtg_size)sizeof(rtg_word));\n")
+	bp.WriteString("  if (!tmp) rtg_fail(\"composite temp alloc failed\");\n")
+	bp.WriteString("  for (i = 0; i < fieldCount; i++) tmp[i] = rtg_pop();\n")
+	bp.WriteString("  p = rtg_alloc((rtg_word)fieldCount * RTG_WORD_BYTES);\n")
+	bp.WriteString("  for (i = 0; i < fieldCount; i++) rtg_store(p + (rtg_word)i * RTG_WORD_BYTES, tmp[fieldCount-1-i], RTG_WORD_BYTES);\n")
+	bp.WriteString("  rtg_push(p);\n")
+	bp.WriteString("  free(tmp);\n")
+	bp.WriteString("}\n\n")
+
+	for fi, f := range irmod.Funcs {
+		funcStart := bp.Len()
+		frameSize := len(f.Locals)
+		if f.Params > frameSize {
+			frameSize = f.Params
+		}
+		if frameSize <= 0 {
+			frameSize = 1
+		}
+		needA := false
+		needC := false
+		needT := false
+		needI := f.Params > 0
+		for _, in := range f.Code {
+			switch in.Op {
+			case OP_DUP:
+				needT = true
+			case OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_AND, OP_OR, OP_XOR, OP_SHL, OP_SHR,
+				OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LEQ, OP_GEQ:
+				needA = true
+				needC = true
+			case OP_NEG, OP_NOT, OP_LOAD, OP_OFFSET, OP_LEN, OP_JMP_IF, OP_JMP_IF_NOT:
+				needA = true
+			case OP_STORE:
+				needA = true
+				needC = true
+			case OP_INDEX_ADDR:
+				needA = true
+				needC = true
+				needT = true
+			case OP_CONVERT:
+				if in.Name == "byte" || in.Name == "uint16" || in.Name == "int32" || in.Name == "uint32" {
+					needA = true
+				}
+			case OP_IFACE_BOX:
+				needA = true
+				needC = true
+			case OP_IFACE_CALL:
+				needA = true
+				needC = true
+				needT = true
+				needI = true
+			case OP_PANIC:
+				needA = true
+				needC = true
+				needT = true
+			case OP_CALL_INTRINSIC:
+				if in.Name == "Sliceptr" || in.Name == "Stringptr" || in.Name == "ReadPtr" || in.Name == "WritePtr" || in.Name == "WriteByte" {
+					needA = true
+				}
+			}
+		}
+
+		bp.WriteString("static void ")
+		bp.WriteString(funcSyms[fi])
+		bp.WriteString("(void) {\n")
+		cWritef(bp, "  rtg_word locals[%d];\n", frameSize)
+		var temps []string
+		if needA {
+			temps = append(temps, "a")
+		}
+		if needC {
+			temps = append(temps, "c")
+		}
+		if needT {
+			temps = append(temps, "t")
+		}
+		if len(temps) > 0 {
+			cWritef(bp, "  rtg_word %s;\n", strings.Join(temps, ", "))
+		}
+		if needI {
+			bp.WriteString("  int i;\n")
+		}
+		cWritef(bp, "  rtg_memzero((rtg_word)(rtg_size)locals, %d * RTG_WORD_BYTES);\n", frameSize)
+		if f.Params > 0 {
+			cWritef(bp, "  for (i = %d; i >= 0; i--) locals[i] = rtg_pop();\n", f.Params-1)
+		}
+		for _, in := range f.Code {
+			if in.Op == OP_LABEL {
+				cWritef(bp, "L_%d:\n", in.Arg)
+				continue
+			}
+			switch in.Op {
+			case OP_CONST_I64:
+				if bits == 16 {
+					cWritef(bp, "  rtg_push((rtg_word)((rtg_sword)%d));\n", in.Val)
+				} else {
+					cWritef(bp, "  rtg_push((rtg_word)((rtg_sword)%dL));\n", in.Val)
+				}
+			case OP_CONST_STR:
+				lit := decodeStringLiteral(in.Name)
+				idx := litIdx[lit]
+				cWritef(bp, "  rtg_push((rtg_word)(rtg_size)&g_lit_hdr_%d);\n", idx)
+			case OP_CONST_BOOL:
+				if in.Arg != 0 {
+					bp.WriteString("  rtg_push(1);\n")
+				} else {
+					bp.WriteString("  rtg_push(0);\n")
+				}
+			case OP_CONST_NIL:
+				bp.WriteString("  rtg_push(0);\n")
+
+			case OP_LOCAL_GET:
+				cWritef(bp, "  rtg_push(locals[%d]);\n", in.Arg)
+			case OP_LOCAL_SET:
+				cWritef(bp, "  locals[%d] = rtg_pop();\n", in.Arg)
+			case OP_LOCAL_ADDR:
+				cWritef(bp, "  rtg_push((rtg_word)(rtg_size)&locals[%d]);\n", in.Arg)
+			case OP_GLOBAL_GET:
+				cWritef(bp, "  rtg_push(g_globals[%d]);\n", in.Arg)
+			case OP_GLOBAL_SET:
+				cWritef(bp, "  g_globals[%d] = rtg_pop();\n", in.Arg)
+			case OP_GLOBAL_ADDR:
+				cWritef(bp, "  rtg_push((rtg_word)(rtg_size)&g_globals[%d]);\n", in.Arg)
+
+			case OP_DROP:
+				bp.WriteString("  (void)rtg_pop();\n")
+			case OP_DUP:
+				bp.WriteString("  t = rtg_pop(); rtg_push(t); rtg_push(t);\n")
+
+			case OP_ADD:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c + (rtg_sword)a));\n")
+			case OP_SUB:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c - (rtg_sword)a));\n")
+			case OP_MUL:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c * (rtg_sword)a));\n")
+			case OP_DIV:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((a == 0) ? 0 : (rtg_word)((rtg_sword)c / (rtg_sword)a));\n")
+			case OP_MOD:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((a == 0) ? 0 : (rtg_word)((rtg_sword)c % (rtg_sword)a));\n")
+			case OP_NEG:
+				bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(-(rtg_sword)a));\n")
+			case OP_AND:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push(c & a);\n")
+			case OP_OR:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push(c | a);\n")
+			case OP_XOR:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push(c ^ a);\n")
+			case OP_SHL:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(c << (a & RTG_SHIFT_MASK)));\n")
+			case OP_SHR:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) >> (a & RTG_SHIFT_MASK)));\n")
+			case OP_EQ:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) == ((rtg_sword)a)));\n")
+			case OP_NEQ:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) != ((rtg_sword)a)));\n")
+			case OP_LT:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) < ((rtg_sword)a)));\n")
+			case OP_GT:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) > ((rtg_sword)a)));\n")
+			case OP_LEQ:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) <= ((rtg_sword)a)));\n")
+			case OP_GEQ:
+				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) >= ((rtg_sword)a)));\n")
+			case OP_NOT:
+				bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(a == 0));\n")
+
+			case OP_LOAD:
+				if in.Arg == 0 {
+					bp.WriteString("  a = rtg_pop(); rtg_push(rtg_load(a, RTG_WORD_BYTES));\n")
+				} else {
+					cWritef(bp, "  a = rtg_pop(); rtg_push(rtg_load(a, %d));\n", in.Arg)
+				}
+			case OP_STORE:
+				if in.Arg == 0 {
+					bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_store(a, c, RTG_WORD_BYTES);\n")
+				} else {
+					cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_store(a, c, %d);\n", in.Arg)
+				}
+			case OP_OFFSET:
+				cWritef(bp, "  a = rtg_pop(); rtg_push(a + (rtg_word)%d);\n", in.Arg)
+			case OP_INDEX_ADDR:
+				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); t = (c == 0) ? 0 : rtg_load(c, RTG_WORD_BYTES); rtg_push(t + a * (rtg_word)%d);\n", in.Arg)
+			case OP_LEN:
+				bp.WriteString("  a = rtg_pop(); rtg_push((a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES));\n")
+
+			case OP_JMP:
+				cWritef(bp, "  goto L_%d;\n", in.Arg)
+			case OP_JMP_IF:
+				cWritef(bp, "  a = rtg_pop(); if (a != 0) goto L_%d;\n", in.Arg)
+			case OP_JMP_IF_NOT:
+				cWritef(bp, "  a = rtg_pop(); if (a == 0) goto L_%d;\n", in.Arg)
+
+			case OP_CALL:
+				if strings.HasPrefix(in.Name, "builtin.composite.") {
+					cWritef(bp, "  rtg_builtin_composite(%d);\n", in.Arg)
+				} else if idx, ok := funcIdx[in.Name]; ok {
+					bp.WriteString("  ")
+					bp.WriteString(funcSyms[idx])
+					bp.WriteString("();\n")
+				} else {
+					return fmt.Errorf("unresolved call target for C backend: %s", in.Name)
+				}
+
+			case OP_CALL_INTRINSIC:
+				switch in.Name {
+				case "Syscall":
+					bp.WriteString("  {\n")
+					bp.WriteString("    rtg_word num = locals[0], a0 = locals[1], a1 = locals[2], a2 = locals[3], a3 = locals[4], a4 = locals[5], a5 = locals[6];\n")
+					bp.WriteString("    rtg_sword rv;\n")
+					bp.WriteString("    rv = rtg_host_call(num, a0, a1, a2, a3, a4, a5);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); }\n")
+					bp.WriteString("  }\n")
+				case "Sliceptr":
+					bp.WriteString("  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n")
+				case "Makeslice":
+					bp.WriteString("  {\n")
+					bp.WriteString("    rtg_word h = rtg_alloc((rtg_word)(4 * RTG_WORD_BYTES));\n")
+					bp.WriteString("    rtg_store(h + 0 * RTG_WORD_BYTES, locals[0], RTG_WORD_BYTES);\n")
+					bp.WriteString("    rtg_store(h + 1 * RTG_WORD_BYTES, locals[1], RTG_WORD_BYTES);\n")
+					bp.WriteString("    rtg_store(h + 2 * RTG_WORD_BYTES, locals[2], RTG_WORD_BYTES);\n")
+					bp.WriteString("    rtg_store(h + 3 * RTG_WORD_BYTES, 1, RTG_WORD_BYTES);\n")
+					bp.WriteString("    rtg_push(h);\n")
+					bp.WriteString("  }\n")
+				case "Stringptr":
+					bp.WriteString("  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n")
+				case "Makestring":
+					bp.WriteString("  {\n")
+					bp.WriteString("    rtg_word h = rtg_alloc((rtg_word)(2 * RTG_WORD_BYTES));\n")
+					bp.WriteString("    rtg_store(h + 0 * RTG_WORD_BYTES, locals[0], RTG_WORD_BYTES);\n")
+					bp.WriteString("    rtg_store(h + 1 * RTG_WORD_BYTES, locals[1], RTG_WORD_BYTES);\n")
+					bp.WriteString("    rtg_push(h);\n")
+					bp.WriteString("  }\n")
+				case "Tostring":
+					bp.WriteString("  rtg_push(rtg_tostring(locals[0]));\n")
+				case "ReadPtr":
+					bp.WriteString("  rtg_push(rtg_load(locals[0], RTG_WORD_BYTES));\n")
+				case "WritePtr":
+					bp.WriteString("  rtg_store(locals[0], locals[1], RTG_WORD_BYTES);\n")
+				case "WriteByte":
+					bp.WriteString("  rtg_store(locals[0], locals[1], 1);\n")
+				default:
+					return fmt.Errorf("unknown intrinsic %q", in.Name)
+				}
+
+			case OP_RETURN:
+				bp.WriteString("  return;\n")
+
+			case OP_CONVERT:
+				switch in.Name {
+				case "string":
+					if bytesToStringIdx >= 0 {
+						bp.WriteString("  ")
+						bp.WriteString(funcSyms[bytesToStringIdx])
+						bp.WriteString("();\n")
+					}
+				case "[]byte":
+					if stringToBytesIdx >= 0 {
+						bp.WriteString("  ")
+						bp.WriteString(funcSyms[stringToBytesIdx])
+						bp.WriteString("();\n")
+					}
+				case "byte":
+					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
+				case "uint16":
+					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffffu);\n")
+				case "int32":
+					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i32)(rtg_u32)a);\n")
+				case "uint32":
+					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_u32)a);\n")
+				default:
+					bp.WriteString("  /* no-op conversion */\n")
+				}
+
+			case OP_IFACE_BOX:
+				cWritef(bp, "  a = rtg_pop(); c = rtg_alloc((rtg_word)(2 * RTG_WORD_BYTES)); rtg_store(c, (rtg_word)%d, RTG_WORD_BYTES); rtg_store(c + RTG_WORD_BYTES, a, RTG_WORD_BYTES); rtg_push(c);\n", in.Arg)
+
+			case OP_IFACE_CALL:
+				mid := methodID[cBareMethod(in.Name)]
+				cWritef(bp, "  {\n")
+				cWritef(bp, "    int ac = %d;\n", in.Arg)
+				bp.WriteString("    rtg_word* argv = 0;\n")
+				bp.WriteString("    int k;\n")
+				bp.WriteString("    if (ac > 0) { argv = (rtg_word*)malloc((rtg_size)ac * (rtg_size)sizeof(rtg_word)); if (!argv) rtg_fail(\"iface argv alloc\"); }\n")
+				bp.WriteString("    for (k = 0; k < ac; k++) argv[k] = rtg_pop();\n")
+				bp.WriteString("    a = rtg_pop();\n")
+				bp.WriteString("    c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);\n")
+				bp.WriteString("    t = (a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
+				bp.WriteString("    rtg_push(t);\n")
+				bp.WriteString("    for (k = ac - 1; k >= 0; k--) rtg_push(argv[k]);\n")
+				bp.WriteString("    if (argv) free(argv);\n")
+				cWritef(bp, "    i = rtg_find_dispatch((int)c, %d);\n", mid)
+				bp.WriteString("    if (i < 0) rtg_fail(\"interface dispatch failed\");\n")
+				bp.WriteString("    rtg_call_func(i);\n")
+				bp.WriteString("  }\n")
+
+			case OP_PANIC:
+				bp.WriteString("  a = rtg_pop();\n")
+				bp.WriteString("  c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);\n")
+				bp.WriteString("  if (c < 256) a = rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
+				bp.WriteString("  c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);\n")
+				bp.WriteString("  t = (a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
+				bp.WriteString("  if (c != 0 && t != 0) rtg_host_write_str((const char*)(rtg_size)c, (rtg_size)t);\n")
+				bp.WriteString("  rtg_host_write_str(\"\\n\", 1);\n")
+				bp.WriteString("  rtg_host_exit(2);\n")
+
+			case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+				bp.WriteString("  rtg_fail(\"unexpected unsupported opcode\");\n")
+
+			default:
+				return fmt.Errorf("unhandled opcode for C backend: %d", in.Op)
+			}
+		}
+		bp.WriteString("}\n\n")
+		funcSizes = append(funcSizes, FuncSize{Name: f.Name, Size: bp.Len() - funcStart})
+	}
+
+	bp.WriteString("int main(int argc, char** argv) {\n")
+	bp.WriteString("  g_argc = argc;\n")
+	bp.WriteString("  g_argv = argv;\n")
+	bp.WriteString("  rtg_host_init();\n")
+	bp.WriteString("  rtg_check_ptr_bits();\n")
+	bp.WriteString("  rtg_init_literals();\n")
+	for i, f := range irmod.Funcs {
+		if isInitFunc(f.Name) {
+			bp.WriteString("  ")
+			bp.WriteString(funcSyms[i])
+			bp.WriteString("();\n")
+		}
+	}
+	bp.WriteString("  ")
+	bp.WriteString(funcSyms[mainIdx])
+	bp.WriteString("();\n")
+	bp.WriteString("  return 0;\n")
+	bp.WriteString("}\n")
+
+	if err := os.WriteFile(outputPath, []byte(bp.String()), 0644); err != nil {
+		return fmt.Errorf("write C source: %v", err)
+	}
+	return nil
+}

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RTG2 Playground</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      background: #111827; color: #f3f4f6;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    button, select { font-family: inherit; font-size: inherit; }
+    .hidden { display: none !important; }
+
+    /* Toolbar */
+    #toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; background: #1f2937;
+      border-bottom: 1px solid #374151; flex-shrink: 0;
+      gap: 8px; flex-wrap: wrap;
+    }
+    #toolbar h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.025em; flex-shrink: 0; }
+    #toolbar-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #target-select {
+      background: #374151; color: #f3f4f6; border: 1px solid #4b5563;
+      border-radius: 4px; padding: 6px 8px; outline: none;
+    }
+    .btn {
+      padding: 6px 12px; border: none; border-radius: 4px;
+      font-size: 13px; font-weight: 500; cursor: pointer; transition: background 0.15s;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-blue { background: #2563eb; color: #fff; }
+    .btn-blue:hover:not(:disabled) { background: #3b82f6; }
+    .btn-green { background: #16a34a; color: #fff; }
+    .btn-green:hover:not(:disabled) { background: #22c55e; }
+    .btn-gray { background: #4b5563; color: #fff; }
+    .btn-gray:hover:not(:disabled) { background: #6b7280; }
+
+    /* Panels */
+    #main-panels { display: flex; flex: 1; min-height: 0; }
+
+    /* File Explorer */
+    #panel-files {
+      width: 224px; flex-shrink: 0; background: #1f2937;
+      border-right: 1px solid #374151; display: flex; flex-direction: column; overflow: hidden;
+    }
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; border-bottom: 1px solid #374151;
+    }
+    .panel-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.05em; color: #9ca3af;
+    }
+    #btn-new-file {
+      background: none; border: none; color: #9ca3af; font-size: 18px;
+      cursor: pointer; line-height: 1;
+    }
+    #btn-new-file:hover { color: #e5e7eb; }
+    #file-tree { flex: 1; overflow-y: auto; font-size: 13px; padding: 4px 0; }
+    .tree-item {
+      padding: 2px 12px; cursor: pointer; user-select: none; white-space: nowrap;
+    }
+    .tree-item:hover { background: rgba(255,255,255,0.05); }
+    .tree-item.active { background: rgba(59,130,246,0.2); }
+    .tree-dir { font-weight: 500; color: #d1d5db; }
+    .tree-arrow { display: inline-block; width: 16px; text-align: center; color: #6b7280; }
+    .dir-children { display: none; }
+    .dir-children.open { display: block; }
+
+    /* Editor */
+    #panel-editor { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    #editor-bar {
+      display: flex; align-items: center; padding: 6px 12px;
+      background: #1f2937; border-bottom: 1px solid #374151; font-size: 13px;
+    }
+    #editor-filename { color: #d1d5db; }
+    #editor-dirty { margin-left: 4px; color: #facc15; }
+    #editor-readonly-badge { margin-left: 8px; font-size: 11px; color: #6b7280; }
+    #btn-delete-file {
+      margin-left: auto; background: none; border: none; color: #6b7280;
+      cursor: pointer; font-size: 12px;
+    }
+    #btn-delete-file:hover { color: #f87171; }
+    #editor {
+      flex: 1; width: 100%; background: #111827; color: #f3f4f6;
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+      font-size: 13px; padding: 16px; border: none; resize: none;
+      outline: none; tab-size: 4;
+    }
+    #editor:read-only { opacity: 0.7; }
+
+    /* Output */
+    #panel-output {
+      width: 320px; flex-shrink: 0; background: #1f2937;
+      border-left: 1px solid #374151; display: flex; flex-direction: column; overflow: hidden;
+    }
+    #btn-clear-output {
+      background: none; border: none; color: #6b7280; cursor: pointer; font-size: 12px;
+    }
+    #btn-clear-output:hover { color: #d1d5db; }
+    #output-content {
+      flex: 1; overflow-y: auto; padding: 12px;
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+      font-size: 13px; white-space: pre-wrap; word-break: break-all;
+    }
+    #output-content .stderr { color: #f87171; }
+    #output-content .stdout { color: #e5e7eb; }
+
+    /* Size Analysis */
+    #size-analysis {
+      border-top: 1px solid #374151; padding: 8px 12px;
+      font-size: 12px; overflow-y: auto; max-height: 40%;
+    }
+    .size-header {
+      font-weight: 600; color: #d1d5db; margin-bottom: 6px;
+    }
+    .size-pkg { margin-bottom: 2px; }
+    .size-pkg summary {
+      cursor: pointer; padding: 2px 0; color: #9ca3af;
+      list-style: disclosure-closed;
+    }
+    .size-pkg[open] summary { list-style: disclosure-open; }
+    .size-pkg-name { color: #93c5fd; }
+    .size-pkg-size { color: #6b7280; margin-left: 4px; }
+    .size-func-list { padding-left: 16px; }
+    .size-func-row {
+      display: flex; justify-content: space-between;
+      padding: 1px 0; color: #9ca3af;
+    }
+    .size-func-name {
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+      color: #d1d5db; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .size-func-size { color: #6b7280; white-space: nowrap; margin-left: 8px; }
+
+    /* Status */
+    #statusbar {
+      padding: 4px 12px; background: #1f2937;
+      border-top: 1px solid #374151; font-size: 12px; color: #9ca3af; flex-shrink: 0;
+    }
+
+    /* Mobile */
+    @media (max-width: 768px) {
+      #main-panels { flex-direction: column; }
+      #panel-files {
+        width: 100%; max-height: 30vh;
+        border-right: none; border-bottom: 1px solid #374151;
+      }
+      #panel-editor { min-height: 30vh; }
+      #panel-output {
+        width: 100%; max-height: 30vh;
+        border-left: none; border-top: 1px solid #374151;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <h1>RTG2 Playground</h1>
+    <div id="toolbar-buttons">
+      <select id="target-select">
+        <option value="wasi/wasm32">wasi/wasm32</option>
+        <option value="linux/amd64">linux/amd64</option>
+        <option value="linux/386">linux/386</option>
+        <option value="darwin/arm64">darwin/arm64</option>
+        <option value="windows/386">windows/386</option>
+        <option value="c/64">c/64</option>
+        <option value="c/32">c/32</option>
+        <option value="c/16">c/16</option>
+      </select>
+      <button id="btn-compile" class="btn btn-blue">Compile</button>
+      <button id="btn-run" class="btn btn-green" disabled>Run</button>
+      <button id="btn-download" class="btn btn-gray hidden" disabled>Download</button>
+    </div>
+  </div>
+
+  <!-- Main panels -->
+  <div id="main-panels">
+    <div id="panel-files">
+      <div class="panel-header">
+        <span class="panel-label">Files</span>
+        <button id="btn-new-file" title="New file">+</button>
+      </div>
+      <div id="file-tree"></div>
+    </div>
+
+    <div id="panel-editor">
+      <div id="editor-bar">
+        <span id="editor-filename">user/main.go</span>
+        <span id="editor-dirty" class="hidden" title="Modified since last compile">&#8226;</span>
+        <span id="editor-readonly-badge" class="hidden">read-only</span>
+        <button id="btn-delete-file" class="hidden" title="Delete file">Delete</button>
+      </div>
+      <textarea id="editor" spellcheck="false"></textarea>
+    </div>
+
+    <div id="panel-output">
+      <div class="panel-header">
+        <span class="panel-label">Output</span>
+        <button id="btn-clear-output">Clear</button>
+      </div>
+      <pre id="output-content"></pre>
+      <div id="size-analysis" class="hidden"></div>
+    </div>
+  </div>
+
+  <div id="statusbar"><span id="status">Ready</span></div>
+
+  <!--SCRIPTS-->
+  <script type="module" src="playground.js"></script>
+</body>
+</html>
