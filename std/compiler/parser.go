@@ -225,7 +225,7 @@ func (l *Lexer) skipWhitespaceAndComments() (bool, *Token) {
 			l.advance()
 			l.advance()
 			start := l.pos
-			for !l.atEnd() && l.peek() != '\n' {
+			for !l.atEnd() && l.peek() != '\n' && l.peek() != '\r' {
 				l.advance()
 			}
 			val := string(l.src[start:l.pos])
