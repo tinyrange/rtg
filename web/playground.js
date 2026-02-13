@@ -25,6 +25,11 @@ const btnDownload = document.getElementById("btn-download");
 const btnNewFile = document.getElementById("btn-new-file");
 const btnClearOutput = document.getElementById("btn-clear-output");
 const targetSelect = document.getElementById("target-select");
+const panelOutput = document.getElementById("panel-output");
+const irViewer = document.getElementById("ir-viewer");
+const irContent = document.getElementById("ir-content");
+const irFuncList = document.getElementById("ir-func-list");
+const irFuncSearch = document.getElementById("ir-func-search");
 
 // --- Init ---
 function init() {
@@ -230,12 +235,12 @@ function setupButtons() {
     const target = targetSelect.value;
     const canRun = target === "wasi/wasm32";
     btnRun.classList.toggle("hidden", !canRun);
-    // Show download for non-wasm targets, or always after compile
     markDirty();
     compiledWasm = null;
     btnRun.disabled = true;
     btnDownload.disabled = true;
     btnDownload.classList.add("hidden");
+    showIRViewer(false);
   });
 
   btnNewFile.addEventListener("click", () => {
@@ -270,6 +275,7 @@ function getOutputFilename(target) {
     case "wasi/wasm32": return "output.wasm";
     case "windows/386": return "output.exe";
     case "c/64": case "c/32": case "c/16": return "output.c";
+    case "ir": return "output.ir";
     default: return "output";
   }
 }
@@ -284,11 +290,13 @@ function getDownloadFilename(target) {
     case "c/64": return "program-c64.c";
     case "c/32": return "program-c32.c";
     case "c/16": return "program-c16.c";
+    case "ir": return "program.ir";
     default: return "program";
   }
 }
 
 function getMimeType(target) {
+  if (target === "ir") return "text/plain";
   if (target.startsWith("c/")) return "text/x-csrc";
   if (target === "wasi/wasm32") return "application/wasm";
   return "application/octet-stream";
@@ -346,7 +354,10 @@ async function compile() {
     }
 
     const entryFile = "user/main.go";
-    const args = ["rtg", "-T", target, "-size-analysis", "size-analysis.json", "-o", outputFile, entryFile];
+    const isIR = target === "ir";
+    const args = ["rtg", "-T", target];
+    if (!isIR) args.push("-size-analysis", "size-analysis.json");
+    args.push("-o", outputFile, entryFile);
 
     const wasi = createWASI(fs, args, {
       onStdout: (data) => appendOutput(new TextDecoder().decode(data), "stdout"),
@@ -381,23 +392,34 @@ async function compile() {
       compiledTarget = target;
       markClean();
 
-      const canRun = target === "wasi/wasm32";
-      btnRun.disabled = !canRun;
-      btnDownload.disabled = false;
-      btnDownload.classList.remove("hidden");
+      if (isIR) {
+        const irText = new TextDecoder().decode(output);
+        appendOutput(`IR generated (${irText.split("\n").length} lines) in ${elapsed}s\n`, "stdout");
+        renderIRViewer(irText);
+        showIRViewer(true);
+        btnRun.disabled = true;
+        btnDownload.disabled = false;
+        btnDownload.classList.remove("hidden");
+      } else {
+        showIRViewer(false);
+        const canRun = target === "wasi/wasm32";
+        btnRun.disabled = !canRun;
+        btnDownload.disabled = false;
+        btnDownload.classList.remove("hidden");
 
-      appendOutput(`Compiled ${output.length} bytes in ${elapsed}s\n`, "stdout");
+        appendOutput(`Compiled ${output.length} bytes in ${elapsed}s\n`, "stdout");
 
-      // Read and display size analysis
-      try {
-        const sizeData = fs.readFile("size-analysis.json");
-        if (sizeData && sizeData.length > 0) {
-          const json = new TextDecoder().decode(sizeData);
-          const analysis = JSON.parse(json);
-          renderSizeAnalysis(analysis);
+        // Read and display size analysis
+        try {
+          const sizeData = fs.readFile("size-analysis.json");
+          if (sizeData && sizeData.length > 0) {
+            const json = new TextDecoder().decode(sizeData);
+            const analysis = JSON.parse(json);
+            renderSizeAnalysis(analysis);
+          }
+        } catch (e) {
+          // Size analysis is optional, don't fail compile on error
         }
-      } catch (e) {
-        // Size analysis is optional, don't fail compile on error
       }
 
       setStatus(`Compiled (${elapsed}s)`);
@@ -517,7 +539,7 @@ function renderSizeAnalysis(data) {
 
   // Build output
   const container = document.getElementById("size-analysis");
-  container.innerHTML = "";
+  container.replaceChildren();
   container.classList.remove("hidden");
 
   const header = document.createElement("div");
@@ -531,8 +553,9 @@ function renderSizeAnalysis(data) {
     const pkgEl = document.createElement("details");
     pkgEl.className = "size-pkg";
 
-    const summary = document.createElement("summary");
-    summary.innerHTML = `<span class="size-pkg-name">${pkg}</span> <span class="size-pkg-size">${formatSize(info.size)} (${pct}%)</span>`;
+    const summary = el("summary", null,
+      span("size-pkg-name", pkg), text(" "),
+      span("size-pkg-size", `${formatSize(info.size)} (${pct}%)`));
     pkgEl.appendChild(summary);
 
     // Sort functions by size descending within package
@@ -543,9 +566,9 @@ function renderSizeAnalysis(data) {
     for (const f of info.funcs) {
       const fpct = info.size > 0 ? ((f.size / info.size) * 100).toFixed(1) : "0.0";
       const shortName = f.name.indexOf(".") >= 0 ? f.name.substring(f.name.indexOf(".") + 1) : f.name;
-      const row = document.createElement("div");
-      row.className = "size-func-row";
-      row.innerHTML = `<span class="size-func-name">${shortName}</span><span class="size-func-size">${formatSize(f.size)} (${fpct}%)</span>`;
+      const row = el("div", "size-func-row",
+        span("size-func-name", shortName),
+        span("size-func-size", `${formatSize(f.size)} (${fpct}%)`));
       list.appendChild(row);
     }
     pkgEl.appendChild(list);
@@ -553,5 +576,194 @@ function renderSizeAnalysis(data) {
   }
 }
 
+// --- IR Viewer ---
+function showIRViewer(show) {
+  if (show) {
+    panelOutput.classList.add("ir-active");
+    irViewer.classList.remove("hidden");
+    document.getElementById("size-analysis").classList.add("hidden");
+  } else {
+    panelOutput.classList.remove("ir-active");
+    irViewer.classList.add("hidden");
+    irContent.replaceChildren();
+    irFuncList.replaceChildren();
+    irFuncSearch.value = "";
+  }
+}
+
+// --- DOM helpers ---
+function el(tag, cls, ...children) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  for (const c of children) e.append(c);
+  return e;
+}
+
+function span(cls, s) { return el("span", cls, s); }
+function text(s) { return document.createTextNode(s); }
+
+function renderIRViewer(irText) {
+  const lines = irText.split("\n");
+
+  // Parse function names and their line indices
+  const funcs = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^func\s+(\S+)/);
+    if (m) funcs.push({ name: m[1], line: i });
+  }
+
+  // Render function nav buttons
+  irFuncList.replaceChildren();
+  for (const f of funcs) {
+    const btn = el("button", "ir-func-btn", f.name);
+    btn.addEventListener("click", () => {
+      const target = document.getElementById("ir-line-" + f.line);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    irFuncList.append(btn);
+  }
+
+  // Filter input
+  irFuncSearch.oninput = () => {
+    const q = irFuncSearch.value.toLowerCase();
+    for (const btn of irFuncList.children) {
+      btn.style.display = btn.textContent.toLowerCase().includes(q) ? "" : "none";
+    }
+  };
+
+  // Render highlighted lines
+  irContent.replaceChildren();
+  for (let i = 0; i < lines.length; i++) {
+    const div = el("div", "ir-line", ...highlightIRLine(lines[i]));
+    div.id = "ir-line-" + i;
+    irContent.append(div);
+  }
+}
+
+// Returns an array of DOM nodes for a single IR line.
+function highlightIRLine(line) {
+  if (!line) return [text("\n")];
+
+  // Section comments: "; === ... ==="
+  if (/^;\s*===/.test(line)) return [span("ir-section-comment", line)];
+
+  // Full-line comments
+  if (/^;/.test(line)) return [span("ir-comment", line)];
+
+  // "end" keyword
+  if (/^end\b/.test(line)) return [span("ir-keyword", "end")];
+
+  // func declaration
+  const funcMatch = line.match(/^(func)\s+(\S+)(.*)/);
+  if (funcMatch) {
+    return [span("ir-keyword", "func"), text(" "), span("ir-func-name", funcMatch[2]), ...tokenizeArgs(funcMatch[3])];
+  }
+
+  // Other declarations
+  const declMatch = line.match(/^(\s*)(global|local|type|typeid|method|interface)\b(.*)/);
+  if (declMatch) {
+    return [text(declMatch[1]), span("ir-keyword", declMatch[2]), ...tokenizeArgs(declMatch[3])];
+  }
+
+  // Instructions: "  NNNN: opcode args"
+  const instrMatch = line.match(/^(\s*)(\d{4}:)\s+(\S+)(.*)/);
+  if (instrMatch) {
+    return [text(instrMatch[1]), span("ir-addr", instrMatch[2]), text(" "), span("ir-opcode", instrMatch[3]), ...tokenizeArgs(instrMatch[4])];
+  }
+
+  return [text(line)];
+}
+
+// Tokenize raw text into an array of DOM nodes.
+function tokenizeArgs(raw) {
+  if (!raw) return [];
+  const nodes = [];
+  let i = 0;
+  while (i < raw.length) {
+    // Comment to end of line
+    if (raw[i] === ";") {
+      nodes.push(span("ir-comment", raw.slice(i)));
+      break;
+    }
+    // Quoted string
+    if (raw[i] === '"') {
+      const end = raw.indexOf('"', i + 1);
+      const s = end >= 0 ? raw.slice(i, end + 1) : raw.slice(i);
+      nodes.push(span("ir-string", s));
+      i += s.length;
+      continue;
+    }
+    // key=value param
+    const pm = raw.slice(i).match(/^([a-zA-Z_]\w*=\S+)/);
+    if (pm) {
+      nodes.push(span("ir-param", pm[0]));
+      i += pm[0].length;
+      continue;
+    }
+    // Boolean
+    const bm = raw.slice(i).match(/^(true|false)\b/);
+    if (bm) {
+      nodes.push(span("ir-bool", bm[0]));
+      i += bm[0].length;
+      continue;
+    }
+    // Number
+    const nm = raw.slice(i).match(/^-?\d+/);
+    if (nm && (i === 0 || /[\s(=]/.test(raw[i - 1]))) {
+      nodes.push(span("ir-number", nm[0]));
+      i += nm[0].length;
+      continue;
+    }
+    // Plain text: consume until next interesting char
+    let j = i + 1;
+    while (j < raw.length && !';"\n'.includes(raw[j]) && !/[a-zA-Z_\d]/.test(raw[j])) j++;
+    if (j === i + 1 && /[a-zA-Z_\d]/.test(raw[i])) {
+      while (j < raw.length && /[a-zA-Z_\d]/.test(raw[j])) j++;
+    }
+    nodes.push(text(raw.slice(i, j)));
+    i = j;
+  }
+  return nodes;
+}
+
+// --- Resizable Panels ---
+function setupResizeHandles() {
+  setupResize("resize-files", "panel-files", "left");
+  setupResize("resize-output", "panel-output", "right");
+}
+
+function setupResize(handleId, panelId, side) {
+  const handle = document.getElementById(handleId);
+  const panel = document.getElementById(panelId);
+  if (!handle || !panel) return;
+
+  let startX, startW;
+
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = panel.offsetWidth;
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing");
+
+    function onMove(e) {
+      const dx = e.clientX - startX;
+      const newW = side === "left" ? startW + dx : startW - dx;
+      panel.style.width = Math.max(80, newW) + "px";
+    }
+
+    function onUp() {
+      handle.classList.remove("dragging");
+      document.body.classList.remove("resizing");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
 // --- Start ---
+setupResizeHandles();
 init();

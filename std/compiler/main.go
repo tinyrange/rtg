@@ -10,7 +10,7 @@ import (
 var targetGOOS string = "linux"
 var targetGOARCH string = "amd64"
 var targetPtrSize int = 8
-var targetBackend string = "native" // native or c
+var targetBackend string = "native" // native, c, or ir
 var targetCModel int = 0            // 16/32/64 when targetBackend==c
 var buildTags []string
 
@@ -55,6 +55,8 @@ func main() {
 				}
 				targetGOOS = "c"
 				targetGOARCH = fmt.Sprintf("c%d", targetCModel)
+			} else if target == "ir" {
+				targetBackend = "ir"
 			} else {
 				slashIdx := strings.Index(target, "/")
 				if slashIdx < 0 {

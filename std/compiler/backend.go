@@ -94,6 +94,9 @@ func GenerateELF(irmod *IRModule, outputPath string) error {
 	if targetBackend == "c" {
 		return generateCSource(irmod, outputPath)
 	}
+	if targetBackend == "ir" {
+		return generateIRText(irmod, outputPath)
+	}
 	switch targetGOARCH {
 	case "amd64":
 		return generateAmd64ELF(irmod, outputPath)

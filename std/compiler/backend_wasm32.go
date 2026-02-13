@@ -1208,8 +1208,8 @@ func (g *WasmGen) compileLocalGet(idx int) {
 func (g *WasmGen) compileLocalSet(idx int) {
 	offset := g.localOffsets[idx]
 	t := g.popType()
-	if t == WASM_TYPE_I64 || g.localI64[idx] {
-		// If value is i64 or local expects i64
+	if g.localI64[idx] {
+		// Local has an 8-byte slot — use i64.store
 		if t == WASM_TYPE_I32 {
 			g.w.i64ExtendI32U() // promote to i64
 		}
@@ -1217,8 +1217,11 @@ func (g *WasmGen) compileLocalSet(idx int) {
 		g.w.globalGet(uint32(g.globalSP))
 		g.w.localGet(uint32(g.tempLocal64))
 		g.w.i64Store(3, uint32(offset))
-		g.localI64[idx] = true
 	} else {
+		// Local has a 4-byte slot — always wrap to i32
+		if t == WASM_TYPE_I64 {
+			g.w.i32WrapI64()
+		}
 		g.w.localSet(uint32(g.tempLocal))
 		g.w.globalGet(uint32(g.globalSP))
 		g.w.localGet(uint32(g.tempLocal))

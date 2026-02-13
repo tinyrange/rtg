@@ -43,11 +43,26 @@
 
     /* Panels */
     #main-panels { display: flex; flex: 1; min-height: 0; }
+    .panel-resize-handle {
+      width: 5px; cursor: col-resize; background: #374151; flex-shrink: 0;
+      position: relative; z-index: 10;
+    }
+    .panel-resize-handle::after {
+      content: ""; position: absolute; top: 0; bottom: 0;
+      left: -3px; right: -3px;
+    }
+    .panel-resize-handle:hover, .panel-resize-handle.dragging {
+      background: #2563eb;
+    }
+    body.resizing { cursor: col-resize !important; }
+    body.resizing textarea, body.resizing pre, body.resizing iframe {
+      pointer-events: none !important;
+    }
 
     /* File Explorer */
     #panel-files {
-      width: 224px; flex-shrink: 0; background: #1f2937;
-      border-right: 1px solid #374151; display: flex; flex-direction: column; overflow: hidden;
+      width: 224px; flex-shrink: 0; flex-grow: 0; background: #1f2937;
+      display: flex; flex-direction: column; overflow: hidden; min-width: 120px;
     }
     .panel-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -97,8 +112,8 @@
 
     /* Output */
     #panel-output {
-      width: 320px; flex-shrink: 0; background: #1f2937;
-      border-left: 1px solid #374151; display: flex; flex-direction: column; overflow: hidden;
+      width: 320px; flex-shrink: 0; flex-grow: 0; background: #1f2937;
+      display: flex; flex-direction: column; overflow: hidden; min-width: 200px;
     }
     #btn-clear-output {
       background: none; border: none; color: #6b7280; cursor: pointer; font-size: 12px;
@@ -139,6 +154,57 @@
     }
     .size-func-size { color: #6b7280; white-space: nowrap; margin-left: 8px; }
 
+    /* Output shrink when IR is active */
+    #panel-output.ir-active #output-content {
+      flex: 0; max-height: 80px; overflow-y: auto;
+    }
+
+    /* IR Viewer */
+    #ir-viewer {
+      flex: 1; display: flex; flex-direction: column;
+      min-height: 0; border-top: 1px solid #374151;
+    }
+    #ir-nav {
+      padding: 6px 8px; border-bottom: 1px solid #374151;
+      flex-shrink: 0;
+    }
+    #ir-func-search {
+      width: 100%; padding: 4px 8px; margin-bottom: 4px;
+      background: #374151; color: #f3f4f6; border: 1px solid #4b5563;
+      border-radius: 4px; font-size: 12px; outline: none;
+      font-family: inherit;
+    }
+    #ir-func-search:focus { border-color: #6b7280; }
+    #ir-func-list {
+      display: flex; flex-wrap: wrap; gap: 3px;
+      max-height: 80px; overflow-y: auto;
+    }
+    .ir-func-btn {
+      padding: 1px 6px; background: #374151; color: #93c5fd;
+      border: 1px solid #4b5563; border-radius: 3px;
+      font-size: 11px; cursor: pointer; white-space: nowrap;
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+    }
+    .ir-func-btn:hover { background: #4b5563; color: #bfdbfe; }
+    #ir-content {
+      flex: 1; overflow-y: auto; padding: 8px 12px; margin: 0;
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+      font-size: 13px; line-height: 1.4;
+      background: #111827; color: #d1d5db;
+    }
+    .ir-line { white-space: pre; }
+    .ir-line:hover { background: rgba(255,255,255,0.03); }
+    .ir-section-comment { color: #6b7280; font-weight: bold; }
+    .ir-comment { color: #6b7280; }
+    .ir-keyword { color: #93c5fd; }
+    .ir-func-name { color: #f3f4f6; font-weight: bold; }
+    .ir-opcode { color: #86efac; }
+    .ir-string { color: #fbbf24; }
+    .ir-number { color: #67e8f9; }
+    .ir-addr { color: #67e8f9; opacity: 0.6; }
+    .ir-param { color: #c4b5fd; }
+    .ir-bool { color: #67e8f9; }
+
     /* Status */
     #statusbar {
       padding: 4px 12px; background: #1f2937;
@@ -148,14 +214,15 @@
     /* Mobile */
     @media (max-width: 768px) {
       #main-panels { flex-direction: column; }
+      .panel-resize-handle { display: none; }
       #panel-files {
-        width: 100%; max-height: 30vh;
-        border-right: none; border-bottom: 1px solid #374151;
+        width: 100% !important; max-height: 30vh;
+        border-bottom: 1px solid #374151;
       }
       #panel-editor { min-height: 30vh; }
       #panel-output {
-        width: 100%; max-height: 30vh;
-        border-left: none; border-top: 1px solid #374151;
+        width: 100% !important; max-height: 30vh;
+        border-top: 1px solid #374151;
       }
     }
   </style>
@@ -174,6 +241,7 @@
         <option value="c/64">c/64</option>
         <option value="c/32">c/32</option>
         <option value="c/16">c/16</option>
+        <option value="ir">ir</option>
       </select>
       <button id="btn-compile" class="btn btn-blue">Compile</button>
       <button id="btn-run" class="btn btn-green" disabled>Run</button>
@@ -190,6 +258,7 @@
       </div>
       <div id="file-tree"></div>
     </div>
+    <div class="panel-resize-handle" id="resize-files"></div>
 
     <div id="panel-editor">
       <div id="editor-bar">
@@ -200,6 +269,7 @@
       </div>
       <textarea id="editor" spellcheck="false"></textarea>
     </div>
+    <div class="panel-resize-handle" id="resize-output"></div>
 
     <div id="panel-output">
       <div class="panel-header">
@@ -207,6 +277,13 @@
         <button id="btn-clear-output">Clear</button>
       </div>
       <pre id="output-content"></pre>
+      <div id="ir-viewer" class="hidden">
+        <div id="ir-nav">
+          <input id="ir-func-search" type="text" placeholder="Filter functions..." />
+          <div id="ir-func-list"></div>
+        </div>
+        <pre id="ir-content"></pre>
+      </div>
       <div id="size-analysis" class="hidden"></div>
     </div>
   </div>
