@@ -85,7 +85,7 @@ func (c *Cmd) Run() error {
 		args[0] = c.Path
 	}
 	cmd := buildCmdString(args)
-	rv, _, errn := runtime.Syscall(os.SYS_SYSTEM, runtime.Sliceptr(cmd), 0, 0, 0, 0, 0)
+	rv, _, errn := runtime.SysSystem(runtime.Sliceptr(cmd))
 	if errn != 0 {
 		return os.Errno(errn)
 	}
@@ -103,7 +103,7 @@ func (c *Cmd) Output() ([]byte, error) {
 		args[0] = c.Path
 	}
 	cmd := buildCmdString(args)
-	fd, _, errn := runtime.Syscall(os.SYS_POPEN, runtime.Sliceptr(cmd), 0, 0, 0, 0, 0)
+	fd, _, errn := runtime.SysPopen(runtime.Sliceptr(cmd))
 	if errn != 0 {
 		return nil, os.Errno(errn)
 	}
@@ -111,14 +111,14 @@ func (c *Cmd) Output() ([]byte, error) {
 	var data []byte
 	chunk := make([]byte, 4096)
 	for {
-		n, _, errn := runtime.Syscall(os.SYS_READ, fd, runtime.Sliceptr(chunk), 4096, 0, 0, 0)
+		n, _, errn := runtime.SysRead(fd, runtime.Sliceptr(chunk), 4096)
 		if errn != 0 || n == 0 {
 			break
 		}
 		data = append(data, chunk[0:int(n)]...)
 	}
 
-	rv, _, _ := runtime.Syscall(os.SYS_PCLOSE, fd, 0, 0, 0, 0, 0)
+	rv, _, _ := runtime.SysPclose(fd)
 	exitCode := int(rv)
 	if exitCode != 0 {
 		return data, &ExitError{code: exitCode}

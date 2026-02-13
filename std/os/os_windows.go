@@ -17,7 +17,7 @@ var Stdin *File = &File{fd: 0}
 var Args []string
 
 func (f *File) Write(p []byte) (n int, err error) {
-	wrote, _, errn := runtime.Syscall(SYS_WRITE, uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)), 0, 0, 0)
+	wrote, _, errn := runtime.SysWrite(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
 	if errn != 0 {
 		return int(wrote), Errno(errn)
 	}
@@ -25,7 +25,7 @@ func (f *File) Write(p []byte) (n int, err error) {
 }
 
 func (f *File) Read(p []byte) (int, error) {
-	n, _, errn := runtime.Syscall(SYS_READ, uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)), 0, 0, 0)
+	n, _, errn := runtime.SysRead(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
 	if errn != 0 {
 		return int(n), Errno(errn)
 	}
@@ -33,7 +33,7 @@ func (f *File) Read(p []byte) (int, error) {
 }
 
 func (f *File) Close() error {
-	_, _, errn := runtime.Syscall(SYS_CLOSE, uintptr(f.fd), 0, 0, 0, 0, 0)
+	_, _, errn := runtime.SysClose(uintptr(f.fd))
 	if errn != 0 {
 		return Errno(errn)
 	}
@@ -49,7 +49,7 @@ func NewFile(fd int) *File {
 }
 
 func Write(f *File, p []byte) (int, error) {
-	wrote, _, errn := runtime.Syscall(SYS_WRITE, uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)), 0, 0, 0)
+	wrote, _, errn := runtime.SysWrite(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
 	if errn != 0 {
 		return int(wrote), Errno(errn)
 	}
@@ -57,7 +57,7 @@ func Write(f *File, p []byte) (int, error) {
 }
 
 func Exit(code int) {
-	runtime.Syscall(SYS_EXIT_GROUP, uintptr(code), 0, 0, 0, 0, 0)
+	runtime.SysExit(uintptr(code))
 }
 
 func makeCString(s string) []byte {
@@ -76,7 +76,7 @@ func Open(name string) (*File, error) {
 
 func OpenFile(name string, flag int, perm FileMode) (*File, error) {
 	buf := makeCString(name)
-	fd, _, errn := runtime.Syscall(SYS_OPEN, runtime.Sliceptr(buf), uintptr(flag), uintptr(perm), 0, 0, 0)
+	fd, _, errn := runtime.SysOpen(runtime.Sliceptr(buf), uintptr(flag), uintptr(perm))
 	if errn != 0 {
 		return nil, Errno(errn)
 	}
@@ -86,7 +86,7 @@ func OpenFile(name string, flag int, perm FileMode) (*File, error) {
 func ReadFile(filename string) ([]byte, error) {
 	buf := makeCString(filename)
 
-	fd, _, errn := runtime.Syscall(SYS_OPEN, runtime.Sliceptr(buf), uintptr(O_RDONLY), 0, 0, 0, 0)
+	fd, _, errn := runtime.SysOpen(runtime.Sliceptr(buf), uintptr(O_RDONLY), 0)
 	if errn != 0 {
 		return nil, Errno(errn)
 	}
@@ -94,9 +94,9 @@ func ReadFile(filename string) ([]byte, error) {
 	var data []byte
 	chunk := make([]byte, 4096)
 	for {
-		n, _, errn := runtime.Syscall(SYS_READ, fd, runtime.Sliceptr(chunk), 4096, 0, 0, 0)
+		n, _, errn := runtime.SysRead(fd, runtime.Sliceptr(chunk), 4096)
 		if errn != 0 {
-			runtime.Syscall(SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+			runtime.SysClose(fd)
 			return nil, Errno(errn)
 		}
 		if n == 0 {
@@ -105,32 +105,32 @@ func ReadFile(filename string) ([]byte, error) {
 		data = append(data, chunk[0:int(n)]...)
 	}
 
-	runtime.Syscall(SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+	runtime.SysClose(fd)
 	return data, nil
 }
 
 func WriteFile(name string, data []byte, perm int) error {
 	buf := makeCString(name)
 	flags := O_WRONLY + O_CREAT + O_TRUNC
-	fd, _, errn := runtime.Syscall(SYS_OPEN, runtime.Sliceptr(buf), uintptr(flags), uintptr(perm), 0, 0, 0)
+	fd, _, errn := runtime.SysOpen(runtime.Sliceptr(buf), uintptr(flags), uintptr(perm))
 	if errn != 0 {
 		return Errno(errn)
 	}
 	for len(data) > 0 {
-		n, _, errn := runtime.Syscall(SYS_WRITE, fd, runtime.Sliceptr(data), uintptr(len(data)), 0, 0, 0)
+		n, _, errn := runtime.SysWrite(fd, runtime.Sliceptr(data), uintptr(len(data)))
 		if errn != 0 {
-			runtime.Syscall(SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+			runtime.SysClose(fd)
 			return Errno(errn)
 		}
 		data = data[int(n):len(data)]
 	}
-	runtime.Syscall(SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+	runtime.SysClose(fd)
 	return nil
 }
 
 func MkdirAll(path string, perm FileMode) error {
 	buf := makeCString(path)
-	_, _, errn := runtime.Syscall(SYS_MKDIR, runtime.Sliceptr(buf), uintptr(perm), 0, 0, 0, 0)
+	_, _, errn := runtime.SysMkdir(runtime.Sliceptr(buf), uintptr(perm))
 	if errn == 0 || errn == 183 {
 		// 183 = ERROR_ALREADY_EXISTS
 		return nil
@@ -151,7 +151,7 @@ func MkdirAll(path string, perm FileMode) error {
 		}
 		prefix := path[0:j]
 		pbuf := makeCString(prefix)
-		_, _, errn = runtime.Syscall(SYS_MKDIR, runtime.Sliceptr(pbuf), uintptr(perm), 0, 0, 0, 0)
+		_, _, errn = runtime.SysMkdir(runtime.Sliceptr(pbuf), uintptr(perm))
 		if errn != 0 && errn != 183 {
 			return Errno(errn)
 		}
@@ -162,7 +162,7 @@ func MkdirAll(path string, perm FileMode) error {
 
 func RemoveAll(path string) error {
 	buf := makeCString(path)
-	_, _, errn := runtime.Syscall(SYS_UNLINK, runtime.Sliceptr(buf), 0, 0, 0, 0, 0)
+	_, _, errn := runtime.SysUnlink(runtime.Sliceptr(buf))
 	if errn == 0 {
 		return nil
 	}
@@ -183,7 +183,7 @@ func RemoveAll(path string) error {
 	}
 
 	buf = makeCString(path)
-	_, _, errn = runtime.Syscall(SYS_RMDIR, runtime.Sliceptr(buf), 0, 0, 0, 0, 0)
+	_, _, errn = runtime.SysRmdir(runtime.Sliceptr(buf))
 	if errn != 0 {
 		return Errno(errn)
 	}
@@ -192,7 +192,7 @@ func RemoveAll(path string) error {
 
 func Getenv(key string) string {
 	// Get environment block
-	envPtr, _, _ := runtime.Syscall(SYS_GET_ENV_STRINGS, 0, 0, 0, 0, 0, 0)
+	envPtr, _, _ := runtime.SysGetEnvStrings()
 	if envPtr == 0 {
 		return ""
 	}
@@ -234,7 +234,7 @@ func Getenv(key string) string {
 }
 
 func Environ() []string {
-	envPtr, _, _ := runtime.Syscall(SYS_GET_ENV_STRINGS, 0, 0, 0, 0, 0, 0)
+	envPtr, _, _ := runtime.SysGetEnvStrings()
 	if envPtr == 0 {
 		return nil
 	}
@@ -272,7 +272,7 @@ func ListDir(dirname string) ([]string, error) {
 	// WIN32_FIND_DATAA is 320 bytes
 	findData := make([]byte, 320)
 
-	handle, _, errn := runtime.Syscall(SYS_FIND_FIRST_FILE, runtime.Sliceptr(pbuf), runtime.Sliceptr(findData), 0, 0, 0, 0)
+	handle, _, errn := runtime.SysFindFirstFile(runtime.Sliceptr(pbuf), runtime.Sliceptr(findData))
 	if errn != 0 {
 		return nil, Errno(errn)
 	}
@@ -297,13 +297,13 @@ func ListDir(dirname string) ([]string, error) {
 			i++
 		}
 
-		_, _, errn = runtime.Syscall(SYS_FIND_NEXT_FILE, handle, runtime.Sliceptr(findData), 0, 0, 0, 0)
+		_, _, errn = runtime.SysFindNextFile(handle, runtime.Sliceptr(findData))
 		if errn != 0 {
 			break
 		}
 	}
 
-	runtime.Syscall(SYS_FIND_CLOSE, handle, 0, 0, 0, 0, 0)
+	runtime.SysFindClose(handle)
 	return names, nil
 }
 
@@ -326,7 +326,7 @@ func ReadDir(dirname string) ([]DirEntry, error) {
 
 	findData := make([]byte, 320)
 
-	handle, _, errn := runtime.Syscall(SYS_FIND_FIRST_FILE, runtime.Sliceptr(pbuf), runtime.Sliceptr(findData), 0, 0, 0, 0)
+	handle, _, errn := runtime.SysFindFirstFile(runtime.Sliceptr(pbuf), runtime.Sliceptr(findData))
 	if errn != 0 {
 		return nil, Errno(errn)
 	}
@@ -352,19 +352,19 @@ func ReadDir(dirname string) ([]DirEntry, error) {
 			i++
 		}
 
-		_, _, errn = runtime.Syscall(SYS_FIND_NEXT_FILE, handle, runtime.Sliceptr(findData), 0, 0, 0, 0)
+		_, _, errn = runtime.SysFindNextFile(handle, runtime.Sliceptr(findData))
 		if errn != 0 {
 			break
 		}
 	}
 
-	runtime.Syscall(SYS_FIND_CLOSE, handle, 0, 0, 0, 0, 0)
+	runtime.SysFindClose(handle)
 	return entries, nil
 }
 
 func Getwd() (string, error) {
 	buf := make([]byte, 4096)
-	n, _, errn := runtime.Syscall(SYS_GETCWD, runtime.Sliceptr(buf), 4096, 0, 0, 0, 0)
+	n, _, errn := runtime.SysGetcwd(runtime.Sliceptr(buf), 4096)
 	if errn != 0 {
 		return "", Errno(errn)
 	}
@@ -378,7 +378,7 @@ func Chmod(name string, mode int) error {
 
 func Stat(name string) error {
 	buf := makeCString(name)
-	_, _, errn := runtime.Syscall(SYS_STAT, runtime.Sliceptr(buf), 0, 0, 0, 0, 0)
+	_, _, errn := runtime.SysStat(runtime.Sliceptr(buf), 0)
 	if errn != 0 {
 		return Errno(errn)
 	}
@@ -387,7 +387,7 @@ func Stat(name string) error {
 
 func init() {
 	// Get command line string
-	cmdLinePtr, _, _ := runtime.Syscall(SYS_GET_CMDLINE, 0, 0, 0, 0, 0, 0)
+	cmdLinePtr, _, _ := runtime.SysGetCommandLine()
 	if cmdLinePtr == 0 {
 		return
 	}

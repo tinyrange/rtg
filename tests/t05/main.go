@@ -6,7 +6,7 @@ import "runtime"
 func writeStr(s string) {
 	ptr := runtime.Stringptr(s)
 	n := len(s)
-	runtime.Syscall(1, 1, ptr, uintptr(n), 0, 0, 0)
+	runtime.SysWrite(1, ptr, uintptr(n))
 }
 
 func main() {

@@ -157,7 +157,7 @@ func (c *Cmd) Run() error {
 
 	// CreateProcessA(NULL, cmdLine, NULL, NULL, TRUE, 0, envp, NULL, &si, &pi)
 	// a0=NULL (appName), a1=cmdLine, a2=startupInfo, a3=processInfo, a4=envp
-	_, _, errn := runtime.Syscall(os.SYS_CREATE_PROCESS, 0, cmdLinePtr, si, pi, envPtr, 0, 0)
+	_, _, errn := runtime.SysCreateProcess(0, cmdLinePtr, si, pi, envPtr)
 	if errn != 0 {
 		return os.Errno(errn)
 	}
@@ -169,12 +169,12 @@ func (c *Cmd) Run() error {
 	// a0=hProcess, a1=exitCodeBuf
 	exitCodeBuf := runtime.Alloc(4)
 	runtime.Memzero(exitCodeBuf, 4)
-	exitCode, _, _ := runtime.Syscall(os.SYS_WAIT_PROCESS, hProcess, exitCodeBuf, 0, 0, 0, 0)
+	exitCode, _, _ := runtime.SysWaitProcess(hProcess, exitCodeBuf)
 
 	// Close process and thread handles
 	hThread := runtime.ReadPtr(pi + 4)
-	runtime.Syscall(os.SYS_CLOSE, hThread, 0, 0, 0, 0, 0)
-	runtime.Syscall(os.SYS_CLOSE, hProcess, 0, 0, 0, 0, 0)
+	runtime.SysClose(hThread)
+	runtime.SysClose(hProcess)
 
 	if int(exitCode) != 0 {
 		return &ExitError{code: int(exitCode)}
@@ -189,7 +189,7 @@ func (c *Cmd) Output() ([]byte, error) {
 	runtime.Memzero(readBuf, 4)
 	runtime.Memzero(writeBuf, 4)
 
-	_, _, errn := runtime.Syscall(os.SYS_CREATE_PIPE, readBuf, writeBuf, 0, 0, 0, 0)
+	_, _, errn := runtime.SysCreatePipe(readBuf, writeBuf)
 	if errn != 0 {
 		return nil, os.Errno(errn)
 	}
@@ -234,7 +234,7 @@ func (c *Cmd) Output() ([]byte, error) {
 	pi := runtime.Alloc(piSize)
 	runtime.Memzero(pi, piSize)
 
-	_, _, errn = runtime.Syscall(os.SYS_CREATE_PROCESS, 0, cmdLinePtr, si, pi, envPtr, 0, 0)
+	_, _, errn = runtime.SysCreateProcess(0, cmdLinePtr, si, pi, envPtr)
 	if errn != 0 {
 		readFile.Close()
 		writeFile.Close()
@@ -262,11 +262,11 @@ func (c *Cmd) Output() ([]byte, error) {
 	hProcess := runtime.ReadPtr(pi)
 	exitCodeBuf := runtime.Alloc(4)
 	runtime.Memzero(exitCodeBuf, 4)
-	exitCode, _, _ := runtime.Syscall(os.SYS_WAIT_PROCESS, hProcess, exitCodeBuf, 0, 0, 0, 0)
+	exitCode, _, _ := runtime.SysWaitProcess(hProcess, exitCodeBuf)
 
 	hThread := runtime.ReadPtr(pi + 4)
-	runtime.Syscall(os.SYS_CLOSE, hThread, 0, 0, 0, 0, 0)
-	runtime.Syscall(os.SYS_CLOSE, hProcess, 0, 0, 0, 0, 0)
+	runtime.SysClose(hThread)
+	runtime.SysClose(hProcess)
 
 	if int(exitCode) != 0 {
 		return data, &ExitError{code: int(exitCode)}

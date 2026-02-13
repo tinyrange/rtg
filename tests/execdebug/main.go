@@ -47,7 +47,7 @@ func main() {
 	}
 
 	fmt.Printf("about to fork\n")
-	pid, _, errn := runtime.Syscall(os.SYS_FORK, 0, 0, 0, 0, 0, 0)
+	pid, _, errn := runtime.SysFork()
 	fmt.Printf("fork returned pid=%d errn=%d\n", pid, errn)
 
 	if errn != 0 {
@@ -57,7 +57,7 @@ func main() {
 
 	if pid == 0 {
 		fmt.Printf("child: about to execve\n")
-		_, _, eerr := runtime.Syscall(os.SYS_EXECVE, pathPtr, argvPtr, envpPtr, 0, 0, 0)
+		_, _, eerr := runtime.SysExecve(pathPtr, argvPtr, envpPtr)
 		fmt.Printf("execve failed: %d\n", eerr)
 		os.Exit(127)
 	}
@@ -65,7 +65,7 @@ func main() {
 	fmt.Printf("parent: waiting for pid %d\n", pid)
 	statusBuf := make([]byte, 8)
 	runtime.Memzero(runtime.Sliceptr(statusBuf), 8)
-	_, _, werr := runtime.Syscall(os.SYS_WAIT4, pid, runtime.Sliceptr(statusBuf), 0, 0, 0, 0)
+	_, _, werr := runtime.SysWait4(pid, runtime.Sliceptr(statusBuf), 0, 0)
 	fmt.Printf("wait4 returned werr=%d\n", werr)
 
 	if werr != 0 {

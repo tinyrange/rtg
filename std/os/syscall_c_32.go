@@ -5,27 +5,6 @@ package os
 type Errno int32
 
 const (
-	SYS_READ       int32 = 0
-	SYS_WRITE      int32 = 1
-	SYS_OPEN       int32 = 2
-	SYS_CLOSE      int32 = 3
-	SYS_STAT       int32 = 4
-	SYS_MKDIR      int32 = 5
-	SYS_RMDIR      int32 = 6
-	SYS_UNLINK     int32 = 7
-	SYS_GETCWD     int32 = 8
-	SYS_EXIT_GROUP int32 = 9
-	SYS_GETARGC    int32 = 11
-	SYS_GETARGV    int32 = 12
-	SYS_GETENV     int32 = 13
-	SYS_OPENDIR    int32 = 14
-	SYS_READDIR    int32 = 15
-	SYS_CLOSEDIR   int32 = 16
-	SYS_SYSTEM     int32 = 17
-	SYS_POPEN      int32 = 18
-	SYS_PCLOSE     int32 = 19
-	SYS_CHMOD      int32 = 20
-
 	O_RDONLY int32 = 0
 	O_WRONLY int32 = 1
 	O_RDWR   int32 = 2

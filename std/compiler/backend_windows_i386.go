@@ -152,192 +152,6 @@ func (g *CodeGen) pushImm32(val uint32) {
 	}
 }
 
-// compileSyscallIntrinsic_win386 dispatches pseudo-syscall numbers to
-// kernel32.dll calls via the IAT.
-func (g *CodeGen) compileSyscallIntrinsic_win386(paramCount int) {
-	// Load syscall number from local 1
-	g.emitLoadLocal32(1*4, REG32_EAX) // syscall num
-
-	// Dispatch via cmp/je chain
-	// Each handler pushes r1, r2, err onto the operand stack
-
-	// SYS_MMAP (192) → VirtualAlloc
-	g.cmpRI32(REG32_EAX, 192)
-	fixMmap := g.jccRel32(CC32_NE)
-	g.compileSyscallMmap_win386()
-	skipMmap := g.jmpRel32()
-	g.patchRel32(fixMmap)
-
-	// SYS_WRITE (4) → WriteFile
-	g.cmpRI32(REG32_EAX, 4)
-	fixWrite := g.jccRel32(CC32_NE)
-	g.compileSyscallWrite_win386()
-	skipWrite := g.jmpRel32()
-	g.patchRel32(fixWrite)
-
-	// SYS_READ (3) → ReadFile
-	g.cmpRI32(REG32_EAX, 3)
-	fixRead := g.jccRel32(CC32_NE)
-	g.compileSyscallRead_win386()
-	skipRead := g.jmpRel32()
-	g.patchRel32(fixRead)
-
-	// SYS_OPEN (5) → CreateFileA
-	g.cmpRI32(REG32_EAX, 5)
-	fixOpen := g.jccRel32(CC32_NE)
-	g.compileSyscallOpen_win386()
-	skipOpen := g.jmpRel32()
-	g.patchRel32(fixOpen)
-
-	// SYS_CLOSE (6) → CloseHandle
-	g.cmpRI32(REG32_EAX, 6)
-	fixClose := g.jccRel32(CC32_NE)
-	g.compileSyscallClose_win386()
-	skipClose := g.jmpRel32()
-	g.patchRel32(fixClose)
-
-	// SYS_EXIT_GROUP (252) → ExitProcess
-	g.cmpRI32(REG32_EAX, 252)
-	fixExit := g.jccRel32(CC32_NE)
-	g.compileSyscallExit_win386()
-	skipExit := g.jmpRel32()
-	g.patchRel32(fixExit)
-
-	// SYS_MKDIR (39) → CreateDirectoryA
-	g.cmpRI32(REG32_EAX, 39)
-	fixMkdir := g.jccRel32(CC32_NE)
-	g.compileSyscallMkdir_win386()
-	skipMkdir := g.jmpRel32()
-	g.patchRel32(fixMkdir)
-
-	// SYS_RMDIR (40) → RemoveDirectoryA
-	g.cmpRI32(REG32_EAX, 40)
-	fixRmdir := g.jccRel32(CC32_NE)
-	g.compileSyscallRmdir_win386()
-	skipRmdir := g.jmpRel32()
-	g.patchRel32(fixRmdir)
-
-	// SYS_UNLINK (10) → DeleteFileA
-	g.cmpRI32(REG32_EAX, 10)
-	fixUnlink := g.jccRel32(CC32_NE)
-	g.compileSyscallUnlink_win386()
-	skipUnlink := g.jmpRel32()
-	g.patchRel32(fixUnlink)
-
-	// SYS_GETCWD (183) → GetCurrentDirectoryA
-	g.cmpRI32(REG32_EAX, 183)
-	fixGetcwd := g.jccRel32(CC32_NE)
-	g.compileSyscallGetcwd_win386()
-	skipGetcwd := g.jmpRel32()
-	g.patchRel32(fixGetcwd)
-
-	// SYS_GETDENTS64 (220) → FindFirstFileA/FindNextFileA (return unsupported for now)
-	g.cmpRI32(REG32_EAX, 220)
-	fixGetdents := g.jccRel32(CC32_NE)
-	g.compileSyscallGetdents_win386()
-	skipGetdents := g.jmpRel32()
-	g.patchRel32(fixGetdents)
-
-	// 500: GetCommandLineA
-	g.cmpRI32(REG32_EAX, 500)
-	fix500 := g.jccRel32(CC32_NE)
-	g.compileSyscallGetCommandLine_win386()
-	skip500 := g.jmpRel32()
-	g.patchRel32(fix500)
-
-	// 501: GetEnvironmentStringsA
-	g.cmpRI32(REG32_EAX, 501)
-	fix501 := g.jccRel32(CC32_NE)
-	g.compileSyscallGetEnvStrings_win386()
-	skip501 := g.jmpRel32()
-	g.patchRel32(fix501)
-
-	// 502: FindFirstFileA
-	g.cmpRI32(REG32_EAX, 502)
-	fix502 := g.jccRel32(CC32_NE)
-	g.compileSyscallFindFirstFile_win386()
-	skip502 := g.jmpRel32()
-	g.patchRel32(fix502)
-
-	// 503: FindNextFileA
-	g.cmpRI32(REG32_EAX, 503)
-	fix503 := g.jccRel32(CC32_NE)
-	g.compileSyscallFindNextFile_win386()
-	skip503 := g.jmpRel32()
-	g.patchRel32(fix503)
-
-	// 504: FindClose
-	g.cmpRI32(REG32_EAX, 504)
-	fix504 := g.jccRel32(CC32_NE)
-	g.compileSyscallFindClose_win386()
-	skip504 := g.jmpRel32()
-	g.patchRel32(fix504)
-
-	// 505: CreateProcessA
-	g.cmpRI32(REG32_EAX, 505)
-	fix505 := g.jccRel32(CC32_NE)
-	g.compileSyscallCreateProcess_win386()
-	skip505 := g.jmpRel32()
-	g.patchRel32(fix505)
-
-	// 506: WaitForSingleObject + GetExitCodeProcess
-	g.cmpRI32(REG32_EAX, 506)
-	fix506 := g.jccRel32(CC32_NE)
-	g.compileSyscallWaitProcess_win386()
-	skip506 := g.jmpRel32()
-	g.patchRel32(fix506)
-
-	// 507: CreatePipe
-	g.cmpRI32(REG32_EAX, 507)
-	fix507 := g.jccRel32(CC32_NE)
-	g.compileSyscallCreatePipe_win386()
-	skip507 := g.jmpRel32()
-	g.patchRel32(fix507)
-
-	// 508: SetStdHandle
-	g.cmpRI32(REG32_EAX, 508)
-	fix508 := g.jccRel32(CC32_NE)
-	g.compileSyscallSetStdHandle_win386()
-	skip508 := g.jmpRel32()
-	g.patchRel32(fix508)
-
-	// 509: GetFileAttributesExA
-	g.cmpRI32(REG32_EAX, 509)
-	fix509 := g.jccRel32(CC32_NE)
-	g.compileSyscallStat_win386()
-	skip509 := g.jmpRel32()
-	g.patchRel32(fix509)
-
-	// Unsupported syscall: push r1=0, r2=0, err=1
-	g.compileConstI32(0)
-	g.compileConstI32(0)
-	g.compileConstI32(1)
-	g.flush() // ensure pending pushes are emitted before skip targets land here
-
-	// Patch all skip targets to here
-	g.patchRel32(skipMmap)
-	g.patchRel32(skipWrite)
-	g.patchRel32(skipRead)
-	g.patchRel32(skipOpen)
-	g.patchRel32(skipClose)
-	g.patchRel32(skipExit)
-	g.patchRel32(skipMkdir)
-	g.patchRel32(skipRmdir)
-	g.patchRel32(skipUnlink)
-	g.patchRel32(skipGetcwd)
-	g.patchRel32(skipGetdents)
-	g.patchRel32(skip500)
-	g.patchRel32(skip501)
-	g.patchRel32(skip502)
-	g.patchRel32(skip503)
-	g.patchRel32(skip504)
-	g.patchRel32(skip505)
-	g.patchRel32(skip506)
-	g.patchRel32(skip507)
-	g.patchRel32(skip508)
-	g.patchRel32(skip509)
-}
-
 // === Windows fd→handle translation ===
 // Loads fd from local, if 0/1/2 calls GetStdHandle, else uses as-is.
 // Result in EAX.
@@ -367,10 +181,10 @@ func (g *CodeGen) loadFdAsHandle(localOffset int) {
 
 func (g *CodeGen) compileSyscallMmap_win386() {
 	// VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
-	// a1 = size (local 3)
+	// param 1 = size (local 2)
 	g.pushImm32(0x04)       // PAGE_READWRITE
 	g.pushImm32(0x3000)     // MEM_COMMIT | MEM_RESERVE
-	g.emitLoadLocal32(3*4, REG32_EAX)
+	g.emitLoadLocal32(2*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // size
 	g.pushImm32(0)          // lpAddress = NULL
 	g.emitCallIAT("VirtualAlloc")
@@ -394,7 +208,7 @@ func (g *CodeGen) compileSyscallMmap_win386() {
 
 func (g *CodeGen) compileSyscallWrite_win386() {
 	// WriteFile(hFile, lpBuffer, nNumberOfBytesToWrite, &lpNumberOfBytesWritten, NULL)
-	// a0=fd (local 2), a1=buf (local 3), a2=count (local 4)
+	// param 0=fd (local 1), param 1=buf (local 2), param 2=count (local 3)
 
 	// Allocate stack space for lpNumberOfBytesWritten
 	g.subRI32(REG32_ESP, 4)
@@ -402,13 +216,13 @@ func (g *CodeGen) compileSyscallWrite_win386() {
 
 	g.pushImm32(0)          // lpOverlapped = NULL
 	g.pushR32(REG32_ECX)    // &written
-	g.emitLoadLocal32(4*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // nNumberOfBytesToWrite
 	g.emitLoadLocal32(3*4, REG32_EAX)
+	g.pushR32(REG32_EAX)   // nNumberOfBytesToWrite
+	g.emitLoadLocal32(2*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // lpBuffer
 
 	// Translate fd to handle
-	g.loadFdAsHandle(2 * 4)
+	g.loadFdAsHandle(1 * 4)
 	g.pushR32(REG32_EAX) // hFile
 
 	g.emitCallIAT("WriteFile")
@@ -436,19 +250,19 @@ func (g *CodeGen) compileSyscallWrite_win386() {
 
 func (g *CodeGen) compileSyscallRead_win386() {
 	// ReadFile(hFile, lpBuffer, nNumberOfBytesToRead, &lpNumberOfBytesRead, NULL)
-	// a0=fd (local 2), a1=buf (local 3), a2=count (local 4)
+	// param 0=fd (local 1), param 1=buf (local 2), param 2=count (local 3)
 
 	g.subRI32(REG32_ESP, 4)
 	g.movRR32(REG32_ECX, REG32_ESP) // &nread
 
 	g.pushImm32(0)          // lpOverlapped = NULL
 	g.pushR32(REG32_ECX)    // &nread
-	g.emitLoadLocal32(4*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // nNumberOfBytesToRead
 	g.emitLoadLocal32(3*4, REG32_EAX)
+	g.pushR32(REG32_EAX)   // nNumberOfBytesToRead
+	g.emitLoadLocal32(2*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // lpBuffer
 
-	g.loadFdAsHandle(2 * 4)
+	g.loadFdAsHandle(1 * 4)
 	g.pushR32(REG32_EAX)   // hFile
 
 	g.emitCallIAT("ReadFile")
@@ -473,10 +287,10 @@ func (g *CodeGen) compileSyscallRead_win386() {
 func (g *CodeGen) compileSyscallOpen_win386() {
 	// CreateFileA(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
 	//             dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile)
-	// a0=path (local 2), a1=flags (local 3), a2=mode (local 4)
+	// param 0=path (local 1), param 1=flags (local 2), param 2=mode (local 3)
 
 	// Map Linux open flags to Windows CreateFileA parameters
-	g.emitLoadLocal32(3*4, REG32_EAX) // flags
+	g.emitLoadLocal32(2*4, REG32_EAX) // flags
 
 	// Default: GENERIC_READ, OPEN_EXISTING
 	g.emitMovRegImm32(REG32_ECX, 0x80000000) // dwDesiredAccess = GENERIC_READ
@@ -506,7 +320,7 @@ func (g *CodeGen) compileSyscallOpen_win386() {
 	g.pushImm32(0)          // lpSecurityAttributes = NULL
 	g.pushImm32(3)          // dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE
 	g.pushR32(REG32_ECX)    // dwDesiredAccess
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // lpFileName
 
 	g.emitCallIAT("CreateFileA")
@@ -531,8 +345,8 @@ func (g *CodeGen) compileSyscallOpen_win386() {
 
 func (g *CodeGen) compileSyscallClose_win386() {
 	// CloseHandle(hObject)
-	// a0=fd/handle (local 2)
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	// param 0=fd/handle (local 1)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 
 	// Don't close std handles (0, 1, 2)
 	g.cmpRI32(REG32_EAX, 2)
@@ -566,8 +380,8 @@ func (g *CodeGen) compileSyscallClose_win386() {
 
 func (g *CodeGen) compileSyscallExit_win386() {
 	// ExitProcess(uExitCode)
-	// a0=code (local 2)
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	// param 0=code (local 1)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)
 	g.emitCallIAT("ExitProcess")
 
@@ -579,9 +393,9 @@ func (g *CodeGen) compileSyscallExit_win386() {
 
 func (g *CodeGen) compileSyscallMkdir_win386() {
 	// CreateDirectoryA(lpPathName, lpSecurityAttributes)
-	// a0=path (local 2)
+	// param 0=path (local 1)
 	g.pushImm32(0)          // lpSecurityAttributes = NULL
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // lpPathName
 
 	g.emitCallIAT("CreateDirectoryA")
@@ -616,7 +430,7 @@ func (g *CodeGen) compileSyscallMkdir_win386() {
 
 func (g *CodeGen) compileSyscallRmdir_win386() {
 	// RemoveDirectoryA(lpPathName)
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)
 	g.emitCallIAT("RemoveDirectoryA")
 
@@ -637,7 +451,7 @@ func (g *CodeGen) compileSyscallRmdir_win386() {
 
 func (g *CodeGen) compileSyscallUnlink_win386() {
 	// DeleteFileA(lpFileName)
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)
 	g.emitCallIAT("DeleteFileA")
 
@@ -658,10 +472,10 @@ func (g *CodeGen) compileSyscallUnlink_win386() {
 
 func (g *CodeGen) compileSyscallGetcwd_win386() {
 	// GetCurrentDirectoryA(nBufferLength, lpBuffer)
-	// a0=buf (local 2), a1=bufsize (local 3)
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	// param 0=buf (local 1), param 1=bufsize (local 2)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // lpBuffer
-	g.emitLoadLocal32(3*4, REG32_EAX)
+	g.emitLoadLocal32(2*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // nBufferLength
 
 	g.emitCallIAT("GetCurrentDirectoryA")
@@ -677,9 +491,9 @@ func (g *CodeGen) compileSyscallGetcwd_win386() {
 
 	g.patchRel32(fixOk)
 	// Convert backslashes to forward slashes in-place
-	// EAX = length, buf is at local 2
+	// EAX = length, buf is at local 1
 	g.movRR32(REG32_ECX, REG32_EAX) // save length
-	g.emitLoadLocal32(2*4, REG32_EDX) // buf ptr
+	g.emitLoadLocal32(1*4, REG32_EDX) // buf ptr
 	// Include null terminator in count: n = eax + 1
 	g.addRI32(REG32_EAX, 1)
 	g.opPush(REG32_ECX) // save length on operand stack
@@ -735,10 +549,10 @@ func (g *CodeGen) compileSyscallGetEnvStrings_win386() {
 
 func (g *CodeGen) compileSyscallFindFirstFile_win386() {
 	// FindFirstFileA(lpFileName, lpFindFileData)
-	// a0=pattern (local 2), a1=buf (local 3)
-	g.emitLoadLocal32(3*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpFindFileData
+	// param 0=pattern (local 1), param 1=buf (local 2)
 	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.pushR32(REG32_EAX)   // lpFindFileData
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // lpFileName
 
 	g.emitCallIAT("FindFirstFileA")
@@ -761,10 +575,10 @@ func (g *CodeGen) compileSyscallFindFirstFile_win386() {
 
 func (g *CodeGen) compileSyscallFindNextFile_win386() {
 	// FindNextFileA(hFindFile, lpFindFileData)
-	// a0=handle (local 2), a1=buf (local 3)
-	g.emitLoadLocal32(3*4, REG32_EAX)
-	g.pushR32(REG32_EAX)
+	// param 0=handle (local 1), param 1=buf (local 2)
 	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.pushR32(REG32_EAX)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)
 
 	g.emitCallIAT("FindNextFileA")
@@ -787,8 +601,8 @@ func (g *CodeGen) compileSyscallFindNextFile_win386() {
 
 func (g *CodeGen) compileSyscallFindClose_win386() {
 	// FindClose(hFindFile)
-	// a0=handle (local 2)
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	// param 0=handle (local 1)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)
 	g.emitCallIAT("FindClose")
 
@@ -801,23 +615,23 @@ func (g *CodeGen) compileSyscallCreateProcess_win386() {
 	// CreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes,
 	//                lpThreadAttributes, bInheritHandles, dwCreationFlags,
 	//                lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation)
-	// a0=appName (local 2), a1=cmdLine (local 3), a2=startupInfo (local 4),
-	// a3=processInfo (local 5), a4=envp (local 6)
+	// param 0=appName (local 1), param 1=cmdLine (local 2), param 2=startupInfo (local 3),
+	// param 3=processInfo (local 4), param 4=envp (local 5)
 
-	g.emitLoadLocal32(5*4, REG32_EAX) // processInfo
+	g.emitLoadLocal32(4*4, REG32_EAX) // processInfo
 	g.pushR32(REG32_EAX)
-	g.emitLoadLocal32(4*4, REG32_EAX) // startupInfo
+	g.emitLoadLocal32(3*4, REG32_EAX) // startupInfo
 	g.pushR32(REG32_EAX)
 	g.pushImm32(0)          // lpCurrentDirectory = NULL
-	g.emitLoadLocal32(6*4, REG32_EAX) // lpEnvironment
+	g.emitLoadLocal32(5*4, REG32_EAX) // lpEnvironment
 	g.pushR32(REG32_EAX)
 	g.pushImm32(0)          // dwCreationFlags = 0
 	g.pushImm32(1)          // bInheritHandles = TRUE
 	g.pushImm32(0)          // lpThreadAttributes = NULL
 	g.pushImm32(0)          // lpProcessAttributes = NULL
-	g.emitLoadLocal32(3*4, REG32_EAX) // lpCommandLine
+	g.emitLoadLocal32(2*4, REG32_EAX) // lpCommandLine
 	g.pushR32(REG32_EAX)
-	g.emitLoadLocal32(2*4, REG32_EAX) // lpApplicationName
+	g.emitLoadLocal32(1*4, REG32_EAX) // lpApplicationName
 	g.pushR32(REG32_EAX)
 
 	g.emitCallIAT("CreateProcessA")
@@ -839,26 +653,26 @@ func (g *CodeGen) compileSyscallCreateProcess_win386() {
 
 func (g *CodeGen) compileSyscallWaitProcess_win386() {
 	// WaitForSingleObject(hHandle, INFINITE) then GetExitCodeProcess(hHandle, &exitCode)
-	// a0=hProcess (local 2), a1=exitCodeBuf (local 3)
+	// param 0=hProcess (local 1), param 1=exitCodeBuf (local 2)
 
 	// WaitForSingleObject(hProcess, INFINITE=0xFFFFFFFF)
 	g.emitMovRegImm32(REG32_EAX, 0xFFFFFFFF)
 	g.pushR32(REG32_EAX)   // dwMilliseconds = INFINITE
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // hHandle
 
 	g.emitCallIAT("WaitForSingleObject")
 
 	// GetExitCodeProcess(hProcess, &exitCode)
-	g.emitLoadLocal32(3*4, REG32_EAX) // exitCodeBuf
+	g.emitLoadLocal32(2*4, REG32_EAX) // exitCodeBuf
 	g.pushR32(REG32_EAX)
-	g.emitLoadLocal32(2*4, REG32_EAX) // hProcess
+	g.emitLoadLocal32(1*4, REG32_EAX) // hProcess
 	g.pushR32(REG32_EAX)
 
 	g.emitCallIAT("GetExitCodeProcess")
 
 	// Read exit code from buffer
-	g.emitLoadLocal32(3*4, REG32_EAX)
+	g.emitLoadLocal32(2*4, REG32_EAX)
 	g.loadMem32(REG32_EAX, REG32_EAX, 0) // exit code
 
 	g.opPush(REG32_EAX) // r1 = exit code
@@ -868,7 +682,7 @@ func (g *CodeGen) compileSyscallWaitProcess_win386() {
 
 func (g *CodeGen) compileSyscallCreatePipe_win386() {
 	// CreatePipe(&hReadPipe, &hWritePipe, lpPipeAttributes, nSize)
-	// a0=readBuf (local 2), a1=writeBuf (local 3)
+	// param 0=readBuf (local 1), param 1=writeBuf (local 2)
 	// We need a SECURITY_ATTRIBUTES struct for inheritable handles
 	// {nLength=12, lpSecurityDescriptor=0, bInheritHandle=1}
 	g.subRI32(REG32_ESP, 12) // allocate SECURITY_ATTRIBUTES on stack
@@ -882,9 +696,9 @@ func (g *CodeGen) compileSyscallCreatePipe_win386() {
 
 	g.pushImm32(0)          // nSize = 0 (default)
 	g.pushR32(REG32_ECX)    // lpPipeAttributes
-	g.emitLoadLocal32(3*4, REG32_EAX) // &hWritePipe
+	g.emitLoadLocal32(2*4, REG32_EAX) // &hWritePipe
 	g.pushR32(REG32_EAX)
-	g.emitLoadLocal32(2*4, REG32_EAX) // &hReadPipe
+	g.emitLoadLocal32(1*4, REG32_EAX) // &hReadPipe
 	g.pushR32(REG32_EAX)
 
 	g.emitCallIAT("CreatePipe")
@@ -908,10 +722,10 @@ func (g *CodeGen) compileSyscallCreatePipe_win386() {
 
 func (g *CodeGen) compileSyscallSetStdHandle_win386() {
 	// SetStdHandle(nStdHandle, hHandle)
-	// a0=nStdHandle (local 2), a1=hHandle (local 3)
-	g.emitLoadLocal32(3*4, REG32_EAX)
-	g.pushR32(REG32_EAX)
+	// param 0=nStdHandle (local 1), param 1=hHandle (local 2)
 	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.pushR32(REG32_EAX)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)
 
 	g.emitCallIAT("SetStdHandle")
@@ -923,14 +737,14 @@ func (g *CodeGen) compileSyscallSetStdHandle_win386() {
 
 func (g *CodeGen) compileSyscallStat_win386() {
 	// GetFileAttributesExA(lpFileName, fInfoLevelId, lpFileInformation)
-	// a0=path (local 2)
+	// param 0=path (local 1)
 	// Allocate WIN32_FILE_ATTRIBUTE_DATA (36 bytes) on stack
 	g.subRI32(REG32_ESP, 36)
 	g.movRR32(REG32_ECX, REG32_ESP)
 
 	g.pushR32(REG32_ECX)    // lpFileInformation
 	g.pushImm32(0)          // fInfoLevelId = GetFileExInfoStandard
-	g.emitLoadLocal32(2*4, REG32_EAX)
+	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)   // lpFileName
 
 	g.emitCallIAT("GetFileAttributesExA")

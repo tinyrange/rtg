@@ -1592,8 +1592,162 @@ func (g *WasmGen) compileReturn(inst Inst) {
 
 func (g *WasmGen) compileCallIntrinsic(inst Inst) {
 	switch inst.Name {
-	case "Syscall":
-		g.compileSyscallIntrinsic()
+	case "SysWrite":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallWrite(scratch, r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysRead":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallRead(scratch, r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysOpen":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallOpen(scratch, r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysClose":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallClose(r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysMmap":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallMmap(r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysExit":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallExit(r1Addr, r2Addr, errAddr)
+	case "SysMkdir":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallMkdir(r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysRmdir":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallRmdir(r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysUnlink":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallUnlink(r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysGetcwd":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallGetcwd(r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+	case "SysGetdents64":
+		scratch := g.scratchAddr
+		r1Addr := scratch + 40
+		r2Addr := scratch + 44
+		errAddr := scratch + 48
+		g.compileSyscallGetdents(scratch, r1Addr, r2Addr, errAddr)
+		g.w.i32Const(r1Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(r2Addr)
+		g.w.i32Load(2, 0)
+		g.w.i32Const(errAddr)
+		g.w.i32Load(2, 0)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
+		g.pushType(WASM_TYPE_I32)
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic()
 	case "Makeslice":
@@ -1823,162 +1977,25 @@ func (g *WasmGen) compileWriteByteIntrinsic() {
 	// No return value
 }
 
-// === Syscall → WASI dispatch ===
-
-func (g *WasmGen) compileSyscallIntrinsic() {
-	// Params in shadow stack frame:
-	// 0: syscall number, 1: a0, 2: a1, 3: a2, 4: a3, 5: a4, 6: a5
-	//
-	// Results are stored to scratch memory, then loaded at the end.
-	// This avoids WASM type mismatch issues in if/else branches.
-	// scratch+40: r1, scratch+44: r2, scratch+48: err
-
-	scratch := g.scratchAddr
-	r1Addr := scratch + 40
-	r2Addr := scratch + 44
-	errAddr := scratch + 48
-
-	// Load syscall number
-	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 0) // syscall num
-	g.w.localSet(uint32(g.tempLocal))
-
-	// Dispatch on syscall number using if/else chain
-	// Each branch stores r1, r2, err to scratch memory.
-
-	// SYS_WRITE (1)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(1)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallWrite(scratch, r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_READ (0)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(0)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallRead(scratch, r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_OPEN (2)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(2)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallOpen(scratch, r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_CLOSE (3)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(3)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallClose(r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_MMAP (9)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(9)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallMmap(r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_EXIT_GROUP (231)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(231)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallExit(r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_MKDIR (83)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(83)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallMkdir(r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_RMDIR (84)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(84)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallRmdir(r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_UNLINK (87)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(87)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallUnlink(r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_GETCWD (79)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(79)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallGetcwd(r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// SYS_GETDENTS64 (217)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Const(217)
-	g.w.op(OP_WASM_I32_EQ)
-	g.w.ifOp(WASM_TYPE_VOID)
-	g.compileSyscallGetdents(scratch, r1Addr, r2Addr, errAddr)
-	g.w.elseOp()
-
-	// Unsupported syscalls
-	g.compileSyscallUnsupported(r1Addr, r2Addr, errAddr)
-
-	// Close all if/else chains
-	g.w.end() // getdents
-	g.w.end() // getcwd
-	g.w.end() // unlink
-	g.w.end() // rmdir
-	g.w.end() // mkdir
-	g.w.end() // exit
-	g.w.end() // mmap
-	g.w.end() // close
-	g.w.end() // open
-	g.w.end() // read
-	g.w.end() // write
-
-	// Load results from scratch onto WASM stack
-	g.w.i32Const(r1Addr)
-	g.w.i32Load(2, 0)
-	g.w.i32Const(r2Addr)
-	g.w.i32Load(2, 0)
-	g.w.i32Const(errAddr)
-	g.w.i32Load(2, 0)
-	g.pushType(WASM_TYPE_I32)
-	g.pushType(WASM_TYPE_I32)
-	g.pushType(WASM_TYPE_I32)
-}
+// === Syscall → WASI helpers ===
 
 func (g *WasmGen) compileSyscallWrite(scratch int32, r1Addr int32, r2Addr int32, errAddr int32) {
 	// fd_write(fd, iovs, iovs_len, nwritten) -> errno
-	// a0=fd, a1=buf, a2=count
+	// params: fd=SP+0, buf=SP+4, count=SP+8
 	// Build iovec at scratch: {buf_ptr:4, buf_len:4}
 	g.w.i32Const(scratch)
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 8) // a1 = buf ptr
+	g.w.i32Load(2, 4) // buf ptr
 	g.w.i32Store(2, 0)
 
 	g.w.i32Const(scratch)
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 12) // a2 = count
+	g.w.i32Load(2, 8) // count
 	g.w.i32Store(2, 4)
 
 	// Call fd_write(fd, scratch, 1, scratch+8)
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // a0 = fd
+	g.w.i32Load(2, 0) // fd
 	g.w.i32Const(scratch)      // iovs
 	g.w.i32Const(1)            // iovs_len
 	g.w.i32Const(scratch + 8)  // nwritten ptr
@@ -2004,18 +2021,19 @@ func (g *WasmGen) compileSyscallWrite(scratch int32, r1Addr int32, r2Addr int32,
 
 func (g *WasmGen) compileSyscallRead(scratch int32, r1Addr int32, r2Addr int32, errAddr int32) {
 	// fd_read(fd, iovs, iovs_len, nread) -> errno
+	// params: fd=SP+0, buf=SP+4, count=SP+8
 	g.w.i32Const(scratch)
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 8) // a1 = buf
+	g.w.i32Load(2, 4) // buf
 	g.w.i32Store(2, 0)
 
 	g.w.i32Const(scratch)
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 12) // a2 = count
+	g.w.i32Load(2, 8) // count
 	g.w.i32Store(2, 4)
 
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // a0 = fd
+	g.w.i32Load(2, 0) // fd
 	g.w.i32Const(scratch)
 	g.w.i32Const(1)
 	g.w.i32Const(scratch + 8)
@@ -2036,10 +2054,10 @@ func (g *WasmGen) compileSyscallRead(scratch int32, r1Addr int32, r2Addr int32, 
 
 func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, errAddr int32) {
 	// path_open(dirfd, dirflags, path, path_len, oflags, rights_base, rights_base_hi, rights_inheriting, rights_inheriting_hi, fdflags, fd_out)
-	// a0=path_ptr (C string), a1=flags, a2=mode
+	// params: path_ptr=SP+0 (C string), flags=SP+4, mode=SP+8
 	//
 	// We need to compute path length from C string (null terminated)
-	// path is at a0, need to find strlen
+	// path is at param 0, need to find strlen
 
 	// For WASI: the paths from our os package are already C strings (null-terminated).
 	// We need the length without the null.
@@ -2048,7 +2066,7 @@ func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, 
 
 	// Load path ptr
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // a0 = path ptr
+	g.w.i32Load(2, 0) // path ptr
 	g.w.localSet(uint32(g.tempLocal)) // path_ptr
 
 	// Compute path length (find null terminator)
@@ -2109,10 +2127,10 @@ func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, 
 	g.w.end()
 
 	// Convert Linux open flags to WASI oflags
-	// a1 = Linux flags. WASI oflags: 0=none, 1=creat, 2=directory, 4=excl, 8=trunc
+	// flags = SP+4. WASI oflags: 0=none, 1=creat, 2=directory, 4=excl, 8=trunc
 	// Linux: O_RDONLY=0, O_WRONLY=1, O_RDWR=2, O_CREAT=64, O_TRUNC=512
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 8) // a1 = Linux flags
+	g.w.i32Load(2, 4) // flags
 	g.w.localSet(uint32(g.tempLocal)) // linux_flags
 
 	temp2 := uint32(g.tempLocal + 1)
@@ -2188,8 +2206,9 @@ func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, 
 
 func (g *WasmGen) compileSyscallClose(r1Addr int32, r2Addr int32, errAddr int32) {
 	// fd_close(fd) -> errno
+	// params: fd=SP+0
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // a0 = fd
+	g.w.i32Load(2, 0) // fd
 	g.w.call(uint32(g.wasiFdClose))
 
 	g.w.localSet(uint32(g.tempLocal))
@@ -2206,9 +2225,9 @@ func (g *WasmGen) compileSyscallClose(r1Addr int32, r2Addr int32, errAddr int32)
 
 func (g *WasmGen) compileSyscallMmap(r1Addr int32, r2Addr int32, errAddr int32) {
 	// memory.grow for allocation
-	// a1 = size in bytes
+	// params: addr=SP+0, length=SP+4, prot=SP+8, flags=SP+12, fd=SP+16, offset=SP+20
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 8) // a1 = size
+	g.w.i32Load(2, 4) // length
 	// Round up to pages (65536 bytes)
 	g.w.i32Const(65535)
 	g.w.op(OP_WASM_I32_ADD)
@@ -2250,8 +2269,9 @@ func (g *WasmGen) compileSyscallMmap(r1Addr int32, r2Addr int32, errAddr int32) 
 }
 
 func (g *WasmGen) compileSyscallExit(r1Addr int32, r2Addr int32, errAddr int32) {
+	// params: code=SP+0
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // a0 = exit code
+	g.w.i32Load(2, 0) // exit code
 	g.w.call(uint32(g.wasiProcExit))
 
 	// proc_exit doesn't return, but store dummy results
@@ -2268,7 +2288,7 @@ func (g *WasmGen) compileSyscallExit(r1Addr int32, r2Addr int32, errAddr int32) 
 
 func (g *WasmGen) compileSyscallMkdir(r1Addr int32, r2Addr int32, errAddr int32) {
 	// path_create_directory(dirfd, path, path_len) -> errno
-	// a0 = path ptr (C string), a1 = mode (ignored)
+	// params: path=SP+0 (C string), mode=SP+4 (ignored)
 	g.compileSyscallPathOp(g.wasiPathCreateDir, r1Addr, r2Addr, errAddr)
 }
 
@@ -2285,8 +2305,9 @@ func (g *WasmGen) compileSyscallPathOp(wasiFunc int, r1Addr int32, r2Addr int32,
 	scratch := g.scratchAddr
 
 	// Load path ptr
+	// params: path=SP+0
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // a0 = path ptr
+	g.w.i32Load(2, 0) // path ptr
 	g.w.localSet(uint32(g.tempLocal))
 
 	// Compute strlen
@@ -2361,9 +2382,9 @@ func (g *WasmGen) compileSyscallPathOp(wasiFunc int, r1Addr int32, r2Addr int32,
 
 func (g *WasmGen) compileSyscallGetcwd(r1Addr int32, r2Addr int32, errAddr int32) {
 	// WASI has no getcwd. Write "." to the buffer.
-	// a0 = buf ptr, a1 = buf size
+	// params: buf=SP+0, size=SP+4
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // a0 = buf
+	g.w.i32Load(2, 0) // buf
 	g.w.localSet(uint32(g.tempLocal))
 
 	// Write ".\0" to buffer
@@ -2388,7 +2409,7 @@ func (g *WasmGen) compileSyscallGetcwd(r1Addr int32, r2Addr int32, errAddr int32
 
 func (g *WasmGen) compileSyscallGetdents(scratch int32, r1Addr int32, r2Addr int32, errAddr int32) {
 	// fd_readdir(fd, buf, buf_len, cookie, bufused) -> errno
-	// Linux getdents64: a0=fd, a1=buf, a2=buf_size
+	// Linux getdents64: fd=SP+0, buf=SP+4, buf_size=SP+8
 	// We need to translate WASI dirent format to Linux getdents64 format.
 	// For simplicity: call fd_readdir and translate in-place.
 	//
@@ -2397,12 +2418,13 @@ func (g *WasmGen) compileSyscallGetdents(scratch int32, r1Addr int32, r2Addr int
 	// WASI dirent: {d_next:8, d_ino:8, d_namlen:4, d_type:1} + name
 	// Linux getdents64: {d_ino:8, d_off:8, d_reclen:2, d_type:1} + name + padding
 
+	// params: fd=SP+0, buf=SP+4, buf_len=SP+8
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // a0 = fd
+	g.w.i32Load(2, 0) // fd
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 8) // a1 = buf
+	g.w.i32Load(2, 4) // buf
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 12) // a2 = buf_len
+	g.w.i32Load(2, 8) // buf_len
 
 	// Use scratch for cookie (start at 0) and bufused
 	// cookie: i64.const 0

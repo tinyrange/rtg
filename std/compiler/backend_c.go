@@ -972,13 +972,69 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 
 			case OP_CALL_INTRINSIC:
 				switch in.Name {
-				case "Syscall":
-					bp.WriteString("  {\n")
-					bp.WriteString("    rtg_word num = locals[0], a0 = locals[1], a1 = locals[2], a2 = locals[3], a3 = locals[4], a4 = locals[5], a5 = locals[6];\n")
-					bp.WriteString("    rtg_sword rv;\n")
-					bp.WriteString("    rv = rtg_host_call(num, a0, a1, a2, a3, a4, a5);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); }\n")
-					bp.WriteString("  }\n")
+				case "SysRead":
+					bp.WriteString("  { rtg_sword rv = rtg_host_read(locals[0], locals[1], locals[2]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysWrite":
+					bp.WriteString("  { rtg_sword rv = rtg_host_write(locals[0], locals[1], locals[2]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysOpen":
+					bp.WriteString("  { rtg_sword rv = rtg_host_open(locals[0], locals[1]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysClose":
+					bp.WriteString("  { rtg_sword rv = rtg_host_close(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysStat":
+					bp.WriteString("  { rtg_sword rv = rtg_host_stat(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysMkdir":
+					bp.WriteString("  { rtg_sword rv = rtg_host_mkdir(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysRmdir":
+					bp.WriteString("  { rtg_sword rv = rtg_host_rmdir(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysUnlink":
+					bp.WriteString("  { rtg_sword rv = rtg_host_unlink(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysGetcwd":
+					bp.WriteString("  { rtg_sword rv = rtg_host_getcwd(locals[0], locals[1]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysExit":
+					bp.WriteString("  rtg_host_exit((int)locals[0]);\n")
+				case "SysMmap":
+					bp.WriteString("  { rtg_sword rv = rtg_host_alloc(locals[1]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysGetargc":
+					bp.WriteString("  rtg_push((rtg_word)g_argc); rtg_push(0); rtg_push(0);\n")
+				case "SysGetargv":
+					bp.WriteString("  { int idx = (int)locals[0]; rtg_push(((idx >= g_argc) ? 0 : (rtg_word)(rtg_size)g_argv[idx])); rtg_push(0); rtg_push(0); }\n")
+				case "SysGetenv":
+					bp.WriteString("  { rtg_sword rv = rtg_host_getenv(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysOpendir":
+					bp.WriteString("  { rtg_sword rv = rtg_host_opendir(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysReaddir":
+					bp.WriteString("  { rtg_sword rv = rtg_host_readdir(locals[0], locals[1], locals[2], 0);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysReaddirWithType":
+					bp.WriteString("  { rtg_sword rv = rtg_host_readdir(locals[0], locals[1], locals[2], locals[3]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysClosedir":
+					bp.WriteString("  { rtg_sword rv = rtg_host_closedir(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysSystem":
+					bp.WriteString("  { rtg_sword rv = rtg_host_system(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysPopen":
+					bp.WriteString("  { rtg_sword rv = rtg_host_popen(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysPclose":
+					bp.WriteString("  { rtg_sword rv = rtg_host_pclose(locals[0]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysChmod":
+					bp.WriteString("  { rtg_sword rv = rtg_host_chmod(locals[0], locals[1]);\n")
+					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
 				case "Sliceptr":
 					bp.WriteString("  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n")
 				case "Makeslice":

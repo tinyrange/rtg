@@ -3,11 +3,6 @@ package runtime
 // === Compiler intrinsics ===
 // These cannot be implemented in Go. The compiler must provide them.
 
-// Syscall executes a Linux system call.
-//
-//rtg:internal Syscall
-func Syscall(num int32, a0, a1, a2, a3, a4, a5 uintptr) (r1 uintptr, r2 uintptr, err int32)
-
 // Sliceptr returns the data pointer of a byte slice.
 //
 //rtg:internal Sliceptr
@@ -53,10 +48,10 @@ func WriteByte(addr uintptr, val byte)
 
 func runtimePanic(msg string) {
 	if len(msg) > 0 {
-		Syscall(SYS_WRITE, 2, Stringptr(msg), uintptr(len(msg)), 0, 0, 0)
+		SysWrite(2, Stringptr(msg), uintptr(len(msg)))
 	}
-	Syscall(SYS_WRITE, 2, Stringptr("\n"), 1, 0, 0, 0)
-	Syscall(SYS_EXIT_GROUP, 2, 0, 0, 0, 0, 0)
+	SysWrite(2, Stringptr("\n"), 1)
+	SysExit(2)
 }
 
 var heapPtr uintptr
@@ -74,7 +69,7 @@ func Alloc(size int) uintptr {
 			chunk = size
 		}
 		// mmap(0, chunk, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
-		ptr, _, _ := Syscall(SYS_MMAP, 0, uintptr(chunk), 3, MmapAnonFlags, 0, 0)
+		ptr, _, _ := SysMmap(0, uintptr(chunk), 3, MmapAnonFlags, 0, 0)
 		heapPtr = ptr
 		heapEnd = ptr + uintptr(chunk)
 	}

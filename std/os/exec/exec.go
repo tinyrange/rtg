@@ -75,7 +75,7 @@ func getDefaultEnvp() uintptr {
 }
 
 func dup2(f *os.File, newfd int) {
-	runtime.Syscall(os.SYS_DUP2, uintptr(f.Fd()), uintptr(newfd), 0, 0, 0, 0)
+	runtime.SysDup2(uintptr(f.Fd()), uintptr(newfd))
 }
 
 func (c *Cmd) Run() error {
@@ -95,7 +95,7 @@ func (c *Cmd) Run() error {
 		envpPtr = getDefaultEnvp()
 	}
 
-	pid, _, errn := runtime.Syscall(os.SYS_FORK, 0, 0, 0, 0, 0, 0)
+	pid, _, errn := runtime.SysFork()
 	if errn != 0 {
 		return os.Errno(errn)
 	}
@@ -112,7 +112,7 @@ func (c *Cmd) Run() error {
 			dup2(c.Stderr, 2)
 		}
 
-		runtime.Syscall(os.SYS_EXECVE, pathPtr, argvPtr, envpPtr, 0, 0, 0)
+		runtime.SysExecve(pathPtr, argvPtr, envpPtr)
 		// If execve returns, it failed
 		os.Exit(127)
 	}
@@ -120,7 +120,7 @@ func (c *Cmd) Run() error {
 	// Parent: wait for child
 	statusBuf := make([]byte, 8)
 	runtime.Memzero(runtime.Sliceptr(statusBuf), 8)
-	_, _, errn = runtime.Syscall(os.SYS_WAIT4, pid, runtime.Sliceptr(statusBuf), 0, 0, 0, 0)
+	_, _, errn = runtime.SysWait4(pid, runtime.Sliceptr(statusBuf), 0, 0)
 	if errn != 0 {
 		return os.Errno(errn)
 	}
@@ -138,7 +138,7 @@ func (c *Cmd) Run() error {
 func (c *Cmd) Output() ([]byte, error) {
 	// Create pipe
 	pipeBuf := make([]byte, 8)
-	_, _, errn := runtime.Syscall(os.SYS_PIPE2, runtime.Sliceptr(pipeBuf), 0, 0, 0, 0, 0)
+	_, _, errn := runtime.SysPipe(runtime.Sliceptr(pipeBuf))
 	if errn != 0 {
 		return nil, os.Errno(errn)
 	}
@@ -168,7 +168,7 @@ func (c *Cmd) Output() ([]byte, error) {
 		envpPtr = getDefaultEnvp()
 	}
 
-	pid, _, errn := runtime.Syscall(os.SYS_FORK, 0, 0, 0, 0, 0, 0)
+	pid, _, errn := runtime.SysFork()
 	if errn != 0 {
 		readFile.Close()
 		writeFile.Close()
@@ -185,7 +185,7 @@ func (c *Cmd) Output() ([]byte, error) {
 		if c.Stderr != nil {
 			dup2(c.Stderr, 2)
 		}
-		runtime.Syscall(os.SYS_EXECVE, pathPtr, argvPtr, envpPtr, 0, 0, 0)
+		runtime.SysExecve(pathPtr, argvPtr, envpPtr)
 		os.Exit(127)
 	}
 
@@ -208,7 +208,7 @@ func (c *Cmd) Output() ([]byte, error) {
 	// Wait for child
 	statusBuf := make([]byte, 8)
 	runtime.Memzero(runtime.Sliceptr(statusBuf), 8)
-	_, _, errn = runtime.Syscall(os.SYS_WAIT4, pid, runtime.Sliceptr(statusBuf), 0, 0, 0, 0)
+	_, _, errn = runtime.SysWait4(pid, runtime.Sliceptr(statusBuf), 0, 0)
 	if errn != 0 {
 		return data, os.Errno(errn)
 	}
