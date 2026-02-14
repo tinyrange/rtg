@@ -390,7 +390,7 @@ func generateIRText(irmod *IRModule, outputPath string) error {
 		if len(f.Code) > 0 {
 			sb.WriteString("  ; body\n")
 			for i, inst := range f.Code {
-				sb.WriteString("  " + irPad4(i) + ": " + opcodeName(inst.Op) + instArgs(inst.Op, inst.Arg, inst.Val, inst.Name, f, irmod) + "\n")
+				sb.WriteString("  " + irPad4(i) + ": " + opcodeName(inst.Op) + instArgs(inst, f, irmod) + "\n")
 			}
 		}
 		sb.WriteString("end\n\n")
@@ -399,10 +399,18 @@ func generateIRText(irmod *IRModule, outputPath string) error {
 	return os.WriteFile(outputPath, []byte(sb.String()), 0644)
 }
 
-func instArgs(op Opcode, arg int, val int64, name string, f *IRFunc, irmod *IRModule) string {
+func instArgs(inst Inst, f *IRFunc, irmod *IRModule) string {
+	op := inst.Op
+	arg := inst.Arg
+	val := inst.Val
+	name := inst.Name
+	w := ""
+	if inst.Width != 0 {
+		w = " w=" + fmt.Sprintf("%d", inst.Width)
+	}
 	switch op {
 	case OP_CONST_I64:
-		return " " + fmt.Sprintf("%d", val)
+		return " " + fmt.Sprintf("%d", val) + w
 	case OP_CONST_STR:
 		return " " + irQuote(name)
 	case OP_CONST_BOOL:
@@ -416,7 +424,7 @@ func instArgs(op Opcode, arg int, val int64, name string, f *IRFunc, irmod *IRMo
 		if arg < len(f.Locals) {
 			s = s + "                     ; " + irQuote(f.Locals[arg].Name)
 		}
-		return s
+		return s + w
 
 	case OP_GLOBAL_GET, OP_GLOBAL_SET, OP_GLOBAL_ADDR:
 		s := " " + fmt.Sprintf("%d", arg)
@@ -463,6 +471,9 @@ func instArgs(op Opcode, arg int, val int64, name string, f *IRFunc, irmod *IRMo
 
 	case OP_LEN:
 		return " kind=" + fmt.Sprintf("%d", arg)
+	}
+	if w != "" {
+		return w
 	}
 	return ""
 }

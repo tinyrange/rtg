@@ -120,11 +120,11 @@ const (
 
 // Inst represents a single IR instruction.
 type Inst struct {
-	Op   Opcode
-	Arg  int
-	Arg2 int
-	Val  int64
-	Name string
+	Op    Opcode
+	Arg   int
+	Width int // operand width in bytes: 0=word, 1=byte, 2=int16, 4=int32, 8=int64
+	Val   int64
+	Name  string
 }
 
 // IRLocal represents a local variable in a function.
@@ -133,6 +133,7 @@ type IRLocal struct {
 	Type  *TypeInfo
 	Index int
 	Is64  bool // true for uint64/int64 locals (need i64 on wasm32)
+	Width int  // storage width: 0=word, 1=byte, 2=int16, 4=int32, 8=int64
 }
 
 // IRFunc represents a compiled function.
@@ -196,6 +197,7 @@ type Compiler struct {
 	globalMapVars      map[string]int      // qualified global name → keyKind if it's a map
 	globalConcreteTypes map[string]string  // qualified global name → qualified type name
 	constValues        map[string]int64    // qualified const name → precomputed value
+	constStringValues  map[string]string   // qualified const name → precomputed string value
 	stackDepth         int                 // operand stack depth tracking for balance checks
 }
 
@@ -220,6 +222,7 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 		globalMapVars:      make(map[string]int),
 		globalConcreteTypes: make(map[string]string),
 		constValues:       make(map[string]int64),
+		constStringValues: make(map[string]string),
 	}
 	c.initBuiltinTypes()
 
@@ -625,6 +628,69 @@ func (c *Compiler) resolveExprType(node *Node) string {
 	return ""
 }
 
+// typeWidth returns the byte width for a named type.
+// Returns 0 for word-sized types (int, uintptr, pointers, etc).
+func typeWidth(name string) int {
+	switch name {
+	case "byte":
+		return 1
+	case "uint16":
+		return 2
+	case "int32", "uint32":
+		return 4
+	case "int64", "uint64":
+		return 8
+	}
+	return 0
+}
+
+// exprWidth infers the operand width from an AST expression.
+// Returns 0 for word-sized, or 1/2/4/8 for explicitly sized types.
+func (c *Compiler) exprWidth(node *Node) int {
+	if node == nil {
+		return 0
+	}
+	switch node.Kind {
+	case NIdent:
+		// Check if this local has a known concrete type
+		if ct, ok := c.localConcreteTypes[node.Name]; ok {
+			w := typeWidth(ct)
+			if w != 0 {
+				return w
+			}
+		}
+		// Check if local has Width set
+		if idx, ok := c.lookupLocal(node.Name); ok {
+			if idx < len(c.curFunc.Locals) {
+				w := c.curFunc.Locals[idx].Width
+				if w != 0 {
+					return w
+				}
+			}
+		}
+	case NCallExpr:
+		calleeName := c.resolveCallName(node.X)
+		// Type conversions: uint64(), int64(), int32(), byte(), etc.
+		tw := typeWidth(calleeName)
+		if tw != 0 {
+			return tw
+		}
+		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
+			return typeWidth(retTypes[0])
+		}
+	case NBinaryExpr:
+		lw := c.exprWidth(node.X)
+		rw := c.exprWidth(node.Y)
+		if lw > rw {
+			return lw
+		}
+		return rw
+	case NUnaryExpr:
+		return c.exprWidth(node.X)
+	}
+	return 0
+}
+
 // precomputeConsts walks all const declarations in a package, tracking iota,
 // and stores computed values in c.constValues.
 func (c *Compiler) precomputeConsts(pkg *Package) {
@@ -639,15 +705,22 @@ func (c *Compiler) precomputeConsts(pkg *Package) {
 					if child.X != nil {
 						lastExpr = child.X
 					}
-					// Evaluate with current iota value
-					val := c.evalConstExprWithIota(lastExpr, iotaVal)
-					c.constValues[qname] = val
+					if c.isConstStringExpr(lastExpr) {
+						c.constStringValues[qname] = c.evalConstString(lastExpr)
+					} else {
+						val := c.evalConstExprWithIota(lastExpr, iotaVal)
+						c.constValues[qname] = val
+					}
 					iotaVal++
 				}
 			} else if node.Kind == NConstDecl {
 				// Single const: iota = 0
 				qname := pkg.Path + "." + node.Name
-				c.constValues[qname] = c.evalConstExprWithIota(node.X, 0)
+				if c.isConstStringExpr(node.X) {
+					c.constStringValues[qname] = c.evalConstString(node.X)
+				} else {
+					c.constValues[qname] = c.evalConstExprWithIota(node.X, 0)
+				}
 			}
 		}
 	}
@@ -741,6 +814,44 @@ func (c *Compiler) evalConstExprWithIota(node *Node, iotaVal int64) int64 {
 		return 0
 	}
 	return 0
+}
+
+func (c *Compiler) isConstStringExpr(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == NStringLit {
+		return true
+	}
+	if node.Kind == NBinaryExpr && node.Name == "+" {
+		return c.isConstStringExpr(node.X) || c.isConstStringExpr(node.Y)
+	}
+	if node.Kind == NIdent {
+		qname := c.curPkg.Path + "." + node.Name
+		if _, ok := c.constStringValues[qname]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Compiler) evalConstString(node *Node) string {
+	if node == nil {
+		return ""
+	}
+	if node.Kind == NStringLit {
+		return node.Name
+	}
+	if node.Kind == NBinaryExpr && node.Name == "+" {
+		return c.evalConstString(node.X) + c.evalConstString(node.Y)
+	}
+	if node.Kind == NIdent {
+		qname := c.curPkg.Path + "." + node.Name
+		if s, ok := c.constStringValues[qname]; ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func (c *Compiler) compilePackage(pkg *Package) {
@@ -1133,6 +1244,13 @@ func (c *Compiler) compileFunc(node *Node) {
 			if param.Type != nil && param.Type.Kind == NIdent && (param.Type.Name == "uint64" || param.Type.Name == "int64") {
 				c.curFunc.Locals[localIdx].Is64 = true
 			}
+			// Set Width for explicitly sized params
+			if param.Type != nil && param.Type.Kind == NIdent {
+				w := typeWidth(param.Type.Name)
+				if w != 0 {
+					c.curFunc.Locals[localIdx].Width = w
+				}
+			}
 			// Track elem size for slice params
 			if isVarParam {
 				c.localElemSizes[pname] = varElemSize
@@ -1451,6 +1569,13 @@ func (c *Compiler) compileVarDecl(node *Node) {
 	if node.Type != nil && node.Type.Kind == NIdent && (node.Type.Name == "uint64" || node.Type.Name == "int64") {
 		c.curFunc.Locals[idx].Is64 = true
 	}
+	// Set Width for explicitly sized locals
+	if node.Type != nil && node.Type.Kind == NIdent {
+		w := typeWidth(node.Type.Name)
+		if w != 0 {
+			c.curFunc.Locals[idx].Width = w
+		}
+	}
 	// Track element size for slice variables
 	if node.Type != nil && node.Type.Kind == NSliceType {
 		c.localElemSizes[node.Name] = c.sliceElemSize(node.Type)
@@ -1478,7 +1603,7 @@ func (c *Compiler) compileVarDecl(node *Node) {
 	}
 	if node.X != nil {
 		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
 	} else {
 		// Struct locals are represented as pointers to heap-allocated storage.
 		// A zero-value struct var must still be addressable and non-nil.
@@ -1600,6 +1725,14 @@ func (c *Compiler) compileAssign(node *Node) {
 	if node.Name == ":=" {
 		// Short var decl
 		idx := c.addLocal(node.X.Name)
+		// Infer width from RHS expression for int64/uint64/etc.
+		w := c.exprWidth(node.Y)
+		if w != 0 {
+			c.curFunc.Locals[idx].Width = w
+			if w == 8 {
+				c.curFunc.Locals[idx].Is64 = true
+			}
+		}
 		// Track string-typed short vars
 		if c.isStringTypedExpr(node.Y) {
 			c.localStringVars[node.X.Name] = true
@@ -1641,86 +1774,96 @@ func (c *Compiler) compileAssign(node *Node) {
 			}
 		}
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
 		return
 	}
 
 	if node.Name == "+=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_ADD})
+		c.emit(Inst{Op: OP_ADD, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == "-=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_SUB})
+		c.emit(Inst{Op: OP_SUB, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == "*=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_MUL})
+		c.emit(Inst{Op: OP_MUL, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == "/=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_DIV})
+		c.emit(Inst{Op: OP_DIV, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == "%=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_MOD})
+		c.emit(Inst{Op: OP_MOD, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == "|=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_OR})
+		c.emit(Inst{Op: OP_OR, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == "&=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_AND})
+		c.emit(Inst{Op: OP_AND, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == "^=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_XOR})
+		c.emit(Inst{Op: OP_XOR, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == "<<=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_SHL})
+		c.emit(Inst{Op: OP_SHL, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
 
 	if node.Name == ">>=" {
+		w := c.exprWidth(node.X)
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_SHR})
+		c.emit(Inst{Op: OP_SHR, Width: w})
 		c.compileLValueSet(node.X)
 		return
 	}
@@ -1752,7 +1895,11 @@ func (c *Compiler) compileLValueSet(node *Node) {
 		}
 		idx, ok := c.lookupLocal(node.Name)
 		if ok {
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+			w := 0
+			if idx < len(c.curFunc.Locals) {
+				w = c.curFunc.Locals[idx].Width
+			}
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
 		} else {
 			gidx, gok := c.lookupGlobal(node.Name)
 			if gok {
@@ -2444,7 +2591,11 @@ func (c *Compiler) compileBasicLit(node *Node) {
 func (c *Compiler) compileIdent(node *Node) {
 	idx, ok := c.lookupLocal(node.Name)
 	if ok {
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idx})
+		w := 0
+		if idx < len(c.curFunc.Locals) {
+			w = c.curFunc.Locals[idx].Width
+		}
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idx, Width: w})
 		return
 	}
 	gidx, gok := c.lookupGlobal(node.Name)
@@ -2454,6 +2605,10 @@ func (c *Compiler) compileIdent(node *Node) {
 	}
 	// Check if it's a precomputed constant
 	qname2 := c.curPkg.Path + "." + node.Name
+	if sval, ok2 := c.constStringValues[qname2]; ok2 {
+		c.emit(Inst{Op: OP_CONST_STR, Name: sval})
+		return
+	}
 	if val, ok2 := c.constValues[qname2]; ok2 {
 		c.emit(Inst{Op: OP_CONST_I64, Val: val})
 		return
@@ -2461,6 +2616,10 @@ func (c *Compiler) compileIdent(node *Node) {
 	// Check if it's a constant in the current package
 	sym, symOk := c.curPkg.Symbols[node.Name]
 	if symOk && sym.Kind == SymConst {
+		if c.isConstStringExpr(sym.Node.X) {
+			c.emit(Inst{Op: OP_CONST_STR, Name: c.evalConstString(sym.Node.X)})
+			return
+		}
 		val := c.resolveConstValue(sym.Node)
 		c.emit(Inst{Op: OP_CONST_I64, Val: val})
 		return
@@ -2518,6 +2677,11 @@ func (c *Compiler) isStringTypedExpr(node *Node) bool {
 		return true
 	case NIdent:
 		if c.localStringVars[node.Name] {
+			return true
+		}
+		// Check string constants
+		qname := c.curPkg.Path + "." + node.Name
+		if _, ok := c.constStringValues[qname]; ok {
 			return true
 		}
 		// Check global string vars
@@ -2660,39 +2824,41 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	c.compileExpr(node.X)
 	c.compileExpr(node.Y)
 
+	w := c.exprWidth(node)
+
 	switch node.Name {
 	case "+":
-		c.emit(Inst{Op: OP_ADD})
+		c.emit(Inst{Op: OP_ADD, Width: w})
 	case "-":
-		c.emit(Inst{Op: OP_SUB})
+		c.emit(Inst{Op: OP_SUB, Width: w})
 	case "*":
-		c.emit(Inst{Op: OP_MUL})
+		c.emit(Inst{Op: OP_MUL, Width: w})
 	case "/":
-		c.emit(Inst{Op: OP_DIV})
+		c.emit(Inst{Op: OP_DIV, Width: w})
 	case "%":
-		c.emit(Inst{Op: OP_MOD})
+		c.emit(Inst{Op: OP_MOD, Width: w})
 	case "&":
-		c.emit(Inst{Op: OP_AND})
+		c.emit(Inst{Op: OP_AND, Width: w})
 	case "|":
-		c.emit(Inst{Op: OP_OR})
+		c.emit(Inst{Op: OP_OR, Width: w})
 	case "^":
-		c.emit(Inst{Op: OP_XOR})
+		c.emit(Inst{Op: OP_XOR, Width: w})
 	case "<<":
-		c.emit(Inst{Op: OP_SHL})
+		c.emit(Inst{Op: OP_SHL, Width: w})
 	case ">>":
-		c.emit(Inst{Op: OP_SHR})
+		c.emit(Inst{Op: OP_SHR, Width: w})
 	case "==":
-		c.emit(Inst{Op: OP_EQ})
+		c.emit(Inst{Op: OP_EQ, Width: w})
 	case "!=":
-		c.emit(Inst{Op: OP_NEQ})
+		c.emit(Inst{Op: OP_NEQ, Width: w})
 	case "<":
-		c.emit(Inst{Op: OP_LT})
+		c.emit(Inst{Op: OP_LT, Width: w})
 	case ">":
-		c.emit(Inst{Op: OP_GT})
+		c.emit(Inst{Op: OP_GT, Width: w})
 	case "<=":
-		c.emit(Inst{Op: OP_LEQ})
+		c.emit(Inst{Op: OP_LEQ, Width: w})
 	case ">=":
-		c.emit(Inst{Op: OP_GEQ})
+		c.emit(Inst{Op: OP_GEQ, Width: w})
 	default:
 		panic("ICE: unhandled binary operator in compileBinaryExpr")
 	}
@@ -2704,8 +2870,9 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 		c.compileExpr(node.X)
 		c.emit(Inst{Op: OP_NOT})
 	case "-":
+		w := c.exprWidth(node.X)
 		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_NEG})
+		c.emit(Inst{Op: OP_NEG, Width: w})
 	case "*":
 		c.compileExpr(node.X)
 		if !c.isPointerToStructDeref(node.X) {
@@ -2714,9 +2881,10 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 	case "&":
 		c.compileAddrOf(node.X)
 	case "^":
+		w := c.exprWidth(node.X)
 		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_CONST_I64, Val: -1})
-		c.emit(Inst{Op: OP_XOR})
+		c.emit(Inst{Op: OP_CONST_I64, Val: -1, Width: w})
+		c.emit(Inst{Op: OP_XOR, Width: w})
 	default:
 		panic("ICE: unhandled unary operator in compileUnaryExpr")
 	}

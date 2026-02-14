@@ -928,6 +928,9 @@ func (p *Parser) parseConstDecl() *Node {
 	}
 	name := p.expect(TOKEN_IDENT)
 	node := &Node{Kind: NConstDecl, Name: name.Val, Pos: pos}
+	if p.at(TOKEN_IDENT) {
+		node.Type = p.parseType()
+	}
 	if p.at(TOKEN_ASSIGN) {
 		p.advance()
 		node.X = p.parseExpr()

@@ -786,6 +786,9 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 	bp.WriteString("}\n\n")
 
 	for fi, f := range irmod.Funcs {
+		if compilerDebug && fi%100 == 0 {
+			fmt.Fprintf(os.Stderr, "debug: C codegen func %d/%d (%s)\n", fi, len(irmod.Funcs), f.Name)
+		}
 		funcStart := bp.Len()
 		frameSize := len(f.Locals)
 		if f.Params > frameSize {
@@ -1169,6 +1172,9 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 	bp.WriteString("  return 0;\n")
 	bp.WriteString("}\n")
 
+	if compilerDebug {
+		fmt.Fprintf(os.Stderr, "debug: C codegen complete, writing %d bytes\n", bp.Len())
+	}
 	if err := os.WriteFile(outputPath, []byte(bp.String()), 0644); err != nil {
 		return fmt.Errorf("write C source: %v", err)
 	}

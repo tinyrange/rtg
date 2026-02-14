@@ -15,8 +15,8 @@ func main() {
 	// Division before subtraction
 	if 10-6/2 != 7 { fmt.Printf("FAIL: 10-6/2\n"); passed = false }
 
-	// Shift vs addition
-	if 1<<4+1 != 32 { fmt.Printf("FAIL: 1<<4+1 (shift has lower prec)\n"); passed = false }
+	// Shift vs addition: << has higher precedence than + in Go, so 1<<4+1 = (1<<4)+1 = 17
+	if 1<<4+1 != 17 { fmt.Printf("FAIL: 1<<4+1\n"); passed = false }
 
 	// Comparison vs logical
 	if !(1 < 2 && 3 < 4) { fmt.Printf("FAIL: comparison && comparison\n"); passed = false }
