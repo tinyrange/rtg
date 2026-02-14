@@ -68,7 +68,15 @@ const (
 	TOKEN_ASSIGN
 	TOKEN_DEFINE
 	TOKEN_PLUS_ASSIGN
+	TOKEN_MINUS_ASSIGN
+	TOKEN_STAR_ASSIGN
+	TOKEN_SLASH_ASSIGN
+	TOKEN_PERCENT_ASSIGN
 	TOKEN_OR_ASSIGN
+	TOKEN_AND_ASSIGN
+	TOKEN_CARET_ASSIGN
+	TOKEN_SHL_ASSIGN
+	TOKEN_SHR_ASSIGN
 
 	// Punctuation
 	TOKEN_LPAREN
@@ -104,7 +112,10 @@ var tokenNames = map[TokenKind]string{
 	TOKEN_AND: "&&", TOKEN_OR: "||", TOKEN_NOT: "!",
 	TOKEN_AMPERSAND: "&", TOKEN_PIPE: "|", TOKEN_CARET: "^",
 	TOKEN_SHL: "<<", TOKEN_SHR: ">>",
-	TOKEN_ASSIGN: "=", TOKEN_DEFINE: ":=", TOKEN_PLUS_ASSIGN: "+=", TOKEN_OR_ASSIGN: "|=",
+	TOKEN_ASSIGN: "=", TOKEN_DEFINE: ":=", TOKEN_PLUS_ASSIGN: "+=", TOKEN_MINUS_ASSIGN: "-=",
+	TOKEN_STAR_ASSIGN: "*=", TOKEN_SLASH_ASSIGN: "/=", TOKEN_PERCENT_ASSIGN: "%=",
+	TOKEN_OR_ASSIGN: "|=", TOKEN_AND_ASSIGN: "&=", TOKEN_CARET_ASSIGN: "^=",
+	TOKEN_SHL_ASSIGN: "<<=", TOKEN_SHR_ASSIGN: ">>=",
 	TOKEN_LPAREN: "(", TOKEN_RPAREN: ")", TOKEN_LBRACE: "{", TOKEN_RBRACE: "}",
 	TOKEN_LBRACK: "[", TOKEN_RBRACK: "]", TOKEN_COMMA: ",", TOKEN_DOT: ".",
 	TOKEN_COLON: ":", TOKEN_SEMICOLON: ";", TOKEN_ELLIPSIS: "...",
@@ -370,12 +381,28 @@ func (l *Lexer) scanOperator() Token {
 		}
 		return Token{Kind: TOKEN_PLUS, Line: line, Col: col}
 	case '-':
+		if l.peek() == '=' {
+			l.advance()
+			return Token{Kind: TOKEN_MINUS_ASSIGN, Line: line, Col: col}
+		}
 		return Token{Kind: TOKEN_MINUS, Line: line, Col: col}
 	case '*':
+		if l.peek() == '=' {
+			l.advance()
+			return Token{Kind: TOKEN_STAR_ASSIGN, Line: line, Col: col}
+		}
 		return Token{Kind: TOKEN_STAR, Line: line, Col: col}
 	case '/':
+		if l.peek() == '=' {
+			l.advance()
+			return Token{Kind: TOKEN_SLASH_ASSIGN, Line: line, Col: col}
+		}
 		return Token{Kind: TOKEN_SLASH, Line: line, Col: col}
 	case '%':
+		if l.peek() == '=' {
+			l.advance()
+			return Token{Kind: TOKEN_PERCENT_ASSIGN, Line: line, Col: col}
+		}
 		return Token{Kind: TOKEN_PERCENT, Line: line, Col: col}
 	case '=':
 		if l.peek() == '=' {
@@ -396,6 +423,10 @@ func (l *Lexer) scanOperator() Token {
 		}
 		if l.peek() == '<' {
 			l.advance()
+			if l.peek() == '=' {
+				l.advance()
+				return Token{Kind: TOKEN_SHL_ASSIGN, Line: line, Col: col}
+			}
 			return Token{Kind: TOKEN_SHL, Line: line, Col: col}
 		}
 		return Token{Kind: TOKEN_LT, Line: line, Col: col}
@@ -406,6 +437,10 @@ func (l *Lexer) scanOperator() Token {
 		}
 		if l.peek() == '>' {
 			l.advance()
+			if l.peek() == '=' {
+				l.advance()
+				return Token{Kind: TOKEN_SHR_ASSIGN, Line: line, Col: col}
+			}
 			return Token{Kind: TOKEN_SHR, Line: line, Col: col}
 		}
 		return Token{Kind: TOKEN_GT, Line: line, Col: col}
@@ -413,6 +448,10 @@ func (l *Lexer) scanOperator() Token {
 		if l.peek() == '&' {
 			l.advance()
 			return Token{Kind: TOKEN_AND, Line: line, Col: col}
+		}
+		if l.peek() == '=' {
+			l.advance()
+			return Token{Kind: TOKEN_AND_ASSIGN, Line: line, Col: col}
 		}
 		return Token{Kind: TOKEN_AMPERSAND, Line: line, Col: col}
 	case '|':
@@ -426,6 +465,10 @@ func (l *Lexer) scanOperator() Token {
 		}
 		return Token{Kind: TOKEN_PIPE, Line: line, Col: col}
 	case '^':
+		if l.peek() == '=' {
+			l.advance()
+			return Token{Kind: TOKEN_CARET_ASSIGN, Line: line, Col: col}
+		}
 		return Token{Kind: TOKEN_CARET, Line: line, Col: col}
 	case '(':
 		return Token{Kind: TOKEN_LPAREN, Line: line, Col: col}
@@ -1041,6 +1084,10 @@ func (p *Parser) parseBlock() *Node {
 
 func (p *Parser) parseStmt() *Node {
 	switch p.peek().Kind {
+	case TOKEN_LBRACE:
+		block := p.parseBlock()
+		p.skipSemicolon()
+		return block
 	case TOKEN_IF:
 		return p.parseIfStmt()
 	case TOKEN_FOR:
@@ -1153,9 +1200,19 @@ func (p *Parser) parseForStmt() *Node {
 		return node
 	}
 
+	// Check for bare "for range x {"
+	if p.at(TOKEN_RANGE) {
+		p.advance()
+		iterable := p.parseExprNoBrace()
+		node.Name = "range"
+		node.Type = iterable
+		node.Body = p.parseBlock()
+		p.skipSemicolon()
+		return node
+	}
+
 	// Try to detect range-based for loop
 	// Patterns: for _, x := range y { ... } or for i := range y { ... }
-	// or for range y { ... }
 	first := p.parseExprNoBrace()
 
 	if p.at(TOKEN_COMMA) {
@@ -1329,7 +1386,7 @@ func (p *Parser) parseSimpleStmtNoSemicolon() *Node {
 	}
 
 	// Check for assignment / short var decl
-	if p.match(TOKEN_ASSIGN, TOKEN_DEFINE, TOKEN_PLUS_ASSIGN, TOKEN_OR_ASSIGN) {
+	if p.match(TOKEN_ASSIGN, TOKEN_DEFINE, TOKEN_PLUS_ASSIGN, TOKEN_MINUS_ASSIGN, TOKEN_STAR_ASSIGN, TOKEN_SLASH_ASSIGN, TOKEN_PERCENT_ASSIGN, TOKEN_OR_ASSIGN, TOKEN_AND_ASSIGN, TOKEN_CARET_ASSIGN, TOKEN_SHL_ASSIGN, TOKEN_SHR_ASSIGN) {
 		op := p.advance()
 		rhs := p.parseExpr()
 		return &Node{Kind: NAssign, Name: tokenVal(op), X: expr, Y: rhs, Pos: expr.Pos}

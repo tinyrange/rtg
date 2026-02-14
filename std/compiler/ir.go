@@ -1653,10 +1653,74 @@ func (c *Compiler) compileAssign(node *Node) {
 		return
 	}
 
+	if node.Name == "-=" {
+		c.compileLValueGet(node.X)
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_SUB})
+		c.compileLValueSet(node.X)
+		return
+	}
+
+	if node.Name == "*=" {
+		c.compileLValueGet(node.X)
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_MUL})
+		c.compileLValueSet(node.X)
+		return
+	}
+
+	if node.Name == "/=" {
+		c.compileLValueGet(node.X)
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_DIV})
+		c.compileLValueSet(node.X)
+		return
+	}
+
+	if node.Name == "%=" {
+		c.compileLValueGet(node.X)
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_MOD})
+		c.compileLValueSet(node.X)
+		return
+	}
+
 	if node.Name == "|=" {
 		c.compileLValueGet(node.X)
 		c.compileExpr(node.Y)
 		c.emit(Inst{Op: OP_OR})
+		c.compileLValueSet(node.X)
+		return
+	}
+
+	if node.Name == "&=" {
+		c.compileLValueGet(node.X)
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_AND})
+		c.compileLValueSet(node.X)
+		return
+	}
+
+	if node.Name == "^=" {
+		c.compileLValueGet(node.X)
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_XOR})
+		c.compileLValueSet(node.X)
+		return
+	}
+
+	if node.Name == "<<=" {
+		c.compileLValueGet(node.X)
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_SHL})
+		c.compileLValueSet(node.X)
+		return
+	}
+
+	if node.Name == ">>=" {
+		c.compileLValueGet(node.X)
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_SHR})
 		c.compileLValueSet(node.X)
 		return
 	}
