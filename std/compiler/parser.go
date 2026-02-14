@@ -39,6 +39,9 @@ const (
 	TOKEN_FALSE
 	TOKEN_DEFER
 	TOKEN_IOTA
+	TOKEN_CHAN
+	TOKEN_GO
+	TOKEN_SELECT
 
 	// Operators
 	TOKEN_PLUS
@@ -94,6 +97,7 @@ var tokenNames = map[TokenKind]string{
 	TOKEN_BREAK: "break", TOKEN_CONTINUE: "continue", TOKEN_MAP: "map",
 	TOKEN_NIL: "nil", TOKEN_TRUE: "true", TOKEN_FALSE: "false",
 	TOKEN_DEFER: "defer", TOKEN_IOTA: "iota",
+	TOKEN_CHAN: "chan", TOKEN_GO: "go", TOKEN_SELECT: "select",
 	TOKEN_PLUS: "+", TOKEN_MINUS: "-", TOKEN_STAR: "*", TOKEN_SLASH: "/",
 	TOKEN_PERCENT: "%", TOKEN_EQ: "==", TOKEN_NEQ: "!=",
 	TOKEN_LT: "<", TOKEN_GT: ">", TOKEN_LEQ: "<=", TOKEN_GEQ: ">=",
@@ -125,6 +129,7 @@ var keywords = map[string]TokenKind{
 	"break": TOKEN_BREAK, "continue": TOKEN_CONTINUE, "map": TOKEN_MAP,
 	"nil": TOKEN_NIL, "true": TOKEN_TRUE, "false": TOKEN_FALSE,
 	"defer": TOKEN_DEFER, "iota": TOKEN_IOTA,
+	"chan": TOKEN_CHAN, "go": TOKEN_GO, "select": TOKEN_SELECT,
 }
 
 // Token represents a lexical token.
@@ -577,6 +582,20 @@ func (p *Parser) skipSemicolon() {
 	}
 }
 
+func (p *Parser) skipBlock() {
+	p.expect(TOKEN_LBRACE)
+	depth := 1
+	for depth > 0 && !p.at(TOKEN_EOF) {
+		if p.at(TOKEN_LBRACE) {
+			depth++
+		}
+		if p.at(TOKEN_RBRACE) {
+			depth = depth - 1
+		}
+		p.advance()
+	}
+}
+
 // ParseFile parses a complete Go source file.
 func (p *Parser) ParseFile() *Node {
 	file := &Node{Kind: NFile, Pos: p.peek().Line}
@@ -658,6 +677,18 @@ func (p *Parser) parseFuncDecl() *Node {
 	// function name
 	name := p.expect(TOKEN_IDENT)
 	node.Name = name.Val
+
+	// reject generic type parameters
+	if p.at(TOKEN_LBRACK) {
+		p.errorf("generic type parameters are not supported at line %d", p.peek().Line)
+		p.advance()
+		for !p.at(TOKEN_RBRACK) && !p.at(TOKEN_EOF) {
+			p.advance()
+		}
+		if p.at(TOKEN_RBRACK) {
+			p.advance()
+		}
+	}
 
 	// parameters
 	node.Nodes = p.parseParamList()
@@ -890,6 +921,13 @@ func (p *Parser) parseType() *Node {
 		return p.parseStructType()
 	case TOKEN_INTERFACE:
 		return p.parseInterfaceType()
+	case TOKEN_CHAN:
+		tok := p.advance()
+		p.errorf("chan types are not supported at line %d", tok.Line)
+		if !p.at(TOKEN_LBRACE) && !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_RPAREN) && !p.at(TOKEN_COMMA) && !p.at(TOKEN_EOF) {
+			p.parseType() // consume element type for recovery
+		}
+		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 	}
 	tok := p.advance()
 	p.errorf("expected type, got %s at line %d", tok.String(), tok.Line)
@@ -1027,6 +1065,35 @@ func (p *Parser) parseStmt() *Node {
 		return &Node{Kind: NBranch, Name: "continue", Pos: pos}
 	case TOKEN_DEFER:
 		return p.parseDeferStmt()
+	case TOKEN_GO:
+		p.errorf("go statements (goroutines) are not supported at line %d", p.peek().Line)
+		p.advance()
+		depth := 0
+		for !p.at(TOKEN_EOF) {
+			if p.at(TOKEN_LBRACE) {
+				depth++
+			}
+			if p.at(TOKEN_RBRACE) {
+				if depth == 0 {
+					break
+				}
+				depth = depth - 1
+			}
+			if p.at(TOKEN_SEMICOLON) && depth == 0 {
+				break
+			}
+			p.advance()
+		}
+		p.skipSemicolon()
+		return nil
+	case TOKEN_SELECT:
+		p.errorf("select statements are not supported at line %d", p.peek().Line)
+		p.advance()
+		if p.at(TOKEN_LBRACE) {
+			p.skipBlock()
+		}
+		p.skipSemicolon()
+		return nil
 	case TOKEN_SEMICOLON:
 		p.advance()
 		return nil
@@ -1386,6 +1453,21 @@ func (p *Parser) parsePrimaryExpr() *Node {
 			body := p.parseBlock()
 			node.Body = body
 		}
+	case TOKEN_CHAN:
+		tok := p.advance()
+		p.errorf("chan types are not supported at line %d", tok.Line)
+		if p.at(TOKEN_IDENT) {
+			p.advance()
+		}
+		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
+	case TOKEN_GO:
+		tok := p.advance()
+		p.errorf("go statements (goroutines) are not supported at line %d", tok.Line)
+		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
+	case TOKEN_SELECT:
+		tok := p.advance()
+		p.errorf("select statements are not supported at line %d", tok.Line)
+		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 	default:
 		tok := p.advance()
 		p.errorf("unexpected token in expression: %s at line %d col %d", tok.String(), tok.Line, tok.Col)
