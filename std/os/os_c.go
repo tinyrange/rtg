@@ -312,6 +312,11 @@ func Stat(name string) error {
 	return nil
 }
 
+func Getpid() int {
+	pid, _, _ := runtime.SysGetpid()
+	return int(pid)
+}
+
 func init() {
 	argc, _, _ := runtime.SysGetargc()
 	i := 0

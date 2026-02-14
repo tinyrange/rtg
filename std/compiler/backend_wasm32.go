@@ -1751,6 +1751,14 @@ func (g *WasmGen) compileCallIntrinsic(inst Inst) {
 		g.pushType(WASM_TYPE_I32)
 		g.pushType(WASM_TYPE_I32)
 		g.pushType(WASM_TYPE_I32)
+	case "SysGetpid":
+		// WASI has no getpid; return 0
+		g.w.i32Const(0)
+		g.pushType(WASM_TYPE_I32)
+		g.w.i32Const(0)
+		g.pushType(WASM_TYPE_I32)
+		g.w.i32Const(0)
+		g.pushType(WASM_TYPE_I32)
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic()
 	case "Makeslice":

@@ -297,6 +297,11 @@ func Stat(name string) error {
 	return nil
 }
 
+func Getpid() int {
+	pid, _, _ := runtime.SysGetpid()
+	return int(pid)
+}
+
 func init() {
 	// WASI: args are retrieved via args_sizes_get + args_get
 	// These are called via the WASI imports. For now, the backend

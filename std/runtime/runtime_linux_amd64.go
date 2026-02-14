@@ -39,3 +39,4 @@ func SysGetdents64(fd, buf, size uintptr) (uintptr, uintptr, int32)           { 
 func SysExit(code uintptr)                                                    { Syscall(231, code, 0, 0, 0, 0, 0) }
 func SysMmap(addr, length, prot, flags, fd, offset uintptr) (uintptr, uintptr, int32) { return Syscall(9, addr, length, prot, flags, fd, offset) }
 func SysPipe(fds uintptr) (uintptr, uintptr, int32)                           { return Syscall(293, fds, 0, 0, 0, 0, 0) }
+func SysGetpid() (uintptr, uintptr, int32)                                    { return Syscall(39, 0, 0, 0, 0, 0, 0) }

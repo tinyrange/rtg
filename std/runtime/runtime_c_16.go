@@ -83,3 +83,6 @@ func SysPopen(cmd uintptr) (uintptr, uintptr, int32)
 
 //rtg:internal SysPclose
 func SysPclose(fd uintptr) (uintptr, uintptr, int32)
+
+//rtg:internal SysGetpid
+func SysGetpid() (uintptr, uintptr, int32)

@@ -385,6 +385,11 @@ func Stat(name string) error {
 	return nil
 }
 
+func Getpid() int {
+	pid, _, _ := runtime.SysGetpid()
+	return int(pid)
+}
+
 func init() {
 	// Get command line string
 	cmdLinePtr, _, _ := runtime.SysGetCommandLine()

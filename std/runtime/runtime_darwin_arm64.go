@@ -86,3 +86,6 @@ func SysGetargv() (uintptr, uintptr, int32)
 
 //rtg:internal SysGetenvp
 func SysGetenvp() (uintptr, uintptr, int32)
+
+//rtg:internal SysGetpid
+func SysGetpid() (uintptr, uintptr, int32)

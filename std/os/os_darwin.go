@@ -387,6 +387,11 @@ func Stat(name string) error {
 	return nil
 }
 
+func Getpid() int {
+	pid, _, _ := runtime.SysGetpid()
+	return int(pid)
+}
+
 func init() {
 	// Get argc, argv from saved globals
 	argc, _, _ := runtime.SysGetargc()

@@ -366,6 +366,11 @@ func Stat(name string) error {
 	return nil
 }
 
+func Getpid() int {
+	pid, _, _ := runtime.SysGetpid()
+	return int(pid)
+}
+
 func init() {
 	data, err := ReadFile("/proc/self/cmdline")
 	if err != nil {

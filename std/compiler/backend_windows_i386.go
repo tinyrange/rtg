@@ -34,6 +34,7 @@ var win386Imports = []string{
 	"SetStdHandle",
 	"SetHandleInformation",
 	"GetLastError",
+	"GetCurrentProcessId",
 }
 
 // generateWin386PE compiles an IRModule to a Windows PE32 executable.
@@ -542,6 +543,14 @@ func (g *CodeGen) compileSyscallGetCommandLine_win386() {
 func (g *CodeGen) compileSyscallGetEnvStrings_win386() {
 	// GetEnvironmentStringsA() returns a pointer to the environment block
 	g.emitCallIAT("GetEnvironmentStringsA")
+	g.opPush(REG32_EAX)
+	g.compileConstI32(0)
+	g.compileConstI32(0)
+}
+
+func (g *CodeGen) compileSyscallGetpid_win386() {
+	// GetCurrentProcessId() returns DWORD (the process ID)
+	g.emitCallIAT("GetCurrentProcessId")
 	g.opPush(REG32_EAX)
 	g.compileConstI32(0)
 	g.compileConstI32(0)

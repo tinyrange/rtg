@@ -51,20 +51,14 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 		Packages: make(map[string]*Package),
 	}
 
-	// Parse entry package: discover all .go files in the same directory
+	// Parse entry package.
+	// If specific .go files are given, parse only those files (like go run file.go).
+	// If a directory or bare package name is given, parse all .go files in it.
 	entryDir := dirOfPath(entryFiles[0])
-	// If the argument is a bare package name (not a .go file, not "."),
-	// try resolving it via embedded std first.
 	var mainPkg *Package
 	arg := entryFiles[0]
-	if !isGoFile(arg) && arg != "." {
-		mainPkg = parsePackageFromEmbed(arg)
-	}
-	if mainPkg == nil {
-		mainPkg = parsePackageDir(entryDir, "main")
-	}
-	if mainPkg == nil {
-		// Fallback: parse only the specified files
+	if isGoFile(arg) {
+		// Specific .go files: parse only the named files
 		mainPkg = &Package{
 			Name:    "main",
 			Path:    "main",
@@ -78,6 +72,19 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 			}
 		}
 		mainPkg.Imports = collectImports(mainPkg)
+	} else if arg != "." {
+		// Bare package name: try embedded std first, then directory scan
+		mainPkg = parsePackageFromEmbed(arg)
+		if mainPkg == nil {
+			mainPkg = parsePackageDir(entryDir, "main")
+		}
+	} else {
+		// "." or directory: scan the directory for all .go files
+		mainPkg = parsePackageDir(entryDir, "main")
+	}
+	if mainPkg == nil {
+		fmt.Fprintf(os.Stderr, "error: no Go files found in %s\n", entryDir)
+		os.Exit(1)
 	}
 	mainPkg.Path = "main"
 	mod.Packages["main"] = mainPkg

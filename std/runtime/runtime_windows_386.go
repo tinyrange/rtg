@@ -77,3 +77,6 @@ func SysCreatePipe(readBuf, writeBuf uintptr) (uintptr, uintptr, int32)
 
 //rtg:internal SysSetStdHandle
 func SysSetStdHandle(stdHandle, handle uintptr) (uintptr, uintptr, int32)
+
+//rtg:internal SysGetpid
+func SysGetpid() (uintptr, uintptr, int32)

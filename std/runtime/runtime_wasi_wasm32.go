@@ -50,3 +50,6 @@ func SysGetcwd(buf, size uintptr) (uintptr, uintptr, int32)
 
 //rtg:internal SysGetdents64
 func SysGetdents64(fd, buf, size uintptr) (uintptr, uintptr, int32)
+
+//rtg:internal SysGetpid
+func SysGetpid() (uintptr, uintptr, int32)

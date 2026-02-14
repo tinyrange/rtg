@@ -530,6 +530,8 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst Inst) {
 		g.compileSyscallCreatePipe_win386()
 	case "SysSetStdHandle":
 		g.compileSyscallSetStdHandle_win386()
+	case "SysGetpid":
+		g.compileSyscallGetpid_win386()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic_i386()
 	case "Makeslice":

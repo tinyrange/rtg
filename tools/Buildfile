@@ -5,8 +5,8 @@ build:
 
 selfhost: build
   sh ./build/rtg -o build/stage1 ./std/compiler/
-  sh ./build/stage1 -o build/stage2 compiler
-  sh ./build/stage2 -o build/stage3 compiler
+  sh ./build/stage1 -o build/stage_out compiler && mv build/stage_out build/stage2
+  sh ./build/stage2 -o build/stage_out compiler && mv build/stage_out build/stage3
   sh cmp build/stage2 build/stage3 && echo "PASS: self-hosting OK"
 
 selfhost-i386: build

@@ -38,31 +38,34 @@ build/          - Build output (gitignored)
 
 ### Build Tags
 
-Default backends: `backend_linux_amd64`, `backend_linux_i386`, `backend_c`
-Optional: `backend_darwin_arm64`, `backend_wasi_wasm32`
-Special: `no_embed_std` (disables embedded stdlib for playground)
+The Buildfile `build` target uses `go build` with **no build tags** — backends are selected at compile time based on Go filename build constraints. Build tags are only needed for special cases:
+- `no_embed_std` — disables embedded stdlib (used for the WASM playground)
 
 ## Commands
 
 ```sh
-# Build the compiler
-go build -tags 'backend_linux_amd64,backend_linux_i386,backend_c' -o build/rtg ./std/compiler/
-
-# Run all Go tests
-go test ./...
+# Build the compiler (no build tags needed)
+go build -o build/rtg ./std/compiler/
 
 # Build the build runner, then use it
 go build -o build/build ./tools/ && ./build/build test
 
 # Self-hosting verification (stage2 and stage3 must be byte-identical)
-./build/build selfhost
+./build/build selfhost    # linux/amd64 (default)
+./build/build selfhost-c  # C backend (works on any host)
 
 # Compile a test program
-./build/rtg -o build/testbin -T linux/amd64 tests/t00/main.go
+./build/rtg -o build/testbin -T darwin/arm64 tests/t00/main.go
+
+# Run a program directly (compile + execute, auto-detects host platform)
+./build/rtg -run tests/t00/main.go
+echo 'package main ...' | ./build/rtg -run
 
 # Track compiler sizes after changes
 ./tools/compiler_sizes.sh
 ```
+
+**Note:** `go test ./...` does NOT work — RTG's std packages use `//rtg:internal` intrinsics that the Go compiler can't handle. Use `./build/build test` or `./build/build selfhost-c` instead.
 
 ### Buildfile Targets
 
@@ -108,7 +111,7 @@ These are real issues that have caused bugs in this project before:
 ### When Making Changes
 - If changing a function signature, grep for ALL callers and update them in the same change
 - Run `go build ./...` after edits to catch compile errors early
-- Run `go test ./...` before declaring anything complete
+- Run `./build/build selfhost-c` to verify self-hosting before declaring anything complete
 
 ### Testing
 - **Always test end-to-end** — IR-level test passing does NOT mean the binary works. Compile and run the actual binary.
@@ -124,4 +127,4 @@ These are real issues that have caused bugs in this project before:
 - Don't use raw syscalls on macOS/Windows — use dynamic linking through libSystem/kernel32
 - Don't assume Go AST types map 1:1 to RTG's custom parser types
 - Don't create test `.go` files in the project root — they conflict with the module's package declarations
-- Don't use `go run -` with stdin piping — it doesn't work
+- Don't use `go run` for RTG programs — use `./build/rtg -run` instead (supports stdin piping and file args)

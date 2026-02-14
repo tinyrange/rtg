@@ -519,6 +519,9 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
 		g.hasPending = false
+	case "SysGetpid":
+		g.emitCallGOT("_getpid")
+		g.emitSyscallReturnArm64()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsicArm64()
 	case "Makeslice":

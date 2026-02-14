@@ -424,6 +424,15 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 	bp.WriteString("#endif\n")
 	bp.WriteString("}\n\n")
 
+	// rtg_host_getpid
+	bp.WriteString("static rtg_sword rtg_host_getpid(void) {\n")
+	bp.WriteString("#ifdef _WIN32\n")
+	bp.WriteString("  return (rtg_sword)GetCurrentProcessId();\n")
+	bp.WriteString("#else\n")
+	bp.WriteString("  return (rtg_sword)getpid();\n")
+	bp.WriteString("#endif\n")
+	bp.WriteString("}\n\n")
+
 	// rtg_host_rmdir
 	bp.WriteString("static rtg_sword rtg_host_rmdir(rtg_word pathw) {\n")
 	bp.WriteString("  int rv = rtg_rmdir((const char*)(rtg_size)pathw);\n")
@@ -1035,6 +1044,8 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				case "SysChmod":
 					bp.WriteString("  { rtg_sword rv = rtg_host_chmod(locals[0], locals[1]);\n")
 					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+				case "SysGetpid":
+					bp.WriteString("  rtg_push((rtg_word)rtg_host_getpid()); rtg_push(0); rtg_push(0);\n")
 				case "Sliceptr":
 					bp.WriteString("  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n")
 				case "Makeslice":
