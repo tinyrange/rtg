@@ -92,6 +92,7 @@ type VM struct {
 	// Frame stack: dedicated region for function call frames
 	frameStackBase int
 	frameStackTop  int
+	frameStackSize int
 
 	// Slab allocator for fixed-size objects
 	slabPageSize int
@@ -113,16 +114,19 @@ type VM struct {
 	stepCount  int64
 	stepLimit  int64
 	callStack  []string
+	stackHWM   int
 
 	// Memory tracking (RTG_VM_MEM=1 summary, RTG_VM_ALLOC=1 per-alloc log)
-	trackMem   bool
-	logAllocs  bool
-	heapAllocs int64
-	allocCount int64
-	frameHWM   int64
-	callCount  int64
-	tagBytes   map[string]int64
-	tagCount   map[string]int64
+	trackMem     bool
+	logAllocs    bool
+	heapAllocs   int64
+	allocCount   int64
+	frameHWM     int64
+	callCount    int64
+	tagBytes     map[string]int64
+	tagCount     map[string]int64
+	callerBytes  map[string]int64
+	callerCount  map[string]int64
 }
 
 type vmDispatchEntry struct {
@@ -142,7 +146,7 @@ func generateVM(irmod *IRModule, outputPath string) error {
 	vm := &VM{
 		config:      cfg,
 		stack:       make([]uint64, 0, 4096),
-		memory:      make([]byte, 16*1024*1024),
+		memory:      make([]byte, 256*1024),
 		memNext:     guard,
 		funcs:       make(map[string]*IRFunc),
 		stringAddrs: make(map[string]uint64),
@@ -226,9 +230,9 @@ func generateVM(irmod *IRModule, outputPath string) error {
 	}
 
 	// Allocate frame stack (dedicated region for function call frames)
-	frameStackSize := 16 * 1024 * 1024
-	vm.frameStackBase = int(vm.alloc(uint64(frameStackSize), "frame-stack"))
-	vm.frameStackTop = vm.frameStackBase + frameStackSize
+	vm.frameStackSize = 64 * 1024
+	vm.frameStackBase = int(vm.alloc(uint64(vm.frameStackSize), "frame-stack"))
+	vm.frameStackTop = vm.frameStackBase + vm.frameStackSize
 
 	// Initialize slab allocator for fixed-size objects
 	vm.slabPageSize = 65536
@@ -241,6 +245,8 @@ func generateVM(irmod *IRModule, outputPath string) error {
 		vm.trackMem = true
 		vm.tagBytes = make(map[string]int64)
 		vm.tagCount = make(map[string]int64)
+		vm.callerBytes = make(map[string]int64)
+		vm.callerCount = make(map[string]int64)
 	}
 	if os.Getenv("RTG_VM_ALLOC") != "" {
 		vm.trackMem = true
@@ -265,15 +271,47 @@ func generateVM(irmod *IRModule, outputPath string) error {
 	vm.execFunc(mainFunc)
 
 	// Always print VM summary on exit
-	fmt.Fprintf(os.Stderr, "vm: %s steps, %s calls, %s memory, %s frame hwm\n",
+	fmt.Fprintf(os.Stderr, "vm: %s steps, %s calls, %s memory, %s frame hwm, %s stack hwm\n",
 		vmFormatCount(vm.stepCount), vmFormatCount(vm.callCount),
-		vmFormatBytes(int64(vm.memNext)), vmFormatBytes(vm.frameHWM))
+		vmFormatBytes(int64(vm.memNext)), vmFormatBytes(vm.frameHWM),
+		vmFormatCount(int64(vm.stackHWM)))
 
 	if vm.trackMem {
 		fmt.Fprintf(os.Stderr, "  heap=%dKB allocs=%d\n",
 			vm.heapAllocs/1024, vm.allocCount)
+		fmt.Fprintf(os.Stderr, "  by tag:\n")
 		for tag, bytes := range vm.tagBytes {
-			fmt.Fprintf(os.Stderr, "  %-16s %8dKB  %d allocs\n", tag, bytes/1024, vm.tagCount[tag])
+			fmt.Fprintf(os.Stderr, "    %-16s %8dKB  %d allocs\n", tag, bytes/1024, vm.tagCount[tag])
+		}
+		// Per-caller breakdown sorted by bytes descending (insertion sort)
+		var callerNames []string
+		var callerBytesArr []int64
+		var callerCountArr []int64
+		for name, bytes := range vm.callerBytes {
+			// Insert in sorted order (descending by bytes)
+			pos := 0
+			for pos < len(callerBytesArr) && callerBytesArr[pos] > bytes {
+				pos = pos + 1
+			}
+			callerNames = append(callerNames, "")
+			callerBytesArr = append(callerBytesArr, 0)
+			callerCountArr = append(callerCountArr, 0)
+			j := len(callerNames) - 1
+			for j > pos {
+				callerNames[j] = callerNames[j-1]
+				callerBytesArr[j] = callerBytesArr[j-1]
+				callerCountArr[j] = callerCountArr[j-1]
+				j = j - 1
+			}
+			callerNames[pos] = name
+			callerBytesArr[pos] = bytes
+			callerCountArr[pos] = vm.callerCount[name]
+		}
+		fmt.Fprintf(os.Stderr, "  by caller:\n")
+		ci := 0
+		for ci < len(callerNames) {
+			fmt.Fprintf(os.Stderr, "    %-40s %8dKB  %d allocs\n", callerNames[ci], callerBytesArr[ci]/1024, callerCountArr[ci])
+			ci = ci + 1
 		}
 	}
 
@@ -299,6 +337,23 @@ func (vm *VM) ensureMemory(needed int) {
 	vm.memory = grown
 }
 
+func (vm *VM) trackAlloc(size int64) {
+	vm.heapAllocs = vm.heapAllocs + size
+	vm.allocCount = vm.allocCount + 1
+	depth := len(vm.callStack)
+	if depth == 0 {
+		return
+	}
+	// Skip runtime functions to find the real caller
+	ci := depth - 1
+	for ci > 0 && strings.HasPrefix(vm.callStack[ci], "runtime.") {
+		ci = ci - 1
+	}
+	caller := vm.callStack[ci]
+	vm.callerBytes[caller] = vm.callerBytes[caller] + size
+	vm.callerCount[caller] = vm.callerCount[caller] + 1
+}
+
 func (vm *VM) alloc(size uint64, tag string) uint64 {
 	if size == 0 {
 		size = 1
@@ -309,8 +364,7 @@ func (vm *VM) alloc(size uint64, tag string) uint64 {
 	vm.memNext = vm.memNext + int(size)
 	vm.ensureMemory(vm.memNext)
 	if vm.trackMem {
-		vm.heapAllocs = vm.heapAllocs + int64(size)
-		vm.allocCount = vm.allocCount + 1
+		vm.trackAlloc(int64(size))
 		vm.tagBytes[tag] = vm.tagBytes[tag] + int64(size)
 		vm.tagCount[tag] = vm.tagCount[tag] + 1
 		if vm.logAllocs {
@@ -322,13 +376,15 @@ func (vm *VM) alloc(size uint64, tag string) uint64 {
 }
 
 func (vm *VM) slabAllocSmall(tag string) uint64 {
+	sz := int64(vm.slabSmallSize)
 	if vm.slabSmallFree != 0 {
 		addr := vm.slabSmallFree
 		vm.slabSmallFree = vm.loadWord(addr)
 		vm.storeWord(addr, 0)
 		vm.storeWord(addr+uint64(vm.config.WordSize), 0)
 		if vm.trackMem {
-			vm.tagBytes[tag] = vm.tagBytes[tag] + int64(vm.slabSmallSize)
+			vm.trackAlloc(sz)
+			vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 			vm.tagCount[tag] = vm.tagCount[tag] + 1
 		}
 		return addr
@@ -337,7 +393,8 @@ func (vm *VM) slabAllocSmall(tag string) uint64 {
 		addr := uint64(vm.slabSmallBump)
 		vm.slabSmallBump = vm.slabSmallBump + vm.slabSmallSize
 		if vm.trackMem {
-			vm.tagBytes[tag] = vm.tagBytes[tag] + int64(vm.slabSmallSize)
+			vm.trackAlloc(sz)
+			vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 			vm.tagCount[tag] = vm.tagCount[tag] + 1
 		}
 		return addr
@@ -346,13 +403,15 @@ func (vm *VM) slabAllocSmall(tag string) uint64 {
 	vm.slabSmallBump = int(page) + vm.slabSmallSize
 	vm.slabSmallEnd = int(page) + vm.slabPageSize
 	if vm.trackMem {
-		vm.tagBytes[tag] = vm.tagBytes[tag] + int64(vm.slabSmallSize)
+		vm.trackAlloc(sz)
+		vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 		vm.tagCount[tag] = vm.tagCount[tag] + 1
 	}
 	return page
 }
 
 func (vm *VM) slabAllocLarge(tag string) uint64 {
+	sz := int64(vm.slabLargeSize)
 	if vm.slabLargeFree != 0 {
 		addr := vm.slabLargeFree
 		vm.slabLargeFree = vm.loadWord(addr)
@@ -362,7 +421,8 @@ func (vm *VM) slabAllocLarge(tag string) uint64 {
 		vm.storeWord(addr+2*ws, 0)
 		vm.storeWord(addr+3*ws, 0)
 		if vm.trackMem {
-			vm.tagBytes[tag] = vm.tagBytes[tag] + int64(vm.slabLargeSize)
+			vm.trackAlloc(sz)
+			vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 			vm.tagCount[tag] = vm.tagCount[tag] + 1
 		}
 		return addr
@@ -371,7 +431,8 @@ func (vm *VM) slabAllocLarge(tag string) uint64 {
 		addr := uint64(vm.slabLargeBump)
 		vm.slabLargeBump = vm.slabLargeBump + vm.slabLargeSize
 		if vm.trackMem {
-			vm.tagBytes[tag] = vm.tagBytes[tag] + int64(vm.slabLargeSize)
+			vm.trackAlloc(sz)
+			vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 			vm.tagCount[tag] = vm.tagCount[tag] + 1
 		}
 		return addr
@@ -380,7 +441,8 @@ func (vm *VM) slabAllocLarge(tag string) uint64 {
 	vm.slabLargeBump = int(page) + vm.slabLargeSize
 	vm.slabLargeEnd = int(page) + vm.slabPageSize
 	if vm.trackMem {
-		vm.tagBytes[tag] = vm.tagBytes[tag] + int64(vm.slabLargeSize)
+		vm.trackAlloc(sz)
+		vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 		vm.tagCount[tag] = vm.tagCount[tag] + 1
 	}
 	return page
@@ -555,6 +617,9 @@ func (vm *VM) push(val uint64) {
 		vm.stack[vm.sp] = val
 	}
 	vm.sp = vm.sp + 1
+	if vm.sp > vm.stackHWM {
+		vm.stackHWM = vm.sp
+	}
 }
 
 func (vm *VM) pop() uint64 {
@@ -824,7 +889,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 	}
 
 	vm.callCount = vm.callCount + 1
-	used := int64(vm.frameStackBase + 16*1024*1024 - vm.frameStackTop)
+	used := int64(vm.frameStackSize) - int64(vm.frameStackTop - vm.frameStackBase)
 	if used > vm.frameHWM {
 		vm.frameHWM = used
 	}
