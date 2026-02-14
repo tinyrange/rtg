@@ -74,6 +74,6 @@ jobs:
       - name: WASI self-hosting (3-stage)
         run: |
           ./build/rtg -T wasi/wasm32 -o build/stage1.wasm ./std/compiler/
-          wasmtime --dir=. build/stage1.wasm -- -T wasi/wasm32 -o build/stage2.wasm compiler
-          wasmtime --dir=. build/stage2.wasm -- -T wasi/wasm32 -o build/stage3.wasm compiler
+          wasmtime --dir=. build/stage1.wasm -T wasi/wasm32 -o build/stage2.wasm compiler
+          wasmtime --dir=. build/stage2.wasm -T wasi/wasm32 -o build/stage3.wasm compiler
           cmp build/stage2.wasm build/stage3.wasm
