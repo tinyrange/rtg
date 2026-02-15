@@ -1120,6 +1120,8 @@ func (g *WasmGen) compileInst(inst Inst) {
 		g.compileIndexAddr(inst.Arg)
 	case OP_LEN:
 		g.compileLen()
+	case OP_CAP:
+		g.compileCap()
 
 	case OP_CALL:
 		g.compileCall(inst)
@@ -1356,6 +1358,20 @@ func (g *WasmGen) compileLen() {
 	g.w.elseOp()
 	g.w.localGet(uint32(g.tempLocal))
 	g.w.i32Load(2, 4) // len at offset 4
+	g.w.end()
+	g.pushType(WASM_TYPE_I32)
+}
+
+func (g *WasmGen) compileCap() {
+	// Stack: [headerPtr] → [capacity]
+	g.popType() // pop headerPtr
+	g.w.localTee(uint32(g.tempLocal))
+	g.w.op(OP_WASM_I32_EQZ)
+	g.w.ifOp(WASM_TYPE_I32)
+	g.w.i32Const(0)
+	g.w.elseOp()
+	g.w.localGet(uint32(g.tempLocal))
+	g.w.i32Load(2, 8) // cap at offset 8 (2*4)
 	g.w.end()
 	g.pushType(WASM_TYPE_I32)
 }

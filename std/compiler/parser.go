@@ -1408,6 +1408,17 @@ func (p *Parser) parseSimpleStmtNoSemicolon() *Node {
 			rhs := p.parseExpr()
 			node := &Node{Kind: NAssign, Name: tokenVal(op), Y: rhs, Pos: expr.Pos}
 			node.Nodes = lhs
+			// Check for comma-separated RHS: a, b := 1, 2
+			if p.at(TOKEN_COMMA) {
+				var rhsList []*Node
+				rhsList = append(rhsList, rhs)
+				for p.at(TOKEN_COMMA) {
+					p.advance()
+					rhsList = append(rhsList, p.parseExpr())
+				}
+				node.Y = nil
+				node.Body = &Node{Kind: NBlock, Nodes: rhsList, Pos: expr.Pos}
+			}
 			return node
 		}
 	}
@@ -1571,18 +1582,30 @@ func (p *Parser) parsePostfixOps(node *Node) *Node {
 			node = call
 		case TOKEN_LBRACK:
 			p.advance()
-			index := p.parseExpr()
 			if p.at(TOKEN_COLON) {
+				// s[:hi] — empty low bound, defaults to 0
 				p.advance()
 				var hi *Node
 				if !p.at(TOKEN_RBRACK) {
 					hi = p.parseExpr()
 				}
 				p.expect(TOKEN_RBRACK)
-				node = &Node{Kind: NSliceExpr, X: node, Y: index, Body: hi, Pos: node.Pos}
+				lo := &Node{Kind: NIntLit, Name: "0", Pos: node.Pos}
+				node = &Node{Kind: NSliceExpr, X: node, Y: lo, Body: hi, Pos: node.Pos}
 			} else {
-				p.expect(TOKEN_RBRACK)
-				node = &Node{Kind: NIndexExpr, X: node, Y: index, Pos: node.Pos}
+				index := p.parseExpr()
+				if p.at(TOKEN_COLON) {
+					p.advance()
+					var hi *Node
+					if !p.at(TOKEN_RBRACK) {
+						hi = p.parseExpr()
+					}
+					p.expect(TOKEN_RBRACK)
+					node = &Node{Kind: NSliceExpr, X: node, Y: index, Body: hi, Pos: node.Pos}
+				} else {
+					p.expect(TOKEN_RBRACK)
+					node = &Node{Kind: NIndexExpr, X: node, Y: index, Pos: node.Pos}
+				}
 			}
 		case TOKEN_LBRACE:
 			if !p.noCompLit && p.isTypeLikeNode(node) {
@@ -1600,15 +1623,33 @@ func (p *Parser) parseCompositeLit(typeNode *Node) *Node {
 	pos := typeNode.Pos
 	p.expect(TOKEN_LBRACE)
 	node := &Node{Kind: NCompositeLit, Type: typeNode, Pos: pos}
+	// Infer element type for nested composite literals
+	var elemType *Node
+	if typeNode.Kind == NSliceType {
+		elemType = typeNode.X
+	} else if typeNode.Kind == NMapType {
+		elemType = typeNode.Y
+	}
 	for !p.at(TOKEN_RBRACE) && !p.at(TOKEN_EOF) {
-		val := p.parseExpr()
-		if p.at(TOKEN_COLON) {
-			p.advance()
-			v := p.parseExpr()
-			kv := &Node{Kind: NKeyValue, X: val, Y: v, Pos: val.Pos}
-			node.Nodes = append(node.Nodes, kv)
-		} else {
+		if p.at(TOKEN_LBRACE) && elemType != nil {
+			// Nested composite literal with inferred type: {X: 1, Y: 2}
+			val := p.parseCompositeLit(elemType)
 			node.Nodes = append(node.Nodes, val)
+		} else {
+			val := p.parseExpr()
+			if p.at(TOKEN_COLON) {
+				p.advance()
+				var v *Node
+				if p.at(TOKEN_LBRACE) && elemType != nil {
+					v = p.parseCompositeLit(elemType)
+				} else {
+					v = p.parseExpr()
+				}
+				kv := &Node{Kind: NKeyValue, X: val, Y: v, Pos: val.Pos}
+				node.Nodes = append(node.Nodes, kv)
+			} else {
+				node.Nodes = append(node.Nodes, val)
+			}
 		}
 		if p.at(TOKEN_COMMA) {
 			p.advance()

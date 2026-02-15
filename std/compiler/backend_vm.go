@@ -1160,6 +1160,13 @@ func (vm *VM) execFunc(f *IRFunc) {
 			} else {
 				vm.push(vm.loadWord(a + ws))
 			}
+		case OP_CAP:
+			a := vm.pop()
+			if a == 0 {
+				vm.push(0)
+			} else {
+				vm.push(vm.loadWord(a + 2*ws))
+			}
 
 		case OP_JMP:
 			ip = labels[inst.Arg]

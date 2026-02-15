@@ -260,6 +260,21 @@ func SliceMake(length int, elemSize int) uintptr {
 	return header
 }
 
+func SliceMakeCap(length int, capacity int, elemSize int) uintptr {
+	byteSize := capacity * elemSize
+	var dataPtr uintptr
+	if byteSize > 0 {
+		dataPtr = Alloc(byteSize)
+		Memzero(dataPtr, byteSize)
+	}
+	header := Alloc(SliceHdrSize)
+	WritePtr(header, dataPtr)
+	WritePtr(header+uintptr(SliceOffLen), uintptr(length))
+	WritePtr(header+uintptr(SliceOffCap), uintptr(capacity))
+	WritePtr(header+uintptr(SliceOffEsz), uintptr(elemSize))
+	return header
+}
+
 // SliceAppend appends one element to a slice, growing if necessary.
 // Returns the (possibly updated) header pointer.
 func SliceAppend(hdr uintptr, elem uintptr, elemSize int) uintptr {

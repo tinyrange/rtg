@@ -243,6 +243,8 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 		g.compileIndexAddr_i386(inst.Arg)
 	case OP_LEN:
 		g.compileLen_i386()
+	case OP_CAP:
+		g.compileCap_i386()
 
 	case OP_CONVERT:
 		g.compileConvert_i386(inst.Name)
@@ -872,6 +874,16 @@ func (g *CodeGen) compileLen_i386() {
 	g.xorRR32(REG32_EAX, REG32_EAX)            // 2 bytes
 	g.jmpRel8(0x03)                             // jmp +3
 	g.loadMem32(REG32_EAX, REG32_EAX, 4)       // len at offset 4 (not 8)
+	g.opPush(REG32_EAX)
+}
+
+func (g *CodeGen) compileCap_i386() {
+	g.opPop(REG32_EAX)
+	g.testRR32(REG32_EAX, REG32_EAX)
+	g.emitBytes(0x75, 0x04)                    // jnz +4
+	g.xorRR32(REG32_EAX, REG32_EAX)            // 2 bytes
+	g.jmpRel8(0x03)                             // jmp +3
+	g.loadMem32(REG32_EAX, REG32_EAX, 8)       // cap at offset 8 (2*4)
 	g.opPush(REG32_EAX)
 }
 

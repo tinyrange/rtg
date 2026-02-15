@@ -180,6 +180,8 @@ func (g *CodeGen) compileInstArm64(inst Inst) {
 		g.compileIndexAddrArm64(inst.Arg)
 	case OP_LEN:
 		g.compileLenArm64()
+	case OP_CAP:
+		g.compileCapArm64()
 
 	case OP_CONVERT:
 		g.compileConvertArm64(inst.Name)
@@ -887,6 +889,19 @@ func (g *CodeGen) compileLenArm64() {
 	doneFixup := g.emitB()
 	g.patchArm64BCondAt(nonNilFixup, len(g.code))
 	g.emitLdr(REG_X0, REG_X0, 8) // [header+8] = len
+	g.patchArm64BAt(doneFixup, len(g.code))
+	g.opPush(REG_X0)
+}
+
+func (g *CodeGen) compileCapArm64() {
+	g.opPop(REG_X0)
+	g.emitCmpImm(REG_X0, 0)
+	nonNilFixup := g.emitBCond(COND_NE)
+	// nil: cap = 0
+	g.emitMovZ(REG_X0, 0, 0)
+	doneFixup := g.emitB()
+	g.patchArm64BCondAt(nonNilFixup, len(g.code))
+	g.emitLdr(REG_X0, REG_X0, 16) // [header+16] = cap
 	g.patchArm64BAt(doneFixup, len(g.code))
 	g.opPush(REG_X0)
 }

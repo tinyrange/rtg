@@ -254,6 +254,8 @@ func (g *CodeGen) compileInst(inst Inst) {
 		g.compileIndexAddr(inst.Arg)
 	case OP_LEN:
 		g.compileLen()
+	case OP_CAP:
+		g.compileCap()
 
 	case OP_CONVERT:
 		g.compileConvert(inst.Name)
@@ -920,6 +922,16 @@ func (g *CodeGen) compileLen() {
 	g.xorRR(REG_RAX, REG_RAX) // 3 bytes
 	g.jmpRel8(0x04)            // jmp +4 (skip load) 2 bytes
 	g.loadMem(REG_RAX, REG_RAX, 8)
+	g.opPush(REG_RAX)
+}
+
+func (g *CodeGen) compileCap() {
+	g.opPop(REG_RAX)
+	g.testRR(REG_RAX, REG_RAX)
+	g.emitBytes(0x75, 0x05)    // jnz +5 (skip zero case)
+	g.xorRR(REG_RAX, REG_RAX) // 3 bytes
+	g.jmpRel8(0x04)            // jmp +4 (skip load) 2 bytes
+	g.loadMem(REG_RAX, REG_RAX, 16) // cap at offset 16 (2*8)
 	g.opPush(REG_RAX)
 }
 

@@ -103,6 +103,8 @@ func opcodeName(op Opcode) string {
 		return "index_addr"
 	case OP_LEN:
 		return "len"
+	case OP_CAP:
+		return "cap"
 	case OP_CONVERT:
 		return "convert"
 	case OP_IFACE_BOX:
@@ -471,6 +473,8 @@ func instArgs(inst Inst, f *IRFunc, irmod *IRModule) string {
 
 	case OP_LEN:
 		return " kind=" + fmt.Sprintf("%d", arg)
+	case OP_CAP:
+		return ""
 	}
 	if w != "" {
 		return w

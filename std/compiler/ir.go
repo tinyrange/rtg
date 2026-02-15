@@ -116,6 +116,7 @@ const (
 	OP_IFACE_CALL
 
 	OP_PANIC
+	OP_CAP
 )
 
 // Inst represents a single IR instruction.
@@ -199,6 +200,9 @@ type Compiler struct {
 	constValues        map[string]int64    // qualified const name → precomputed value
 	constStringValues  map[string]string   // qualified const name → precomputed string value
 	stackDepth         int                 // operand stack depth tracking for balance checks
+	deferNames         []string
+	deferArgStarts     []int
+	deferArgCounts     []int
 }
 
 // CompileModule compiles an entire resolved module to IR.
@@ -1184,6 +1188,9 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localConcreteTypes = make(map[string]string)
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
+	c.deferNames = nil
+	c.deferArgStarts = nil
+	c.deferArgCounts = nil
 	c.pushScope()
 
 	// Extract return type names for interface boxing
@@ -1312,6 +1319,9 @@ func (c *Compiler) compileFunc(node *Node) {
 	// Ensure function ends with a return
 	codeLen := len(f.Code)
 	if codeLen == 0 || f.Code[codeLen-1].Op != OP_RETURN {
+		if len(c.deferNames) > 0 {
+			c.emitDeferredCalls()
+		}
 		c.emit(Inst{Op: OP_RETURN, Arg: 0})
 	}
 
@@ -1476,6 +1486,8 @@ func (c *Compiler) instStackDelta(inst Inst) int {
 		return -1 // pop base + index, push addr
 	case OP_LEN:
 		return 0 // pop header, push len
+	case OP_CAP:
+		return 0 // pop header, push cap
 	case OP_CONVERT:
 		return 0
 	case OP_IFACE_BOX:
@@ -1544,9 +1556,26 @@ func (c *Compiler) compileStmt(node *Node) {
 	case NBranch:
 		c.compileBranch(node)
 	case NDeferStmt:
-		// Defer is recorded but not fully implemented yet
-		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_DROP})
+		if node.X != nil && node.X.Kind == NCallExpr {
+			name := c.resolveCallName(node.X.X)
+			argStart := -1
+			argCount := 0
+			for _, arg := range node.X.Nodes {
+				c.compileExpr(arg)
+				idx := c.addLocal(fmt.Sprintf("_defer_%d_%d", len(c.deferNames), argCount))
+				c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+				if argStart < 0 {
+					argStart = idx
+				}
+				argCount++
+			}
+			if argStart < 0 {
+				argStart = 0
+			}
+			c.deferNames = append(c.deferNames, name)
+			c.deferArgStarts = append(c.deferArgStarts, argStart)
+			c.deferArgCounts = append(c.deferArgCounts, argCount)
+		}
 	case NConstDecl:
 		// Local const — treat like var
 		if len(node.Nodes) > 0 {
@@ -1636,6 +1665,25 @@ func (c *Compiler) compileVarDecl(node *Node) {
 
 func (c *Compiler) compileAssign(node *Node) {
 	if len(node.Nodes) > 0 {
+		// Multi-value assignment with comma-separated RHS: a, b := 1, 2
+		if node.Body != nil && node.Body.Kind == NBlock && len(node.Body.Nodes) > 0 {
+			for _, rhs := range node.Body.Nodes {
+				c.compileExpr(rhs)
+			}
+			i := len(node.Nodes) - 1
+			for i >= 0 {
+				lhs := node.Nodes[i]
+				if node.Name == ":=" {
+					idx := c.addLocal(lhs.Name)
+					c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+				} else {
+					c.compileLValueSet(lhs)
+				}
+				i = i - 1
+			}
+			return
+		}
+
 		// Multi-value map index: v, ok := m[key]
 		if node.Y != nil && node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X) {
 			c.compileExpr(node.Y.X) // push map
@@ -1951,6 +1999,24 @@ func (c *Compiler) compileLValueGet(node *Node) {
 	}
 }
 
+func (c *Compiler) emitDeferredCalls() {
+	n := len(c.deferNames)
+	di := 0
+	for di < n {
+		idx := n - 1 - di
+		name := c.deferNames[idx]
+		argStart := c.deferArgStarts[idx]
+		argCount := c.deferArgCounts[idx]
+		k := 0
+		for k < argCount {
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: argStart + k})
+			k++
+		}
+		c.emit(Inst{Op: OP_CALL, Name: name, Arg: argCount})
+		di++
+	}
+}
+
 func (c *Compiler) compileReturn(node *Node) {
 	count := 0
 	retTypes := c.funcRetTypes[c.curFunc.Name]
@@ -1964,6 +2030,9 @@ func (c *Compiler) compileReturn(node *Node) {
 		c.compileExpr(extra)
 		c.maybeBoxInterface(extra, retTypes, i+1)
 		count++
+	}
+	if len(c.deferNames) > 0 {
+		c.emitDeferredCalls()
 	}
 	c.emit(Inst{Op: OP_RETURN, Arg: count})
 }
@@ -2081,6 +2150,33 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 			}
 			return 0 // pointer, might be interface already
 		}
+		if expr.Name == "*" {
+			// Pointer dereference: check the pointed-to type
+			if expr.X != nil && expr.X.Kind == NIdent {
+				if ct, ok := c.localConcreteTypes[expr.X.Name]; ok {
+					// ct is like "main.*int" — extract the pointed-to type
+					dotIdx := -1
+					for i := 0; i < len(ct); i++ {
+						if ct[i] == '.' {
+							dotIdx = i
+						}
+					}
+					if dotIdx >= 0 {
+						rest := ct[dotIdx+1 : len(ct)]
+						if len(rest) > 1 && rest[0] == '*' {
+							inner := rest[1:len(rest)]
+							if inner == "string" {
+								return 2
+							}
+							if inner == "int" || inner == "byte" || inner == "bool" || inner == "int32" || inner == "int64" || inner == "uintptr" {
+								return 1
+							}
+						}
+					}
+				}
+			}
+			return 1 // default: deref of pointer to scalar
+		}
 		if expr.Name == "!" || expr.Name == "-" || expr.Name == "^" {
 			return 1
 		}
@@ -2091,7 +2187,27 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 		}
 		return 1 // default to int for unknown fields
 	case NIndexExpr:
-		return 0 // could be anything from slice/map access
+		// Determine element type from the base expression
+		if expr.X != nil && expr.X.Kind == NIdent {
+			// String indexing returns byte (int)
+			if c.localStringVars[expr.X.Name] {
+				return 1
+			}
+			// Check if it's a known slice type
+			if _, isSlice := c.localElemSizes[expr.X.Name]; isSlice {
+				return 1 // scalar element from known slice
+			}
+			// Check concrete type — if it's a slice of strings, return 2
+			if ct, ok := c.localConcreteTypes[expr.X.Name]; ok {
+				if c.concreteTypeIsStringSlice(ct) {
+					return 2
+				}
+				if c.concreteTypeIsStructSlice(ct) {
+					return 0 // struct element — don't box
+				}
+			}
+		}
+		return 1 // default: assume scalar element
 	case NSliceExpr:
 		if c.isStringTypedExpr(expr.X) {
 			return 2 // string slice produces string
@@ -2099,6 +2215,24 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 		return 0 // slice reslice produces slice
 	}
 	return 0
+}
+
+func (c *Compiler) concreteTypeIsStringSlice(ct string) bool {
+	return ct == "[]string"
+}
+
+func (c *Compiler) concreteTypeIsStructSlice(ct string) bool {
+	if len(ct) <= 2 {
+		return false
+	}
+	if ct[0] != '[' || ct[1] != ']' {
+		return false
+	}
+	elem := ct[2:len(ct)]
+	if elem == "string" || elem == "int" || elem == "byte" || elem == "bool" || elem == "int32" || elem == "int64" || elem == "uintptr" {
+		return false
+	}
+	return true
 }
 
 // resolveConcreteTypeID detects the concrete type from AST patterns and returns its type ID.
@@ -2161,8 +2295,34 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 			return c.qualifyTypeName("*"+typeName, "")
 		}
 	}
+	// Address-of variable: &x where x has a known concrete type
+	if expr.Kind == NUnaryExpr && expr.Name == "&" && expr.X != nil && expr.X.Kind == NIdent {
+		if ct, ok := c.localConcreteTypes[expr.X.Name]; ok {
+			// Strip package prefix, prepend *, re-qualify
+			dotIdx := -1
+			for i := 0; i < len(ct); i++ {
+				if ct[i] == '.' {
+					dotIdx = i
+				}
+			}
+			if dotIdx >= 0 {
+				return ct[0:dotIdx+1] + "*" + ct[dotIdx+1:len(ct)]
+			}
+			return "*" + ct
+		}
+	}
+	// Address-of any expression: when inner type is unknown, default to *int
+	// so that isPointerToStructDeref returns false (requiring LOAD on deref).
+	// Struct composite literals and typed idents are already handled above.
+	if expr.Kind == NUnaryExpr && expr.Name == "&" {
+		return c.qualifyTypeName("*int", "")
+	}
 	// Function call: check return type
 	if expr.Kind == NCallExpr {
+		// append returns the same slice type as its first argument
+		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "append" && len(expr.Nodes) > 0 {
+			return c.exprConcreteType(expr.Nodes[0])
+		}
 		calleeName := c.resolveCallName(expr.X)
 		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
 			// Extract package path from callee name for proper qualification
@@ -2885,6 +3045,10 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 		c.compileExpr(node.X)
 		c.emit(Inst{Op: OP_CONST_I64, Val: -1, Width: w})
 		c.emit(Inst{Op: OP_XOR, Width: w})
+		if w == 1 {
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0xFF})
+			c.emit(Inst{Op: OP_AND})
+		}
 	default:
 		panic("ICE: unhandled unary operator in compileUnaryExpr")
 	}
@@ -3052,9 +3216,8 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			return
 		}
 		if name == "cap" {
-			// For now, same as len
 			c.compileExpr(node.Nodes[0])
-			c.emit(Inst{Op: OP_LEN})
+			c.emit(Inst{Op: OP_CAP})
 			return
 		}
 		if name == "append" {
@@ -3599,15 +3762,21 @@ func (c *Compiler) compileMake(node *Node) {
 		c.emit(Inst{Op: OP_CALL, Name: "runtime.MapMake", Arg: 1})
 		return
 	}
-	// Slice creation: make([]T, len)
+	// Slice creation: make([]T, len) or make([]T, len, cap)
 	if len(node.Nodes) >= 2 {
 		c.compileExpr(node.Nodes[1]) // length
 	} else {
 		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
 	}
 	elemSize := c.sliceElemSize(node.Nodes[0])
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSize)})
-	c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceMake", Arg: 2})
+	if len(node.Nodes) >= 3 {
+		c.compileExpr(node.Nodes[2]) // capacity
+		c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSize)})
+		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceMakeCap", Arg: 3})
+	} else {
+		c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSize)})
+		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceMake", Arg: 2})
+	}
 }
 
 // mapKeyKind returns the key kind for a map key type node: 0=int/pointer, 1=string.
@@ -3624,6 +3793,13 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 		return 1
 	}
 	if node.Kind == NCallExpr {
+		// Builtins that return nothing
+		if node.X != nil && node.X.Kind == NIdent {
+			bname := node.X.Name
+			if bname == "delete" || bname == "close" {
+				return 0
+			}
+		}
 		// Look up the callee's return count (node.X is the callee)
 		name := c.resolveCallName(node.X)
 		if retCount, ok := c.funcRets[name]; ok {

@@ -809,7 +809,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LEQ, OP_GEQ:
 				needA = true
 				needC = true
-			case OP_NEG, OP_NOT, OP_LOAD, OP_OFFSET, OP_LEN, OP_JMP_IF, OP_JMP_IF_NOT:
+			case OP_NEG, OP_NOT, OP_LOAD, OP_OFFSET, OP_LEN, OP_CAP, OP_JMP_IF, OP_JMP_IF_NOT:
 				needA = true
 			case OP_STORE:
 				needA = true
@@ -963,6 +963,8 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); t = (c == 0) ? 0 : rtg_load(c, RTG_WORD_BYTES); rtg_push(t + a * (rtg_word)%d);\n", in.Arg)
 			case OP_LEN:
 				bp.WriteString("  a = rtg_pop(); rtg_push((a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES));\n")
+			case OP_CAP:
+				bp.WriteString("  a = rtg_pop(); rtg_push((a == 0) ? 0 : rtg_load(a + 2*RTG_WORD_BYTES, RTG_WORD_BYTES));\n")
 
 			case OP_JMP:
 				cWritef(bp, "  goto L_%d;\n", in.Arg)
