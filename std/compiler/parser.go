@@ -160,13 +160,13 @@ func (t Token) String() string {
 
 // Lexer tokenizes Go source code.
 type Lexer struct {
-	src  []byte
+	src  string
 	pos  int
 	line int
 	col  int
 }
 
-func NewLexer(src []byte) *Lexer {
+func NewLexer(src string) *Lexer {
 	return &Lexer{src: src, pos: 0, line: 1, col: 1}
 }
 
@@ -244,7 +244,7 @@ func (l *Lexer) skipWhitespaceAndComments() (bool, *Token) {
 			for !l.atEnd() && l.peek() != '\n' && l.peek() != '\r' {
 				l.advance()
 			}
-			val := string(l.src[start:l.pos])
+			val := l.src[start:l.pos]
 			if len(val) >= 4 && val[0:4] == "rtg:" {
 				directive = &Token{Kind: TOKEN_DIRECTIVE, Val: val[4:len(val)], Line: cLine, Col: cCol}
 			} else if len(val) >= 9 && val[0:9] == "go:embed " {
@@ -265,7 +265,7 @@ func (l *Lexer) scanIdent() Token {
 	for !l.atEnd() && (isLetter(l.peek()) || isDigit(l.peek())) {
 		l.advance()
 	}
-	val := string(l.src[start:l.pos])
+	val := l.src[start:l.pos]
 	kind, isKeyword := keywords[val]
 	if !isKeyword {
 		kind = TOKEN_IDENT
@@ -288,7 +288,7 @@ func (l *Lexer) scanNumber() Token {
 			l.advance()
 		}
 	}
-	return Token{Kind: TOKEN_INT, Val: string(l.src[start:l.pos]), Line: line, Col: col}
+	return Token{Kind: TOKEN_INT, Val: l.src[start:l.pos], Line: line, Col: col}
 }
 
 func (l *Lexer) scanString() Token {
@@ -302,7 +302,7 @@ func (l *Lexer) scanString() Token {
 		}
 		l.advance()
 	}
-	val := string(l.src[start:l.pos])
+	val := l.src[start:l.pos]
 	if !l.atEnd() {
 		l.advance() // skip closing "
 	}
@@ -318,7 +318,7 @@ func (l *Lexer) scanRune() Token {
 		l.advance()
 	}
 	l.advance()
-	val := string(l.src[start:l.pos])
+	val := l.src[start:l.pos]
 	if !l.atEnd() {
 		l.advance() // skip closing '
 	}
@@ -326,7 +326,7 @@ func (l *Lexer) scanRune() Token {
 }
 
 func (l *Lexer) Tokenize() []Token {
-	var tokens []Token
+	tokens := make([]Token, 0, len(l.src)/4)
 	lastKind := TOKEN_EOF
 	for {
 		sawNewline, directive := l.skipWhitespaceAndComments()

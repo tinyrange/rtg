@@ -204,6 +204,23 @@ type Compiler struct {
 	deferNames         []string
 	deferArgStarts     []int
 	deferArgCounts     []int
+	dotJoinCache       map[string]map[string]string // a → b → "a.b"
+	qualifyTypeCache   map[string]string            // "typeName\x00pkgPath" → qualified result
+}
+
+func (c *Compiler) dotJoin(a string, b string) string {
+	m := c.dotJoinCache[a]
+	if m != nil {
+		if v, ok := m[b]; ok {
+			return v
+		}
+	} else {
+		m = make(map[string]string)
+		c.dotJoinCache[a] = m
+	}
+	v := a + "." + b
+	m[b] = v
+	return v
 }
 
 // CompileModule compiles an entire resolved module to IR.
@@ -228,6 +245,8 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 		globalConcreteTypes: make(map[string]string),
 		constValues:       make(map[string]int64),
 		constStringValues: make(map[string]string),
+		dotJoinCache:      make(map[string]map[string]string),
+		qualifyTypeCache:  make(map[string]string),
 	}
 	c.initBuiltinTypes()
 
@@ -249,7 +268,7 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 		sortStrings(varNames)
 		for _, name := range varNames {
 			sym := pkg.Symbols[name]
-			qname := pkg.Path + "." + name
+			qname := pkg.QualName(name)
 			idx := len(c.irmod.Globals)
 			c.globals[qname] = idx
 			c.irmod.Globals = append(c.irmod.Globals, IRGlobal{Name: qname, Index: idx})
@@ -706,7 +725,7 @@ func (c *Compiler) precomputeConsts(pkg *Package) {
 				var lastExpr *Node
 				iotaVal := int64(0)
 				for _, child := range node.Nodes {
-					qname := pkg.Path + "." + child.Name
+					qname := pkg.QualName(child.Name)
 					if child.X != nil {
 						lastExpr = child.X
 					}
@@ -720,7 +739,7 @@ func (c *Compiler) precomputeConsts(pkg *Package) {
 				}
 			} else if node.Kind == NConstDecl {
 				// Single const: iota = 0
-				qname := pkg.Path + "." + node.Name
+				qname := pkg.QualName(node.Name)
 				if c.isConstStringExpr(node.X) {
 					c.constStringValues[qname] = c.evalConstString(node.X)
 				} else {
@@ -754,7 +773,7 @@ func (c *Compiler) evalConstExprWithIota(node *Node, iotaVal int64) int64 {
 		return 0
 	case NIdent:
 		// Look up another constant
-		qname := c.curPkg.Path + "." + node.Name
+		qname := c.curPkg.QualName(node.Name)
 		if val, ok := c.constValues[qname]; ok {
 			return val
 		}
@@ -832,7 +851,7 @@ func (c *Compiler) isConstStringExpr(node *Node) bool {
 		return c.isConstStringExpr(node.X) || c.isConstStringExpr(node.Y)
 	}
 	if node.Kind == NIdent {
-		qname := c.curPkg.Path + "." + node.Name
+		qname := c.curPkg.QualName(node.Name)
 		if _, ok := c.constStringValues[qname]; ok {
 			return true
 		}
@@ -851,7 +870,7 @@ func (c *Compiler) evalConstString(node *Node) string {
 		return c.evalConstString(node.X) + c.evalConstString(node.Y)
 	}
 	if node.Kind == NIdent {
-		qname := c.curPkg.Path + "." + node.Name
+		qname := c.curPkg.QualName(node.Name)
 		if s, ok := c.constStringValues[qname]; ok {
 			return s
 		}
@@ -884,11 +903,11 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			if fn.Kind != NFunc {
 				continue
 			}
-			qname := pkg.Path + "." + fn.Name
+			qname := pkg.QualName(fn.Name)
 			if fn.X != nil {
 				// Method with receiver
 				recvType := nodeTypeName(fn.X.Type)
-				qname = pkg.Path + "." + recvType + "." + fn.Name
+				qname = c.dotJoin(pkg.QualName(recvType), fn.Name)
 			}
 			var retTypeNames []string
 			if fn.Type != nil {
@@ -954,7 +973,7 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 		return
 	}
 	if node.Kind == NTypeDecl && node.Type != nil && node.Type.Kind == NInterfaceType {
-		qname := pkg.Path + "." + node.Name
+		qname := pkg.QualName(node.Name)
 		var methods []string
 		for _, meth := range node.Type.Nodes {
 			if meth.Kind == NFunc {
@@ -983,8 +1002,8 @@ func (c *Compiler) collectMethodDecl(pkg *Package, node *Node) {
 	if node.Kind == NFunc && node.X != nil {
 		// Method with receiver
 		recvType := nodeTypeName(node.X.Type)
-		qtype := pkg.Path + "." + recvType
-		qname := qtype + "." + node.Name
+		qtype := pkg.QualName(recvType)
+		qname := c.dotJoin(qtype, node.Name)
 		c.methodTable[qname] = qname
 		// Assign type ID if not yet assigned
 		if _, ok := c.typeIDs[qtype]; !ok {
@@ -1038,7 +1057,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.stackDepth = 0
 	c.pushScope()
 	for _, node := range inits {
-		qname := pkg.Path + "." + node.Name
+		qname := pkg.QualName(node.Name)
 		gidx, ok := c.globals[qname]
 		if !ok {
 			continue
@@ -1049,7 +1068,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 
 	// Generate embed init code
 	for _, emb := range embeds {
-		qname := pkg.Path + "." + emb.name
+		qname := pkg.QualName(emb.name)
 		gidx, ok := c.globals[qname]
 		if !ok {
 			continue
@@ -1175,11 +1194,11 @@ func (c *Compiler) compileTopDecl(node *Node) {
 }
 
 func (c *Compiler) compileFunc(node *Node) {
-	qname := c.curPkg.Path + "." + node.Name
+	qname := c.curPkg.QualName(node.Name)
 	if node.X != nil {
 		// Method with receiver
 		recvType := nodeTypeName(node.X.Type)
-		qname = c.curPkg.Path + "." + recvType + "." + node.Name
+		qname = c.dotJoin(c.curPkg.QualName(recvType), node.Name)
 	}
 	f := &IRFunc{Name: qname}
 	c.curFunc = f
@@ -1342,7 +1361,7 @@ func (c *Compiler) compileFunc(node *Node) {
 
 func (c *Compiler) compileIntrinsicFunc(directive *Node) {
 	node := directive.X
-	qname := c.curPkg.Path + "." + node.Name
+	qname := c.curPkg.QualName(node.Name)
 	intern := parseInternalDirective(directive.Name)
 
 	f := &IRFunc{Name: qname}
@@ -2257,7 +2276,7 @@ func (c *Compiler) resolveConcreteTypeID(expr *Node) int {
 	if expr.Kind == NCallExpr && expr.X != nil && expr.X.Kind == NIdent {
 		sym, ok := c.curPkg.Symbols[expr.X.Name]
 		if ok && sym.Kind == SymType {
-			qtype := c.curPkg.Path + "." + expr.X.Name
+			qtype := c.curPkg.QualName(expr.X.Name)
 			if id, ok := c.typeIDs[qtype]; ok {
 				return id
 			}
@@ -2270,7 +2289,7 @@ func (c *Compiler) resolveConcreteTypeID(expr *Node) int {
 		impPkg := c.resolvePackage(pkgAlias)
 		if impPkg != nil {
 			if sym, ok := impPkg.Symbols[typeName]; ok && sym.Kind == SymType {
-				qtype := impPkg.Path + "." + typeName
+				qtype := impPkg.QualName(typeName)
 				if id, ok := c.typeIDs[qtype]; ok {
 					return id
 				}
@@ -2283,7 +2302,7 @@ func (c *Compiler) resolveConcreteTypeID(expr *Node) int {
 		if expr.X.Type != nil {
 			typeName = nodeTypeName(expr.X.Type)
 		}
-		qtype := c.curPkg.Path + ".*" + typeName
+		qtype := c.curPkg.QualPtrName(typeName)
 		if id, ok := c.typeIDs[qtype]; ok {
 			return id
 		}
@@ -2547,7 +2566,7 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 			if node.Type.Kind == NIdent {
 				collType := c.localConcreteTypes[node.Type.Name]
 				if collType == "" {
-					gqname := c.curPkg.Path + "." + node.Type.Name
+					gqname := c.curPkg.QualName(node.Type.Name)
 					collType = c.globalConcreteTypes[gqname]
 				}
 				elemType = sliceElemType(collType)
@@ -2777,7 +2796,7 @@ func (c *Compiler) compileIdent(node *Node) {
 		return
 	}
 	// Check if it's a precomputed constant
-	qname2 := c.curPkg.Path + "." + node.Name
+	qname2 := c.curPkg.QualName(node.Name)
 	if sval, ok2 := c.constStringValues[qname2]; ok2 {
 		c.emit(Inst{Op: OP_CONST_STR, Name: sval})
 		return
@@ -2814,7 +2833,7 @@ func (c *Compiler) resolveConstValue(node *Node) int64 {
 
 func (c *Compiler) lookupGlobal(name string) (int, bool) {
 	// Try qualified name with current package
-	qname := c.curPkg.Path + "." + name
+	qname := c.curPkg.QualName(name)
 	idx, ok := c.globals[qname]
 	if ok {
 		return idx, true
@@ -2853,7 +2872,7 @@ func (c *Compiler) isStringTypedExpr(node *Node) bool {
 			return true
 		}
 		// Check string constants
-		qname := c.curPkg.Path + "." + node.Name
+		qname := c.curPkg.QualName(node.Name)
 		if _, ok := c.constStringValues[qname]; ok {
 			return true
 		}
@@ -3378,7 +3397,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					for _, arg := range node.Nodes {
 						c.compileExpr(arg)
 					}
-					c.emit(Inst{Op: OP_IFACE_CALL, Name: ifaceType + "." + methodName, Arg: len(node.Nodes)})
+					c.emit(Inst{Op: OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(node.Nodes)})
 					return
 				}
 			}
@@ -3392,14 +3411,14 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		concreteType, ok := c.localConcreteTypes[recvName]
 		if !ok {
 			// Try global concrete types
-			gqname := c.curPkg.Path + "." + recvName
+			gqname := c.curPkg.QualName(recvName)
 			concreteType, ok = c.globalConcreteTypes[gqname]
 		}
 		if ok {
-			candidate := concreteType + "." + methodName
+			candidate := c.dotJoin(concreteType, methodName)
 			resolvedName, ok := c.methodTable[candidate]
 			if !ok {
-				ptrCandidate := pointerMethodTypeName(concreteType) + "." + methodName
+				ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
 				resolvedName, ok = c.methodTable[ptrCandidate]
 			}
 			if ok {
@@ -3453,10 +3472,10 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			if concreteType, ok := c.localConcreteTypes[root.Name]; ok {
 				fieldType := c.resolveFieldType(concreteType, fieldName)
 				if fieldType != "" {
-					candidate := fieldType + "." + methodName
+					candidate := c.dotJoin(fieldType, methodName)
 					resolvedName, ok := c.methodTable[candidate]
 					if !ok {
-						ptrCandidate := pointerMethodTypeName(fieldType) + "." + methodName
+						ptrCandidate := c.dotJoin(pointerMethodTypeName(fieldType), methodName)
 						resolvedName, ok = c.methodTable[ptrCandidate]
 					}
 					if ok {
@@ -3528,6 +3547,16 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	if typeName == "" || typeName == "string" || typeName == "int" || typeName == "bool" || typeName == "byte" || typeName == "error" || typeName == "interface{}" {
 		return typeName
 	}
+	cacheKey := typeName + "\x00" + pkgPath
+	if cached, ok := c.qualifyTypeCache[cacheKey]; ok {
+		return cached
+	}
+	result := c.qualifyTypeNameInner(typeName, pkgPath)
+	c.qualifyTypeCache[cacheKey] = result
+	return result
+}
+
+func (c *Compiler) qualifyTypeNameInner(typeName string, pkgPath string) string {
 	// Map types: recursively qualify key and value types
 	if len(typeName) >= 4 && typeName[0] == 'm' && typeName[1] == 'a' && typeName[2] == 'p' && typeName[3] == '[' {
 		depth := 1
@@ -3552,10 +3581,6 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	// Pointer prefix: keep * after package name to match method table format (e.g. "main.*Parser")
 	if len(typeName) > 1 && typeName[0] == '*' {
 		inner := typeName[1:len(typeName)]
-		pkg := pkgPath
-		if pkg == "" {
-			pkg = c.curPkg.Path
-		}
 		// Check if inner is already qualified (e.g. "*os.File" → "os.*File")
 		j := 0
 		for j < len(inner) {
@@ -3565,13 +3590,19 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 				// Resolve package alias to full path
 				impPkg := c.resolvePackage(pkgAlias)
 				if impPkg != nil {
-					return impPkg.Path + ".*" + typePart
+					return impPkg.QualPtrName(typePart)
 				}
 				return pkgAlias + ".*" + typePart
 			}
 			j++
 		}
-		return pkg + ".*" + inner
+		if pkgPath != "" {
+			if resolvedPkg, ok := c.mod.Packages[pkgPath]; ok {
+				return resolvedPkg.QualPtrName(inner)
+			}
+			return pkgPath + ".*" + inner
+		}
+		return c.curPkg.QualPtrName(inner)
 	}
 	// Already qualified (contains '.') — but might be an import alias, resolve it
 	i := 0
@@ -3581,7 +3612,7 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 			rest := typeName[i+1 : len(typeName)]
 			impPkg := c.resolvePackage(pkgAlias)
 			if impPkg != nil {
-				return impPkg.Path + "." + rest
+				return impPkg.QualName(rest)
 			}
 			return typeName
 		}
@@ -3589,9 +3620,12 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	}
 	// Qualify with package
 	if pkgPath != "" {
-		return pkgPath + "." + typeName
+		if resolvedPkg, ok := c.mod.Packages[pkgPath]; ok {
+			return resolvedPkg.QualName(typeName)
+		}
+		return c.dotJoin(pkgPath, typeName)
 	}
-	return c.curPkg.Path + "." + typeName
+	return c.curPkg.QualName(typeName)
 }
 
 // pointerMethodTypeName converts a qualified value receiver type name like
@@ -3693,7 +3727,7 @@ func (c *Compiler) resolveCallName(node *Node) string {
 			if sym.Kind != SymFunc && sym.Kind != SymType {
 				c.errorf("%s: %s is not callable (not a function or type)", c.curFunc.Name, node.Name)
 			}
-			return c.curPkg.Path + "." + node.Name
+			return c.curPkg.QualName(node.Name)
 		}
 		if !isBuiltinName(node.Name) {
 			c.errorf("%s: undefined: %s (used as function)", c.curFunc.Name, node.Name)
@@ -3710,24 +3744,24 @@ func (c *Compiler) resolveCallName(node *Node) string {
 			} else if sym.Kind != SymFunc && sym.Kind != SymType {
 				c.errorf("%s: %s.%s is not callable", c.curFunc.Name, node.X.Name, node.Name)
 			}
-			return pkg.Path + "." + node.Name
+			return pkg.QualName(node.Name)
 		}
 		// Could be a method call — try to resolve using concrete type
 		concreteType := ""
 		if ct, ok := c.localConcreteTypes[node.X.Name]; ok {
 			concreteType = ct
 		} else {
-			gqname := c.curPkg.Path + "." + node.X.Name
+			gqname := c.curPkg.QualName(node.X.Name)
 			if ct, ok := c.globalConcreteTypes[gqname]; ok {
 				concreteType = ct
 			}
 		}
 		if concreteType != "" {
-			candidate := concreteType + "." + node.Name
+			candidate := c.dotJoin(concreteType, node.Name)
 			if resolved, ok := c.methodTable[candidate]; ok {
 				return resolved
 			}
-			ptrCandidate := pointerMethodTypeName(concreteType) + "." + node.Name
+			ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), node.Name)
 			if resolved, ok := c.methodTable[ptrCandidate]; ok {
 				return resolved
 			}
@@ -3735,7 +3769,7 @@ func (c *Compiler) resolveCallName(node *Node) string {
 		if resolved, ok := c.findUniqueMethodByName(node.Name); ok {
 			return resolved
 		}
-		return node.X.Name + "." + node.Name
+		return c.dotJoin(node.X.Name, node.Name)
 	}
 	// Handle []byte, []int, etc. type conversions
 	if node.Kind == NSliceType {
@@ -3755,11 +3789,11 @@ func (c *Compiler) resolveCallName(node *Node) string {
 			if concreteType, ok := c.localConcreteTypes[root.Name]; ok {
 				fieldType := c.resolveFieldType(concreteType, fieldName)
 				if fieldType != "" {
-					candidate := fieldType + "." + methodName
+					candidate := c.dotJoin(fieldType, methodName)
 					if resolved, ok := c.methodTable[candidate]; ok {
 						return resolved
 					}
-					ptrCandidate := pointerMethodTypeName(fieldType) + "." + methodName
+					ptrCandidate := c.dotJoin(pointerMethodTypeName(fieldType), methodName)
 					if resolved, ok := c.methodTable[ptrCandidate]; ok {
 						return resolved
 					}
@@ -3892,7 +3926,7 @@ func (c *Compiler) exprElemSize(node *Node) int {
 			return es
 		}
 		// Check globals with qualified name
-		qname := c.curPkg.Path + "." + node.Name
+		qname := c.curPkg.QualName(node.Name)
 		if es, ok := c.globalElemSizes[qname]; ok {
 			return es
 		}
@@ -3932,7 +3966,7 @@ func (c *Compiler) exprElemSize(node *Node) int {
 		if node.X != nil && node.X.Kind == NIdent {
 			pkg := c.resolvePackage(node.X.Name)
 			if pkg != nil {
-				qname := pkg.Path + "." + node.Name
+				qname := pkg.QualName(node.Name)
 				if es, ok := c.globalElemSizes[qname]; ok {
 					return es
 				}
@@ -3973,7 +4007,7 @@ func (c *Compiler) compileSelectorExpr(node *Node) {
 			if !hasSym {
 				c.errorf("%s: %s.%s not found in package %s", c.curFunc.Name, node.X.Name, node.Name, pkg.Path)
 			}
-			qname := pkg.Path + "." + node.Name
+			qname := pkg.QualName(node.Name)
 			// Check if it's a precomputed constant
 			if val, ok := c.constValues[qname]; ok {
 				c.emit(Inst{Op: OP_CONST_I64, Val: val})
@@ -4039,7 +4073,7 @@ func (c *Compiler) mapExprKeyKind(node *Node) int {
 		if kk, ok := c.localMapVars[node.Name]; ok {
 			return kk
 		}
-		qname := c.curPkg.Path + "." + node.Name
+		qname := c.curPkg.QualName(node.Name)
 		if kk, ok := c.globalMapVars[qname]; ok {
 			return kk
 		}
@@ -4048,7 +4082,7 @@ func (c *Compiler) mapExprKeyKind(node *Node) int {
 		if node.X.Kind == NIdent {
 			pkg := c.resolvePackage(node.X.Name)
 			if pkg != nil {
-				qname := pkg.Path + "." + node.Name
+				qname := pkg.QualName(node.Name)
 				if kk, ok := c.globalMapVars[qname]; ok {
 					return kk
 				}
@@ -4100,7 +4134,7 @@ func (c *Compiler) isMapExpr(node *Node) bool {
 			return true
 		}
 		// Check qualified global
-		qname := c.curPkg.Path + "." + node.Name
+		qname := c.curPkg.QualName(node.Name)
 		_, ok = c.globalMapVars[qname]
 		return ok
 	}
@@ -4109,7 +4143,7 @@ func (c *Compiler) isMapExpr(node *Node) bool {
 		if node.X.Kind == NIdent {
 			pkg := c.resolvePackage(node.X.Name)
 			if pkg != nil {
-				qname := pkg.Path + "." + node.Name
+				qname := pkg.QualName(node.Name)
 				_, ok := c.globalMapVars[qname]
 				return ok
 			}

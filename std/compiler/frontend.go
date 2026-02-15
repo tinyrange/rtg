@@ -27,13 +27,39 @@ type Symbol struct {
 
 // Package represents a parsed Go package.
 type Package struct {
-	Name    string
-	Path    string
-	Dir     string
-	Files   []*Node
-	Imports []string
-	Symbols map[string]*Symbol
-	Inits   []*Node
+	Name         string
+	Path         string
+	Dir          string
+	Files        []*Node
+	Imports      []string
+	Symbols      map[string]*Symbol
+	Inits        []*Node
+	qualNames    map[string]string // name → "Path.name"
+	qualPtrNames map[string]string // name → "Path.*name"
+}
+
+func (pkg *Package) QualName(name string) string {
+	if q, ok := pkg.qualNames[name]; ok {
+		return q
+	}
+	q := pkg.Path + "." + name
+	if pkg.qualNames == nil {
+		pkg.qualNames = make(map[string]string)
+	}
+	pkg.qualNames[name] = q
+	return q
+}
+
+func (pkg *Package) QualPtrName(name string) string {
+	if q, ok := pkg.qualPtrNames[name]; ok {
+		return q
+	}
+	q := pkg.Path + ".*" + name
+	if pkg.qualPtrNames == nil {
+		pkg.qualPtrNames = make(map[string]string)
+	}
+	pkg.qualPtrNames[name] = q
+	return q
 }
 
 // Module represents the complete module with all resolved packages.
@@ -469,7 +495,7 @@ func parseFile(path string) *Node {
 	}
 
 	// fmt.Fprintf(os.Stderr, "  parsing %s (%d bytes, %d tokens)...\n", path, len(src), 0)
-	lexer := NewLexer(src)
+	lexer := NewLexer(string(src))
 	tokens := lexer.Tokenize()
 	// fmt.Fprintf(os.Stderr, "  tokenized %s: %d tokens\n", path, len(tokens))
 
@@ -489,7 +515,7 @@ func parseFile(path string) *Node {
 
 // parseSource lexes and parses source code from a string.
 func parseSource(name string, src string) *Node {
-	lexer := NewLexer([]byte(src))
+	lexer := NewLexer(src)
 	tokens := lexer.Tokenize()
 	parser := NewParser(tokens)
 	file := parser.ParseFile()
