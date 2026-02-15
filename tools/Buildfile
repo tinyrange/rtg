@@ -37,6 +37,17 @@ selfhost-wasm: build
 
 selfhost-winarm64: build
   sh ./build/rtg -T windows/arm64 -o build/stage1_winarm64.exe ./std/compiler/
+  sh ./build/stage1_winarm64.exe -T windows/arm64 -o build/stage2_winarm64.exe compiler
+  sh chmod +x build/stage2_winarm64.exe
+  sh ./build/stage2_winarm64.exe -T windows/arm64 -o build/stage3_winarm64.exe compiler
+  sh cmp build/stage2_winarm64.exe build/stage3_winarm64.exe && echo "PASS: windows/arm64 self-hosting OK"
+
+selfhost-winamd64: build
+  sh ./build/rtg -T windows/amd64 -o build/stage1_winamd64.exe ./std/compiler/
+  sh ./build/stage1_winamd64.exe -T windows/amd64 -o build/stage2_winamd64.exe compiler
+  sh chmod +x build/stage2_winamd64.exe
+  sh ./build/stage2_winamd64.exe -T windows/amd64 -o build/stage3_winamd64.exe compiler
+  sh cmp build/stage2_winamd64.exe build/stage3_winamd64.exe && echo "PASS: windows/amd64 self-hosting OK"
 
 selfhost-win386: build
   sh ./build/rtg -T windows/386 -o build/stage1.exe ./std/compiler/

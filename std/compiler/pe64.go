@@ -11,9 +11,9 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 	// 0x080  PE Signature (4 bytes)
 	// 0x084  COFF Header (20 bytes)
 	// 0x098  Optional Header (240 bytes)
-	// 0x188  Section Table (6 sections x 40 bytes = 240 bytes)
+	// 0x188  Section Table (6 or 7 sections x 40 bytes)
 	//        (pad to FileAlignment=0x200)
-	// 0x200  .text / .rdata / .data / .idata / .debug_abbrev / .debug_info
+	// 0x200  .text / .rdata / .data / .idata / [.reloc] / .debug_abbrev / .debug_info
 
 	const (
 		fileAlignment    = 0x200
@@ -27,6 +27,9 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 	coffHeaderSize := 20
 	optionalHeaderSize := 240
 	numSections := 6
+	if g.isArm64 {
+		numSections = 7 // includes .reloc for ASLR
+	}
 	sectionTableSize := numSections * 40
 
 	headersRawSize := dosHeaderSize + dosStubSize + peSignatureSize + coffHeaderSize + optionalHeaderSize + sectionTableSize
@@ -50,6 +53,33 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 	// Fix up .idata internal RVAs
 	g.fixupIData64(idataContent, idataRVA, imports)
 
+	// Build .reloc section for ARM64 (Windows ARM64 requires ASLR)
+	var relocContent []byte
+	relocRVA := 0
+	relocRawSize := 0
+	if g.isArm64 {
+		// Collect .data offsets that will contain absolute addresses (string header pointers)
+		var relocOffsets []int
+		for _, headerOff := range g.stringMap {
+			relocOffsets = append(relocOffsets, headerOff)
+		}
+		// Insertion sort for deterministic output (critical for self-hosting)
+		si := 1
+		for si < len(relocOffsets) {
+			sj := si
+			for sj > 0 && relocOffsets[sj] < relocOffsets[sj-1] {
+				tmp := relocOffsets[sj]
+				relocOffsets[sj] = relocOffsets[sj-1]
+				relocOffsets[sj-1] = tmp
+				sj = sj - 1
+			}
+			si = si + 1
+		}
+		relocContent = g.buildBaseRelocations(dataRVA, relocOffsets)
+		relocRVA = idataRVA + alignUp(len(idataContent), sectionAlignment)
+		relocRawSize = alignUp(len(relocContent), fileAlignment)
+	}
+
 	// Build DWARF debug sections with 8-byte addresses
 	textVA := imageBase + textRVA
 	debugAbbrev, debugInfo := g.buildDWARF64(irmod, textVA, len(g.code))
@@ -57,6 +87,9 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 	debugInfoRawSize := alignUp(len(debugInfo), fileAlignment)
 
 	debugAbbrevRVA := idataRVA + alignUp(len(idataContent), sectionAlignment)
+	if g.isArm64 {
+		debugAbbrevRVA = relocRVA + alignUp(len(relocContent), sectionAlignment)
+	}
 	debugInfoRVA := debugAbbrevRVA + alignUp(len(debugAbbrev), sectionAlignment)
 
 	// File offsets
@@ -64,7 +97,11 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 	rdataFileOff := textFileOff + textRawSize
 	dataFileOff := rdataFileOff + rdataRawSize
 	idataFileOff := dataFileOff + dataRawSize
+	relocFileOff := idataFileOff + idataRawSize
 	debugAbbrevFileOff := idataFileOff + idataRawSize
+	if g.isArm64 {
+		debugAbbrevFileOff = relocFileOff + relocRawSize
+	}
 	debugInfoFileOff := debugAbbrevFileOff + debugAbbrevRawSize
 
 	// COFF symbols
@@ -210,9 +247,9 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 	putU32(opt[60:], uint32(headersAligned))       // SizeOfHeaders
 	putU32(opt[64:], 0)                            // CheckSum
 	putU16(opt[68:], 3)                            // Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI
-	dllChars := uint16(0x0100) // NX_COMPAT (x64: no ASLR since we use movabs absolute addresses)
+	dllChars := uint16(0x0100) // NX_COMPAT
 	if g.isArm64 {
-		dllChars = 0x0160 // DYNAMIC_BASE | NX_COMPAT | HIGH_ENTROPY_VA
+		dllChars = 0x0160 // HIGH_ENTROPY_VA | DYNAMIC_BASE | NX_COMPAT
 	}
 	putU16(opt[70:], dllChars)                     // DllCharacteristics
 	// PE32+: Stack/Heap sizes are 8 bytes each
@@ -229,12 +266,18 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 	putU32(opt[112+1*8:], uint32(importDirRVA))
 	putU32(opt[112+1*8+4:], uint32(importDirSize))
 
+	// [5] Base Relocation Table (ARM64 only — required for ASLR)
+	if g.isArm64 {
+		putU32(opt[112+5*8:], uint32(relocRVA))
+		putU32(opt[112+5*8+4:], uint32(len(relocContent)))
+	}
+
 	// [12] IAT
 	iatRVA, iatSize := g.getIATInfo64(imports, idataRVA)
 	putU32(opt[112+12*8:], uint32(iatRVA))
 	putU32(opt[112+12*8+4:], uint32(iatSize))
 
-	// === Section Table (6 x 40 bytes at 0x188) ===
+	// === Section Table (at 0x188) ===
 	sectBase := 0x188
 
 	// .text
@@ -257,13 +300,22 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 		len(idataContent), idataRVA, idataRawSize, idataFileOff,
 		0xC0000040) // INITIALIZED_DATA | READ | WRITE
 
+	nextSect := sectBase + 160
+	if g.isArm64 {
+		// .reloc
+		writeSection(pe[nextSect:], ".reloc",
+			len(relocContent), relocRVA, relocRawSize, relocFileOff,
+			0x42000040) // INITIALIZED_DATA | DISCARDABLE | READ
+		nextSect += 40
+	}
+
 	// .debug_abbrev
-	writeSectionLongName(pe[sectBase+160:], debugAbbrevNameOff,
+	writeSectionLongName(pe[nextSect:], debugAbbrevNameOff,
 		len(debugAbbrev), debugAbbrevRVA, debugAbbrevRawSize, debugAbbrevFileOff,
 		0x42000040) // INITIALIZED_DATA | READ | DISCARDABLE
 
 	// .debug_info
-	writeSectionLongName(pe[sectBase+200:], debugInfoNameOff,
+	writeSectionLongName(pe[nextSect+40:], debugInfoNameOff,
 		len(debugInfo), debugInfoRVA, debugInfoRawSize, debugInfoFileOff,
 		0x42000040) // INITIALIZED_DATA | READ | DISCARDABLE
 
@@ -272,6 +324,9 @@ func (g *CodeGen) buildPE64(irmod *IRModule, imports []string) []byte {
 	copy(pe[rdataFileOff:], g.rodata)
 	copy(pe[dataFileOff:], g.data)
 	copy(pe[idataFileOff:], idataContent)
+	if g.isArm64 {
+		copy(pe[relocFileOff:], relocContent)
+	}
 	copy(pe[debugAbbrevFileOff:], debugAbbrev)
 	copy(pe[debugInfoFileOff:], debugInfo)
 
@@ -476,6 +531,54 @@ func (g *CodeGen) buildDWARF64(irmod *IRModule, textVA int, textSize int) ([]byt
 	putU32(info[0:], uint32(unitLen))
 
 	return abbrev, info
+}
+
+// buildBaseRelocations builds a .reloc section for 64-bit PE base relocations.
+// sectionRVA is the RVA of the section containing the addresses to relocate.
+// offsets are sorted offsets within that section of 8-byte absolute addresses.
+func (g *CodeGen) buildBaseRelocations(sectionRVA int, offsets []int) []byte {
+	if len(offsets) == 0 {
+		return nil
+	}
+
+	var reloc []byte
+
+	// Group relocations by 4KB page
+	i := 0
+	for i < len(offsets) {
+		rva := sectionRVA + offsets[i]
+		pageRVA := (rva / 0x1000) * 0x1000
+
+		// Reserve space for block header
+		blockStart := len(reloc)
+		reloc = append(reloc, 0, 0, 0, 0) // PageRVA placeholder
+		reloc = append(reloc, 0, 0, 0, 0) // BlockSize placeholder
+
+		// Add entries for all relocations in this page
+		for i < len(offsets) {
+			rva = sectionRVA + offsets[i]
+			if (rva/0x1000)*0x1000 != pageRVA {
+				break
+			}
+			offsetInPage := rva % 0x1000
+			entry := uint16(0xA000) | uint16(offsetInPage) // IMAGE_REL_BASED_DIR64
+			reloc = append(reloc, byte(entry), byte(entry>>8))
+			i++
+		}
+
+		// Pad to 4-byte alignment
+		blockSize := len(reloc) - blockStart
+		if blockSize%4 != 0 {
+			reloc = append(reloc, 0, 0) // IMAGE_REL_BASED_ABSOLUTE padding
+			blockSize += 2
+		}
+
+		// Patch block header
+		putU32(reloc[blockStart:], uint32(pageRVA))
+		putU32(reloc[blockStart+4:], uint32(blockSize))
+	}
+
+	return reloc
 }
 
 // appendU64 appends a little-endian uint64 to a byte slice.
