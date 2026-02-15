@@ -106,11 +106,12 @@ func generateWinAmd64PE(irmod *IRModule, outputPath string) error {
 
 // emitStart_win64 generates the Windows x64 entry point.
 func (g *CodeGen) emitStart_win64(irmod *IRModule) {
-	// Windows x64 entry point. RSP is 16-byte aligned on entry.
+	// Windows x64 entry point. RSP is 16-byte aligned + 8 on entry
+	// (the loader calls us via `call`, pushing a return address).
 	// We use R15 as the operand stack pointer (callee-saved, preserved by kernel32).
 
-	// Allocate shadow space (32 bytes) + alignment
-	g.subRI(REG_RSP, 48) // 32 shadow + 16 for 16-byte alignment
+	// Allocate shadow space (32 bytes) + 8 alignment (to restore 16-byte alignment)
+	g.subRI(REG_RSP, 40) // 32 shadow + 8 to realign RSP to 16 bytes
 
 	// VirtualAlloc(NULL, 16MB, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
 	// Microsoft x64 ABI: RCX, RDX, R8, R9
