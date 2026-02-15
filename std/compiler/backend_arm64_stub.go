@@ -11,3 +11,7 @@ func generateDarwinArm64(irmod *IRModule, outputPath string) error {
 func generateLinuxArm64ELF(irmod *IRModule, outputPath string) error {
 	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
 }
+
+func generateWinArm64PE(irmod *IRModule, outputPath string) error {
+	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
+}

@@ -117,6 +117,9 @@ func GenerateELF(irmod *IRModule, outputPath string) error {
 		if targetGOOS == "linux" {
 			return generateLinuxArm64ELF(irmod, outputPath)
 		}
+		if targetGOOS == "windows" {
+			return generateWinArm64PE(irmod, outputPath)
+		}
 		return fmt.Errorf("unsupported OS for arm64: %s", targetGOOS)
 	default:
 		return fmt.Errorf("unsupported target architecture: %s", targetGOARCH)

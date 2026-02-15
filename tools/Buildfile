@@ -35,6 +35,9 @@ selfhost-wasm: build
   sh wasmtime --dir=. build/stage2.wasm -- -T wasi/wasm32 -o build/stage3.wasm compiler
   sh cmp build/stage2.wasm build/stage3.wasm && echo "PASS: wasm self-hosting OK"
 
+selfhost-winarm64: build
+  sh ./build/rtg -T windows/arm64 -o build/stage1_winarm64.exe ./std/compiler/
+
 selfhost-win386: build
   sh ./build/rtg -T windows/386 -o build/stage1.exe ./std/compiler/
   sh wine build/stage1.exe -T windows/386 -o build/stage2.exe compiler

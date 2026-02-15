@@ -191,6 +191,8 @@ func (g *CodeGen) compileInstArm64(inst Inst) {
 	case OP_PANIC:
 		if targetGOOS == "linux" {
 			g.compilePanicArm64Linux()
+		} else if targetGOOS == "windows" {
+			g.compilePanicArm64Windows()
 		} else {
 			g.compilePanicArm64()
 		}
@@ -395,6 +397,10 @@ func (g *CodeGen) compileReturnArm64(inst Inst) {
 
 func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
 	g.flush()
+	if targetGOOS == "windows" {
+		g.compileCallIntrinsicArm64Windows(inst)
+		return
+	}
 	switch inst.Name {
 	case "SysRead":
 		g.emitLoadLocalArm64(1*8, REG_X0) // fd

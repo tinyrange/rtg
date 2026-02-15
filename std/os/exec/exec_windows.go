@@ -125,6 +125,35 @@ func buildEnvBlock(env []string) uintptr {
 	return ptr
 }
 
+// STARTUPINFOA and PROCESS_INFORMATION struct sizes/offsets vary by pointer size.
+var _siSize int
+var _siFlagsOff int
+var _siStdinOff int
+var _siStdoutOff int
+var _siStderrOff int
+var _piSize int
+var _piThreadOff int
+
+func init() {
+	if runtime.PtrSize == 8 {
+		_siSize = 104
+		_siFlagsOff = 60
+		_siStdinOff = 80
+		_siStdoutOff = 88
+		_siStderrOff = 96
+		_piSize = 24
+		_piThreadOff = 8
+	} else {
+		_siSize = 68
+		_siFlagsOff = 44
+		_siStdinOff = 56
+		_siStdoutOff = 60
+		_siStderrOff = 64
+		_piSize = 16
+		_piThreadOff = 4
+	}
+}
+
 func (c *Cmd) Run() error {
 	args := c.Args
 	if len(args) == 0 {
@@ -143,16 +172,15 @@ func (c *Cmd) Run() error {
 		}
 	}
 
-	// STARTUPINFOA: 68 bytes, all zeros except cb=68
-	siSize := 68
-	si := runtime.Alloc(siSize)
-	runtime.Memzero(si, siSize)
-	runtime.WritePtr(si, uintptr(siSize)) // cb = 68
+	// STARTUPINFOA
+	si := runtime.Alloc(_siSize)
+	runtime.Memzero(si, _siSize)
+	runtime.WritePtr(si, uintptr(_siSize)) // cb
 
 	// Set up stdio redirection if needed
 	if c.Stdin != nil || c.Stdout != nil || c.Stderr != nil {
 		// dwFlags = STARTF_USESTDHANDLES (0x100)
-		runtime.WritePtr(si+44, 0x100)
+		runtime.WritePtr(si+uintptr(_siFlagsOff), 0x100)
 
 		// Get default handles for any not overridden
 		var stdinH uintptr
@@ -175,19 +203,16 @@ func (c *Cmd) Run() error {
 			stderrH = uintptr(os.Stderr.Fd())
 		}
 
-		// hStdInput at offset 56, hStdOutput at 60, hStdError at 64
-		runtime.WritePtr(si+56, stdinH)
-		runtime.WritePtr(si+60, stdoutH)
-		runtime.WritePtr(si+64, stderrH)
+		runtime.WritePtr(si+uintptr(_siStdinOff), stdinH)
+		runtime.WritePtr(si+uintptr(_siStdoutOff), stdoutH)
+		runtime.WritePtr(si+uintptr(_siStderrOff), stderrH)
 	}
 
-	// PROCESS_INFORMATION: 16 bytes
-	piSize := 16
-	pi := runtime.Alloc(piSize)
-	runtime.Memzero(pi, piSize)
+	// PROCESS_INFORMATION
+	pi := runtime.Alloc(_piSize)
+	runtime.Memzero(pi, _piSize)
 
-	// CreateProcessA(NULL, cmdLine, NULL, NULL, TRUE, 0, envp, NULL, &si, &pi)
-	// a0=NULL (appName), a1=cmdLine, a2=startupInfo, a3=processInfo, a4=envp
+	// CreateProcessA
 	_, _, errn := runtime.SysCreateProcess(0, cmdLinePtr, si, pi, envPtr)
 	if errn != 0 {
 		return os.Errno(errn)
@@ -197,13 +222,12 @@ func (c *Cmd) Run() error {
 	hProcess := runtime.ReadPtr(pi)
 
 	// WaitForSingleObject + GetExitCodeProcess
-	// a0=hProcess, a1=exitCodeBuf
-	exitCodeBuf := runtime.Alloc(4)
-	runtime.Memzero(exitCodeBuf, 4)
+	exitCodeBuf := runtime.Alloc(runtime.PtrSize)
+	runtime.Memzero(exitCodeBuf, runtime.PtrSize)
 	exitCode, _, _ := runtime.SysWaitProcess(hProcess, exitCodeBuf)
 
 	// Close process and thread handles
-	hThread := runtime.ReadPtr(pi + 4)
+	hThread := runtime.ReadPtr(pi + uintptr(_piThreadOff))
 	runtime.SysClose(hThread)
 	runtime.SysClose(hProcess)
 
@@ -215,10 +239,10 @@ func (c *Cmd) Run() error {
 
 func (c *Cmd) Output() ([]byte, error) {
 	// Create pipe
-	readBuf := runtime.Alloc(4)
-	writeBuf := runtime.Alloc(4)
-	runtime.Memzero(readBuf, 4)
-	runtime.Memzero(writeBuf, 4)
+	readBuf := runtime.Alloc(runtime.PtrSize)
+	writeBuf := runtime.Alloc(runtime.PtrSize)
+	runtime.Memzero(readBuf, runtime.PtrSize)
+	runtime.Memzero(writeBuf, runtime.PtrSize)
 
 	_, _, errn := runtime.SysCreatePipe(readBuf, writeBuf)
 	if errn != 0 {
@@ -250,20 +274,18 @@ func (c *Cmd) Output() ([]byte, error) {
 		}
 	}
 
-	siSize := 68
-	si := runtime.Alloc(siSize)
-	runtime.Memzero(si, siSize)
-	runtime.WritePtr(si, uintptr(siSize))
+	si := runtime.Alloc(_siSize)
+	runtime.Memzero(si, _siSize)
+	runtime.WritePtr(si, uintptr(_siSize))
 
 	// STARTF_USESTDHANDLES
-	runtime.WritePtr(si+44, 0x100)
-	runtime.WritePtr(si+56, uintptr(os.Stdin.Fd()))  // hStdInput
-	runtime.WritePtr(si+60, uintptr(writeHandle))     // hStdOutput = write end
-	runtime.WritePtr(si+64, uintptr(os.Stderr.Fd()))  // hStdError
+	runtime.WritePtr(si+uintptr(_siFlagsOff), 0x100)
+	runtime.WritePtr(si+uintptr(_siStdinOff), uintptr(os.Stdin.Fd()))
+	runtime.WritePtr(si+uintptr(_siStdoutOff), uintptr(writeHandle))
+	runtime.WritePtr(si+uintptr(_siStderrOff), uintptr(os.Stderr.Fd()))
 
-	piSize := 16
-	pi := runtime.Alloc(piSize)
-	runtime.Memzero(pi, piSize)
+	pi := runtime.Alloc(_piSize)
+	runtime.Memzero(pi, _piSize)
 
 	_, _, errn = runtime.SysCreateProcess(0, cmdLinePtr, si, pi, envPtr)
 	if errn != 0 {
@@ -291,11 +313,11 @@ func (c *Cmd) Output() ([]byte, error) {
 
 	// Wait for process
 	hProcess := runtime.ReadPtr(pi)
-	exitCodeBuf := runtime.Alloc(4)
-	runtime.Memzero(exitCodeBuf, 4)
+	exitCodeBuf := runtime.Alloc(runtime.PtrSize)
+	runtime.Memzero(exitCodeBuf, runtime.PtrSize)
 	exitCode, _, _ := runtime.SysWaitProcess(hProcess, exitCodeBuf)
 
-	hThread := runtime.ReadPtr(pi + 4)
+	hThread := runtime.ReadPtr(pi + uintptr(_piThreadOff))
 	runtime.SysClose(hThread)
 	runtime.SysClose(hProcess)
 
