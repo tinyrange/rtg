@@ -199,6 +199,7 @@ type Compiler struct {
 	globalConcreteTypes map[string]string  // qualified global name → qualified type name
 	constValues        map[string]int64    // qualified const name → precomputed value
 	constStringValues  map[string]string   // qualified const name → precomputed string value
+	localAddrOf        map[string]bool     // local var name → true if assigned from &var (pointer-to-pointer)
 	stackDepth         int                 // operand stack depth tracking for balance checks
 	deferNames         []string
 	deferArgStarts     []int
@@ -1030,6 +1031,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
 	c.localStringVars = make(map[string]bool)
+	c.localAddrOf = make(map[string]bool)
 	c.localConcreteTypes = make(map[string]string)
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
@@ -1185,6 +1187,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localElemSizes = make(map[string]int)
 	c.localTypes = make(map[string]string)
 	c.localStringVars = make(map[string]bool)
+	c.localAddrOf = make(map[string]bool)
 	c.localConcreteTypes = make(map[string]string)
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
@@ -1785,6 +1788,10 @@ func (c *Compiler) compileAssign(node *Node) {
 		if c.isStringTypedExpr(node.Y) {
 			c.localStringVars[node.X.Name] = true
 		}
+		// Track address-of locals for auto-deref (only &variable, not &Struct{})
+		if node.Y != nil && node.Y.Kind == NUnaryExpr && node.Y.Name == "&" && node.Y.X != nil && node.Y.X.Kind == NIdent {
+			c.localAddrOf[node.X.Name] = true
+		}
 		// Track concrete type and elem size for method resolution and indexing
 		if ct := c.exprConcreteType(node.Y); ct != "" {
 			c.localConcreteTypes[node.X.Name] = ct
@@ -1817,7 +1824,10 @@ func (c *Compiler) compileAssign(node *Node) {
 			if len(node.Y.Nodes) > 0 && node.Y.Nodes[0].Kind == NMapType {
 				c.localMapVars[node.X.Name] = c.mapKeyKind(node.Y.Nodes[0].X)
 				if node.Y.Nodes[0].Y != nil {
-					c.localMapValueTypes[node.X.Name] = nodeTypeName(node.Y.Nodes[0].Y)
+					valType := nodeTypeName(node.Y.Nodes[0].Y)
+					c.localMapValueTypes[node.X.Name] = valType
+					keyType := nodeTypeName(node.Y.Nodes[0].X)
+					c.localConcreteTypes[node.X.Name] = "map[" + c.qualifyTypeName(keyType, "") + "]" + c.qualifyTypeName(valType, "")
 				}
 			}
 		}
@@ -1969,8 +1979,11 @@ func (c *Compiler) compileLValueSet(node *Node) {
 				offset = off
 			}
 		}
-		// NOTE: resolveFieldOffsetByName fallback removed - too ambiguous
 		c.compileExpr(node.X)
+		// Auto-deref pointer-to-struct for field write (e.g., pp.X = 100)
+		if node.X != nil && c.needsSelectorDeref(node.X) {
+			c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+		}
 		c.emit(Inst{Op: OP_OFFSET, Arg: offset})
 		c.emit(Inst{Op: OP_STORE, Arg: targetPtrSize})
 	case NUnaryExpr:
@@ -3054,6 +3067,61 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 	}
 }
 
+// needsSelectorDeref checks if a selector base needs an extra LOAD for auto-deref.
+// For pp.X where pp is *Point, we need to load through pp to get the struct pointer.
+// Returns false for unknowns (conservative — no extra deref).
+func (c *Compiler) needsSelectorDeref(node *Node) bool {
+	if node == nil || node.Kind != NIdent {
+		return false
+	}
+	// Only auto-deref variables created from & (address-of local)
+	if !c.localAddrOf[node.Name] {
+		return false
+	}
+	ct, ok := c.localConcreteTypes[node.Name]
+	if !ok {
+		return false
+	}
+	dotIdx := -1
+	for i := 0; i < len(ct); i++ {
+		if ct[i] == '.' {
+			dotIdx = i
+		}
+	}
+	if dotIdx < 0 {
+		return false
+	}
+	rest := ct[dotIdx+1 : len(ct)]
+	if len(rest) == 0 || rest[0] != '*' {
+		return false
+	}
+	tName := rest[1:len(rest)]
+	if len(tName) > 0 && tName[0] == '[' {
+		return false
+	}
+	if tName == "int" || tName == "int32" || tName == "int64" ||
+		tName == "uint" || tName == "uint32" || tName == "uint64" ||
+		tName == "uintptr" || tName == "byte" || tName == "bool" || tName == "string" {
+		return false
+	}
+	if strings.HasPrefix(tName, "map[") || strings.HasPrefix(tName, "func(") || strings.HasPrefix(tName, "*") {
+		return false
+	}
+	pkg, ok := c.mod.Packages[ct[0:dotIdx]]
+	if !ok {
+		return false
+	}
+	sym, ok := pkg.Symbols[tName]
+	if !ok || sym.Kind != SymType || sym.Node == nil {
+		return false
+	}
+	typeNode := sym.Node.Type
+	if typeNode == nil {
+		return false
+	}
+	return typeNode.Kind == NStructType
+}
+
 // isPointerToStructDeref checks if a node represents a variable of pointer-to-struct type.
 // In this compiler, struct values are heap-allocated pointers, so *ptr where ptr is *StructType
 // should be a no-op (the value IS the pointer). For non-struct pointer types (*[]string, *int, etc.),
@@ -3846,6 +3914,19 @@ func (c *Compiler) exprElemSize(node *Node) int {
 			}
 		}
 		return 1
+	case NIndexExpr:
+		// Chained indexing: e.g., matrix[i] where matrix is [][]int
+		// Determine elem size of the result of indexing the base
+		if node.X != nil {
+			baseCT := c.exprConcreteType(node.X)
+			if len(baseCT) > 2 && baseCT[0] == '[' && baseCT[1] == ']' {
+				resultType := baseCT[2:len(baseCT)]
+				if len(resultType) > 2 && resultType[0] == '[' && resultType[1] == ']' {
+					return c.typeElemSize(resultType[2:len(resultType)])
+				}
+			}
+		}
+		return 1
 	case NSelectorExpr:
 		// pkg.Name — look up qualified global
 		if node.X != nil && node.X.Kind == NIdent {
@@ -3923,6 +4004,10 @@ func (c *Compiler) compileSelectorExpr(node *Node) {
 		}
 	}
 	c.compileExpr(node.X)
+	// Auto-deref pointer-to-struct for field access (e.g., pp.X where pp is *Point)
+	if node.X != nil && c.needsSelectorDeref(node.X) {
+		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+	}
 	c.emit(Inst{Op: OP_OFFSET, Arg: offset})
 	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
 }
