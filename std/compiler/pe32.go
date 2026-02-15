@@ -1,4 +1,4 @@
-//go:build !no_backend_windows_i386 || !no_backend_arm64
+//go:build !no_backend_windows_i386 || !no_backend_arm64 || !no_backend_windows_amd64
 
 package main
 

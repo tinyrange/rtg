@@ -1,4 +1,4 @@
-//go:build !no_backend_linux_amd64
+//go:build !no_backend_linux_amd64 || !no_backend_windows_amd64
 
 package main
 
@@ -89,6 +89,9 @@ func (g *CodeGen) compileFunc(f *IRFunc) {
 	g.movRR(REG_RBP, REG_RSP)
 
 	frameBytes := g.curFrameSize * 8
+	if targetGOOS == "windows" {
+		frameBytes = alignUp(frameBytes, 16)
+	}
 	if frameBytes > 0 {
 		g.subRI(REG_RSP, int32(frameBytes))
 	}
@@ -260,7 +263,11 @@ func (g *CodeGen) compileInst(inst Inst) {
 	case OP_IFACE_CALL:
 		g.compileIfaceCall(inst)
 	case OP_PANIC:
-		g.compilePanic()
+		if targetGOOS == "windows" {
+			g.compilePanicWin64()
+		} else {
+			g.compilePanic()
+		}
 
 	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
 		// These are handled by intrinsics or builtins
@@ -514,6 +521,10 @@ func (g *CodeGen) compileReturn(inst Inst) {
 
 func (g *CodeGen) compileCallIntrinsic(inst Inst) {
 	g.flush()
+	if targetGOOS == "windows" {
+		g.compileCallIntrinsicWin64(inst)
+		return
+	}
 	switch inst.Name {
 	case "Syscall":
 		g.compileSyscallIntrinsic(inst.Arg)

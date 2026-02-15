@@ -102,6 +102,9 @@ func GenerateELF(irmod *IRModule, outputPath string) error {
 	}
 	switch targetGOARCH {
 	case "amd64":
+		if targetGOOS == "windows" {
+			return generateWinAmd64PE(irmod, outputPath)
+		}
 		return generateAmd64ELF(irmod, outputPath)
 	case "386":
 		if targetGOOS == "windows" {

@@ -1,4 +1,4 @@
-//go:build no_backend_linux_amd64
+//go:build no_backend_linux_amd64 && no_backend_windows_amd64
 
 package main
 
