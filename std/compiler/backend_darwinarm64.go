@@ -1,4 +1,4 @@
-//go:build !no_backend_darwin_arm64
+//go:build !no_backend_arm64
 
 package main
 

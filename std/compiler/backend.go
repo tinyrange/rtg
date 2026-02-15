@@ -114,6 +114,9 @@ func GenerateELF(irmod *IRModule, outputPath string) error {
 		if targetGOOS == "darwin" {
 			return generateDarwinArm64(irmod, outputPath)
 		}
+		if targetGOOS == "linux" {
+			return generateLinuxArm64ELF(irmod, outputPath)
+		}
 		return fmt.Errorf("unsupported OS for arm64: %s", targetGOOS)
 	default:
 		return fmt.Errorf("unsupported target architecture: %s", targetGOARCH)

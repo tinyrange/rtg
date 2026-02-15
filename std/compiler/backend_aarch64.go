@@ -1,4 +1,4 @@
-//go:build !no_backend_darwin_arm64
+//go:build !no_backend_arm64
 
 package main
 
@@ -189,7 +189,11 @@ func (g *CodeGen) compileInstArm64(inst Inst) {
 	case OP_IFACE_CALL:
 		g.compileIfaceCallArm64(inst)
 	case OP_PANIC:
-		g.compilePanicArm64()
+		if targetGOOS == "linux" {
+			g.compilePanicArm64Linux()
+		} else {
+			g.compilePanicArm64()
+		}
 
 	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
 		// Handled by intrinsics
@@ -522,6 +526,8 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
 	case "SysGetpid":
 		g.emitCallGOT("_getpid")
 		g.emitSyscallReturnArm64()
+	case "Syscall":
+		g.compileSyscallIntrinsicArm64(inst.Arg)
 	case "Sliceptr":
 		g.compileSliceptrIntrinsicArm64()
 	case "Makeslice":

@@ -1,4 +1,4 @@
-//go:build !no_backend_linux_amd64
+//go:build !no_backend_linux_amd64 || !no_backend_arm64
 
 package main
 
@@ -25,9 +25,9 @@ func (g *CodeGen) buildELF64(irmod *IRModule) []byte {
 	textOffset := (headerTotal + 15) & ^15
 
 	textSize := len(g.code)
-	rodataOffset := textOffset + textSize
+	rodataOffset := (textOffset + textSize + 7) & ^7 // 8-byte align for ARM64 LDR
 	rodataSize := len(g.rodata)
-	dataOffset := rodataOffset + rodataSize
+	dataOffset := (rodataOffset + rodataSize + 7) & ^7 // 8-byte align for ARM64 LDR
 	dataSize := len(g.data)
 
 	loadedSize := dataOffset + dataSize // end of PT_LOAD segment
@@ -37,24 +37,35 @@ func (g *CodeGen) buildELF64(irmod *IRModule) []byte {
 	rodataVAddr := g.baseAddr + uint64(rodataOffset)
 	dataVAddr := g.baseAddr + uint64(dataOffset)
 
-	// Fix up string headers in rodata: each header's data_ptr field
-	// currently holds the rodata-relative offset of the string bytes.
-	// Replace with absolute virtual address.
-	for _, headerOff := range g.stringMap {
-		dataOff := getU64(g.rodata[headerOff : headerOff+8])
-		putU64(g.rodata[headerOff:headerOff+8], rodataVAddr+dataOff)
-	}
+	if g.isArm64 {
+		// ARM64: patch ADRP+ADD/LDR pairs with PC-relative offsets
+		for _, fix := range g.callFixups {
+			if fix.Target == "$rodata_header$" {
+				pcAddr := textVAddr + uint64(fix.CodeOffset)
+				targetAddr := rodataVAddr + fix.Value
+				g.patchAdrpAddOrLdr(fix.CodeOffset, pcAddr, targetAddr)
+			} else if fix.Target == "$data_addr$" {
+				pcAddr := textVAddr + uint64(fix.CodeOffset)
+				targetAddr := dataVAddr + fix.Value
+				g.patchAdrpAddOrLdr(fix.CodeOffset, pcAddr, targetAddr)
+			}
+		}
+	} else {
+		// x86-64: fix up string headers in rodata with absolute virtual addresses
+		for _, headerOff := range g.stringMap {
+			dataOff := getU64(g.rodata[headerOff : headerOff+8])
+			putU64(g.rodata[headerOff:headerOff+8], rodataVAddr+dataOff)
+		}
 
-	// Fix up code references to rodata headers and data section
-	for _, fix := range g.callFixups {
-		if fix.Target == "$rodata_header$" {
-			// The imm64 at fix.CodeOffset holds the rodata-relative header offset
-			headerOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
-			putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], rodataVAddr+headerOff)
-		} else if fix.Target == "$data_addr$" {
-			// The imm64 at fix.CodeOffset holds the data-relative offset
-			dataOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
-			putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], dataVAddr+dataOff)
+		// Fix up code references to rodata headers and data section
+		for _, fix := range g.callFixups {
+			if fix.Target == "$rodata_header$" {
+				headerOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
+				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], rodataVAddr+headerOff)
+			} else if fix.Target == "$data_addr$" {
+				dataOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
+				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], dataVAddr+dataOff)
+			}
 		}
 	}
 
@@ -151,8 +162,12 @@ func (g *CodeGen) buildELF64(irmod *IRModule) []byte {
 	elf[6] = 1 // EV_CURRENT
 	elf[7] = 0 // ELFOSABI_NONE
 	// bytes 8-15: padding (zero)
-	putU16(elf[16:], 2)                     // e_type: ET_EXEC
-	putU16(elf[18:], 62)                    // e_machine: EM_X86_64
+	putU16(elf[16:], 2) // e_type: ET_EXEC
+	var eMachine uint16 = 62 // EM_X86_64
+	if g.isArm64 {
+		eMachine = 183 // EM_AARCH64
+	}
+	putU16(elf[18:], eMachine)
 	putU32(elf[20:], 1)                     // e_version: EV_CURRENT
 	putU64(elf[24:], entryAddr)             // e_entry
 	putU64(elf[32:], uint64(elfHeaderSize)) // e_phoff

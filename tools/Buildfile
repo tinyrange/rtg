@@ -15,6 +15,12 @@ selfhost-i386: build
   sh ./build/stage2_i386 -T linux/386 -o build/stage3_i386 compiler
   sh cmp build/stage2_i386 build/stage3_i386 && echo "PASS: i386 self-hosting OK"
 
+selfhost-arm64: build
+  sh ./build/rtg -T linux/arm64 -o build/stage1_arm64 ./std/compiler/
+  sh ./build/stage1_arm64 -T linux/arm64 -o build/stage2_arm64 compiler
+  sh ./build/stage2_arm64 -T linux/arm64 -o build/stage3_arm64 compiler
+  sh cmp build/stage2_arm64 build/stage3_arm64 && echo "PASS: arm64 self-hosting OK"
+
 selfhost-c: build
   sh ./build/rtg -T c/64 -o build/stage1_c.c ./std/compiler/
   sh ${CC:-cc} build/stage1_c.c -o build/stage1_c

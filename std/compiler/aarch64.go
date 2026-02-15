@@ -1,4 +1,4 @@
-//go:build !no_backend_darwin_arm64
+//go:build !no_backend_arm64
 
 package main
 
@@ -383,6 +383,11 @@ func (g *CodeGen) emitNop() {
 	g.emitArm64(0xD503201F)
 }
 
+// emitSvc emits SVC #0 (supervisor call for Linux syscalls)
+func (g *CodeGen) emitSvc() {
+	g.emitArm64(0xD4000001)
+}
+
 // === Move ===
 
 // emitMovRRArm64 emits MOV Xd, Xm.
@@ -529,6 +534,18 @@ func (g *CodeGen) patchArm64Imm64At(codeOffset int, val uint64) {
 		// Clear the imm16 field (bits 20:5) and re-encode
 		cleared := existing & 0xFFE0001F
 		putU32(g.code[off:], cleared|(uint32(chunks[i])<<5))
+	}
+}
+
+// patchAdrpAddOrLdr dispatches to patchAdrpAdd or patchAdrpLdr based on the second instruction.
+func (g *CodeGen) patchAdrpAddOrLdr(codeOffset int, pcAddr, targetAddr uint64) {
+	secondInst := getU32(g.code[codeOffset+4:])
+	if secondInst&0xFFC00000 == 0xF9400000 {
+		// LDR (unsigned offset, 64-bit): top bits = 1111 1001 01xx xxxx
+		g.patchAdrpLdr(codeOffset, pcAddr, targetAddr)
+	} else {
+		// ADD (immediate): top bits = 1001 0001 00xx xxxx
+		g.patchAdrpAdd(codeOffset, pcAddr, targetAddr)
 	}
 }
 
