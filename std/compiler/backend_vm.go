@@ -184,6 +184,20 @@ func generateVM(irmod *IRModule, outputPath string) error {
 	vm.fdFiles[2] = os.Stderr
 	vm.fdUsed[2] = true
 
+	// RTG_VM_MEM=1: print memory summary at exit
+	// RTG_VM_ALLOC=1: also log each heap allocation
+	if os.Getenv("RTG_VM_MEM") != "" {
+		vm.trackMem = true
+		vm.tagBytes = make(map[string]int64)
+		vm.tagCount = make(map[string]int64)
+		vm.callerBytes = make(map[string]int64)
+		vm.callerCount = make(map[string]int64)
+	}
+	if os.Getenv("RTG_VM_ALLOC") != "" {
+		vm.trackMem = true
+		vm.logAllocs = true
+	}
+
 	// Register all functions
 	for _, f := range irmod.Funcs {
 		vm.funcs[f.Name] = f
@@ -238,20 +252,6 @@ func generateVM(irmod *IRModule, outputPath string) error {
 	vm.slabPageSize = 65536
 	vm.slabSmallSize = 2 * vm.config.WordSize
 	vm.slabLargeSize = 4 * vm.config.WordSize
-
-	// RTG_VM_MEM=1: print memory summary at exit
-	// RTG_VM_ALLOC=1: also log each heap allocation
-	if os.Getenv("RTG_VM_MEM") != "" {
-		vm.trackMem = true
-		vm.tagBytes = make(map[string]int64)
-		vm.tagCount = make(map[string]int64)
-		vm.callerBytes = make(map[string]int64)
-		vm.callerCount = make(map[string]int64)
-	}
-	if os.Getenv("RTG_VM_ALLOC") != "" {
-		vm.trackMem = true
-		vm.logAllocs = true
-	}
 
 	// Run init functions
 	for _, f := range irmod.Funcs {
@@ -337,9 +337,8 @@ func (vm *VM) ensureMemory(needed int) {
 	vm.memory = grown
 }
 
-func (vm *VM) trackAlloc(size int64) {
-	vm.heapAllocs = vm.heapAllocs + size
-	vm.allocCount = vm.allocCount + 1
+// trackCaller attributes an allocation to the nearest non-runtime caller.
+func (vm *VM) trackCaller(size int64) {
 	depth := len(vm.callStack)
 	if depth == 0 {
 		return
@@ -364,9 +363,15 @@ func (vm *VM) alloc(size uint64, tag string) uint64 {
 	vm.memNext = vm.memNext + int(size)
 	vm.ensureMemory(vm.memNext)
 	if vm.trackMem {
-		vm.trackAlloc(int64(size))
-		vm.tagBytes[tag] = vm.tagBytes[tag] + int64(size)
-		vm.tagCount[tag] = vm.tagCount[tag] + 1
+		// Slab pages are internal infrastructure — individual slots are
+		// tracked by the slab allocator functions instead.
+		if tag != "slab-small" && tag != "slab-large" {
+			vm.heapAllocs = vm.heapAllocs + int64(size)
+			vm.allocCount = vm.allocCount + 1
+			vm.tagBytes[tag] = vm.tagBytes[tag] + int64(size)
+			vm.tagCount[tag] = vm.tagCount[tag] + 1
+			vm.trackCaller(int64(size))
+		}
 		if vm.logAllocs {
 			fmt.Fprintf(os.Stderr, "vm alloc: %6d bytes at 0x%s  [%s] total=%dKB\n",
 				size, hexAddr(addr), tag, vm.memNext/1024)
@@ -383,9 +388,11 @@ func (vm *VM) slabAllocSmall(tag string) uint64 {
 		vm.storeWord(addr, 0)
 		vm.storeWord(addr+uint64(vm.config.WordSize), 0)
 		if vm.trackMem {
-			vm.trackAlloc(sz)
+			vm.heapAllocs = vm.heapAllocs + sz
+			vm.allocCount = vm.allocCount + 1
 			vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 			vm.tagCount[tag] = vm.tagCount[tag] + 1
+			vm.trackCaller(sz)
 		}
 		return addr
 	}
@@ -393,9 +400,11 @@ func (vm *VM) slabAllocSmall(tag string) uint64 {
 		addr := uint64(vm.slabSmallBump)
 		vm.slabSmallBump = vm.slabSmallBump + vm.slabSmallSize
 		if vm.trackMem {
-			vm.trackAlloc(sz)
+			vm.heapAllocs = vm.heapAllocs + sz
+			vm.allocCount = vm.allocCount + 1
 			vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 			vm.tagCount[tag] = vm.tagCount[tag] + 1
+			vm.trackCaller(sz)
 		}
 		return addr
 	}
@@ -403,9 +412,11 @@ func (vm *VM) slabAllocSmall(tag string) uint64 {
 	vm.slabSmallBump = int(page) + vm.slabSmallSize
 	vm.slabSmallEnd = int(page) + vm.slabPageSize
 	if vm.trackMem {
-		vm.trackAlloc(sz)
+		vm.heapAllocs = vm.heapAllocs + sz
+		vm.allocCount = vm.allocCount + 1
 		vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 		vm.tagCount[tag] = vm.tagCount[tag] + 1
+		vm.trackCaller(sz)
 	}
 	return page
 }
@@ -421,9 +432,11 @@ func (vm *VM) slabAllocLarge(tag string) uint64 {
 		vm.storeWord(addr+2*ws, 0)
 		vm.storeWord(addr+3*ws, 0)
 		if vm.trackMem {
-			vm.trackAlloc(sz)
+			vm.heapAllocs = vm.heapAllocs + sz
+			vm.allocCount = vm.allocCount + 1
 			vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 			vm.tagCount[tag] = vm.tagCount[tag] + 1
+			vm.trackCaller(sz)
 		}
 		return addr
 	}
@@ -431,9 +444,11 @@ func (vm *VM) slabAllocLarge(tag string) uint64 {
 		addr := uint64(vm.slabLargeBump)
 		vm.slabLargeBump = vm.slabLargeBump + vm.slabLargeSize
 		if vm.trackMem {
-			vm.trackAlloc(sz)
+			vm.heapAllocs = vm.heapAllocs + sz
+			vm.allocCount = vm.allocCount + 1
 			vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 			vm.tagCount[tag] = vm.tagCount[tag] + 1
+			vm.trackCaller(sz)
 		}
 		return addr
 	}
@@ -441,9 +456,11 @@ func (vm *VM) slabAllocLarge(tag string) uint64 {
 	vm.slabLargeBump = int(page) + vm.slabLargeSize
 	vm.slabLargeEnd = int(page) + vm.slabPageSize
 	if vm.trackMem {
-		vm.trackAlloc(sz)
+		vm.heapAllocs = vm.heapAllocs + sz
+		vm.allocCount = vm.allocCount + 1
 		vm.tagBytes[tag] = vm.tagBytes[tag] + sz
 		vm.tagCount[tag] = vm.tagCount[tag] + 1
+		vm.trackCaller(sz)
 	}
 	return page
 }
