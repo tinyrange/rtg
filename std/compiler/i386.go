@@ -4,6 +4,24 @@ package main
 
 // === i386 Assembler: mnemonic-level instruction encoding ===
 
+func (g *CodeGen) dos32OpPrefix() {
+	if targetGOOS == "dos" && g.wordSize == 4 {
+		g.emitByte(0x66)
+	}
+}
+
+func (g *CodeGen) dos32AddrPrefix() {
+	if targetGOOS == "dos" {
+		g.emitByte(0x67)
+	}
+}
+
+func (g *CodeGen) dos32OpAddrPrefix() {
+	if targetGOOS == "dos" && g.wordSize == 4 {
+		g.emitBytes(0x66, 0x67)
+	}
+}
+
 // Register constants (i386 uses only 8 registers)
 const (
 	REG32_EAX = 0
@@ -32,6 +50,12 @@ const (
 
 // emitMovRegImm32 emits `mov reg, imm32` (B8+rd imm32, 5 bytes)
 func (g *CodeGen) emitMovRegImm32(reg int, val uint32) {
+	if g.wordSize == 2 {
+		g.emitByte(byte(0xb8 + reg))
+		g.emitU16(uint16(val))
+		return
+	}
+	g.dos32OpPrefix()
 	g.emitByte(byte(0xb8 + reg))
 	g.emitU32(val)
 }
@@ -40,6 +64,17 @@ func (g *CodeGen) emitMovRegImm32(reg int, val uint32) {
 
 // emitLoadLocal32 emits `mov reg, [ebp - offset]`
 func (g *CodeGen) emitLoadLocal32(offset int, reg int) {
+	if g.wordSize == 2 {
+		negOff := -offset
+		if negOff >= -128 && negOff <= 127 {
+			g.emitBytes(0x8b, byte(0x46|((reg&7)<<3)), byte(negOff)) // [bp+disp8]
+		} else {
+			g.emitBytes(0x8b, byte(0x86|((reg&7)<<3)))
+			g.emitU16(uint16(int16(negOff)))
+		}
+		return
+	}
+	g.dos32OpAddrPrefix()
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
 		g.emitBytes(0x8b, byte(0x45|((reg&7)<<3)), byte(negOff))
@@ -51,6 +86,17 @@ func (g *CodeGen) emitLoadLocal32(offset int, reg int) {
 
 // emitStoreLocal32 emits `mov [ebp - offset], reg`
 func (g *CodeGen) emitStoreLocal32(offset int, reg int) {
+	if g.wordSize == 2 {
+		negOff := -offset
+		if negOff >= -128 && negOff <= 127 {
+			g.emitBytes(0x89, byte(0x46|((reg&7)<<3)), byte(negOff)) // [bp+disp8]
+		} else {
+			g.emitBytes(0x89, byte(0x86|((reg&7)<<3)))
+			g.emitU16(uint16(int16(negOff)))
+		}
+		return
+	}
+	g.dos32OpAddrPrefix()
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
 		g.emitBytes(0x89, byte(0x45|((reg&7)<<3)), byte(negOff))
@@ -62,6 +108,17 @@ func (g *CodeGen) emitStoreLocal32(offset int, reg int) {
 
 // emitLeaLocal32 emits `lea reg, [ebp - offset]`
 func (g *CodeGen) emitLeaLocal32(offset int, reg int) {
+	if g.wordSize == 2 {
+		negOff := -offset
+		if negOff >= -128 && negOff <= 127 {
+			g.emitBytes(0x8d, byte(0x46|((reg&7)<<3)), byte(negOff)) // [bp+disp8]
+		} else {
+			g.emitBytes(0x8d, byte(0x86|((reg&7)<<3)))
+			g.emitU16(uint16(int16(negOff)))
+		}
+		return
+	}
+	g.dos32OpAddrPrefix()
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
 		g.emitBytes(0x8d, byte(0x45|((reg&7)<<3)), byte(negOff))
@@ -75,11 +132,13 @@ func (g *CodeGen) emitLeaLocal32(offset int, reg int) {
 
 // pushR32 emits `push reg`
 func (g *CodeGen) pushR32(reg int) {
+	g.dos32OpPrefix()
 	g.emitByte(byte(0x50 + reg))
 }
 
 // popR32 emits `pop reg`
 func (g *CodeGen) popR32(reg int) {
+	g.dos32OpPrefix()
 	g.emitByte(byte(0x58 + reg))
 }
 
@@ -92,46 +151,55 @@ func modrmRR32(dst, src int) byte {
 
 // movRR32 emits `mov dst, src`
 func (g *CodeGen) movRR32(dst, src int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x89, modrmRR32(src, dst))
 }
 
 // addRR32 emits `add dst, src`
 func (g *CodeGen) addRR32(dst, src int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x01, modrmRR32(src, dst))
 }
 
 // subRR32 emits `sub dst, src`
 func (g *CodeGen) subRR32(dst, src int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x29, modrmRR32(src, dst))
 }
 
 // andRR32 emits `and dst, src`
 func (g *CodeGen) andRR32(dst, src int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x21, modrmRR32(src, dst))
 }
 
 // orRR32 emits `or dst, src`
 func (g *CodeGen) orRR32(dst, src int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x09, modrmRR32(src, dst))
 }
 
 // xorRR32 emits `xor dst, src`
 func (g *CodeGen) xorRR32(dst, src int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x31, modrmRR32(src, dst))
 }
 
 // cmpRR32 emits `cmp a, b`
 func (g *CodeGen) cmpRR32(a, b int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x39, modrmRR32(b, a))
 }
 
 // testRR32 emits `test a, b`
 func (g *CodeGen) testRR32(a, b int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x85, modrmRR32(b, a))
 }
 
 // imulRR32 emits `imul dst, src` (2-byte opcode 0F AF)
 func (g *CodeGen) imulRR32(dst, src int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x0f, 0xaf, modrmRR32(dst, src))
 }
 
@@ -139,31 +207,37 @@ func (g *CodeGen) imulRR32(dst, src int) {
 
 // negR32 emits `neg reg`
 func (g *CodeGen) negR32(reg int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0xf7, byte(0xd8|(reg&7)))
 }
 
 // cdq32 emits `cdq` (sign-extend eax into edx:eax)
 func (g *CodeGen) cdq32() {
+	g.dos32OpPrefix()
 	g.emitByte(0x99)
 }
 
 // idivR32 emits `idiv reg`
 func (g *CodeGen) idivR32(reg int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0xf7, byte(0xf8|(reg&7)))
 }
 
 // shlCl32 emits `shl reg, cl`
 func (g *CodeGen) shlCl32(reg int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0xd3, byte(0xe0|(reg&7)))
 }
 
 // sarCl32 emits `sar reg, cl` (arithmetic shift right)
 func (g *CodeGen) sarCl32(reg int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0xd3, byte(0xf8|(reg&7)))
 }
 
 // shlImm32 emits `shl reg, imm8`
 func (g *CodeGen) shlImm32(reg int, n byte) {
+	g.dos32OpPrefix()
 	g.emitBytes(0xc1, byte(0xe0|(reg&7)), n)
 }
 
@@ -176,6 +250,20 @@ func (g *CodeGen) emitInt80() {
 
 // addRI32 emits `add reg, imm` (auto-selects imm8 or imm32)
 func (g *CodeGen) addRI32(reg int, val int32) {
+	if g.wordSize == 2 {
+		if val >= -128 && val <= 127 {
+			g.emitBytes(0x83, byte(0xc0|(reg&7)), byte(val))
+		} else {
+			if reg == REG32_EAX {
+				g.emitByte(0x05)
+			} else {
+				g.emitBytes(0x81, byte(0xc0|(reg&7)))
+			}
+			g.emitU16(uint16(int16(val)))
+		}
+		return
+	}
+	g.dos32OpPrefix()
 	if val >= -128 && val <= 127 {
 		g.emitBytes(0x83, byte(0xc0|(reg&7)), byte(val))
 	} else {
@@ -190,6 +278,16 @@ func (g *CodeGen) addRI32(reg int, val int32) {
 
 // subRI32 emits `sub reg, imm` (auto-selects imm8 or imm32)
 func (g *CodeGen) subRI32(reg int, val int32) {
+	if g.wordSize == 2 {
+		if val >= -128 && val <= 127 {
+			g.emitBytes(0x83, byte(0xe8|(reg&7)), byte(val))
+		} else {
+			g.emitBytes(0x81, byte(0xe8|(reg&7)))
+			g.emitU16(uint16(int16(val)))
+		}
+		return
+	}
+	g.dos32OpPrefix()
 	if val >= -128 && val <= 127 {
 		g.emitBytes(0x83, byte(0xe8|(reg&7)), byte(val))
 	} else {
@@ -200,6 +298,16 @@ func (g *CodeGen) subRI32(reg int, val int32) {
 
 // cmpRI32 emits `cmp reg, imm` (auto-selects imm8 or imm32)
 func (g *CodeGen) cmpRI32(reg int, val int32) {
+	if g.wordSize == 2 {
+		if val >= -128 && val <= 127 {
+			g.emitBytes(0x83, byte(0xf8|(reg&7)), byte(val))
+		} else {
+			g.emitBytes(0x81, byte(0xf8|(reg&7)))
+			g.emitU16(uint16(int16(val)))
+		}
+		return
+	}
+	g.dos32OpPrefix()
 	if val >= -128 && val <= 127 {
 		g.emitBytes(0x83, byte(0xf8|(reg&7)), byte(val))
 	} else {
@@ -210,11 +318,18 @@ func (g *CodeGen) cmpRI32(reg int, val int32) {
 
 // xorRI8_32 emits `xor reg, imm8`
 func (g *CodeGen) xorRI8_32(reg int, val byte) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x83, byte(0xf0|(reg&7)), val)
 }
 
 // imulRRI32_32 emits `imul dst, src, imm32`
 func (g *CodeGen) imulRRI32_32(dst, src int, val int32) {
+	if g.wordSize == 2 {
+		g.emitBytes(0x69, modrmRR32(dst, src))
+		g.emitU16(uint16(int16(val)))
+		return
+	}
+	g.dos32OpPrefix()
 	g.emitBytes(0x69, modrmRR32(dst, src))
 	g.emitU32(uint32(val))
 }
@@ -223,6 +338,31 @@ func (g *CodeGen) imulRRI32_32(dst, src int, val int32) {
 
 // loadMem32 emits `mov dst, [base+off]` (32-bit)
 func (g *CodeGen) loadMem32(dst, base, off int) {
+	if g.wordSize == 2 {
+		// Use 32-bit effective-address form in real mode when base is not 16-bit-addressable.
+		g.dos32AddrPrefix()
+		if off == 0 && (base&7) != REG32_EBP {
+			g.emitBytes(0x8b, byte((dst&7)<<3|(base&7)))
+			if (base & 7) == REG32_ESP {
+				g.emitByte(0x24)
+			}
+		} else if off >= -128 && off <= 127 {
+			g.emitBytes(0x8b, byte(0x40|(dst&7)<<3|(base&7)), byte(off))
+			if (base & 7) == REG32_ESP {
+				g.code = g.code[0 : len(g.code)-2]
+				g.emitBytes(byte(0x44|(dst&7)<<3), 0x24, byte(off))
+			}
+		} else {
+			g.emitBytes(0x8b, byte(0x80|(dst&7)<<3|(base&7)))
+			if (base & 7) == REG32_ESP {
+				g.code = g.code[0 : len(g.code)-1]
+				g.emitBytes(byte(0x84|(dst&7)<<3), 0x24)
+			}
+			g.emitU32(uint32(int32(off)))
+		}
+		return
+	}
+	g.dos32OpAddrPrefix()
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x8b, byte((dst&7)<<3|(base&7)))
 		if (base & 7) == REG32_ESP {
@@ -246,6 +386,30 @@ func (g *CodeGen) loadMem32(dst, base, off int) {
 
 // storeMem32 emits `mov [base+off], src` (32-bit)
 func (g *CodeGen) storeMem32(base, off, src int) {
+	if g.wordSize == 2 {
+		g.dos32AddrPrefix()
+		if off == 0 && (base&7) != REG32_EBP {
+			g.emitBytes(0x89, byte((src&7)<<3|(base&7)))
+			if (base & 7) == REG32_ESP {
+				g.emitByte(0x24)
+			}
+		} else if off >= -128 && off <= 127 {
+			g.emitBytes(0x89, byte(0x40|(src&7)<<3|(base&7)), byte(off))
+			if (base & 7) == REG32_ESP {
+				g.code = g.code[0 : len(g.code)-2]
+				g.emitBytes(byte(0x44|(src&7)<<3), 0x24, byte(off))
+			}
+		} else {
+			g.emitBytes(0x89, byte(0x80|(src&7)<<3|(base&7)))
+			if (base & 7) == REG32_ESP {
+				g.code = g.code[0 : len(g.code)-1]
+				g.emitBytes(byte(0x84|(src&7)<<3), 0x24)
+			}
+			g.emitU32(uint32(int32(off)))
+		}
+		return
+	}
+	g.dos32OpAddrPrefix()
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x89, byte((src&7)<<3|(base&7)))
 		if (base & 7) == REG32_ESP {
@@ -269,6 +433,10 @@ func (g *CodeGen) storeMem32(base, off, src int) {
 
 // loadMemByte32 emits `movzx dst, byte [base+off]`
 func (g *CodeGen) loadMemByte32(dst, base, off int) {
+	if g.wordSize == 2 {
+		g.dos32AddrPrefix()
+	}
+	g.dos32OpAddrPrefix()
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x0f, 0xb6, byte((dst&7)<<3|(base&7)))
 	} else if off >= -128 && off <= 127 {
@@ -281,6 +449,7 @@ func (g *CodeGen) loadMemByte32(dst, base, off int) {
 
 // storeMemByte32 emits `mov byte [base+off], src_lo8`
 func (g *CodeGen) storeMemByte32(base, off, src int) {
+	g.dos32AddrPrefix()
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x88, byte((src&7)<<3|(base&7)))
 	} else if off >= -128 && off <= 127 {
@@ -295,11 +464,13 @@ func (g *CodeGen) storeMemByte32(base, off, src int) {
 
 // movzxB32 emits `movzx reg, reg_lo8`
 func (g *CodeGen) movzxB32(reg int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x0f, 0xb6, modrmRR32(reg, reg))
 }
 
 // movzxW32 emits `movzx reg, reg_lo16`
 func (g *CodeGen) movzxW32(reg int) {
+	g.dos32OpPrefix()
 	g.emitBytes(0x0f, 0xb7, modrmRR32(reg, reg))
 }
 

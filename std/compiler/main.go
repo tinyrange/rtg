@@ -19,8 +19,9 @@ func defaultPtrSize() int {
 	}
 	return 8
 }
-var targetBackend string = "native" // native, c, ir, or vm
-var targetCModel int = 0            // 16/32/64 when targetBackend==c
+
+var targetBackend string = "native"       // native, c, ir, or vm
+var targetCModel int = 0                  // 16/32/64 when targetBackend==c
 var targetWordSize int = defaultPtrSize() // word size in bytes
 var buildTags []string
 var compilerDebug bool
@@ -40,7 +41,7 @@ func runCleanup() {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|dos/16|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -110,9 +111,17 @@ func main() {
 				bits := targetWordSize * 8
 				targetGOARCH = fmt.Sprintf("c%d", bits)
 			} else {
+				if target == "dos/16" {
+					// DOS 16-bit COM backend.
+					targetGOOS = "dos"
+					targetGOARCH = "dos16"
+					targetPtrSize = 2
+					i = i + 2
+					continue
+				}
 				slashIdx := strings.Index(target, "/")
 				if slashIdx < 0 {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch or c[/16|32|64]\n", target)
+					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/16, or c[/16|32|64]\n", target)
 					os.Exit(1)
 				}
 				targetGOOS = target[0:slashIdx]
@@ -199,7 +208,7 @@ func main() {
 	}
 
 	if len(entryFiles) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|dos/16|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
 		os.Exit(1)
 	}
 

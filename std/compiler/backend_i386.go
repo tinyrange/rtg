@@ -7,6 +7,17 @@ import (
 	"os"
 )
 
+func (g *CodeGen) slotBytes_i386() int {
+	if g.wordSize <= 0 {
+		return 4
+	}
+	return g.wordSize
+}
+
+func (g *CodeGen) ptrBytes_i386() int {
+	return g.slotBytes_i386()
+}
+
 // generateI386ELF compiles an IRModule to an i386 (32-bit) ELF binary.
 func generateI386ELF(irmod *IRModule, outputPath string) error {
 	g := &CodeGen{
@@ -19,11 +30,12 @@ func generateI386ELF(irmod *IRModule, outputPath string) error {
 		wordSize:      4,
 	}
 
-	// Allocate .data space for globals (4 bytes each)
+	slot := g.slotBytes_i386()
+	// Allocate .data space for globals (word-sized each)
 	for i := range irmod.Globals {
-		g.globalOffsets[i] = i * 4
+		g.globalOffsets[i] = i * slot
 	}
-	g.data = make([]byte, len(irmod.Globals)*4)
+	g.data = make([]byte, len(irmod.Globals)*slot)
 
 	// Emit _start
 	g.emitStart_i386(irmod)
@@ -82,11 +94,12 @@ func (g *CodeGen) compileFunc_i386(f *IRFunc) {
 	g.labelOffsets = make(map[int]int)
 	g.jumpFixups = nil
 
-	// Prologue: push ebp; mov ebp, esp; sub esp, N*4
+	slot := g.slotBytes_i386()
+	// Prologue: push ebp; mov ebp, esp; sub esp, frameBytes
 	g.pushR32(REG32_EBP)
 	g.movRR32(REG32_EBP, REG32_ESP)
 
-	frameBytes := g.curFrameSize * 4
+	frameBytes := g.curFrameSize * slot
 	if frameBytes > 0 {
 		g.subRI32(REG32_ESP, int32(frameBytes))
 	}
@@ -96,7 +109,7 @@ func (g *CodeGen) compileFunc_i386(f *IRFunc) {
 		i := f.Params - 1
 		for i >= 0 {
 			g.opPop(REG32_EAX)
-			offset := (i + 1) * 4
+			offset := (i + 1) * slot
 			g.emitStoreLocal32(offset, REG32_EAX)
 			i = i - 1
 		}
@@ -272,6 +285,16 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 
 func (g *CodeGen) compileConstI32(val int64) {
 	g.flush()
+	if g.wordSize == 2 {
+		v16 := uint16(val)
+		if v16 == 0 {
+			g.xorRR32(REG32_EAX, REG32_EAX)
+		} else {
+			g.emitMovRegImm32(REG32_EAX, uint32(v16))
+		}
+		g.opPush(REG32_EAX)
+		return
+	}
 	v32 := uint32(val)
 	if v32 == 0 {
 		g.xorRR32(REG32_EAX, REG32_EAX)
@@ -291,20 +314,29 @@ func (g *CodeGen) compileConstStr_i386(s string) {
 		dataOff := len(g.rodata)
 		g.rodata = append(g.rodata, []byte(decoded)...)
 
-		// Store 8-byte header {data_ptr:4, len:4} in rodata
+		// Store header {data_ptr, len} in rodata (word-sized fields)
 		headerOff = len(g.rodata)
-		g.emitRodataU32(0)                    // data_ptr placeholder (4 bytes)
-		g.emitRodataU32(uint32(len(decoded))) // len (4 bytes)
+		if g.wordSize == 2 {
+			g.rodata = append(g.rodata, 0, 0)
+			g.rodata = append(g.rodata, byte(len(decoded)), byte(len(decoded)>>8))
+		} else {
+			g.emitRodataU32(0)                    // data_ptr placeholder (4 bytes)
+			g.emitRodataU32(uint32(len(decoded))) // len (4 bytes)
+		}
 
 		g.stringMap[decoded] = headerOff
 		// Store dataOff in the placeholder temporarily
-		putU32(g.rodata[headerOff:headerOff+4], uint32(dataOff))
+		if g.wordSize == 2 {
+			putU16(g.rodata[headerOff:headerOff+2], uint16(dataOff))
+		} else {
+			putU32(g.rodata[headerOff:headerOff+4], uint32(dataOff))
+		}
 	}
 
 	// Push header address onto operand stack: mov eax, imm32
 	g.emitMovRegImm32(REG32_EAX, uint32(headerOff))
 	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 4,
+		CodeOffset: len(g.code) - g.wordSize,
 		Target:     "$rodata_header$",
 	})
 	g.opPush(REG32_EAX)
@@ -314,20 +346,20 @@ func (g *CodeGen) compileConstStr_i386(s string) {
 
 func (g *CodeGen) compileLocalGet_i386(idx int) {
 	g.flush()
-	offset := (idx + 1) * 4
+	offset := (idx + 1) * g.slotBytes_i386()
 	g.emitLoadLocal32(offset, REG32_EAX)
 	g.opPush(REG32_EAX)
 }
 
 func (g *CodeGen) compileLocalSet_i386(idx int) {
 	g.opPop(REG32_EAX)
-	offset := (idx + 1) * 4
+	offset := (idx + 1) * g.slotBytes_i386()
 	g.emitStoreLocal32(offset, REG32_EAX)
 }
 
 func (g *CodeGen) compileLocalAddr_i386(idx int) {
 	g.flush()
-	offset := (idx + 1) * 4
+	offset := (idx + 1) * g.slotBytes_i386()
 	g.emitLeaLocal32(offset, REG32_EAX)
 	g.opPush(REG32_EAX)
 }
@@ -336,9 +368,9 @@ func (g *CodeGen) compileLocalAddr_i386(idx int) {
 
 func (g *CodeGen) compileGlobalGet_i386(inst Inst) {
 	g.flush()
-	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*4))
+	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 4,
+		CodeOffset: len(g.code) - g.wordSize,
 		Target:     "$data_addr$",
 	})
 	g.loadMem32(REG32_EAX, REG32_ECX, 0)
@@ -347,9 +379,9 @@ func (g *CodeGen) compileGlobalGet_i386(inst Inst) {
 
 func (g *CodeGen) compileGlobalSet_i386(inst Inst) {
 	g.opPop(REG32_EAX)
-	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*4))
+	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 4,
+		CodeOffset: len(g.code) - g.wordSize,
 		Target:     "$data_addr$",
 	})
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
@@ -357,9 +389,9 @@ func (g *CodeGen) compileGlobalSet_i386(inst Inst) {
 
 func (g *CodeGen) compileGlobalAddr_i386(inst Inst) {
 	g.flush()
-	g.emitMovRegImm32(REG32_EAX, uint32(inst.Arg*4))
+	g.emitMovRegImm32(REG32_EAX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 4,
+		CodeOffset: len(g.code) - g.wordSize,
 		Target:     "$data_addr$",
 	})
 	g.opPush(REG32_EAX)
@@ -420,7 +452,7 @@ func (g *CodeGen) compileCompare_i386(setccOpcode byte) {
 	g.opPop(REG32_ECX)
 	g.cmpRR32(REG32_ECX, REG32_EAX)
 	g.emitBytes(0x0f, setccOpcode, 0xc1) // setCC cl
-	g.emitBytes(0x0f, 0xb6, 0xc9)         // movzx ecx, cl
+	g.emitBytes(0x0f, 0xb6, 0xc9)        // movzx ecx, cl
 	g.opPush(REG32_ECX)
 }
 
@@ -436,7 +468,7 @@ func (g *CodeGen) compileCall_i386(inst Inst) {
 
 func (g *CodeGen) compileCompositeLitCall_i386(inst Inst) {
 	fieldCount := inst.Arg
-	structSize := fieldCount * 4
+	structSize := fieldCount * g.slotBytes_i386()
 
 	if structSize == 0 {
 		g.compileConstI32(0)
@@ -460,14 +492,21 @@ func (g *CodeGen) compileCompositeLitCall_i386(inst Inst) {
 	i = 0
 	for i < fieldCount {
 		g.popR32(REG32_EAX)
-		offset := i * 4
+		offset := i * g.slotBytes_i386()
 		if offset == 0 {
 			g.storeMem32(REG32_ECX, 0, REG32_EAX)
 		} else if offset <= 127 {
 			g.storeMem32(REG32_ECX, offset, REG32_EAX)
 		} else {
-			g.emitBytes(0x89, 0x81) // mov [ecx+off32], eax
-			g.emitU32(uint32(offset))
+			// mov [ecx+off], eax
+			if g.wordSize == 2 {
+				g.dos32AddrPrefix()
+				g.emitBytes(0x89, 0x81)
+				g.emitU32(uint32(offset))
+			} else {
+				g.emitBytes(0x89, 0x81)
+				g.emitU32(uint32(offset))
+			}
 		}
 		i++
 	}
@@ -488,8 +527,12 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst Inst) {
 	g.flush()
 	switch inst.Name {
 	case "Syscall":
-		// Linux i386 only
-		g.compileSyscallIntrinsic_linux386(inst.Arg)
+		if targetGOOS == "dos" {
+			g.compileSyscallIntrinsic_dos386(inst.Arg)
+		} else {
+			// Linux i386 only
+			g.compileSyscallIntrinsic_linux386(inst.Arg)
+		}
 	case "SysRead":
 		g.compileSyscallRead_win386()
 	case "SysWrite":
@@ -557,49 +600,52 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst Inst) {
 
 func (g *CodeGen) compileSliceptrIntrinsic_i386() {
 	// Param 0 = slice header pointer. Read [header+0] = data ptr.
-	g.emitLoadLocal32(1*4, REG32_EAX)
+	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
 	g.loadMem32(REG32_EAX, REG32_EAX, 0)
 	g.opPush(REG32_EAX)
 }
 
 func (g *CodeGen) compileMakesliceIntrinsic_i386() {
 	// Params: ptr (local 0), len (local 1), cap (local 2)
-	// Allocate 16 bytes for header {ptr:4, len:4, cap:4, elem_size:4}
-	g.compileConstI32(16)
+	// Allocate 4-word header {ptr, len, cap, elem_size}
+	sz := 4 * g.slotBytes_i386()
+	g.compileConstI32(int64(sz))
 	g.emitCallPlaceholder("runtime.Alloc")
 	g.opPop(REG32_ECX)
 
 	// Fill header
-	g.emitLoadLocal32(1*4, REG32_EAX) // ptr
+	w := g.slotBytes_i386()
+	g.emitLoadLocal32(1*w, REG32_EAX) // ptr
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
-	g.emitLoadLocal32(2*4, REG32_EAX) // len
-	g.storeMem32(REG32_ECX, 4, REG32_EAX)
-	g.emitLoadLocal32(3*4, REG32_EAX) // cap
-	g.storeMem32(REG32_ECX, 8, REG32_EAX)
-	g.emitMovRegImm32(REG32_EAX, 1)   // elem_size = 1
-	g.storeMem32(REG32_ECX, 12, REG32_EAX)
+	g.emitLoadLocal32(2*w, REG32_EAX) // len
+	g.storeMem32(REG32_ECX, 1*w, REG32_EAX)
+	g.emitLoadLocal32(3*w, REG32_EAX) // cap
+	g.storeMem32(REG32_ECX, 2*w, REG32_EAX)
+	g.emitMovRegImm32(REG32_EAX, 1) // elem_size = 1
+	g.storeMem32(REG32_ECX, 3*w, REG32_EAX)
 
 	g.opPush(REG32_ECX)
 }
 
 func (g *CodeGen) compileStringptrIntrinsic_i386() {
 	// Param 0 = string header pointer. Read [header+0] = data ptr.
-	g.emitLoadLocal32(1*4, REG32_EAX)
+	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
 	g.loadMem32(REG32_EAX, REG32_EAX, 0)
 	g.opPush(REG32_EAX)
 }
 
 func (g *CodeGen) compileMakestringIntrinsic_i386() {
 	// Params: ptr (local 0), len (local 1)
-	// Allocate 8-byte header {ptr:4, len:4}
-	g.compileConstI32(8)
+	// Allocate 2-word header {ptr, len}
+	g.compileConstI32(int64(2 * g.slotBytes_i386()))
 	g.emitCallPlaceholder("runtime.Alloc")
 	g.opPop(REG32_ECX)
 
-	g.emitLoadLocal32(1*4, REG32_EAX) // ptr
+	w := g.slotBytes_i386()
+	g.emitLoadLocal32(1*w, REG32_EAX) // ptr
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
-	g.emitLoadLocal32(2*4, REG32_EAX) // len
-	g.storeMem32(REG32_ECX, 4, REG32_EAX)
+	g.emitLoadLocal32(2*w, REG32_EAX) // len
+	g.storeMem32(REG32_ECX, w, REG32_EAX)
 
 	g.opPush(REG32_ECX)
 }
@@ -607,7 +653,7 @@ func (g *CodeGen) compileMakestringIntrinsic_i386() {
 func (g *CodeGen) compileTostringIntrinsic_i386() {
 	// Param 0 = value (could be string ptr or interface box ptr)
 	// Heuristic: if [ptr+0] < 256, it's a type_id (interface box)
-	g.emitLoadLocal32(1*4, REG32_EAX) // load value
+	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX) // load value
 
 	// Test: check if [eax] < 256
 	g.loadMem32(REG32_ECX, REG32_EAX, 0)
@@ -615,8 +661,8 @@ func (g *CodeGen) compileTostringIntrinsic_i386() {
 	g.emitU32(256)
 	stringCaseFixup := g.jccRel32(CC32_AE)
 
-	// Interface case: ecx = type_id, [eax+4] = concrete value
-	g.loadMem32(REG32_EDX, REG32_EAX, 4)
+	// Interface case: ecx = type_id, [eax+ptr] = concrete value
+	g.loadMem32(REG32_EDX, REG32_EAX, g.slotBytes_i386())
 	g.opPush(REG32_EDX)
 
 	// Save type_id (ecx) on call stack
@@ -678,7 +724,7 @@ func (g *CodeGen) compileTostringIntrinsic_i386() {
 
 	// string_case: just pass through the value
 	g.patchRel32(stringCaseFixup)
-	g.emitLoadLocal32(1*4, REG32_EAX)
+	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
 	g.opPush(REG32_EAX)
 	g.flush()
 
@@ -687,23 +733,25 @@ func (g *CodeGen) compileTostringIntrinsic_i386() {
 
 func (g *CodeGen) compileReadPtrIntrinsic_i386() {
 	// Param 0 = addr. Read 4 bytes at addr, push result.
-	g.emitLoadLocal32(1*4, REG32_EAX)
+	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
 	g.loadMem32(REG32_EAX, REG32_EAX, 0)
 	g.opPush(REG32_EAX)
 }
 
 func (g *CodeGen) compileWritePtrIntrinsic_i386() {
 	// Param 0 = addr, Param 1 = val. Write 4 bytes.
-	g.emitLoadLocal32(1*4, REG32_EAX) // addr
-	g.emitLoadLocal32(2*4, REG32_ECX) // val
+	w := g.slotBytes_i386()
+	g.emitLoadLocal32(1*w, REG32_EAX) // addr
+	g.emitLoadLocal32(2*w, REG32_ECX) // val
 	g.storeMem32(REG32_EAX, 0, REG32_ECX)
 }
 
 func (g *CodeGen) compileWriteByteIntrinsic_i386() {
 	// Param 0 = addr, Param 1 = val. Write 1 byte.
-	g.emitLoadLocal32(1*4, REG32_EAX) // addr
-	g.emitLoadLocal32(2*4, REG32_ECX) // val
-	g.emitBytes(0x88, 0x08)           // mov [eax], cl
+	w := g.slotBytes_i386()
+	g.emitLoadLocal32(1*w, REG32_EAX) // addr
+	g.emitLoadLocal32(2*w, REG32_ECX) // val
+	g.storeMemByte32(REG32_EAX, 0, REG32_ECX)
 }
 
 // === Interface dispatch (i386) ===
@@ -714,8 +762,8 @@ func (g *CodeGen) compileIfaceBox_i386(inst Inst) {
 	g.opPop(REG32_EAX)
 	g.pushR32(REG32_EAX) // save concrete value
 
-	// Allocate 8 bytes: {type_id:4, value:4}
-	g.compileConstI32(8)
+	// Allocate 2 words: {type_id, value}
+	g.compileConstI32(int64(2 * g.slotBytes_i386()))
 	g.emitCallPlaceholder("runtime.Alloc")
 	g.opPop(REG32_ECX) // box ptr
 
@@ -723,9 +771,9 @@ func (g *CodeGen) compileIfaceBox_i386(inst Inst) {
 	g.emitMovRegImm32(REG32_EAX, uint32(typeID))
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
 
-	// Restore concrete value and store at [box+4]
+	// Restore concrete value and store at [box+ptr]
 	g.popR32(REG32_EAX)
-	g.storeMem32(REG32_ECX, 4, REG32_EAX)
+	g.storeMem32(REG32_ECX, g.slotBytes_i386(), REG32_EAX)
 
 	g.opPush(REG32_ECX)
 }
@@ -745,9 +793,9 @@ func (g *CodeGen) compileIfaceCall_i386(inst Inst) {
 	// Pop interface pointer
 	g.opPop(REG32_EAX)
 
-	// Load type_id from [eax+0], concrete value from [eax+4]
-	g.loadMem32(REG32_ECX, REG32_EAX, 0) // type_id
-	g.loadMem32(REG32_EDX, REG32_EAX, 4) // concrete value
+	// Load type_id from [eax+0], concrete value from [eax+ptr]
+	g.loadMem32(REG32_ECX, REG32_EAX, 0)                  // type_id
+	g.loadMem32(REG32_EDX, REG32_EAX, g.slotBytes_i386()) // concrete value
 
 	// Push receiver once and materialize it before branch dispatch.
 	g.opPush(REG32_EDX)
@@ -818,15 +866,15 @@ func (g *CodeGen) compileLoad_i386(size int) {
 	g.opPop(REG32_ECX)
 	g.testRR32(REG32_ECX, REG32_ECX)
 	if size == 1 {
-		g.emitBytes(0x75, 0x04)                       // jnz +4
-		g.xorRR32(REG32_EAX, REG32_EAX)               // 2 bytes
-		g.jmpRel8(0x03)                                // jmp +3
-		g.loadMemByte32(REG32_EAX, REG32_ECX, 0)      // movzx eax, byte [ecx]
-	} else {
 		g.emitBytes(0x75, 0x04)                  // jnz +4
 		g.xorRR32(REG32_EAX, REG32_EAX)          // 2 bytes
-		g.jmpRel8(0x02)                           // jmp +2
-		g.loadMem32(REG32_EAX, REG32_ECX, 0)     // mov eax, [ecx]
+		g.jmpRel8(0x03)                          // jmp +3
+		g.loadMemByte32(REG32_EAX, REG32_ECX, 0) // movzx eax, byte [ecx]
+	} else {
+		g.emitBytes(0x75, 0x04)              // jnz +4
+		g.xorRR32(REG32_EAX, REG32_EAX)      // 2 bytes
+		g.jmpRel8(0x02)                      // jmp +2
+		g.loadMem32(REG32_EAX, REG32_ECX, 0) // mov eax, [ecx]
 	}
 	g.opPush(REG32_EAX)
 }
@@ -835,7 +883,7 @@ func (g *CodeGen) compileStore_i386(size int) {
 	g.opPop(REG32_ECX) // addr
 	g.opPop(REG32_EAX) // value
 	if size == 1 {
-		g.emitBytes(0x88, 0x01) // mov [ecx], al
+		g.storeMemByte32(REG32_ECX, 0, REG32_EAX)
 	} else {
 		g.storeMem32(REG32_ECX, 0, REG32_EAX)
 	}
@@ -873,20 +921,20 @@ func (g *CodeGen) compileIndexAddr_i386(elemSize int) {
 func (g *CodeGen) compileLen_i386() {
 	g.opPop(REG32_EAX)
 	g.testRR32(REG32_EAX, REG32_EAX)
-	g.emitBytes(0x75, 0x04)                    // jnz +4
-	g.xorRR32(REG32_EAX, REG32_EAX)            // 2 bytes
-	g.jmpRel8(0x03)                             // jmp +3
-	g.loadMem32(REG32_EAX, REG32_EAX, 4)       // len at offset 4 (not 8)
+	g.emitBytes(0x75, 0x04)                               // jnz +4
+	g.xorRR32(REG32_EAX, REG32_EAX)                       // 2 bytes
+	g.jmpRel8(0x03)                                       // jmp +3
+	g.loadMem32(REG32_EAX, REG32_EAX, g.slotBytes_i386()) // len at offset ptr
 	g.opPush(REG32_EAX)
 }
 
 func (g *CodeGen) compileCap_i386() {
 	g.opPop(REG32_EAX)
 	g.testRR32(REG32_EAX, REG32_EAX)
-	g.emitBytes(0x75, 0x04)                    // jnz +4
-	g.xorRR32(REG32_EAX, REG32_EAX)            // 2 bytes
-	g.jmpRel8(0x03)                             // jmp +3
-	g.loadMem32(REG32_EAX, REG32_EAX, 8)       // cap at offset 8 (2*4)
+	g.emitBytes(0x75, 0x04)                                 // jnz +4
+	g.xorRR32(REG32_EAX, REG32_EAX)                         // 2 bytes
+	g.jmpRel8(0x03)                                         // jmp +3
+	g.loadMem32(REG32_EAX, REG32_EAX, 2*g.slotBytes_i386()) // cap at offset 2*ptr
 	g.opPush(REG32_EAX)
 }
 
