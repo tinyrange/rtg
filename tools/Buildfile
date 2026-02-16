@@ -64,13 +64,13 @@ crosscompile-wasm-native: build
   sh cmp build/cross_stage3 build/cross_stage4 && echo "PASS: wasm->native cross-compile OK"
 
 test-fullcompiler-rtg: build
-  sh bash tools/fullcompiler_suite.sh rtg
+  fullcompiler rtg
 
 test-fullcompiler-c: build
-  sh bash tools/fullcompiler_suite.sh c
+  fullcompiler c
 
 test-fullcompiler-wasm: build
-  sh bash tools/fullcompiler_suite.sh wasm
+  fullcompiler wasm
 
 test: test-fullcompiler-rtg
 

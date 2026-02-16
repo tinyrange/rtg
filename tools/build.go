@@ -241,13 +241,14 @@ func parseCommand(line string, lineNum int) (Command, error) {
 
 	// Validate command type
 	validTypes := map[string]bool{
-		"gobuild":  true,
-		"run":      true,
-		"copy":     true,
-		"mkdir":    true,
-		"rm":       true,
-		"sh":       true,
-		"requires": true,
+		"gobuild":      true,
+		"fullcompiler": true,
+		"run":          true,
+		"copy":         true,
+		"mkdir":        true,
+		"rm":           true,
+		"sh":           true,
+		"requires":     true,
 	}
 
 	if !validTypes[cmd.Type] {
@@ -519,6 +520,8 @@ func (e *Executor) executeCommand(cmd Command, target *Target) error {
 	switch cmd.Type {
 	case "gobuild":
 		return e.handleGoBuild(args, target)
+	case "fullcompiler":
+		return e.handleFullCompiler(args)
 	case "run":
 		return e.handleRun(args)
 	case "copy":
@@ -532,6 +535,164 @@ func (e *Executor) executeCommand(cmd Command, target *Target) error {
 	default:
 		return fmt.Errorf("unknown command type %q", cmd.Type)
 	}
+}
+
+func parseTarget(target string) (string, string, error) {
+	parts := strings.Split(target, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid target %q (expected os/arch)", target)
+	}
+	return parts[0], parts[1], nil
+}
+
+func trimCommandOutput(out []byte) string {
+	return strings.TrimRight(string(out), "\r\n")
+}
+
+func detectRTGCompilerPath() (string, error) {
+	if p := os.Getenv("RTG_COMPILER"); p != "" {
+		return p, nil
+	}
+	candidates := []string{"./build/rtg"}
+	if runtime.GOOS == "windows" {
+		candidates = []string{"./build/rtg.exe", "./build/rtg"}
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("could not find RTG compiler; set RTG_COMPILER or build ./build/rtg")
+}
+
+func (e *Executor) runAndCapture(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("%s %s failed: %s", name, strings.Join(args, " "), trimCommandOutput(ee.Stderr))
+		}
+		return "", err
+	}
+	return trimCommandOutput(out), nil
+}
+
+// handleFullCompiler runs the top-level fullcompiler suite for a backend.
+// Usage: fullcompiler <rtg|c|wasm>
+func (e *Executor) handleFullCompiler(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("fullcompiler requires exactly 1 argument: <rtg|c|wasm>")
+	}
+	backend := args[0]
+	switch backend {
+	case "rtg", "c", "wasm":
+	default:
+		return fmt.Errorf("unsupported fullcompiler backend: %s", backend)
+	}
+
+	tests, err := filepath.Glob("tests/fullcompiler/*/main.go")
+	if err != nil {
+		return err
+	}
+	sort.Strings(tests)
+	if len(tests) == 0 {
+		return fmt.Errorf("no tests found under tests/fullcompiler/*/main.go")
+	}
+
+	expect := map[string]string{
+		"empty": "",
+		"hello": "hello world",
+	}
+
+	rtgCompiler, err := detectRTGCompilerPath()
+	if err != nil {
+		return err
+	}
+
+	rtgTarget := os.Getenv("RTG_TARGET")
+	targetOS := runtime.GOOS
+	targetArch := runtime.GOARCH
+	if rtgTarget != "" {
+		targetOS, targetArch, err = parseTarget(rtgTarget)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, testPath := range tests {
+		name := filepath.Base(filepath.Dir(testPath))
+		want, ok := expect[name]
+		if !ok {
+			return fmt.Errorf("unknown fullcompiler test: %s", name)
+		}
+
+		var got string
+		switch backend {
+		case "rtg":
+			out := filepath.Join("build", "fullcompiler_"+name)
+			if targetOS == "windows" {
+				out += ".exe"
+			}
+			compileArgs := []string{}
+			if rtgTarget != "" {
+				compileArgs = append(compileArgs, "-T", rtgTarget)
+			}
+			compileArgs = append(compileArgs, testPath, "-o", out)
+			if _, err := e.runAndCapture(rtgCompiler, compileArgs...); err != nil {
+				return err
+			}
+
+			if targetOS != runtime.GOOS {
+				return fmt.Errorf("cannot execute %s binary on %s host: %s", targetOS, runtime.GOOS, out)
+			}
+			if targetArch != runtime.GOARCH {
+				allowWinWOW64 := runtime.GOOS == "windows" && runtime.GOARCH == "amd64" && targetArch == "386"
+				if !allowWinWOW64 {
+					return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
+				}
+			}
+			got, err = e.runAndCapture(out)
+			if err != nil {
+				return err
+			}
+		case "c":
+			csrc := filepath.Join("build", "fullcompiler_"+name+".c")
+			out := filepath.Join("build", "fullcompiler_c_"+name)
+			if runtime.GOOS == "windows" {
+				out += ".exe"
+			}
+			if _, err := e.runAndCapture(rtgCompiler, "-T", "c/64", testPath, "-o", csrc); err != nil {
+				return err
+			}
+			cc := os.Getenv("CC")
+			if cc == "" {
+				cc = "cc"
+			}
+			if _, err := e.runAndCapture(cc, csrc, "-o", out); err != nil {
+				return err
+			}
+			got, err = e.runAndCapture(out)
+			if err != nil {
+				return err
+			}
+		case "wasm":
+			wasmOut := filepath.Join("build", "fullcompiler_"+name+".wasm")
+			if _, err := e.runAndCapture(rtgCompiler, "-T", "wasi/wasm32", testPath, "-o", wasmOut); err != nil {
+				return err
+			}
+			got, err = e.runAndCapture("wasmtime", "--dir=.", wasmOut)
+			if err != nil {
+				return err
+			}
+		}
+
+		if got != want {
+			return fmt.Errorf("FAIL: %s/%s expected %q got %q", backend, name, want, got)
+		}
+		fmt.Printf("PASS: %s/%s\n", backend, name)
+	}
+
+	return nil
 }
 
 // ============================================================================
@@ -675,7 +836,7 @@ func shShell(cmdStr string) (name string, args []string) {
 	// On Windows, cmd.exe parses "./build/foo" as command "." with arg "build/foo",
 	// and does not provide mv, cmp, etc. Prefer a real bash (Git for Windows).
 	for _, candidate := range []string{
-		os.Getenv("GIT_BASH"),                    // e.g. C:\Program Files\Git\bin\bash.exe
+		os.Getenv("GIT_BASH"), // e.g. C:\Program Files\Git\bin\bash.exe
 		`C:\Program Files\Git\bin\bash.exe`,
 		`C:\Program Files (x86)\Git\bin\bash.exe`,
 	} {
