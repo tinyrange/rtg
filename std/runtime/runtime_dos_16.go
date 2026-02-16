@@ -19,8 +19,9 @@ var GOOS string = "dos"
 var GOARCH string = "dos16"
 
 func init() {
-	// Keep allocator chunk size representable in 16-bit uintptr arithmetic.
-	heapChunk = 4096
+	// Keep heap above typical COM text/data while reserving room for stack.
+	heapChunk = 16384
+	dosMmapBase = 0x8000
 }
 
 //rtg:internal Syscall
@@ -65,7 +66,25 @@ func SysGetdents64(fd, buf, size uintptr) (uintptr, uintptr, uintptr) {
 }
 func SysExit(code uintptr) { Syscall(252, code, 0, 0, 0, 0, 0) }
 func SysMmap(addr, length, prot, flags, fd, offset uintptr) (uintptr, uintptr, uintptr) {
-	return Syscall(192, addr, length, prot, flags, fd, offset)
+	_ = addr
+	_ = prot
+	_ = flags
+	_ = fd
+	_ = offset
+	if length == 0 {
+		return 0, 0, 12
+	}
+	// Align mappings to 16-byte boundaries so pointer arithmetic remains simple.
+	size := (length + 15) &^ uintptr(15)
+	base := dosMmapBase
+	const dosHeapLimit uintptr = 0xE000
+	if base+size > dosHeapLimit {
+		return 0, 0, 12
+	}
+	dosMmapBase = base + size
+	return base, 0, 0
 }
 func SysPipe(fds uintptr) (uintptr, uintptr, uintptr) { return Syscall(331, fds, 0, 0, 0, 0, 0) }
 func SysGetpid() (uintptr, uintptr, uintptr)          { return Syscall(20, 0, 0, 0, 0, 0, 0) }
+
+var dosMmapBase uintptr

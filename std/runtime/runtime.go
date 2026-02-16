@@ -67,7 +67,14 @@ func Alloc(size int) uintptr {
 	// Round up to 8-byte alignment
 	size = (size + 7) / 8 * 8
 
-	if heapPtr == 0 || heapPtr+uintptr(size) > heapEnd {
+	needGrow := heapPtr == 0
+	if !needGrow {
+		avail := heapEnd - heapPtr
+		if uintptr(size) > avail {
+			needGrow = true
+		}
+	}
+	if needGrow {
 		chunk := heapChunk
 		if size > chunk {
 			chunk = size

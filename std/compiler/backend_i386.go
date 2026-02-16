@@ -451,6 +451,16 @@ func (g *CodeGen) compileCompare_i386(setccOpcode byte) {
 	g.opPop(REG32_EAX)
 	g.opPop(REG32_ECX)
 	g.cmpRR32(REG32_ECX, REG32_EAX)
+	if g.wordSize == 2 {
+		g.emitMovRegImm32(REG32_ECX, 0)
+		fixTrue := g.jccRel32(byte(0x80 | (setccOpcode & 0x0f)))
+		fixDone := g.jmpRel32()
+		g.patchRel32(fixTrue)
+		g.emitMovRegImm32(REG32_ECX, 1)
+		g.patchRel32(fixDone)
+		g.opPush(REG32_ECX)
+		return
+	}
 	g.emitBytes(0x0f, setccOpcode, 0xc1) // setCC cl
 	g.emitBytes(0x0f, 0xb6, 0xc9)        // movzx ecx, cl
 	g.opPush(REG32_ECX)
@@ -493,21 +503,7 @@ func (g *CodeGen) compileCompositeLitCall_i386(inst Inst) {
 	for i < fieldCount {
 		g.popR32(REG32_EAX)
 		offset := i * g.slotBytes_i386()
-		if offset == 0 {
-			g.storeMem32(REG32_ECX, 0, REG32_EAX)
-		} else if offset <= 127 {
-			g.storeMem32(REG32_ECX, offset, REG32_EAX)
-		} else {
-			// mov [ecx+off], eax
-			if g.wordSize == 2 {
-				g.dos32AddrPrefix()
-				g.emitBytes(0x89, 0x81)
-				g.emitU32(uint32(offset))
-			} else {
-				g.emitBytes(0x89, 0x81)
-				g.emitU32(uint32(offset))
-			}
-		}
+		g.storeMem32(REG32_ECX, offset, REG32_EAX)
 		i++
 	}
 
@@ -941,6 +937,21 @@ func (g *CodeGen) compileCap_i386() {
 // === Type conversions (i386) ===
 
 func (g *CodeGen) compileConvert_i386(typeName string) {
+	if g.wordSize == 2 {
+		switch typeName {
+		case "string":
+			g.emitCallPlaceholder("runtime.BytesToString")
+		case "[]byte":
+			g.emitCallPlaceholder("runtime.StringToBytes")
+		case "byte":
+			g.opPop(REG32_EAX)
+			g.emitBytes(0x25, 0xff, 0x00) // and ax, 0x00ff
+			g.opPush(REG32_EAX)
+		case "uint16", "int16", "int", "uintptr", "uint", "int32", "uint32", "int64", "uint64":
+			// No-op on 16-bit target: values are represented in one 16-bit word.
+		}
+		return
+	}
 	switch typeName {
 	case "string":
 		g.emitCallPlaceholder("runtime.BytesToString")

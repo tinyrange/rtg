@@ -237,6 +237,14 @@ func (g *CodeGen) sarCl32(reg int) {
 
 // shlImm32 emits `shl reg, imm8`
 func (g *CodeGen) shlImm32(reg int, n byte) {
+	if g.wordSize == 2 {
+		i := byte(0)
+		for i < n {
+			g.emitBytes(0xd1, byte(0xe0|(reg&7)))
+			i++
+		}
+		return
+	}
 	g.dos32OpPrefix()
 	g.emitBytes(0xc1, byte(0xe0|(reg&7)), n)
 }
@@ -325,8 +333,62 @@ func (g *CodeGen) xorRI8_32(reg int, val byte) {
 // imulRRI32_32 emits `imul dst, src, imm32`
 func (g *CodeGen) imulRRI32_32(dst, src int, val int32) {
 	if g.wordSize == 2 {
-		g.emitBytes(0x69, modrmRR32(dst, src))
-		g.emitU16(uint16(int16(val)))
+		if val == 0 {
+			g.xorRR32(dst, dst)
+			return
+		}
+		if val == 1 {
+			if dst != src {
+				g.movRR32(dst, src)
+			}
+			return
+		}
+
+		abs := val
+		neg := false
+		if abs < 0 {
+			neg = true
+			abs = -abs
+		}
+
+		// Fast path for powers of two: shift.
+		if abs > 0 && (abs&(abs-1)) == 0 {
+			shift := byte(0)
+			for (int32(1) << shift) < abs {
+				shift++
+			}
+			if dst != src {
+				g.movRR32(dst, src)
+			}
+			g.shlImm32(dst, shift)
+			if neg {
+				g.negR32(dst)
+			}
+			return
+		}
+
+		// 8086 has no IMUL r, r, imm. Synthesize with repeated add.
+		tmp := REG32_EDX
+		if tmp == dst || tmp == src {
+			tmp = REG32_EBX
+		}
+		if tmp == dst || tmp == src {
+			tmp = REG32_ECX
+		}
+		g.pushR32(tmp)
+		if tmp != src {
+			g.movRR32(tmp, src)
+		}
+		g.xorRR32(dst, dst)
+		i := int32(0)
+		for i < abs {
+			g.addRR32(dst, tmp)
+			i++
+		}
+		if neg {
+			g.negR32(dst)
+		}
+		g.popR32(tmp)
 		return
 	}
 	g.dos32OpPrefix()
@@ -339,26 +401,61 @@ func (g *CodeGen) imulRRI32_32(dst, src int, val int32) {
 // loadMem32 emits `mov dst, [base+off]` (32-bit)
 func (g *CodeGen) loadMem32(dst, base, off int) {
 	if g.wordSize == 2 {
-		// Use 32-bit effective-address form in real mode when base is not 16-bit-addressable.
-		g.dos32AddrPrefix()
-		if off == 0 && (base&7) != REG32_EBP {
-			g.emitBytes(0x8b, byte((dst&7)<<3|(base&7)))
-			if (base & 7) == REG32_ESP {
-				g.emitByte(0x24)
+		addr := base
+		saved := -1
+		rm := byte(0)
+		ok := false
+		switch addr {
+		case REG32_EBX:
+			rm, ok = 7, true
+		case REG32_EBP:
+			rm, ok = 6, true
+		case REG32_ESI:
+			rm, ok = 4, true
+		case REG32_EDI:
+			rm, ok = 5, true
+		}
+		if !ok {
+			tmp := REG32_EBX
+			if tmp == dst || tmp == base {
+				tmp = REG32_ESI
 			}
+			if tmp == dst || tmp == base {
+				tmp = REG32_EDI
+			}
+			g.pushR32(tmp)
+			g.movRR32(tmp, base)
+			addr = tmp
+			saved = tmp
+			switch addr {
+			case REG32_EBX:
+				rm = 7
+			case REG32_EBP:
+				rm = 6
+			case REG32_ESI:
+				rm = 4
+			default:
+				rm = 5
+			}
+		}
+		mod := byte(0)
+		if addr == REG32_EBP && off == 0 {
+			mod = 1
 		} else if off >= -128 && off <= 127 {
-			g.emitBytes(0x8b, byte(0x40|(dst&7)<<3|(base&7)), byte(off))
-			if (base & 7) == REG32_ESP {
-				g.code = g.code[0 : len(g.code)-2]
-				g.emitBytes(byte(0x44|(dst&7)<<3), 0x24, byte(off))
+			if off != 0 {
+				mod = 1
 			}
 		} else {
-			g.emitBytes(0x8b, byte(0x80|(dst&7)<<3|(base&7)))
-			if (base & 7) == REG32_ESP {
-				g.code = g.code[0 : len(g.code)-1]
-				g.emitBytes(byte(0x84|(dst&7)<<3), 0x24)
-			}
-			g.emitU32(uint32(int32(off)))
+			mod = 2
+		}
+		g.emitBytes(0x8b, byte((mod<<6)|byte((dst&7)<<3)|rm))
+		if mod == 1 {
+			g.emitByte(byte(off))
+		} else if mod == 2 {
+			g.emitU16(uint16(int16(off)))
+		}
+		if saved >= 0 {
+			g.popR32(saved)
 		}
 		return
 	}
@@ -387,25 +484,61 @@ func (g *CodeGen) loadMem32(dst, base, off int) {
 // storeMem32 emits `mov [base+off], src` (32-bit)
 func (g *CodeGen) storeMem32(base, off, src int) {
 	if g.wordSize == 2 {
-		g.dos32AddrPrefix()
-		if off == 0 && (base&7) != REG32_EBP {
-			g.emitBytes(0x89, byte((src&7)<<3|(base&7)))
-			if (base & 7) == REG32_ESP {
-				g.emitByte(0x24)
+		addr := base
+		saved := -1
+		rm := byte(0)
+		ok := false
+		switch addr {
+		case REG32_EBX:
+			rm, ok = 7, true
+		case REG32_EBP:
+			rm, ok = 6, true
+		case REG32_ESI:
+			rm, ok = 4, true
+		case REG32_EDI:
+			rm, ok = 5, true
+		}
+		if !ok {
+			tmp := REG32_EBX
+			if tmp == src || tmp == base {
+				tmp = REG32_ESI
 			}
+			if tmp == src || tmp == base {
+				tmp = REG32_EDI
+			}
+			g.pushR32(tmp)
+			g.movRR32(tmp, base)
+			addr = tmp
+			saved = tmp
+			switch addr {
+			case REG32_EBX:
+				rm = 7
+			case REG32_EBP:
+				rm = 6
+			case REG32_ESI:
+				rm = 4
+			default:
+				rm = 5
+			}
+		}
+		mod := byte(0)
+		if addr == REG32_EBP && off == 0 {
+			mod = 1
 		} else if off >= -128 && off <= 127 {
-			g.emitBytes(0x89, byte(0x40|(src&7)<<3|(base&7)), byte(off))
-			if (base & 7) == REG32_ESP {
-				g.code = g.code[0 : len(g.code)-2]
-				g.emitBytes(byte(0x44|(src&7)<<3), 0x24, byte(off))
+			if off != 0 {
+				mod = 1
 			}
 		} else {
-			g.emitBytes(0x89, byte(0x80|(src&7)<<3|(base&7)))
-			if (base & 7) == REG32_ESP {
-				g.code = g.code[0 : len(g.code)-1]
-				g.emitBytes(byte(0x84|(src&7)<<3), 0x24)
-			}
-			g.emitU32(uint32(int32(off)))
+			mod = 2
+		}
+		g.emitBytes(0x89, byte((mod<<6)|byte((src&7)<<3)|rm))
+		if mod == 1 {
+			g.emitByte(byte(off))
+		} else if mod == 2 {
+			g.emitU16(uint16(int16(off)))
+		}
+		if saved >= 0 {
+			g.popR32(saved)
 		}
 		return
 	}
@@ -434,7 +567,72 @@ func (g *CodeGen) storeMem32(base, off, src int) {
 // loadMemByte32 emits `movzx dst, byte [base+off]`
 func (g *CodeGen) loadMemByte32(dst, base, off int) {
 	if g.wordSize == 2 {
-		g.dos32AddrPrefix()
+		// Zero-extend byte via xor + mov r8, [mem].
+		g.xorRR32(dst, dst)
+		addr := base
+		saved := -1
+		rm := byte(0)
+		ok := false
+		switch addr {
+		case REG32_EBX:
+			rm, ok = 7, true
+		case REG32_EBP:
+			rm, ok = 6, true
+		case REG32_ESI:
+			rm, ok = 4, true
+		case REG32_EDI:
+			rm, ok = 5, true
+		}
+		if !ok {
+			tmp := REG32_EBX
+			if tmp == dst || tmp == base {
+				tmp = REG32_ESI
+			}
+			if tmp == dst || tmp == base {
+				tmp = REG32_EDI
+			}
+			g.pushR32(tmp)
+			g.movRR32(tmp, base)
+			addr = tmp
+			saved = tmp
+			switch addr {
+			case REG32_EBX:
+				rm = 7
+			case REG32_EBP:
+				rm = 6
+			case REG32_ESI:
+				rm = 4
+			default:
+				rm = 5
+			}
+		}
+		dst8 := dst & 7
+		if dst8 > 3 {
+			dst8 = 0 // AL
+		}
+		mod := byte(0)
+		if addr == REG32_EBP && off == 0 {
+			mod = 1
+		} else if off >= -128 && off <= 127 {
+			if off != 0 {
+				mod = 1
+			}
+		} else {
+			mod = 2
+		}
+		g.emitBytes(0x8a, byte((mod<<6)|byte(dst8<<3)|rm))
+		if mod == 1 {
+			g.emitByte(byte(off))
+		} else if mod == 2 {
+			g.emitU16(uint16(int16(off)))
+		}
+		if saved >= 0 {
+			g.popR32(saved)
+		}
+		if (dst & 7) > 3 {
+			g.movRR32(dst, REG32_EAX)
+		}
+		return
 	}
 	g.dos32OpAddrPrefix()
 	if off == 0 && (base&7) != REG32_EBP {
@@ -449,6 +647,70 @@ func (g *CodeGen) loadMemByte32(dst, base, off int) {
 
 // storeMemByte32 emits `mov byte [base+off], src_lo8`
 func (g *CodeGen) storeMemByte32(base, off, src int) {
+	if g.wordSize == 2 {
+		addr := base
+		saved := -1
+		rm := byte(0)
+		ok := false
+		switch addr {
+		case REG32_EBX:
+			rm, ok = 7, true
+		case REG32_EBP:
+			rm, ok = 6, true
+		case REG32_ESI:
+			rm, ok = 4, true
+		case REG32_EDI:
+			rm, ok = 5, true
+		}
+		if !ok {
+			tmp := REG32_EBX
+			if tmp == src || tmp == base {
+				tmp = REG32_ESI
+			}
+			if tmp == src || tmp == base {
+				tmp = REG32_EDI
+			}
+			g.pushR32(tmp)
+			g.movRR32(tmp, base)
+			addr = tmp
+			saved = tmp
+			switch addr {
+			case REG32_EBX:
+				rm = 7
+			case REG32_EBP:
+				rm = 6
+			case REG32_ESI:
+				rm = 4
+			default:
+				rm = 5
+			}
+		}
+		src8 := src & 7
+		if src8 > 3 {
+			g.movRR32(REG32_EAX, src)
+			src8 = 0 // AL
+		}
+		mod := byte(0)
+		if addr == REG32_EBP && off == 0 {
+			mod = 1
+		} else if off >= -128 && off <= 127 {
+			if off != 0 {
+				mod = 1
+			}
+		} else {
+			mod = 2
+		}
+		g.emitBytes(0x88, byte((mod<<6)|byte(src8<<3)|rm))
+		if mod == 1 {
+			g.emitByte(byte(off))
+		} else if mod == 2 {
+			g.emitU16(uint16(int16(off)))
+		}
+		if saved >= 0 {
+			g.popR32(saved)
+		}
+		return
+	}
 	g.dos32AddrPrefix()
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x88, byte((src&7)<<3|(base&7)))
@@ -464,18 +726,36 @@ func (g *CodeGen) storeMemByte32(base, off, src int) {
 
 // movzxB32 emits `movzx reg, reg_lo8`
 func (g *CodeGen) movzxB32(reg int) {
+	if g.wordSize == 2 {
+		if reg == REG32_EAX {
+			g.emitBytes(0x25, 0xff, 0x00) // and ax, 0x00ff
+		} else {
+			g.pushR32(REG32_EAX)
+			g.movRR32(REG32_EAX, reg)
+			g.emitBytes(0x25, 0xff, 0x00)
+			g.movRR32(reg, REG32_EAX)
+			g.popR32(REG32_EAX)
+		}
+		return
+	}
 	g.dos32OpPrefix()
 	g.emitBytes(0x0f, 0xb6, modrmRR32(reg, reg))
 }
 
 // movzxW32 emits `movzx reg, reg_lo16`
 func (g *CodeGen) movzxW32(reg int) {
+	if g.wordSize == 2 {
+		return
+	}
 	g.dos32OpPrefix()
 	g.emitBytes(0x0f, 0xb7, modrmRR32(reg, reg))
 }
 
 // movsxW32 emits `movsx reg, reg_lo16`
 func (g *CodeGen) movsxW32(reg int) {
+	if g.wordSize == 2 {
+		return
+	}
 	g.dos32OpPrefix()
 	g.emitBytes(0x0f, 0xbf, modrmRR32(reg, reg))
 }
@@ -484,6 +764,14 @@ func (g *CodeGen) movsxW32(reg int) {
 
 // setcc32 emits `setCC reg_lo8` where cc is a condition code constant
 func (g *CodeGen) setcc32(cc byte, reg int) {
+	if g.wordSize == 2 {
+		cond := cc & 0x0f
+		g.xorRR32(reg, reg)
+		g.jccRel8(cond, 2)
+		g.jmpRel8(3)
+		g.emitMovRegImm32(reg, 1)
+		return
+	}
 	setccOp := byte(0x90 | (cc & 0x0f))
 	g.emitBytes(0x0f, setccOp, byte(0xc0|(reg&7)))
 }

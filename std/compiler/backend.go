@@ -292,9 +292,14 @@ func (g *CodeGen) jmpRel32() int {
 func (g *CodeGen) jccRel32(cc byte) int {
 	g.flush()
 	if targetGOOS == "dos" && g.wordSize == 2 {
-		g.emitBytes(0x0f, cc)
+		// 8086 has only short conditional branches.
+		// Lower near Jcc as:
+		//   j!cc +3
+		//   jmp  rel16
+		inv := (cc & 0x0f) ^ 0x01
+		g.emitBytes(byte(0x70|inv), 0x03, 0xe9)
 		off := len(g.code)
-		g.emitU16(0) // rel16
+		g.emitU16(0)
 		return off
 	}
 	if targetGOOS == "dos" && g.wordSize == 4 {
