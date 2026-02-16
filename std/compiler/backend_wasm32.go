@@ -463,35 +463,82 @@ func (g *WasmGen) compileStart() []byte {
 	g.w.call(uint32(g.wasiArgsSizesGet))
 	g.w.drop() // ignore errno
 
-	// Step 2: allocate argv array and argv_buf
-	// argc at [scratch+64], buf_size at [scratch+68]
-	// Allocate argv: argc * 4 bytes
+	// Step 2: reserve linear memory for argv data and os.Args structures.
+	// We avoid calling runtime helpers here because _start does not use the
+	// regular shadow-stack call setup.
+	// Layout:
+	//   [allocBase]                 argv pointers (argc*4)
+	//   [argvBufPtr]                argv bytes (buf_size)
+	//   [sliceDataPtr]              []string backing data (argc*4, string header ptrs)
+	//   [strHdrBase]                per-arg string headers (argc*8)
+	//   [sliceHdrPtr]               os.Args slice header (16 bytes)
 	g.w.i32Const(scratch + 64)
 	g.w.i32Load(2, 0) // argc
-	g.w.i32Const(4)
-	g.w.op(OP_WASM_I32_MUL)
-	if idx, ok := g.funcMap["runtime.Alloc"]; ok {
-		g.w.call(uint32(idx))
-	}
-	g.w.localSet(0) // local 0 = argv ptr
-
-	// Allocate argv_buf: buf_size bytes
+	g.w.localSet(0) // argc
 	g.w.i32Const(scratch + 68)
 	g.w.i32Load(2, 0) // buf_size
-	if idx, ok := g.funcMap["runtime.Alloc"]; ok {
-		g.w.call(uint32(idx))
-	}
-	g.w.localSet(1) // local 1 = argv_buf ptr
+	g.w.localSet(1) // buf_size
 
-	// Step 3: args_get(argv, argv_buf)
+	// total = argc*16 + buf_size + 64
 	g.w.localGet(0)
+	g.w.i32Const(16)
+	g.w.op(OP_WASM_I32_MUL)
 	g.w.localGet(1)
+	g.w.op(OP_WASM_I32_ADD)
+	g.w.i32Const(64)
+	g.w.op(OP_WASM_I32_ADD)
+	g.w.localSet(11) // total bytes
+
+	// pages = (total + 65535) >> 16
+	g.w.localGet(11)
+	g.w.i32Const(65535)
+	g.w.op(OP_WASM_I32_ADD)
+	g.w.i32Const(16)
+	g.w.op(OP_WASM_I32_SHR_U)
+	g.w.localTee(11)
+	g.w.op(OP_WASM_MEMORY_GROW)
+	g.w.byte(0x00) // memory index 0
+	g.w.i32Const(16)
+	g.w.op(OP_WASM_I32_SHL)
+	g.w.localSet(5) // allocBase
+
+	// Derive region pointers from allocBase.
+	g.w.localGet(5)
+	g.w.localSet(6) // argvPtr
+
+	g.w.localGet(6)
+	g.w.localGet(0)
+	g.w.i32Const(4)
+	g.w.op(OP_WASM_I32_MUL)
+	g.w.op(OP_WASM_I32_ADD)
+	g.w.localSet(7) // argvBufPtr
+
+	g.w.localGet(7)
+	g.w.localGet(1)
+	g.w.op(OP_WASM_I32_ADD)
+	g.w.localSet(8) // sliceDataPtr
+
+	g.w.localGet(8)
+	g.w.localGet(0)
+	g.w.i32Const(4)
+	g.w.op(OP_WASM_I32_MUL)
+	g.w.op(OP_WASM_I32_ADD)
+	g.w.localSet(9) // strHdrBase
+
+	g.w.localGet(9)
+	g.w.localGet(0)
+	g.w.i32Const(8)
+	g.w.op(OP_WASM_I32_MUL)
+	g.w.op(OP_WASM_I32_ADD)
+	g.w.localSet(10) // sliceHdrPtr
+
+	// Step 3: args_get(argvPtr, argvBufPtr)
+	g.w.localGet(6)
+	g.w.localGet(7)
 	g.w.call(uint32(g.wasiArgsGet))
 	g.w.drop()
 
-	// Step 4: Build os.Args slice from argv
-	// For each arg, compute strlen and call runtime.Makestring
-	// Then append to os.Args
+	// Step 4: Build os.Args as []string directly in linear memory.
 	// Find os.Args global index
 	argsGlobalIdx := -1
 	for i, gl := range g.irmod.Globals {
@@ -503,31 +550,29 @@ func (g *WasmGen) compileStart() []byte {
 
 	if argsGlobalIdx >= 0 {
 		// Iterate over argc args
-		// local 2 = loop counter i
 		g.w.i32Const(0)
-		g.w.localSet(2) // i = 0
+		g.w.localSet(2) // i
 
 		g.w.block(WASM_TYPE_VOID)
 		g.w.loop(WASM_TYPE_VOID)
 		// if i >= argc, break
 		g.w.localGet(2)
-		g.w.i32Const(scratch + 64)
-		g.w.i32Load(2, 0) // argc
+		g.w.localGet(0) // argc
 		g.w.op(OP_WASM_I32_GE_S)
 		g.w.brIf(1)
 
-		// argPtr = argv[i] (pointer to null-terminated string in argv_buf)
-		g.w.localGet(0) // argv
+		// argPtr = argvPtr[i]
+		g.w.localGet(6) // argvPtr
 		g.w.localGet(2) // i
 		g.w.i32Const(4)
 		g.w.op(OP_WASM_I32_MUL)
 		g.w.op(OP_WASM_I32_ADD)
-		g.w.i32Load(2, 0) // argv[i] = ptr to C string
-		g.w.localSet(3) // local 3 = argPtr
+		g.w.i32Load(2, 0)
+		g.w.localSet(3) // argPtr
 
-		// Compute strlen
+		// Compute strlen(argPtr)
 		g.w.i32Const(0)
-		g.w.localSet(4) // local 4 = len = 0
+		g.w.localSet(4) // len
 
 		g.w.block(WASM_TYPE_VOID)
 		g.w.loop(WASM_TYPE_VOID)
@@ -542,51 +587,67 @@ func (g *WasmGen) compileStart() []byte {
 		g.w.op(OP_WASM_I32_ADD)
 		g.w.localSet(4)
 		g.w.br(0)
-		g.w.end() // loop
-		g.w.end() // block
+			g.w.end() // loop
+			g.w.end() // block
 
-		// Call runtime.Makestring(argPtr, len) → string header ptr
-		g.w.localGet(3)
-		g.w.localGet(4)
-		if idx, ok := g.funcMap["runtime.Makestring"]; ok {
-			g.w.call(uint32(idx))
-		}
-		// result is string header ptr
+			// strHdrPtr = strHdrBase + i*8
+			g.w.localGet(9)
+			g.w.localGet(2)
+			g.w.i32Const(8)
+			g.w.op(OP_WASM_I32_MUL)
+			g.w.op(OP_WASM_I32_ADD)
+			g.w.localSet(3) // strHdrPtr
 
-		// Append to os.Args: call runtime.SliceAppend(os.Args_global, elem_value)
-		// os.Args is a global (slice header ptr) at globalsAddr + argsGlobalIdx*4
-		argsAddr := g.globalsAddr + int32(argsGlobalIdx*4)
-		g.w.localSet(3) // save string header
+			// Write string header: {ptr,len}
+			g.w.localGet(3)
+			g.w.localGet(6) // argvPtr
+			g.w.localGet(2)
+			g.w.i32Const(4)
+			g.w.op(OP_WASM_I32_MUL)
+			g.w.op(OP_WASM_I32_ADD)
+			g.w.i32Load(2, 0)
+			g.w.i32Store(2, 0)
+			g.w.localGet(3)
+			g.w.localGet(4)
+			g.w.i32Store(2, 4)
 
-		// Load current os.Args slice header
-		g.w.i32Const(argsAddr)
-		g.w.i32Load(2, 0) // current slice header ptr
+			// sliceData[i] = strHdrPtr
+			g.w.localGet(8) // sliceDataPtr
+			g.w.localGet(2)
+			g.w.i32Const(4)
+			g.w.op(OP_WASM_I32_MUL)
+			g.w.op(OP_WASM_I32_ADD)
+			g.w.localGet(3)
+			g.w.i32Store(2, 0)
 
-		// Push element to append
-		g.w.localGet(3) // string header ptr
+			// i++
+			g.w.localGet(2)
+			g.w.i32Const(1)
+			g.w.op(OP_WASM_I32_ADD)
+			g.w.localSet(2)
+			g.w.br(0)
+			g.w.end() // loop
+			g.w.end() // block
 
-		// Push element size (4 bytes on wasm32 for string header pointer)
-		g.w.i32Const(4)
+			// Build slice header: {data_ptr, len, cap, elem_size}
+			g.w.localGet(10) // sliceHdrPtr
+			g.w.localGet(8)  // data ptr
+			g.w.i32Store(2, 0)
+			g.w.localGet(10)
+			g.w.localGet(0) // len
+			g.w.i32Store(2, 4)
+			g.w.localGet(10)
+			g.w.localGet(0) // cap
+			g.w.i32Store(2, 8)
+			g.w.localGet(10)
+			g.w.i32Const(4) // sizeof(string value on wasm32)
+			g.w.i32Store(2, 12)
 
-		// Call runtime.SliceAppend(sliceHdr, elem, elemSize) → new slice header
-		if idx, ok := g.funcMap["runtime.SliceAppend"]; ok {
-			g.w.call(uint32(idx))
-		}
-
-		// Store back to os.Args global
-		g.w.localSet(3) // new slice hdr
-		g.w.i32Const(argsAddr)
-		g.w.localGet(3)
-		g.w.i32Store(2, 0)
-
-		// i++
-		g.w.localGet(2)
-		g.w.i32Const(1)
-		g.w.op(OP_WASM_I32_ADD)
-		g.w.localSet(2)
-		g.w.br(0)
-		g.w.end() // loop
-		g.w.end() // block
+			// Store slice header pointer into os.Args global.
+			argsAddr := g.globalsAddr + int32(argsGlobalIdx*4)
+			g.w.i32Const(argsAddr)
+			g.w.localGet(10)
+			g.w.i32Store(2, 0)
 	}
 
 	// Call init functions
@@ -608,8 +669,8 @@ func (g *WasmGen) compileStart() []byte {
 	g.w.i32Const(0)
 	g.w.call(uint32(g.wasiProcExit))
 
-	// _start needs locals for the args population
-	localCounts := []uint32{5}
+	// _start needs locals for args population bookkeeping.
+	localCounts := []uint32{12}
 	localTypes := []byte{WASM_TYPE_I32}
 	return encodeFuncBody(localCounts, localTypes, g.w.buf)
 }
