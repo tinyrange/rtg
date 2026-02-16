@@ -2643,7 +2643,7 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 		g.w.globalSet(uint32(g.globalSP))
 	}
 
-	// Extract bare method name
+	// Extract interface and bare method names from "iface.Method"
 	dotIdx := 0
 	for dotIdx < len(methodName) {
 		if methodName[dotIdx] == '.' {
@@ -2651,19 +2651,58 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 		}
 		dotIdx++
 	}
+	ifaceName := ""
 	bareMethod := methodName
 	if dotIdx < len(methodName) {
+		ifaceName = methodName[:dotIdx]
 		bareMethod = methodName[dotIdx+1:]
 	}
 
-	// Collect dispatch entries
+	// Expected return count from interface signature (if known)
+	expectedRetCount := -1
+	if ifaceName != "" && g.irmod != nil && g.irmod.IfaceMethodRets != nil {
+		if ret, ok := g.irmod.IfaceMethodRets[ifaceName+"\x00"+bareMethod]; ok {
+			expectedRetCount = ret
+		}
+	}
+
+	// Collect dispatch entries with signature filtering
 	var entries []dispatchEntry
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + "." + bareMethod
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+			funcName, ok := g.irmod.MethodTable[candidate]
+			if !ok {
+				continue
 			}
+
+			var fn *IRFunc
+			for _, f := range g.irmod.Funcs {
+				if f.Name == funcName {
+					fn = f
+					break
+				}
+			}
+			if fn == nil {
+				continue
+			}
+
+			// Receiver + regular args must match exactly.
+			if fn.Params != argCount+1 {
+				continue
+			}
+
+			// If interface signature is known, enforce return count.
+			// Otherwise infer it from the first match and keep it consistent.
+			if expectedRetCount >= 0 {
+				if fn.RetCount != expectedRetCount {
+					continue
+				}
+			} else {
+				expectedRetCount = fn.RetCount
+			}
+
+			entries = append(entries, dispatchEntry{tid, funcName})
 		}
 	}
 
@@ -2694,17 +2733,9 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 			i = i - 1
 		}
 
-		// Determine result count from IR's funcRets or from method table
 		retCount := 0
-		if len(entries) > 0 {
-			// Look up the first entry's return count
-			funcName := entries[0].funcName
-			for _, f := range g.irmod.Funcs {
-				if f.Name == funcName {
-					retCount = f.RetCount
-					break
-				}
-			}
+		if expectedRetCount > 0 {
+			retCount = expectedRetCount
 		}
 
 		// Build result type for if blocks

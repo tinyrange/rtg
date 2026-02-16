@@ -161,6 +161,7 @@ type IRModule struct {
 	TypeIDs      map[string]int      // concrete type → type ID
 	MethodTable  map[string]string   // "pkg.Type.Method" → IR func name
 	IfaceMethods map[string][]string // interface name → method names
+	IfaceMethodRets map[string]int   // iface+"\x00"+method → return count
 }
 
 // === Compiler ===
@@ -325,6 +326,7 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 	c.irmod.TypeIDs = c.typeIDs
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
+	c.irmod.IfaceMethodRets = c.ifaceMethodRets
 
 	return c.irmod, c.errors
 }

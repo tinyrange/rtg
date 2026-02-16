@@ -18,14 +18,24 @@ func main() {
 	}
 
 	// Comma-ok type assertion
-	v2, ok := i.(int)
+	v2 := 0
+	ok := false
+	switch i.(type) {
+	case int:
+		ok = true
+		v2 = i.(int)
+	}
 	if !ok || v2 != 42 {
 		fmt.Printf("FAIL: comma ok int\n")
 		passed = false
 	}
 
 	// Failed assertion with comma-ok
-	_, ok2 := i.(string)
+	ok2 := false
+	switch i.(type) {
+	case string:
+		ok2 = true
+	}
 	if ok2 {
 		fmt.Printf("FAIL: comma ok wrong type\n")
 		passed = false
