@@ -767,6 +767,86 @@ function setupResize(handleId, panelId, side) {
   });
 }
 
+// --- Self-Compile Download ---
+window.selfCompileAndDownload = async function(target) {
+  if (!compilerModule) {
+    appendOutput("Compiler not loaded yet. Please wait...\n", "stderr");
+    return;
+  }
+
+  const isWindows = target.startsWith("windows/");
+  const arch = target.split("/")[1];
+  const os = target.split("/")[0];
+  const outputFile = isWindows ? "rtg.exe" : "rtg";
+  const downloadName = "rtg-" + os + "-" + arch + (isWindows ? ".exe" : "");
+
+  outputContent.innerHTML = "";
+  setStatus("Building RTG for " + target + "...");
+  btnCompile.disabled = true;
+
+  const t0 = performance.now();
+
+  try {
+    const fs = new VirtualFS();
+
+    for (const [path, content] of Object.entries(STD_LIBRARY)) {
+      fs.addFile(path, content);
+    }
+
+    const args = ["rtg", "-T", target, "-o", outputFile, "std/compiler/"];
+
+    const wasi = createWASI(fs, args, {
+      onStdout: (data) => appendOutput(new TextDecoder().decode(data), "stdout"),
+      onStderr: (data) => appendOutput(new TextDecoder().decode(data), "stderr"),
+    });
+
+    const instance = await WebAssembly.instantiate(compilerModule, wasi.imports);
+    wasi.setMemory(instance.exports.memory);
+
+    let exitCode = 0;
+    try {
+      instance.exports._start();
+    } catch (e) {
+      if (e instanceof WASIExit) {
+        exitCode = e.code;
+      } else {
+        throw e;
+      }
+    }
+
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+    if (exitCode !== 0) {
+      appendOutput("\nBuild failed (exit " + exitCode + ") in " + elapsed + "s\n", "stderr");
+      setStatus("Build failed");
+      return;
+    }
+
+    const output = fs.readFile(outputFile);
+    if (output && output.length > 0) {
+      appendOutput("Built " + downloadName + " (" + output.length + " bytes) in " + elapsed + "s\n", "stdout");
+      setStatus("Built " + downloadName + " (" + elapsed + "s)");
+
+      const blob = new Blob([output], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = downloadName;
+      a.click();
+      URL.revokeObjectURL(url);
+    } else {
+      appendOutput("No output produced (" + elapsed + "s)\n", "stderr");
+      setStatus("Build failed");
+    }
+  } catch (e) {
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+    appendOutput("Error: " + e.message + "\n" + e.stack + "\n", "stderr");
+    setStatus("Build error (" + elapsed + "s)");
+  } finally {
+    btnCompile.disabled = false;
+  }
+};
+
 // --- Start ---
 setupResizeHandles();
 init();
