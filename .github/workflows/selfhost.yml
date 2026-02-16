@@ -72,14 +72,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install Wasmtime
-        run: |
-          set -euo pipefail
-          WASMTIME_VERSION="$(curl -fsSL https://api.github.com/repos/bytecodealliance/wasmtime/releases/latest | sed -n 's/.*"tag_name": *"\\([^"]*\\)".*/\\1/p' | head -n1)"
-          test -n "$WASMTIME_VERSION"
-          WASMTIME_TARBALL="wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz"
-          curl -fsSL -o "$WASMTIME_TARBALL" "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${WASMTIME_TARBALL}"
-          tar -xf "$WASMTIME_TARBALL"
-          echo "$PWD/wasmtime-${WASMTIME_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
+        uses: bytecodealliance/actions/wasmtime/setup@v1
 
       - name: Build bootstrap compiler
         run: go build -o build/rtg ./std/compiler/
