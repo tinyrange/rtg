@@ -514,8 +514,12 @@ decoded:
 		c.extraFlags |= 1 << 10
 		c.ip++
 		return nil
+	case 0xfe:
+		return c.execFE(csip)
 	case 0xf6:
-		return c.execF6(csip)
+		return c.execF6(csip, repPrefix != 0)
+	case 0xff:
+		return c.execFF(csip)
 	case 0xeb:
 		rel := int8(c.rb(csip + 1))
 		c.ip += 2
@@ -1032,7 +1036,7 @@ decoded:
 		c.ip++
 		return nil
 	case 0xf7:
-		return c.execF7(csip)
+		return c.execF7(csip, repPrefix != 0)
 	case 0x0f:
 		return c.exec0F(csip)
 	case 0x89:
@@ -2849,7 +2853,7 @@ func (c *cpu) execC7(pc uint32) error {
 	return nil
 }
 
-func (c *cpu) execF6(pc uint32) error {
+func (c *cpu) execF6(pc uint32, repPrefixed bool) error {
 	modrm := c.rb(pc + 1)
 	mod := (modrm >> 6) & 0x3
 	subop := (modrm >> 3) & 0x7
@@ -2920,24 +2924,18 @@ func (c *cpu) execF6(pc uint32) error {
 		c.ip += insnLen
 		return nil
 	case 6: // div
-		quot := uint16(0)
 		if v == 0 {
-			c.cf = false
-			c.of = false
-			c.af = false
-			c.setSZP8(0)
+			ah := c.reg8(4)
+			c.setSubFlags8(ah, v, ah-v)
 			c.ip += insnLen
 			return c.handleInt(0x00)
 		}
 		dividend := uint16(c.ax)
 		q := dividend / uint16(v)
-		quot = uint16(q)
 		r := dividend % uint16(v)
 		if q > 0xff {
-			c.cf = false
-			c.of = false
-			c.af = false
-			c.setSZP8(byte(quot))
+			ah := c.reg8(4)
+			c.setSubFlags8(ah, v, ah-v)
 			c.ip += insnLen
 			return c.handleInt(0x00)
 		}
@@ -2946,34 +2944,206 @@ func (c *cpu) execF6(pc uint32) error {
 		c.ip += insnLen
 		return nil
 	case 7: // idiv
-		quot := int16(0)
 		divisor := int16(int8(v))
+		absDiv := byte(v)
+		if int8(v) < 0 {
+			absDiv = byte(-int8(v))
+		}
+		absAX := c.ax
+		if int16(c.ax) < 0 {
+			absAX = uint16(-int16(c.ax))
+		}
+		cmpA := byte(absAX >> 8)
 		if divisor == 0 {
+			c.setSubFlags8(cmpA, absDiv, cmpA-absDiv)
 			c.cf = false
 			c.of = false
-			c.af = false
-			c.setSZP8(0)
 			c.ip += insnLen
 			return c.handleInt(0x00)
 		}
 		dividend := int16(c.ax)
 		q := dividend / divisor
-		quot = q
 		r := dividend % divisor
-		if q < -128 || q > 127 {
+		if q <= -128 || q > 127 {
+			c.setSubFlags8(cmpA, absDiv, cmpA-absDiv)
 			c.cf = false
 			c.of = false
-			c.af = false
-			c.setSZP8(byte(int8(quot)))
 			c.ip += insnLen
 			return c.handleInt(0x00)
 		}
-		c.setReg8(0, byte(int8(q)))
+		q8 := int8(q)
+		if repPrefixed {
+			q8 = -q8
+		}
+		c.setReg8(0, byte(q8))
 		c.setReg8(4, byte(int8(r)))
 		c.ip += insnLen
 		return nil
 	default:
 		return fmt.Errorf("unsupported f6 /%d at %04x:%04x", subop, c.cs, c.ip)
+	}
+}
+
+func (c *cpu) execFE(pc uint32) error {
+	modrm := c.rb(pc + 1)
+	mod := (modrm >> 6) & 0x3
+	subop := (modrm >> 3) & 0x7
+	rm := int(modrm & 0x7)
+
+	if subop != 0 && subop != 1 {
+		return fmt.Errorf("unsupported fe /%d at %04x:%04x", subop, c.cs, c.ip)
+	}
+
+	if mod == 0x3 {
+		v := c.reg8(rm)
+		if subop == 0 {
+			res := v + 1
+			c.setReg8(rm, res)
+			c.setIncFlags8(v, res)
+		} else {
+			res := v - 1
+			c.setReg8(rm, res)
+			c.setDecFlags8(v, res)
+		}
+		c.ip += 2
+		return nil
+	}
+
+	addr, ok, dispLen := c.ea16(mod, byte(rm), pc+2)
+	if !ok {
+		return fmt.Errorf("unsupported fe memory form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+	}
+	v := c.rb(addr)
+	if subop == 0 {
+		res := v + 1
+		c.wb(addr, res)
+		c.setIncFlags8(v, res)
+	} else {
+		res := v - 1
+		c.wb(addr, res)
+		c.setDecFlags8(v, res)
+	}
+	c.ip += uint16(2 + dispLen)
+	return nil
+}
+
+func (c *cpu) execFF(pc uint32) error {
+	modrm := c.rb(pc + 1)
+	mod := (modrm >> 6) & 0x3
+	subop := (modrm >> 3) & 0x7
+	rm := int(modrm & 0x7)
+
+	dispLen := 0
+	getRM16 := func() (uint16, bool) {
+		if mod == 0x3 {
+			return c.reg16(rm), true
+		}
+		seg, off, ok, d := c.ea16SegOff(mod, byte(rm), pc+2)
+		if !ok {
+			return 0, false
+		}
+		dispLen = d
+		return c.u16SegOff(seg, off), true
+	}
+	setRM16 := func(v uint16) bool {
+		if mod == 0x3 {
+			c.setReg16(rm, v)
+			return true
+		}
+		seg, off, ok, d := c.ea16SegOff(mod, byte(rm), pc+2)
+		if !ok {
+			return false
+		}
+		dispLen = d
+		c.w16SegOff(seg, off, v)
+		return true
+	}
+	getFarPtr := func() (uint16, uint16, bool) {
+		if mod == 0x3 {
+			return 0, 0, false
+		}
+		seg, off, ok, d := c.ea16SegOff(mod, byte(rm), pc+2)
+		if !ok {
+			return 0, 0, false
+		}
+		dispLen = d
+		return c.u16SegOff(seg, off), c.u16SegOff(seg, off+2), true
+	}
+
+	switch subop {
+	case 0: // inc r/m16
+		v, ok := getRM16()
+		if !ok {
+			return fmt.Errorf("unsupported ff /0 form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+		}
+		res := v + 1
+		if !setRM16(res) {
+			return fmt.Errorf("unsupported ff /0 writeback modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+		}
+		c.setIncFlags16(v, res)
+		c.ip += uint16(2 + dispLen)
+		return nil
+	case 1: // dec r/m16
+		v, ok := getRM16()
+		if !ok {
+			return fmt.Errorf("unsupported ff /1 form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+		}
+		res := v - 1
+		if !setRM16(res) {
+			return fmt.Errorf("unsupported ff /1 writeback modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+		}
+		c.setDecFlags16(v, res)
+		c.ip += uint16(2 + dispLen)
+		return nil
+	case 2: // call r/m16 (near absolute)
+		target, ok := getRM16()
+		if !ok {
+			return fmt.Errorf("unsupported ff /2 form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+		}
+		ret := c.ip + uint16(2+dispLen)
+		c.push16(ret)
+		c.ip = target
+		return nil
+	case 3: // call m16:16 (far absolute)
+		off, seg, ok := getFarPtr()
+		if !ok {
+			return fmt.Errorf("unsupported ff /3 form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+		}
+		ret := c.ip + uint16(2+dispLen)
+		c.push16(c.cs)
+		c.push16(ret)
+		c.cs = seg
+		c.ip = off
+		return nil
+	case 4: // jmp r/m16 (near absolute)
+		target, ok := getRM16()
+		if !ok {
+			return fmt.Errorf("unsupported ff /4 form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+		}
+		c.ip = target
+		return nil
+	case 5: // jmp m16:16 (far absolute)
+		off, seg, ok := getFarPtr()
+		if !ok {
+			return fmt.Errorf("unsupported ff /5 form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+		}
+		c.cs = seg
+		c.ip = off
+		return nil
+	case 6, 7: // push r/m16 (8086 also aliases /7 to push)
+		v, ok := getRM16()
+		if !ok {
+			return fmt.Errorf("unsupported ff /%d form modrm=%02x at %04x:%04x", subop, modrm, c.cs, c.ip)
+		}
+		if mod == 0x3 && rm == 4 {
+			// 8086 quirk: PUSH SP pushes post-decrement SP value.
+			v = c.sp - 2
+		}
+		c.push16(v)
+		c.ip += uint16(2 + dispLen)
+		return nil
+	default:
+		return fmt.Errorf("unsupported ff /%d at %04x:%04x", subop, c.cs, c.ip)
 	}
 }
 
@@ -3220,7 +3390,7 @@ func parityEven8(v byte) bool {
 	return bits.OnesCount8(v)%2 == 0
 }
 
-func (c *cpu) execF7(pc uint32) error {
+func (c *cpu) execF7(pc uint32, repPrefixed bool) error {
 	modrm := c.rb(pc + 1)
 	mod := (modrm >> 6) & 0x3
 	subop := (modrm >> 3) & 0x7
@@ -3288,24 +3458,16 @@ func (c *cpu) execF7(pc uint32) error {
 		c.ip += insnLen
 		return nil
 	case 6: // div
-		quot := uint32(0)
 		if v == 0 {
-			c.cf = false
-			c.of = false
-			c.af = false
-			c.setSZP16(0)
+			c.setSubFlags16(c.dx, v, c.dx-v)
 			c.ip += insnLen
 			return c.handleInt(0x00)
 		}
 		dividend := uint32(c.dx)<<16 | uint32(c.ax)
 		q := dividend / uint32(v)
-		quot = q
 		r := dividend % uint32(v)
 		if q > 0xffff {
-			c.cf = false
-			c.of = false
-			c.af = false
-			c.setSZP16(uint16(quot))
+			c.setSubFlags16(c.dx, v, c.dx-v)
 			c.ip += insnLen
 			return c.handleInt(0x00)
 		}
@@ -3314,29 +3476,25 @@ func (c *cpu) execF7(pc uint32) error {
 		c.ip += insnLen
 		return nil
 	case 7: // idiv r/m16
-		quot := int32(0)
 		divisor := int16(v)
 		if divisor == 0 {
-			c.cf = false
-			c.of = false
-			c.af = false
-			c.setSZP16(0)
+			c.setSubFlags16(c.dx, v, c.dx-v)
 			c.ip += insnLen
 			return c.handleInt(0x00)
 		}
 		dividend := int32(int16(c.dx))<<16 | int32(c.ax)
 		q := dividend / int32(divisor)
-		quot = q
 		r := dividend % int32(divisor)
-		if q < -32768 || q > 32767 {
-			c.cf = false
-			c.of = false
-			c.af = false
-			c.setSZP16(uint16(int16(quot)))
+		if q <= -32768 || q > 32767 {
+			c.setSubFlags16(c.dx, v, c.dx-v)
 			c.ip += insnLen
 			return c.handleInt(0x00)
 		}
-		c.ax = uint16(int16(q))
+		q16 := int16(q)
+		if repPrefixed {
+			q16 = -q16
+		}
+		c.ax = uint16(q16)
 		c.dx = uint16(int16(r))
 		c.ip += insnLen
 		return nil
@@ -3879,6 +4037,8 @@ func (c *cpu) setReg8(i int, v byte) {
 func (c *cpu) setLogicFlags16(v uint16) {
 	c.zf = v == 0
 	c.sf = (v & 0x8000) != 0
+	c.pf = parityEven8(byte(v))
+	c.af = false
 	c.cf = false
 	c.of = false
 }
@@ -3886,6 +4046,8 @@ func (c *cpu) setLogicFlags16(v uint16) {
 func (c *cpu) setLogicFlags8(v byte) {
 	c.zf = v == 0
 	c.sf = (v & 0x80) != 0
+	c.pf = parityEven8(v)
+	c.af = false
 	c.cf = false
 	c.of = false
 }
@@ -3893,6 +4055,8 @@ func (c *cpu) setLogicFlags8(v byte) {
 func (c *cpu) setAddFlags16(a, b, res uint16) {
 	c.zf = res == 0
 	c.sf = (res & 0x8000) != 0
+	c.pf = parityEven8(byte(res))
+	c.af = ((a ^ b ^ res) & 0x0010) != 0
 	c.cf = res < a
 	c.of = ((^(a ^ b)) & (a ^ res) & 0x8000) != 0
 }
@@ -3900,6 +4064,8 @@ func (c *cpu) setAddFlags16(a, b, res uint16) {
 func (c *cpu) setAddFlags8(a, b, res byte) {
 	c.zf = res == 0
 	c.sf = (res & 0x80) != 0
+	c.pf = parityEven8(res)
+	c.af = ((a ^ b ^ res) & 0x10) != 0
 	c.cf = res < a
 	c.of = ((^(a ^ b)) & (a ^ res) & 0x80) != 0
 }
@@ -3914,6 +4080,8 @@ func (c *cpu) adc8(a, b byte) byte {
 	signed := int16(int8(a)) + int16(int8(b)) + int16(cin)
 	c.zf = res == 0
 	c.sf = (res & 0x80) != 0
+	c.pf = parityEven8(res)
+	c.af = ((a ^ b ^ res) & 0x10) != 0
 	c.cf = sum > 0xff
 	c.of = signed < -128 || signed > 127
 	return res
@@ -3929,6 +4097,8 @@ func (c *cpu) adc16(a, b uint16) uint16 {
 	signed := int32(int16(a)) + int32(int16(b)) + int32(cin)
 	c.zf = res == 0
 	c.sf = (res & 0x8000) != 0
+	c.pf = parityEven8(byte(res))
+	c.af = ((a ^ b ^ res) & 0x0010) != 0
 	c.cf = sum > 0xffff
 	c.of = signed < -32768 || signed > 32767
 	return res
@@ -3945,6 +4115,8 @@ func (c *cpu) sbb8(a, b byte) byte {
 	signed := int16(int8(a)) - int16(int8(b)) - int16(cin)
 	c.zf = res == 0
 	c.sf = (res & 0x80) != 0
+	c.pf = parityEven8(res)
+	c.af = ((a ^ byte(sub) ^ res) & 0x10) != 0
 	c.cf = uint16(a) < sub
 	c.of = signed < -128 || signed > 127
 	return res
@@ -3961,6 +4133,8 @@ func (c *cpu) sbb16(a, b uint16) uint16 {
 	signed := int32(int16(a)) - int32(int16(b)) - int32(cin)
 	c.zf = res == 0
 	c.sf = (res & 0x8000) != 0
+	c.pf = parityEven8(byte(res))
+	c.af = ((a ^ uint16(sub) ^ res) & 0x0010) != 0
 	c.cf = uint32(a) < sub
 	c.of = signed < -32768 || signed > 32767
 	return res
@@ -3969,6 +4143,8 @@ func (c *cpu) sbb16(a, b uint16) uint16 {
 func (c *cpu) setSubFlags16(a, b, res uint16) {
 	c.zf = res == 0
 	c.sf = (res & 0x8000) != 0
+	c.pf = parityEven8(byte(res))
+	c.af = ((a ^ b ^ res) & 0x0010) != 0
 	c.cf = a < b
 	c.of = ((a ^ b) & (a ^ res) & 0x8000) != 0
 }
@@ -3976,6 +4152,8 @@ func (c *cpu) setSubFlags16(a, b, res uint16) {
 func (c *cpu) setSubFlags8(a, b, res byte) {
 	c.zf = res == 0
 	c.sf = (res & 0x80) != 0
+	c.pf = parityEven8(res)
+	c.af = ((a ^ b ^ res) & 0x10) != 0
 	c.cf = a < b
 	c.of = ((a ^ b) & (a ^ res) & 0x80) != 0
 }
@@ -3983,13 +4161,33 @@ func (c *cpu) setSubFlags8(a, b, res byte) {
 func (c *cpu) setIncFlags16(a, res uint16) {
 	c.zf = res == 0
 	c.sf = (res & 0x8000) != 0
+	c.pf = parityEven8(byte(res))
+	c.af = ((a ^ 1 ^ res) & 0x0010) != 0
 	c.of = a == 0x7fff
+}
+
+func (c *cpu) setIncFlags8(a, res byte) {
+	c.zf = res == 0
+	c.sf = (res & 0x80) != 0
+	c.pf = parityEven8(res)
+	c.af = ((a ^ 1 ^ res) & 0x10) != 0
+	c.of = a == 0x7f
 }
 
 func (c *cpu) setDecFlags16(a, res uint16) {
 	c.zf = res == 0
 	c.sf = (res & 0x8000) != 0
+	c.pf = parityEven8(byte(res))
+	c.af = ((a ^ 1 ^ res) & 0x0010) != 0
 	c.of = a == 0x8000
+}
+
+func (c *cpu) setDecFlags8(a, res byte) {
+	c.zf = res == 0
+	c.sf = (res & 0x80) != 0
+	c.pf = parityEven8(res)
+	c.af = ((a ^ 1 ^ res) & 0x10) != 0
+	c.of = a == 0x80
 }
 
 func _unusedRegName(i int) string {
