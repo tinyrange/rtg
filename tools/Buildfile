@@ -92,6 +92,9 @@ test-comemu-challenge: build
 test-comemu-stress: build
   sh RTG_DOS_TESTS=tests/iface_multi.go,tests/map_range.go,tests/slice_nested.go,tests/struct_embedding.go,tests/func_method.go,tests/flow_switch.go,tests/defer_basic.go,tests/panic_basic.go bash tools/test_comemu_dos16.sh
 
+make-dos-floppy: build
+  sh bash tools/make_dos_floppy.sh
+
 test-8086-suite:
   sh go run ./tools/8086suite ${RTG_8086_SUITE_ARGS:-}
 
