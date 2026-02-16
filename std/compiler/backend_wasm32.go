@@ -11,55 +11,55 @@ import (
 
 // WasmGen holds state for generating WASM code from IR.
 type WasmGen struct {
-	mod    *wasmModule
-	irmod  *IRModule
-	w      wasmCodeWriter // current function body writer
+	mod     *wasmModule
+	irmod   *IRModule
+	w       wasmCodeWriter // current function body writer
 	funcMap map[string]int // IR func name → WASM func index
 
 	// WASI import function indices
-	wasiFdWrite            int
-	wasiFdRead             int
-	wasiFdClose            int
-	wasiPathOpen           int
-	wasiArgsSizesGet       int
-	wasiArgsGet            int
-	wasiEnvironSizesGet    int
-	wasiEnvironGet         int
-	wasiProcExit           int
-	wasiPathCreateDir      int
-	wasiPathRemoveDir      int
-	wasiPathUnlinkFile     int
-	wasiFdReaddir          int
-	wasiFdPrestatGet       int
-	wasiFdPrestatDirName   int
+	wasiFdWrite          int
+	wasiFdRead           int
+	wasiFdClose          int
+	wasiPathOpen         int
+	wasiArgsSizesGet     int
+	wasiArgsGet          int
+	wasiEnvironSizesGet  int
+	wasiEnvironGet       int
+	wasiProcExit         int
+	wasiPathCreateDir    int
+	wasiPathRemoveDir    int
+	wasiPathUnlinkFile   int
+	wasiFdReaddir        int
+	wasiFdPrestatGet     int
+	wasiFdPrestatDirName int
 
 	// WASM global indices
 	globalSP int // shadow stack pointer
 
 	// Memory layout
-	scratchAddr   int32 // WASI scratch area (iovec etc.)
-	globalsAddr   int32 // start of global variables in linear memory
-	globalsSize   int32 // total bytes for globals
-	stringsAddr   int32 // start of string data + headers
-	stringsSize   int32 // total bytes for strings
-	shadowBase    int32 // initial shadow stack pointer (top of shadow region)
+	scratchAddr int32 // WASI scratch area (iovec etc.)
+	globalsAddr int32 // start of global variables in linear memory
+	globalsSize int32 // total bytes for globals
+	stringsAddr int32 // start of string data + headers
+	stringsSize int32 // total bytes for strings
+	shadowBase  int32 // initial shadow stack pointer (top of shadow region)
 
 	// String dedup: decoded content → offset of header in string data area
-	stringMap     map[string]int
-	stringData    []byte // raw string data + headers
+	stringMap  map[string]int
+	stringData []byte // raw string data + headers
 
 	// Current function state
-	curFunc      *IRFunc
-	curFrameSize int
-	numParams    int
+	curFunc       *IRFunc
+	curFrameSize  int
+	numParams     int
 	numWasmLocals int // WASM locals beyond params (frame slots + temps)
-	tempLocal    int  // index of a temp i32 local for reordering
-	tempLocal64  int  // index of a temp i64 local for DUP of i64 values
+	tempLocal     int // index of a temp i32 local for reordering
+	tempLocal64   int // index of a temp i64 local for DUP of i64 values
 
 	// i64 type tracking
-	valTypes     []byte        // type stack: WASM_TYPE_I32 or WASM_TYPE_I64 per stack entry
-	localI64     map[int]bool  // which IR locals hold i64 values
-	localOffsets []int32       // per-local byte offset in shadow stack frame
+	valTypes     []byte       // type stack: WASM_TYPE_I32 or WASM_TYPE_I64 per stack entry
+	localI64     map[int]bool // which IR locals hold i64 values
+	localOffsets []int32      // per-local byte offset in shadow stack frame
 
 	// Stackifier state
 	blockStack []wasmCtrl
@@ -352,7 +352,7 @@ func (g *WasmGen) ensureBothSameType() byte {
 	if top == WASM_TYPE_I64 && below == WASM_TYPE_I32 {
 		// Need to promote the below value. Save top to temp, promote below, restore top.
 		g.w.localSet(uint32(g.tempLocal64)) // save i64 top
-		g.w.i64ExtendI32U()                  // promote i32 below to i64
+		g.w.i64ExtendI32U()                 // promote i32 below to i64
 		g.w.localGet(uint32(g.tempLocal64)) // restore i64 top
 		g.valTypes[len(g.valTypes)-2] = WASM_TYPE_I64
 		return WASM_TYPE_I64
@@ -474,10 +474,10 @@ func (g *WasmGen) compileStart() []byte {
 	//   [sliceHdrPtr]               os.Args slice header (16 bytes)
 	g.w.i32Const(scratch + 64)
 	g.w.i32Load(2, 0) // argc
-	g.w.localSet(0) // argc
+	g.w.localSet(0)   // argc
 	g.w.i32Const(scratch + 68)
 	g.w.i32Load(2, 0) // buf_size
-	g.w.localSet(1) // buf_size
+	g.w.localSet(1)   // buf_size
 
 	// total = argc*16 + buf_size + 64
 	g.w.localGet(0)
@@ -587,67 +587,67 @@ func (g *WasmGen) compileStart() []byte {
 		g.w.op(OP_WASM_I32_ADD)
 		g.w.localSet(4)
 		g.w.br(0)
-			g.w.end() // loop
-			g.w.end() // block
+		g.w.end() // loop
+		g.w.end() // block
 
-			// strHdrPtr = strHdrBase + i*8
-			g.w.localGet(9)
-			g.w.localGet(2)
-			g.w.i32Const(8)
-			g.w.op(OP_WASM_I32_MUL)
-			g.w.op(OP_WASM_I32_ADD)
-			g.w.localSet(3) // strHdrPtr
+		// strHdrPtr = strHdrBase + i*8
+		g.w.localGet(9)
+		g.w.localGet(2)
+		g.w.i32Const(8)
+		g.w.op(OP_WASM_I32_MUL)
+		g.w.op(OP_WASM_I32_ADD)
+		g.w.localSet(3) // strHdrPtr
 
-			// Write string header: {ptr,len}
-			g.w.localGet(3)
-			g.w.localGet(6) // argvPtr
-			g.w.localGet(2)
-			g.w.i32Const(4)
-			g.w.op(OP_WASM_I32_MUL)
-			g.w.op(OP_WASM_I32_ADD)
-			g.w.i32Load(2, 0)
-			g.w.i32Store(2, 0)
-			g.w.localGet(3)
-			g.w.localGet(4)
-			g.w.i32Store(2, 4)
+		// Write string header: {ptr,len}
+		g.w.localGet(3)
+		g.w.localGet(6) // argvPtr
+		g.w.localGet(2)
+		g.w.i32Const(4)
+		g.w.op(OP_WASM_I32_MUL)
+		g.w.op(OP_WASM_I32_ADD)
+		g.w.i32Load(2, 0)
+		g.w.i32Store(2, 0)
+		g.w.localGet(3)
+		g.w.localGet(4)
+		g.w.i32Store(2, 4)
 
-			// sliceData[i] = strHdrPtr
-			g.w.localGet(8) // sliceDataPtr
-			g.w.localGet(2)
-			g.w.i32Const(4)
-			g.w.op(OP_WASM_I32_MUL)
-			g.w.op(OP_WASM_I32_ADD)
-			g.w.localGet(3)
-			g.w.i32Store(2, 0)
+		// sliceData[i] = strHdrPtr
+		g.w.localGet(8) // sliceDataPtr
+		g.w.localGet(2)
+		g.w.i32Const(4)
+		g.w.op(OP_WASM_I32_MUL)
+		g.w.op(OP_WASM_I32_ADD)
+		g.w.localGet(3)
+		g.w.i32Store(2, 0)
 
-			// i++
-			g.w.localGet(2)
-			g.w.i32Const(1)
-			g.w.op(OP_WASM_I32_ADD)
-			g.w.localSet(2)
-			g.w.br(0)
-			g.w.end() // loop
-			g.w.end() // block
+		// i++
+		g.w.localGet(2)
+		g.w.i32Const(1)
+		g.w.op(OP_WASM_I32_ADD)
+		g.w.localSet(2)
+		g.w.br(0)
+		g.w.end() // loop
+		g.w.end() // block
 
-			// Build slice header: {data_ptr, len, cap, elem_size}
-			g.w.localGet(10) // sliceHdrPtr
-			g.w.localGet(8)  // data ptr
-			g.w.i32Store(2, 0)
-			g.w.localGet(10)
-			g.w.localGet(0) // len
-			g.w.i32Store(2, 4)
-			g.w.localGet(10)
-			g.w.localGet(0) // cap
-			g.w.i32Store(2, 8)
-			g.w.localGet(10)
-			g.w.i32Const(4) // sizeof(string value on wasm32)
-			g.w.i32Store(2, 12)
+		// Build slice header: {data_ptr, len, cap, elem_size}
+		g.w.localGet(10) // sliceHdrPtr
+		g.w.localGet(8)  // data ptr
+		g.w.i32Store(2, 0)
+		g.w.localGet(10)
+		g.w.localGet(0) // len
+		g.w.i32Store(2, 4)
+		g.w.localGet(10)
+		g.w.localGet(0) // cap
+		g.w.i32Store(2, 8)
+		g.w.localGet(10)
+		g.w.i32Const(4) // sizeof(string value on wasm32)
+		g.w.i32Store(2, 12)
 
-			// Store slice header pointer into os.Args global.
-			argsAddr := g.globalsAddr + int32(argsGlobalIdx*4)
-			g.w.i32Const(argsAddr)
-			g.w.localGet(10)
-			g.w.i32Store(2, 0)
+		// Store slice header pointer into os.Args global.
+		argsAddr := g.globalsAddr + int32(argsGlobalIdx*4)
+		g.w.i32Const(argsAddr)
+		g.w.localGet(10)
+		g.w.i32Store(2, 0)
 	}
 
 	// Call init functions
@@ -1396,8 +1396,8 @@ func (g *WasmGen) compileIndexAddr(elemSize int) {
 		g.w.i32WrapI64() // index should be i32
 	}
 	g.w.localSet(uint32(g.tempLocal)) // temp = index
-	g.popType() // pop sliceHdrPtr type
-	g.w.i32Load(2, 0) // load data_ptr from header[0]
+	g.popType()                       // pop sliceHdrPtr type
+	g.w.i32Load(2, 0)                 // load data_ptr from header[0]
 	g.w.localGet(uint32(g.tempLocal)) // push index
 	if elemSize == 1 {
 		g.w.op(OP_WASM_I32_ADD)
@@ -1877,17 +1877,17 @@ func (g *WasmGen) compileMakesliceIntrinsic() {
 	// Fill header from params
 	g.w.localGet(uint32(g.tempLocal))
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 0) // param 0 = ptr
+	g.w.i32Load(2, 0)  // param 0 = ptr
 	g.w.i32Store(2, 0) // hdr[0] = ptr
 
 	g.w.localGet(uint32(g.tempLocal))
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // param 1 = len
+	g.w.i32Load(2, 4)  // param 1 = len
 	g.w.i32Store(2, 4) // hdr[4] = len
 
 	g.w.localGet(uint32(g.tempLocal))
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 8) // param 2 = cap
+	g.w.i32Load(2, 8)  // param 2 = cap
 	g.w.i32Store(2, 8) // hdr[8] = cap
 
 	g.w.localGet(uint32(g.tempLocal))
@@ -1901,8 +1901,8 @@ func (g *WasmGen) compileMakesliceIntrinsic() {
 func (g *WasmGen) compileStringptrIntrinsic() {
 	// Param 0 = string header ptr. Read data_ptr at [header+0].
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 0)  // load param 0
-	g.w.i32Load(2, 0)  // load [header+0] = data_ptr
+	g.w.i32Load(2, 0) // load param 0
+	g.w.i32Load(2, 0) // load [header+0] = data_ptr
 	g.pushType(WASM_TYPE_I32)
 }
 
@@ -1936,12 +1936,12 @@ func (g *WasmGen) compileTostringIntrinsic() {
 	temp2 := uint32(g.tempLocal + 1)
 
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 0) // param 0 = value
+	g.w.i32Load(2, 0)                 // param 0 = value
 	g.w.localSet(uint32(g.tempLocal)) // save value ptr
 
 	// Load first dword to check if interface box
 	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Load(2, 0) // first dword
+	g.w.i32Load(2, 0)   // first dword
 	g.w.localSet(temp2) // save first_dword
 
 	g.w.localGet(temp2)
@@ -2083,10 +2083,10 @@ func (g *WasmGen) compileSyscallWrite(scratch int32, r1Addr int32, r2Addr int32,
 
 	// Call fd_write(fd, scratch, 1, scratch+8)
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 0) // fd
-	g.w.i32Const(scratch)      // iovs
-	g.w.i32Const(1)            // iovs_len
-	g.w.i32Const(scratch + 8)  // nwritten ptr
+	g.w.i32Load(2, 0)         // fd
+	g.w.i32Const(scratch)     // iovs
+	g.w.i32Const(1)           // iovs_len
+	g.w.i32Const(scratch + 8) // nwritten ptr
 	g.w.call(uint32(g.wasiFdWrite))
 
 	// Store errno
@@ -2154,7 +2154,7 @@ func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, 
 
 	// Load path ptr
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 0) // path ptr
+	g.w.i32Load(2, 0)                 // path ptr
 	g.w.localSet(uint32(g.tempLocal)) // path_ptr
 
 	// Compute path length (find null terminator)
@@ -2218,7 +2218,7 @@ func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, 
 	// flags = SP+4. WASI oflags: 0=none, 1=creat, 2=directory, 4=excl, 8=trunc
 	// Linux: O_RDONLY=0, O_WRONLY=1, O_RDWR=2, O_CREAT=64, O_TRUNC=512
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Load(2, 4) // flags
+	g.w.i32Load(2, 4)                 // flags
 	g.w.localSet(uint32(g.tempLocal)) // linux_flags
 
 	temp2 := uint32(g.tempLocal + 1)
@@ -2251,30 +2251,30 @@ func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, 
 	g.w.op(OP_WASM_I32_OR)
 
 	g.w.localSet(temp2) // oflags
-	g.w.i32Const(3)                     // dirfd (first preopened directory)
-	g.w.i32Const(0)                     // dirflags (no symlink follow)
+	g.w.i32Const(3)     // dirfd (first preopened directory)
+	g.w.i32Const(0)     // dirflags (no symlink follow)
 	g.w.i32Const(scratch + 20)
-	g.w.i32Load(2, 0)                   // path
+	g.w.i32Load(2, 0) // path
 	g.w.i32Const(scratch + 24)
-	g.w.i32Load(2, 0)                   // path_len
-	g.w.localGet(temp2)                 // oflags
+	g.w.i32Load(2, 0)   // path_len
+	g.w.localGet(temp2) // oflags
 	// rights_base: i64 - directory opens must NOT include FD_READ(bit1)/FD_WRITE(bit6)
 	// or WASI returns EISDIR. Check oflags bit 1 (OFLAGS_DIRECTORY).
 	g.w.localGet(temp2)
 	g.w.i32Const(2) // OFLAGS_DIRECTORY
 	g.w.op(OP_WASM_I32_AND)
 	g.w.ifOp(WASM_TYPE_I64)
-	g.w.op(0x42) // i64.const
+	g.w.op(0x42)         // i64.const
 	g.w.sleb(0x1fffffbd) // directory rights (no FD_READ/FD_WRITE)
 	g.w.elseOp()
-	g.w.op(0x42) // i64.const
+	g.w.op(0x42)         // i64.const
 	g.w.sleb(0x1fffffff) // file rights (all)
 	g.w.end()
 	// rights_inheriting: i64
-	g.w.op(0x42)                        // i64.const
-	g.w.sleb(0x1fffffff)                // rights_inheriting
-	g.w.i32Const(0)                     // fdflags
-	g.w.i32Const(scratch + 28)          // fd_out ptr
+	g.w.op(0x42)               // i64.const
+	g.w.sleb(0x1fffffff)       // rights_inheriting
+	g.w.i32Const(0)            // fdflags
+	g.w.i32Const(scratch + 28) // fd_out ptr
 	g.w.call(uint32(g.wasiPathOpen))
 
 	// errno on stack
@@ -2620,7 +2620,7 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 
 	// Now iface_ptr is on stack top
 	g.w.localTee(uint32(g.tempLocal))
-	g.w.i32Load(2, 0)  // type_id
+	g.w.i32Load(2, 0) // type_id
 	temp2 := uint32(g.tempLocal + 1)
 	g.w.localSet(temp2) // type_id in temp2
 
@@ -2852,6 +2852,16 @@ func (g *WasmGen) compileConvert(typeName string) {
 		}
 		g.w.i32Const(0xffff)
 		g.w.op(OP_WASM_I32_AND)
+		g.pushType(WASM_TYPE_I32)
+	case "int16":
+		t := g.popType()
+		if t == WASM_TYPE_I64 {
+			g.w.i32WrapI64()
+		}
+		g.w.i32Const(16)
+		g.w.op(OP_WASM_I32_SHL)
+		g.w.i32Const(16)
+		g.w.op(OP_WASM_I32_SHR_S)
 		g.pushType(WASM_TYPE_I32)
 	case "int", "uintptr", "uint", "int32", "uint32":
 		t := g.popType()

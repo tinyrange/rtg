@@ -111,22 +111,22 @@ type VM struct {
 	exited bool
 
 	// Debug: step counting
-	stepCount  int64
-	stepLimit  int64
-	callStack  []string
-	stackHWM   int
+	stepCount int64
+	stepLimit int64
+	callStack []string
+	stackHWM  int
 
 	// Memory tracking (RTG_VM_MEM=1 summary, RTG_VM_ALLOC=1 per-alloc log)
-	trackMem     bool
-	logAllocs    bool
-	heapAllocs   int64
-	allocCount   int64
-	frameHWM     int64
-	callCount    int64
-	tagBytes     map[string]int64
-	tagCount     map[string]int64
-	callerBytes  map[string]int64
-	callerCount  map[string]int64
+	trackMem    bool
+	logAllocs   bool
+	heapAllocs  int64
+	allocCount  int64
+	frameHWM    int64
+	callCount   int64
+	tagBytes    map[string]int64
+	tagCount    map[string]int64
+	callerBytes map[string]int64
+	callerCount map[string]int64
 }
 
 type vmDispatchEntry struct {
@@ -906,7 +906,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 	}
 
 	vm.callCount = vm.callCount + 1
-	used := int64(vm.frameStackSize) - int64(vm.frameStackTop - vm.frameStackBase)
+	used := int64(vm.frameStackSize) - int64(vm.frameStackTop-vm.frameStackBase)
 	if used > vm.frameHWM {
 		vm.frameHWM = used
 	}
@@ -1238,6 +1238,10 @@ func (vm *VM) execFunc(f *IRFunc) {
 			case "uint16":
 				a := vm.pop()
 				vm.push(a & 0xFFFF)
+			case "int16":
+				a := vm.pop()
+				v := int16(uint16(a))
+				vm.push(uint64(int64(v)) & vm.config.WordMask)
 			case "int32":
 				a := vm.pop()
 				v := int32(uint32(a))

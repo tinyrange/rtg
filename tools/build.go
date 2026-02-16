@@ -578,6 +578,62 @@ func (e *Executor) runAndCapture(name string, args ...string) (string, error) {
 	return trimCommandOutput(out), nil
 }
 
+func listGoFilesInDir(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(name, ".go") {
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func fileExt(path string) string {
+	lastSep := -1
+	lastDot := -1
+	i := 0
+	for i < len(path) {
+		if path[i] == '/' || path[i] == '\\' {
+			lastSep = i
+		} else if path[i] == '.' {
+			lastDot = i
+		}
+		i++
+	}
+	if lastDot <= lastSep {
+		return ""
+	}
+	return path[lastDot:len(path)]
+}
+
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	i := 0
+	for i < len(a) {
+		aa := a[i]
+		bb := b[i]
+		if aa >= 'A' && aa <= 'Z' {
+			aa = aa + ('a' - 'A')
+		}
+		if bb >= 'A' && bb <= 'Z' {
+			bb = bb + ('a' - 'A')
+		}
+		if aa != bb {
+			return false
+		}
+		i++
+	}
+	return true
+}
+
 // handleFullCompiler runs the top-level fullcompiler suite for a backend.
 // Usage: fullcompiler <rtg|c|wasm>
 func (e *Executor) handleFullCompiler(args []string) error {
@@ -591,7 +647,7 @@ func (e *Executor) handleFullCompiler(args []string) error {
 		return fmt.Errorf("unsupported fullcompiler backend: %s", backend)
 	}
 
-	tests, err := filepath.Glob("tests/*.go")
+	tests, err := listGoFilesInDir("tests")
 	if err != nil {
 		return err
 	}
@@ -616,7 +672,8 @@ func (e *Executor) handleFullCompiler(args []string) error {
 	}
 
 	for _, testPath := range tests {
-		name := strings.TrimSuffix(filepath.Base(testPath), filepath.Ext(testPath))
+		base := filepath.Base(testPath)
+		name := strings.TrimSuffix(base, fileExt(base))
 		if backend == "wasm" && name == "iface_typeassert" {
 			fmt.Printf("SKIP: %s/%s (known wasm32 type-assertion issue)\n", backend, name)
 			continue
@@ -776,7 +833,7 @@ func (e *Executor) handleRun(args []string) error {
 	}
 
 	binary := args[0]
-	if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(binary), ".exe") {
+	if runtime.GOOS == "windows" && !equalFoldASCII(fileExt(binary), ".exe") {
 		// If caller passed a suffix-less path, prefer an existing ".exe" peer.
 		if _, err := os.Stat(binary); err != nil {
 			candidate := binary + ".exe"
@@ -842,8 +899,8 @@ func shShell(cmdStr string) (name string, args []string) {
 	// and does not provide mv, cmp, etc. Prefer a real bash (Git for Windows).
 	for _, candidate := range []string{
 		os.Getenv("GIT_BASH"), // e.g. C:\Program Files\Git\bin\bash.exe
-		`C:\Program Files\Git\bin\bash.exe`,
-		`C:\Program Files (x86)\Git\bin\bash.exe`,
+		"C:\\Program Files\\Git\\bin\\bash.exe",
+		"C:\\Program Files (x86)\\Git\\bin\\bash.exe",
 	} {
 		if candidate == "" {
 			continue
@@ -852,14 +909,8 @@ func shShell(cmdStr string) (name string, args []string) {
 			return candidate, []string{"-c", cmdStr}
 		}
 	}
-	// Fallback: bash in PATH (may be Git) but avoid WSL stub
-	if path, err := exec.LookPath("bash"); err == nil {
-		pathLower := strings.ToLower(path)
-		if !strings.Contains(pathLower, "system32") && !strings.Contains(pathLower, "windowsapps") {
-			return path, []string{"-c", cmdStr}
-		}
-	}
-	return "cmd", []string{"/c", cmdStr}
+	// Fallback: bash in PATH.
+	return "bash", []string{"-c", cmdStr}
 }
 
 // normalizeWindowsGoBuildOutput appends ".exe" to "go build -o <path>" outputs on
@@ -889,7 +940,7 @@ func normalizeWindowsGoBuildOutput(cmdStr string) string {
 	for i := goBuildIdx + 2; i < len(parts); i++ {
 		if strings.HasPrefix(parts[i], "-o=") {
 			out := strings.TrimPrefix(parts[i], "-o=")
-			if out != "" && filepath.Ext(out) == "" {
+			if out != "" && fileExt(out) == "" {
 				parts[i] = "-o=" + out + ".exe"
 				return strings.Join(parts, " ")
 			}
@@ -897,7 +948,7 @@ func normalizeWindowsGoBuildOutput(cmdStr string) string {
 		}
 		if parts[i] == "-o" && i+1 < len(parts) {
 			out := parts[i+1]
-			if out != "" && !strings.HasPrefix(out, "-") && filepath.Ext(out) == "" {
+			if out != "" && !strings.HasPrefix(out, "-") && fileExt(out) == "" {
 				parts[i+1] = out + ".exe"
 				return strings.Join(parts, " ")
 			}
@@ -943,7 +994,7 @@ func (cb crossBuild) OutputName(name string) string {
 	baseName := name
 	if cb.GOOS == "windows" {
 		// Avoid generating ".exe.exe" when caller already provides an extension.
-		if ext := filepath.Ext(baseName); strings.EqualFold(ext, ".exe") {
+		if ext := fileExt(baseName); equalFoldASCII(ext, ".exe") {
 			baseName = strings.TrimSuffix(baseName, ext)
 		}
 	}

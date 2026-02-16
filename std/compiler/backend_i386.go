@@ -956,6 +956,10 @@ func (g *CodeGen) compileConvert_i386(typeName string) {
 		g.opPop(REG32_EAX)
 		g.movzxW32(REG32_EAX)
 		g.opPush(REG32_EAX)
+	case "int16":
+		g.opPop(REG32_EAX)
+		g.movsxW32(REG32_EAX)
+		g.opPush(REG32_EAX)
 	case "int64", "uint64":
 		// On i386, 64-bit types truncated to 32-bit (best effort)
 	}

@@ -403,6 +403,12 @@ func (g *CodeGen) movzxW(reg int) {
 	g.emitBytes(rex, 0x0f, 0xb7, modrmRR(reg, reg))
 }
 
+// movsxW emits `movsx reg, reg_lo16`
+func (g *CodeGen) movsxW(reg int) {
+	rex := rexRR(reg, reg)
+	g.emitBytes(rex, 0x0f, 0xbf, modrmRR(reg, reg))
+}
+
 // movsxD emits `movsxd reg, reg_lo32`
 func (g *CodeGen) movsxD(reg int) {
 	rex := rexRR(reg, reg)

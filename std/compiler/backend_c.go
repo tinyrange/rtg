@@ -252,6 +252,8 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 	bp.WriteString("#endif\n")
 	cWritef(bp, "typedef %s rtg_sword;\n", signedWord)
 	cWritef(bp, "typedef %s rtg_word;\n", unsignedWord)
+	bp.WriteString("typedef signed short rtg_i16;\n")
+	bp.WriteString("typedef unsigned short rtg_u16;\n")
 	cWritef(bp, "typedef %s rtg_i32;\n", i32Type)
 	cWritef(bp, "typedef %s rtg_u32;\n\n", u32Type)
 	if bits == 16 {
@@ -819,7 +821,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				needC = true
 				needT = true
 			case OP_CONVERT:
-				if in.Name == "byte" || in.Name == "uint16" || in.Name == "int32" || in.Name == "uint32" {
+				if in.Name == "byte" || in.Name == "uint16" || in.Name == "int16" || in.Name == "int32" || in.Name == "uint32" {
 					needA = true
 				}
 			case OP_IFACE_BOX:
@@ -1104,6 +1106,8 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
 				case "uint16":
 					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffffu);\n")
+				case "int16":
+					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i16)(rtg_u16)a);\n")
 				case "int32":
 					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i32)(rtg_u32)a);\n")
 				case "uint32":

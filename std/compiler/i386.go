@@ -474,6 +474,12 @@ func (g *CodeGen) movzxW32(reg int) {
 	g.emitBytes(0x0f, 0xb7, modrmRR32(reg, reg))
 }
 
+// movsxW32 emits `movsx reg, reg_lo16`
+func (g *CodeGen) movsxW32(reg int) {
+	g.dos32OpPrefix()
+	g.emitBytes(0x0f, 0xbf, modrmRR32(reg, reg))
+}
+
 // === Setcc (32-bit) ===
 
 // setcc32 emits `setCC reg_lo8` where cc is a condition code constant

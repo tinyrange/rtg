@@ -418,6 +418,13 @@ func (g *CodeGen) emitUxth(rd, rn int) {
 	g.emitArm64(inst)
 }
 
+// emitSxth emits SXTH Xd, Xn (sign-extend halfword)
+func (g *CodeGen) emitSxth(rd, rn int) {
+	// SXTH Xd, Wn = SBFM Xd, Xn, #0, #15
+	inst := uint32(0x93403C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
+	g.emitArm64(inst)
+}
+
 // emitSxtw emits SXTW Xd, Wn (sign-extend 32→64)
 func (g *CodeGen) emitSxtw(rd, rn int) {
 	// SXTW Xd, Wn = SBFM Xd, Xn, #0, #31

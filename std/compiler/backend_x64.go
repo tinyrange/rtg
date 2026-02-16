@@ -835,11 +835,11 @@ func (g *CodeGen) compileIfaceCall(inst Inst) {
 				g.emitBytes(0x48, 0x81, 0xf9) // cmp rcx, imm32
 				g.emitU32(uint32(entry.typeID))
 			}
-				// jne next (rel32)
-				nextFixup := g.jccRel32(CC_NE)
+			// jne next (rel32)
+			nextFixup := g.jccRel32(CC_NE)
 
-				// Call the concrete method (receiver/args already on operand stack).
-				g.emitCallPlaceholder(entry.funcName)
+			// Call the concrete method (receiver/args already on operand stack).
+			g.emitCallPlaceholder(entry.funcName)
 
 			// jmp end
 			endFixups = append(endFixups, g.jmpRel32())
@@ -864,14 +864,14 @@ func (g *CodeGen) compileLoad(size int) {
 	g.opPop(REG_RCX)
 	g.testRR(REG_RCX, REG_RCX)
 	if size == 1 {
-		g.emitBytes(0x75, 0x05)             // jnz +5 (skip zero case)
+		g.emitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.xorRR(REG_RAX, REG_RAX)
-		g.jmpRel8(0x04)                     // jmp +4 (skip load)
+		g.jmpRel8(0x04)                    // jmp +4 (skip load)
 		g.loadMemByte(REG_RAX, REG_RCX, 0) // movzx rax, byte [rcx]
 	} else {
-		g.emitBytes(0x75, 0x05)        // jnz +5 (skip zero case)
+		g.emitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.xorRR(REG_RAX, REG_RAX)
-		g.jmpRel8(0x03)               // jmp +3 (skip load)
+		g.jmpRel8(0x03)                // jmp +3 (skip load)
 		g.loadMem(REG_RAX, REG_RCX, 0) // mov rax, [rcx]
 	}
 	g.opPush(REG_RAX)
@@ -898,8 +898,8 @@ func (g *CodeGen) compileOffset(inst Inst) {
 
 func (g *CodeGen) compileIndexAddr(elemSize int) {
 	// pop index, pop slice-header-ptr, compute data_ptr + index * elemSize, push
-	g.opPop(REG_RAX)  // index
-	g.opPop(REG_RCX)  // slice header ptr
+	g.opPop(REG_RAX) // index
+	g.opPop(REG_RCX) // slice header ptr
 
 	// Load data_ptr from header: [rcx+0]
 	g.loadMem(REG_RCX, REG_RCX, 0)
@@ -921,9 +921,9 @@ func (g *CodeGen) compileIndexAddr(elemSize int) {
 func (g *CodeGen) compileLen() {
 	g.opPop(REG_RAX)
 	g.testRR(REG_RAX, REG_RAX)
-	g.emitBytes(0x75, 0x05)    // jnz +5 (skip zero case)
+	g.emitBytes(0x75, 0x05)   // jnz +5 (skip zero case)
 	g.xorRR(REG_RAX, REG_RAX) // 3 bytes
-	g.jmpRel8(0x04)            // jmp +4 (skip load) 2 bytes
+	g.jmpRel8(0x04)           // jmp +4 (skip load) 2 bytes
 	g.loadMem(REG_RAX, REG_RAX, 8)
 	g.opPush(REG_RAX)
 }
@@ -931,9 +931,9 @@ func (g *CodeGen) compileLen() {
 func (g *CodeGen) compileCap() {
 	g.opPop(REG_RAX)
 	g.testRR(REG_RAX, REG_RAX)
-	g.emitBytes(0x75, 0x05)    // jnz +5 (skip zero case)
-	g.xorRR(REG_RAX, REG_RAX) // 3 bytes
-	g.jmpRel8(0x04)            // jmp +4 (skip load) 2 bytes
+	g.emitBytes(0x75, 0x05)         // jnz +5 (skip zero case)
+	g.xorRR(REG_RAX, REG_RAX)       // 3 bytes
+	g.jmpRel8(0x04)                 // jmp +4 (skip load) 2 bytes
 	g.loadMem(REG_RAX, REG_RAX, 16) // cap at offset 16 (2*8)
 	g.opPush(REG_RAX)
 }
@@ -959,6 +959,10 @@ func (g *CodeGen) compileConvert(typeName string) {
 	case "uint16":
 		g.opPop(REG_RAX)
 		g.movzxW(REG_RAX)
+		g.opPush(REG_RAX)
+	case "int16":
+		g.opPop(REG_RAX)
+		g.movsxW(REG_RAX)
 		g.opPush(REG_RAX)
 	case "int32":
 		g.opPop(REG_RAX)

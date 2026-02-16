@@ -248,7 +248,7 @@ func (g *CodeGen) compileConstStrArm64(s string) {
 	// and store it into the header's data_ptr field in __DATA (writable)
 	g.emitAdrpAdd(REG_X1, "$rodata_header$", uint64(rodataOff)) // X1 = actual string data addr
 	g.emitAdrpAdd(REG_X0, "$data_addr$", uint64(headerOff))     // X0 = header addr in __DATA
-	g.emitStr(REG_X1, REG_X0, 0)                                 // [header+0] = data addr
+	g.emitStr(REG_X1, REG_X0, 0)                                // [header+0] = data addr
 
 	// Push header address onto operand stack
 	g.opPush(REG_X0)
@@ -313,7 +313,7 @@ func (g *CodeGen) compileBinOpArm64(op Opcode) {
 		g.emitSdiv(REG_X1, REG_X1, REG_X0)
 	case OP_MOD:
 		// mod = a - (a/b)*b → SDIV + MSUB
-		g.emitSdiv(REG_X2, REG_X1, REG_X0) // X2 = X1 / X0
+		g.emitSdiv(REG_X2, REG_X1, REG_X0)         // X2 = X1 / X0
 		g.emitMsub(REG_X1, REG_X2, REG_X0, REG_X1) // X1 = X1 - X2*X0
 	case OP_AND:
 		g.emitAndRR(REG_X1, REG_X1, REG_X0)
@@ -559,7 +559,7 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
 
 func (g *CodeGen) compileSliceptrIntrinsicArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // slice header ptr
-	g.emitLdr(REG_X0, REG_X0, 0)       // [header+0] = data ptr
+	g.emitLdr(REG_X0, REG_X0, 0)      // [header+0] = data ptr
 	g.opPush(REG_X0)
 }
 
@@ -687,7 +687,7 @@ func (g *CodeGen) compileTostringIntrinsicArm64() {
 
 func (g *CodeGen) compileReadPtrIntrinsicArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // addr
-	g.emitLdr(REG_X0, REG_X0, 0)       // read 8 bytes
+	g.emitLdr(REG_X0, REG_X0, 0)      // read 8 bytes
 	g.opPush(REG_X0)
 }
 
@@ -926,6 +926,10 @@ func (g *CodeGen) compileConvertArm64(typeName string) {
 	case "uint16":
 		g.opPop(REG_X0)
 		g.emitUxth(REG_X0, REG_X0)
+		g.opPush(REG_X0)
+	case "int16":
+		g.opPop(REG_X0)
+		g.emitSxth(REG_X0, REG_X0)
 		g.opPush(REG_X0)
 	case "int32":
 		g.opPop(REG_X0)

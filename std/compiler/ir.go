@@ -155,60 +155,60 @@ type IRGlobal struct {
 
 // IRModule holds all compiled IR.
 type IRModule struct {
-	Funcs        []*IRFunc
-	Globals      []IRGlobal
-	Types        []*TypeInfo
-	TypeIDs      map[string]int      // concrete type → type ID
-	MethodTable  map[string]string   // "pkg.Type.Method" → IR func name
-	IfaceMethods map[string][]string // interface name → method names
-	IfaceMethodRets map[string]int   // iface+"\x00"+method → return count
+	Funcs           []*IRFunc
+	Globals         []IRGlobal
+	Types           []*TypeInfo
+	TypeIDs         map[string]int      // concrete type → type ID
+	MethodTable     map[string]string   // "pkg.Type.Method" → IR func name
+	IfaceMethods    map[string][]string // interface name → method names
+	IfaceMethodRets map[string]int      // iface+"\x00"+method → return count
 }
 
 // === Compiler ===
 
 // Compiler lowers AST from a Module into stack machine IR.
 type Compiler struct {
-	mod                *Module
-	irmod              *IRModule
-	curFunc            *IRFunc
-	scopes             []map[string]int
-	labelSeq           int
-	breaks             []int
-	continues          []int
-	globals            map[string]int
-	types              map[string]*TypeInfo
-	curPkg             *Package
-	errors             []string
-	funcRets           map[string]int      // function name → return count
-	funcParams         map[string]int      // function name → param count
-	funcParamTypes     map[string][]string // function name → param type names (receiver first for methods)
-	funcVariadic       map[string]int      // variadic function name → count of fixed params
-	funcVariadicIface  map[string]bool     // variadic function name → true if ...interface{}
-	funcVariadicElem   map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
-	localElemSizes     map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
-	globalElemSizes    map[string]int      // qualified global name → slice element size
-	ifaceMethods       map[string][]string // interface name → method names
-	ifaceMethodRets    map[string]int      // iface+"\x00"+method → return count
-	methodTable        map[string]string   // "pkg.Type.Method" → qualified IR func name
-	typeIDs            map[string]int      // concrete type qualified name → unique int
-	nextTypeID         int
-	localTypes         map[string]string   // local var name → type name (for interface-typed locals)
-	localStringVars    map[string]bool     // local var name → true if the local is a string
-	localConcreteTypes map[string]string   // local var name → qualified type name for method resolution
-	funcRetTypes       map[string][]string // function name → return type names
-	localMapVars       map[string]int      // local var name → keyKind (0=int, 1=string) if it's a map
-	localMapValueTypes map[string]string   // local map var name → value type name (e.g. "*Package")
-	globalMapVars      map[string]int      // qualified global name → keyKind if it's a map
-	globalConcreteTypes map[string]string  // qualified global name → qualified type name
-	constValues        map[string]int64    // qualified const name → precomputed value
-	constStringValues  map[string]string   // qualified const name → precomputed string value
-	localAddrOf        map[string]bool     // local var name → true if assigned from &var (pointer-to-pointer)
-	stackDepth         int                 // operand stack depth tracking for balance checks
-	deferNames         []string
-	deferArgStarts     []int
-	deferArgCounts     []int
-	dotJoinCache       map[string]map[string]string // a → b → "a.b"
-	qualifyTypeCache   map[string]string            // "typeName\x00pkgPath" → qualified result
+	mod                 *Module
+	irmod               *IRModule
+	curFunc             *IRFunc
+	scopes              []map[string]int
+	labelSeq            int
+	breaks              []int
+	continues           []int
+	globals             map[string]int
+	types               map[string]*TypeInfo
+	curPkg              *Package
+	errors              []string
+	funcRets            map[string]int      // function name → return count
+	funcParams          map[string]int      // function name → param count
+	funcParamTypes      map[string][]string // function name → param type names (receiver first for methods)
+	funcVariadic        map[string]int      // variadic function name → count of fixed params
+	funcVariadicIface   map[string]bool     // variadic function name → true if ...interface{}
+	funcVariadicElem    map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
+	localElemSizes      map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
+	globalElemSizes     map[string]int      // qualified global name → slice element size
+	ifaceMethods        map[string][]string // interface name → method names
+	ifaceMethodRets     map[string]int      // iface+"\x00"+method → return count
+	methodTable         map[string]string   // "pkg.Type.Method" → qualified IR func name
+	typeIDs             map[string]int      // concrete type qualified name → unique int
+	nextTypeID          int
+	localTypes          map[string]string   // local var name → type name (for interface-typed locals)
+	localStringVars     map[string]bool     // local var name → true if the local is a string
+	localConcreteTypes  map[string]string   // local var name → qualified type name for method resolution
+	funcRetTypes        map[string][]string // function name → return type names
+	localMapVars        map[string]int      // local var name → keyKind (0=int, 1=string) if it's a map
+	localMapValueTypes  map[string]string   // local map var name → value type name (e.g. "*Package")
+	globalMapVars       map[string]int      // qualified global name → keyKind if it's a map
+	globalConcreteTypes map[string]string   // qualified global name → qualified type name
+	constValues         map[string]int64    // qualified const name → precomputed value
+	constStringValues   map[string]string   // qualified const name → precomputed string value
+	localAddrOf         map[string]bool     // local var name → true if assigned from &var (pointer-to-pointer)
+	stackDepth          int                 // operand stack depth tracking for balance checks
+	deferNames          []string
+	deferArgStarts      []int
+	deferArgCounts      []int
+	dotJoinCache        map[string]map[string]string // a → b → "a.b"
+	qualifyTypeCache    map[string]string            // "typeName\x00pkgPath" → qualified result
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -229,29 +229,29 @@ func (c *Compiler) dotJoin(a string, b string) string {
 // CompileModule compiles an entire resolved module to IR.
 func CompileModule(mod *Module) (*IRModule, []string) {
 	c := &Compiler{
-		mod:               mod,
-		irmod:             &IRModule{},
-		globals:           make(map[string]int),
-		types:             make(map[string]*TypeInfo),
-			funcRets:          make(map[string]int),
-			funcParams:        make(map[string]int),
-			funcParamTypes:    make(map[string][]string),
-		funcVariadic:      make(map[string]int),
-		funcVariadicIface: make(map[string]bool),
-			funcVariadicElem:  make(map[string]int),
-			globalElemSizes:   make(map[string]int),
-			ifaceMethods:      make(map[string][]string),
-			ifaceMethodRets:   make(map[string]int),
-			methodTable:       make(map[string]string),
-			typeIDs:           make(map[string]int),
-			nextTypeID:        4, // 1=int, 2=string, 3=bool are reserved
-		funcRetTypes:      make(map[string][]string),
-		globalMapVars:      make(map[string]int),
+		mod:                 mod,
+		irmod:               &IRModule{},
+		globals:             make(map[string]int),
+		types:               make(map[string]*TypeInfo),
+		funcRets:            make(map[string]int),
+		funcParams:          make(map[string]int),
+		funcParamTypes:      make(map[string][]string),
+		funcVariadic:        make(map[string]int),
+		funcVariadicIface:   make(map[string]bool),
+		funcVariadicElem:    make(map[string]int),
+		globalElemSizes:     make(map[string]int),
+		ifaceMethods:        make(map[string][]string),
+		ifaceMethodRets:     make(map[string]int),
+		methodTable:         make(map[string]string),
+		typeIDs:             make(map[string]int),
+		nextTypeID:          4, // 1=int, 2=string, 3=bool are reserved
+		funcRetTypes:        make(map[string][]string),
+		globalMapVars:       make(map[string]int),
 		globalConcreteTypes: make(map[string]string),
-		constValues:       make(map[string]int64),
-		constStringValues: make(map[string]string),
-		dotJoinCache:      make(map[string]map[string]string),
-		qualifyTypeCache:  make(map[string]string),
+		constValues:         make(map[string]int64),
+		constStringValues:   make(map[string]string),
+		dotJoinCache:        make(map[string]map[string]string),
+		qualifyTypeCache:    make(map[string]string),
 	}
 	c.initBuiltinTypes()
 
@@ -334,6 +334,8 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 func (c *Compiler) initBuiltinTypes() {
 	c.types["bool"] = &TypeInfo{Kind: TY_BOOL, Name: "bool", Size: 1, Align: 1}
 	c.types["byte"] = &TypeInfo{Kind: TY_BYTE, Name: "byte", Size: 1, Align: 1}
+	c.types["int16"] = &TypeInfo{Kind: TY_INT32, Name: "int16", Size: 2, Align: 2}
+	c.types["uint16"] = &TypeInfo{Kind: TY_INT32, Name: "uint16", Size: 2, Align: 2}
 	c.types["int32"] = &TypeInfo{Kind: TY_INT32, Name: "int32", Size: 4, Align: 4}
 	c.types["int"] = &TypeInfo{Kind: TY_INT, Name: "int", Size: 8, Align: 8}
 	c.types["uintptr"] = &TypeInfo{Kind: TY_UINTPTR, Name: "uintptr", Size: 8, Align: 8}
@@ -371,7 +373,7 @@ func isBuiltinName(name string) bool {
 	case 'd':
 		return name == "delete"
 	case 'i':
-		return name == "int" || name == "int32" || name == "int64" || name == "iota"
+		return name == "int" || name == "int16" || name == "int32" || name == "int64" || name == "iota"
 	case 'u':
 		return name == "uint" || name == "uint16" || name == "uint32" || name == "uint64" || name == "uintptr"
 	case 'b':
@@ -737,7 +739,7 @@ func typeWidth(name string) int {
 	switch name {
 	case "byte":
 		return 1
-	case "uint16":
+	case "int16", "uint16":
 		return 2
 	case "int32", "uint32":
 		return 4
@@ -1005,47 +1007,47 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			c.funcRetTypes[qname] = retTypeNames
 			c.funcRets[qname] = len(retTypeNames)
 
-				// Pre-register variadic info and param count
-				paramCount := len(fn.Nodes)
-				fixedParams := 0
-				var paramTypeNames []string
-				if fn.X != nil {
-					paramCount++
-					fixedParams = 1 // receiver counts as fixed
-					if fn.X.Type != nil {
-						paramTypeNames = append(paramTypeNames, nodeTypeName(fn.X.Type))
-					} else {
-						paramTypeNames = append(paramTypeNames, "")
-					}
+			// Pre-register variadic info and param count
+			paramCount := len(fn.Nodes)
+			fixedParams := 0
+			var paramTypeNames []string
+			if fn.X != nil {
+				paramCount++
+				fixedParams = 1 // receiver counts as fixed
+				if fn.X.Type != nil {
+					paramTypeNames = append(paramTypeNames, nodeTypeName(fn.X.Type))
+				} else {
+					paramTypeNames = append(paramTypeNames, "")
 				}
-				isVariadic := false
-				isIfaceVariadic := false
-				varElemSize := targetPtrSize
-				for _, param := range fn.Nodes {
-					paramTypeName := ""
-					if param.Type != nil {
-						paramTypeName = nodeTypeName(param.Type)
+			}
+			isVariadic := false
+			isIfaceVariadic := false
+			varElemSize := targetPtrSize
+			for _, param := range fn.Nodes {
+				paramTypeName := ""
+				if param.Type != nil {
+					paramTypeName = nodeTypeName(param.Type)
+				}
+				if len(param.Name) > 3 && param.Name[0:3] == "..." {
+					if paramTypeName != "" {
+						paramTypeName = "[]" + paramTypeName
 					}
-					if len(param.Name) > 3 && param.Name[0:3] == "..." {
-						if paramTypeName != "" {
-							paramTypeName = "[]" + paramTypeName
-						}
-						paramTypeNames = append(paramTypeNames, paramTypeName)
-						isVariadic = true
-						if param.Type != nil && param.Type.Kind == NInterfaceType {
+					paramTypeNames = append(paramTypeNames, paramTypeName)
+					isVariadic = true
+					if param.Type != nil && param.Type.Kind == NInterfaceType {
 						isIfaceVariadic = true
 					}
 					if param.Type != nil && param.Type.Kind == NIdent && param.Type.Name == "byte" {
 						varElemSize = 1
 					}
 				} else {
-						paramTypeNames = append(paramTypeNames, paramTypeName)
-						fixedParams++
-					}
+					paramTypeNames = append(paramTypeNames, paramTypeName)
+					fixedParams++
 				}
-				c.funcParams[qname] = paramCount
-				c.funcParamTypes[qname] = paramTypeNames
-				if isVariadic {
+			}
+			c.funcParams[qname] = paramCount
+			c.funcParamTypes[qname] = paramTypeNames
+			if isVariadic {
 				c.funcVariadic[qname] = fixedParams
 				c.funcVariadicIface[qname] = isIfaceVariadic
 				c.funcVariadicElem[qname] = varElemSize
@@ -1406,16 +1408,16 @@ func (c *Compiler) compileFunc(node *Node) {
 			if param.Type != nil && param.Type.Kind == NIdent && param.Type.Name == "string" {
 				c.localStringVars[pname] = true
 			}
-				// Track concrete type for method resolution on params
-				if param.Type != nil {
-						typeName := nodeTypeName(param.Type)
-						if isVarParam {
-							typeName = "[]" + typeName
-						}
-						// Track interface-typed params
-						if c.isInterfaceTypeName(typeName) {
-							c.localTypes[pname] = typeName
-						}
+			// Track concrete type for method resolution on params
+			if param.Type != nil {
+				typeName := nodeTypeName(param.Type)
+				if isVarParam {
+					typeName = "[]" + typeName
+				}
+				// Track interface-typed params
+				if c.isInterfaceTypeName(typeName) {
+					c.localTypes[pname] = typeName
+				}
 				ct := c.qualifyTypeName(typeName, "")
 				c.localConcreteTypes[pname] = ct
 				// Also track slice elem sizes from type
@@ -1831,7 +1833,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		}
 
 		// Multi-value map index: v, ok := m[key]
-			if node.Y != nil && node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X) {
+		if node.Y != nil && node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X) {
 			c.compileExpr(node.Y.X) // push map
 			c.compileExpr(node.Y.Y) // push key
 			c.emit(Inst{Op: OP_CALL, Name: "runtime.MapGet", Arg: 2})
@@ -1855,28 +1857,28 @@ func (c *Compiler) compileAssign(node *Node) {
 					c.localConcreteTypes[node.Nodes[0].Name] = c.qualifyTypeName(valType, "")
 				}
 			}
-				return
-			}
+			return
+		}
 
-			// Multi-value type assertion: v, ok := x.(T)
-			if node.Y != nil && node.Y.Kind == NTypeAssertExpr && len(node.Nodes) == 2 {
-				c.compileTypeAssertCommaOk(node.Y)
-				i := len(node.Nodes) - 1
-				for i >= 0 {
-					lhs := node.Nodes[i]
-					if node.Name == ":=" {
-						idx := c.addLocal(lhs.Name)
-						c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
-					} else {
-						c.compileLValueSet(lhs)
-					}
-					i = i - 1
+		// Multi-value type assertion: v, ok := x.(T)
+		if node.Y != nil && node.Y.Kind == NTypeAssertExpr && len(node.Nodes) == 2 {
+			c.compileTypeAssertCommaOk(node.Y)
+			i := len(node.Nodes) - 1
+			for i >= 0 {
+				lhs := node.Nodes[i]
+				if node.Name == ":=" {
+					idx := c.addLocal(lhs.Name)
+					c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+				} else {
+					c.compileLValueSet(lhs)
 				}
-				return
+				i = i - 1
 			}
+			return
+		}
 
-			// Multi-value assignment: a, b = expr or a, b := expr
-			c.compileExpr(node.Y)
+		// Multi-value assignment: a, b = expr or a, b := expr
+		c.compileExpr(node.Y)
 
 		// Track interface-typed, string-typed, and concrete-typed locals from multi-value := assignments
 		if node.Name == ":=" && node.Y != nil && node.Y.Kind == NCallExpr {
@@ -1893,9 +1895,9 @@ func (c *Compiler) compileAssign(node *Node) {
 				for j, lhs := range node.Nodes {
 					if j < len(retTypes) {
 						qret := c.qualifyTypeName(retTypes[j], calleePkg)
-							if c.isInterfaceTypeName(retTypes[j]) {
-								c.localTypes[lhs.Name] = retTypes[j]
-							}
+						if c.isInterfaceTypeName(retTypes[j]) {
+							c.localTypes[lhs.Name] = retTypes[j]
+						}
 						if retTypes[j] == "string" {
 							c.localStringVars[lhs.Name] = true
 						}
@@ -2252,9 +2254,9 @@ func (c *Compiler) maybeBoxInterface(expr *Node, retTypes []string, idx int) {
 		calleeName := c.resolveCallName(expr.X)
 		if calleeRetTypes, ok := c.funcRetTypes[calleeName]; ok {
 			if idx < len(calleeRetTypes) {
-					if c.isInterfaceTypeName(calleeRetTypes[idx]) {
-						return // callee already boxes
-					}
+				if c.isInterfaceTypeName(calleeRetTypes[idx]) {
+					return // callee already boxes
+				}
 			}
 		}
 	}
@@ -2298,21 +2300,21 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 		if _, isIface := c.localTypes[expr.Name]; isIface {
 			return 0 // already interface
 		}
-			// Check if it's a global string var
-			if c.curPkg != nil {
-				if sym, ok := c.curPkg.Symbols[expr.Name]; ok && sym.Kind == SymVar && sym.Node != nil && sym.Node.Type != nil {
-					if nodeTypeName(sym.Node.Type) == "string" {
-						return 2
-					}
-					if nodeTypeName(sym.Node.Type) == "bool" {
-						return 3
-					}
+		// Check if it's a global string var
+		if c.curPkg != nil {
+			if sym, ok := c.curPkg.Symbols[expr.Name]; ok && sym.Kind == SymVar && sym.Node != nil && sym.Node.Type != nil {
+				if nodeTypeName(sym.Node.Type) == "string" {
+					return 2
+				}
+				if nodeTypeName(sym.Node.Type) == "bool" {
+					return 3
 				}
 			}
-			if ct, ok := c.localConcreteTypes[expr.Name]; ok && ct == "bool" {
-				return 3
-			}
-			return 1 // default to int for unknown locals
+		}
+		if ct, ok := c.localConcreteTypes[expr.Name]; ok && ct == "bool" {
+			return 3
+		}
+		return 1 // default to int for unknown locals
 	case NBinaryExpr:
 		if expr.Name == "+" || expr.Name == "-" || expr.Name == "*" || expr.Name == "/" || expr.Name == "%" {
 			if c.isStringTypedExpr(expr) {
@@ -2326,7 +2328,7 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 	case NCallExpr:
 		if expr.X != nil && expr.X.Kind == NIdent {
 			name := expr.X.Name
-			if name == "len" || name == "cap" || name == "int" || name == "uintptr" || name == "byte" || name == "int32" || name == "int64" {
+			if name == "len" || name == "cap" || name == "int" || name == "uintptr" || name == "byte" || name == "int16" || name == "int32" || name == "int64" {
 				return 1
 			}
 			if name == "string" {
@@ -2374,7 +2376,7 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 							if inner == "string" {
 								return 2
 							}
-							if inner == "int" || inner == "byte" || inner == "bool" || inner == "int32" || inner == "int64" || inner == "uintptr" {
+							if inner == "int" || inner == "byte" || inner == "bool" || inner == "int16" || inner == "int32" || inner == "int64" || inner == "uint16" || inner == "uintptr" {
 								return 1
 							}
 						}
@@ -2435,7 +2437,7 @@ func (c *Compiler) concreteTypeIsStructSlice(ct string) bool {
 		return false
 	}
 	elem := ct[2:len(ct)]
-	if elem == "string" || elem == "int" || elem == "byte" || elem == "bool" || elem == "int32" || elem == "int64" || elem == "uintptr" {
+	if elem == "string" || elem == "int" || elem == "byte" || elem == "bool" || elem == "int16" || elem == "int32" || elem == "int64" || elem == "uint16" || elem == "uintptr" {
 		return false
 	}
 	return true
@@ -2842,54 +2844,54 @@ func (c *Compiler) compileSwitch(node *Node) {
 				caseExprs = append(caseExprs, extra)
 			}
 
-				if hasTag {
-					// Check each case value with OR logic
-					// DUP/expr/EQ/JMP_IF is net-zero on the fallthrough path
-					for _, expr := range caseExprs {
-						c.emit(Inst{Op: OP_DUP})
-						if isTypeSwitch {
-							c.emit(Inst{Op: OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
-							c.emit(Inst{Op: OP_EQ})
-						} else {
-							c.compileExpr(expr)
-							if isStringSwitch {
-								c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
-							} else {
-								c.emit(Inst{Op: OP_EQ})
-							}
-						}
-						c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
-					}
-				} else {
-					// No tag — each case expr is a bool condition, OR them
-					for _, expr := range caseExprs {
+			if hasTag {
+				// Check each case value with OR logic
+				// DUP/expr/EQ/JMP_IF is net-zero on the fallthrough path
+				for _, expr := range caseExprs {
+					c.emit(Inst{Op: OP_DUP})
+					if isTypeSwitch {
+						c.emit(Inst{Op: OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
+						c.emit(Inst{Op: OP_EQ})
+					} else {
 						c.compileExpr(expr)
-						c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
+						if isStringSwitch {
+							c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+						} else {
+							c.emit(Inst{Op: OP_EQ})
+						}
 					}
+					c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
 				}
-				c.emit(Inst{Op: OP_JMP, Arg: nextLabel})
-
-				// Body is reached from JMP_IF; depth = caseCheckDepth
-				c.stackDepth = caseCheckDepth
-				c.emitLabel(bodyLabel)
-				if hasTag {
-					c.emit(Inst{Op: OP_DROP})
+			} else {
+				// No tag — each case expr is a bool condition, OR them
+				for _, expr := range caseExprs {
+					c.compileExpr(expr)
+					c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
 				}
-				if cas.Body != nil {
-					c.compileBlock(cas.Body)
-				}
-				c.emit(Inst{Op: OP_JMP, Arg: endLabel})
-				// Reset depth for next case's check path
-				c.stackDepth = caseCheckDepth
-				c.emitLabel(nextLabel)
 			}
-		}
+			c.emit(Inst{Op: OP_JMP, Arg: nextLabel})
 
-		if hasTag {
-			c.emit(Inst{Op: OP_DROP})
+			// Body is reached from JMP_IF; depth = caseCheckDepth
+			c.stackDepth = caseCheckDepth
+			c.emitLabel(bodyLabel)
+			if hasTag {
+				c.emit(Inst{Op: OP_DROP})
+			}
+			if cas.Body != nil {
+				c.compileBlock(cas.Body)
+			}
+			c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+			// Reset depth for next case's check path
+			c.stackDepth = caseCheckDepth
+			c.emitLabel(nextLabel)
 		}
-			c.emitLabel(endLabel)
-			c.stackDepth = savedDepth // switch should have net-zero effect
+	}
+
+	if hasTag {
+		c.emit(Inst{Op: OP_DROP})
+	}
+	c.emitLabel(endLabel)
+	c.stackDepth = savedDepth // switch should have net-zero effect
 }
 
 func (c *Compiler) typeIDForTypeName(tname string) int {
@@ -3429,8 +3431,8 @@ func (c *Compiler) needsSelectorDeref(node *Node) bool {
 	if len(tName) > 0 && tName[0] == '[' {
 		return false
 	}
-	if tName == "int" || tName == "int32" || tName == "int64" ||
-		tName == "uint" || tName == "uint32" || tName == "uint64" ||
+	if tName == "int" || tName == "int16" || tName == "int32" || tName == "int64" ||
+		tName == "uint" || tName == "uint16" || tName == "uint32" || tName == "uint64" ||
 		tName == "uintptr" || tName == "byte" || tName == "bool" || tName == "string" {
 		return false
 	}
@@ -3489,8 +3491,8 @@ func (c *Compiler) isPointerToStructDeref(node *Node) bool {
 		return false
 	}
 	// Pointers to primitives and well-known scalar forms should still load.
-	if tName == "int" || tName == "int32" || tName == "int64" ||
-		tName == "uint" || tName == "uint32" || tName == "uint64" ||
+	if tName == "int" || tName == "int16" || tName == "int32" || tName == "int64" ||
+		tName == "uint" || tName == "uint16" || tName == "uint32" || tName == "uint64" ||
 		tName == "uintptr" || tName == "byte" || tName == "bool" || tName == "string" {
 		return false
 	}
@@ -3647,8 +3649,8 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			c.emit(Inst{Op: OP_PANIC})
 			return
 		}
-		// Type conversions: int(), uintptr(), byte(), string(), int32()
-		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "string" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" {
+		// Type conversions: int(), uintptr(), byte(), string(), int16(), int32()
+		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "string" || name == "int16" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" {
 			c.compileExpr(node.Nodes[0])
 			if name == "string" && c.isExprByte(node.Nodes[0]) {
 				c.emit(Inst{Op: OP_CALL, Name: "runtime.ByteToString", Arg: 1})
@@ -3725,31 +3727,31 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			gqname := c.curPkg.QualName(recvName)
 			concreteType, ok = c.globalConcreteTypes[gqname]
 		}
-			if ok {
-				candidate := c.dotJoin(concreteType, methodName)
-				resolvedName, ok := c.methodTable[candidate]
-				if !ok {
-					ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
-					resolvedName, ok = c.methodTable[ptrCandidate]
-				}
-				if !ok {
-					if pm, found := c.findPromotedMethod(concreteType, methodName); found {
-						// Build receiver from embedded field path.
-						c.compileExpr(node.X.X)
-						i := 0
-						for i < len(pm.Offsets) {
-							c.emit(Inst{Op: OP_OFFSET, Arg: pm.Offsets[i]})
-							c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
-							i++
-						}
-						for _, arg := range node.Nodes {
-							c.compileExpr(arg)
-						}
-						c.emit(Inst{Op: OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
-						return
+		if ok {
+			candidate := c.dotJoin(concreteType, methodName)
+			resolvedName, ok := c.methodTable[candidate]
+			if !ok {
+				ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
+				resolvedName, ok = c.methodTable[ptrCandidate]
+			}
+			if !ok {
+				if pm, found := c.findPromotedMethod(concreteType, methodName); found {
+					// Build receiver from embedded field path.
+					c.compileExpr(node.X.X)
+					i := 0
+					for i < len(pm.Offsets) {
+						c.emit(Inst{Op: OP_OFFSET, Arg: pm.Offsets[i]})
+						c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+						i++
 					}
+					for _, arg := range node.Nodes {
+						c.compileExpr(arg)
+					}
+					c.emit(Inst{Op: OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
+					return
 				}
-				if ok {
+			}
+			if ok {
 				// Check if this method is variadic
 				fixedCount, isVariadic := c.funcVariadic[resolvedName]
 				isSpread := node.Name == "spread"
@@ -4236,25 +4238,25 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 	if node == nil {
 		return 1
 	}
-		if node.Kind == NCallExpr {
-			// Builtins that return nothing
-			if node.X != nil && node.X.Kind == NIdent {
-				bname := node.X.Name
-				if bname == "delete" || bname == "close" {
-					return 0
+	if node.Kind == NCallExpr {
+		// Builtins that return nothing
+		if node.X != nil && node.X.Kind == NIdent {
+			bname := node.X.Name
+			if bname == "delete" || bname == "close" {
+				return 0
+			}
+		}
+		// Interface method calls: use the declared interface method signature.
+		if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
+			recvName := node.X.X.Name
+			if ifaceType, ok := c.localTypes[recvName]; ok {
+				if retCount, ok := c.ifaceMethodReturnCount(ifaceType, node.X.Name); ok {
+					return retCount
 				}
 			}
-			// Interface method calls: use the declared interface method signature.
-			if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
-				recvName := node.X.X.Name
-				if ifaceType, ok := c.localTypes[recvName]; ok {
-					if retCount, ok := c.ifaceMethodReturnCount(ifaceType, node.X.Name); ok {
-						return retCount
-					}
-				}
-			}
-			// Look up the callee's return count (node.X is the callee)
-			name := c.resolveCallName(node.X)
+		}
+		// Look up the callee's return count (node.X is the callee)
+		name := c.resolveCallName(node.X)
 		if retCount, ok := c.funcRets[name]; ok {
 			return retCount
 		}
