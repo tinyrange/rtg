@@ -56,17 +56,28 @@ func runtimePanic(msg string) {
 
 var heapPtr uintptr
 var heapEnd uintptr
+var heapChunk int = 65536
+
+const heapChunkMax int = 1048576
 
 // Alloc allocates size bytes via mmap, using a bump allocator over
-// a 1MB region to avoid per-allocation syscall overhead.
+// growth-sized regions to avoid per-allocation syscall overhead while
+// keeping startup memory lower.
 func Alloc(size int) uintptr {
 	// Round up to 8-byte alignment
 	size = (size + 7) / 8 * 8
 
 	if heapPtr == 0 || heapPtr+uintptr(size) > heapEnd {
-		chunk := 1048576
+		chunk := heapChunk
 		if size > chunk {
 			chunk = size
+		}
+		if heapChunk < heapChunkMax {
+			next := heapChunk * 2
+			if next > heapChunkMax {
+				next = heapChunkMax
+			}
+			heapChunk = next
 		}
 		// mmap(0, chunk, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
 		ptr, _, _ := SysMmap(0, uintptr(chunk), 3, MmapAnonFlags, 0, 0)
