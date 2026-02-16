@@ -53,6 +53,12 @@ jobs:
           mv build/stageN${{ matrix.suffix }} build/stage3${{ matrix.suffix }}
           cmp build/stage2${{ matrix.suffix }} build/stage3${{ matrix.suffix }}
 
+      - name: Build Buildfile runner
+        run: go build -o build/build${{ matrix.suffix }} ./tools/build.go
+
+      - name: Fullcompiler suite (RTG backend)
+        run: ./build/build${{ matrix.suffix }} test-fullcompiler-rtg
+
       - name: C self-hosting (3-stage)
         if: matrix.runner != 'windows-latest'
         run: |
@@ -62,6 +68,10 @@ jobs:
           ${{ matrix.cc }} build/stage2_c.c -o build/stage2_c${{ matrix.suffix }}
           ./build/stage2_c${{ matrix.suffix }} -T c/64 -o build/stage3_c.c compiler
           cmp build/stage2_c.c build/stage3_c.c
+
+      - name: Fullcompiler suite (C backend)
+        if: matrix.runner != 'windows-latest'
+        run: ./build/build${{ matrix.suffix }} test-fullcompiler-c
 
   selfhost-wasm:
     runs-on: ubuntu-latest
@@ -83,3 +93,9 @@ jobs:
           wasmtime --dir=. build/stage1.wasm -T wasi/wasm32 -o build/stage2.wasm compiler
           wasmtime --dir=. build/stage2.wasm -T wasi/wasm32 -o build/stage3.wasm compiler
           cmp build/stage2.wasm build/stage3.wasm
+
+      - name: Build Buildfile runner
+        run: go build -o build/build ./tools/build.go
+
+      - name: Fullcompiler suite (WASM backend)
+        run: ./build/build test-fullcompiler-wasm

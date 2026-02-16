@@ -63,27 +63,25 @@ crosscompile-wasm-native: build
   sh ./build/cross_stage3 -o build/cross_stage4 compiler
   sh cmp build/cross_stage3 build/cross_stage4 && echo "PASS: wasm->native cross-compile OK"
 
-test: build
-  sh ./build/rtg tests/stringstest/main.go -o build/stringstest && build/stringstest
-  sh ./build/rtg tests/filepathtest/main.go -o build/filepathtest && build/filepathtest
-  sh ./build/rtg tests/sorttest/main.go -o build/sorttest && build/sorttest
-  sh ./build/rtg tests/exectest/main.go -o build/exectest && build/exectest
+test-fullcompiler-rtg: build
+  sh bash tools/fullcompiler_suite.sh rtg
 
-test-i386: build
-  sh ./build/rtg -T linux/386 tests/hello386/main.go -o build/hello386 && build/hello386
-  sh ./build/rtg -T linux/386 tests/write386/main.go -o build/write386 && build/write386
-  sh ./build/rtg -T linux/386 tests/stringstest/main.go -o build/stringstest_386 && build/stringstest_386
-  sh ./build/rtg -T linux/386 tests/filepathtest/main.go -o build/filepathtest_386 && build/filepathtest_386
-  sh ./build/rtg -T linux/386 tests/sorttest/main.go -o build/sorttest_386 && build/sorttest_386
+test-fullcompiler-c: build
+  sh bash tools/fullcompiler_suite.sh c
+
+test-fullcompiler-wasm: build
+  sh bash tools/fullcompiler_suite.sh wasm
+
+test: test-fullcompiler-rtg
 
 test-build: build
-  sh ./build/rtg tools/build.go -o build/build
-  sh ./build/build --list
-  sh ./build/build test
+  sh ./build/rtg tools/build.go -o build/rtg-build
+  sh ./build/rtg-build --list
+  sh ./build/rtg-build test
 
 playground: build
   sh ./build/rtg -T wasi/wasm32 -tags no_embed_std -o web/compiler.wasm ./std/compiler/
   sh bash web/build.sh
 
 clean:
-  sh rm -f build/stage* build/stage*_c.c build/stage*_c build/rtg build/rtg-build build/rtg_from_i386 build/*_386 build/hello386 build/write386 build/stringstest build/filepathtest build/sorttest build/exectest build/build build/cross_stage* build/*.wasm build/*.exe
+  sh rm -f build/stage* build/stage*_c.c build/stage*_c build/rtg build/rtg-build build/rtg_from_i386 build/*_386 build/build build/cross_stage* build/*.wasm build/*.exe build/fullcompiler_* build/fullcompiler_c_*

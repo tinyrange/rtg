@@ -29,9 +29,13 @@ Primary build/test orchestration is defined in `tools/Buildfile`.
 - `crosscompile-wasm-native`
   - Builds compiler to WASM, then uses it to emit native `linux/amd64`, and checks stability.
 - `test`
-  - Builds and runs `stringstest`, `filepathtest`, `sorttest`, `exectest`.
-- `test-i386`
-  - Builds and runs `hello386`, `write386`, `stringstest`, `filepathtest`, `sorttest` for `linux/386`.
+  - Alias for `test-fullcompiler-rtg`.
+- `test-fullcompiler-rtg`
+  - Runs top-level fullcompiler suite with RTG backend and validates output.
+- `test-fullcompiler-c`
+  - Runs top-level fullcompiler suite with `-T c/64` and validates output.
+- `test-fullcompiler-wasm`
+  - Runs top-level fullcompiler suite with `-T wasi/wasm32` via `wasmtime` and validates output.
 - `test-build`
   - Builds `build/build`, lists targets, then runs `test`.
 - `playground`
