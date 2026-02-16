@@ -666,22 +666,45 @@ func (e *Executor) handleRm(args []string) error {
 	return nil
 }
 
+// shShell returns the shell and args to run a Unix-style sh command on the current OS.
+// On Windows, prefers Git for Windows bash (avoids WSL stub which may have no distro).
+func shShell(cmdStr string) (name string, args []string) {
+	if runtime.GOOS != "windows" {
+		return "/bin/sh", []string{"-c", cmdStr}
+	}
+	// On Windows, cmd.exe parses "./build/foo" as command "." with arg "build/foo",
+	// and does not provide mv, cmp, etc. Prefer a real bash (Git for Windows).
+	for _, candidate := range []string{
+		os.Getenv("GIT_BASH"),                    // e.g. C:\Program Files\Git\bin\bash.exe
+		`C:\Program Files\Git\bin\bash.exe`,
+		`C:\Program Files (x86)\Git\bin\bash.exe`,
+	} {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, []string{"-c", cmdStr}
+		}
+	}
+	// Fallback: bash in PATH (may be Git) but avoid WSL stub
+	if path, err := exec.LookPath("bash"); err == nil {
+		pathLower := strings.ToLower(path)
+		if !strings.Contains(pathLower, "system32") && !strings.Contains(pathLower, "windowsapps") {
+			return path, []string{"-c", cmdStr}
+		}
+	}
+	return "cmd", []string{"/c", cmdStr}
+}
+
 // handleSh handles the sh command
 func (e *Executor) handleSh(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("sh requires a command")
 	}
 
-	// Join args back into a command string
 	cmdStr := strings.Join(args, " ")
-
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", cmdStr)
-	} else {
-		cmd = exec.Command("/bin/sh", "-c", cmdStr)
-	}
-
+	name, shellArgs := shShell(cmdStr)
+	cmd := exec.Command(name, shellArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
