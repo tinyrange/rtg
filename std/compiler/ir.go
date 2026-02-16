@@ -187,7 +187,7 @@ type Compiler struct {
 	localElemSizes     map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
 	globalElemSizes    map[string]int      // qualified global name → slice element size
 	ifaceMethods       map[string][]string // interface name → method names
-	ifaceMethodRets    map[string]map[string]int // interface name → method name → return count
+	ifaceMethodRets    map[string]int      // iface+"\x00"+method → return count
 	methodTable        map[string]string   // "pkg.Type.Method" → qualified IR func name
 	typeIDs            map[string]int      // concrete type qualified name → unique int
 	nextTypeID         int
@@ -240,7 +240,7 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 			funcVariadicElem:  make(map[string]int),
 			globalElemSizes:   make(map[string]int),
 			ifaceMethods:      make(map[string][]string),
-			ifaceMethodRets:   make(map[string]map[string]int),
+			ifaceMethodRets:   make(map[string]int),
 			methodTable:       make(map[string]string),
 			typeIDs:           make(map[string]int),
 			nextTypeID:        4, // 1=int, 2=string, 3=bool are reserved
@@ -341,8 +341,7 @@ func (c *Compiler) initBuiltinTypes() {
 	c.typeIDs["bool"] = 3
 	c.ifaceMethods["interface{}"] = []string{}
 	c.ifaceMethods["error"] = []string{"Error"}
-	c.ifaceMethodRets["interface{}"] = map[string]int{}
-	c.ifaceMethodRets["error"] = map[string]int{"Error": 1}
+	c.ifaceMethodRets["error\x00Error"] = 1
 }
 
 func (c *Compiler) errorf(format string, args ...interface{}) {
@@ -1021,12 +1020,15 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				isIfaceVariadic := false
 				varElemSize := targetPtrSize
 				for _, param := range fn.Nodes {
+					paramTypeName := ""
 					if param.Type != nil {
-						paramTypeNames = append(paramTypeNames, nodeTypeName(param.Type))
-					} else {
-						paramTypeNames = append(paramTypeNames, "")
+						paramTypeName = nodeTypeName(param.Type)
 					}
 					if len(param.Name) > 3 && param.Name[0:3] == "..." {
+						if paramTypeName != "" {
+							paramTypeName = "[]" + paramTypeName
+						}
+						paramTypeNames = append(paramTypeNames, paramTypeName)
 						isVariadic = true
 						if param.Type != nil && param.Type.Kind == NInterfaceType {
 						isIfaceVariadic = true
@@ -1035,8 +1037,9 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 						varElemSize = 1
 					}
 				} else {
-					fixedParams++
-				}
+						paramTypeNames = append(paramTypeNames, paramTypeName)
+						fixedParams++
+					}
 				}
 				c.funcParams[qname] = paramCount
 				c.funcParamTypes[qname] = paramTypeNames
@@ -1065,7 +1068,6 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 	if node.Kind == NTypeDecl && node.Type != nil && node.Type.Kind == NInterfaceType {
 		qname := pkg.QualName(node.Name)
 		var methods []string
-		retMap := make(map[string]int)
 		for _, meth := range node.Type.Nodes {
 			if meth.Kind == NFunc {
 				methods = append(methods, meth.Name)
@@ -1077,13 +1079,12 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 						retCount = 1
 					}
 				}
-				retMap[meth.Name] = retCount
+				c.ifaceMethodRets[node.Name+"\x00"+meth.Name] = retCount
+				c.ifaceMethodRets[qname+"\x00"+meth.Name] = retCount
 			}
 		}
 		c.ifaceMethods[node.Name] = methods
 		c.ifaceMethods[qname] = methods
-		c.ifaceMethodRets[node.Name] = retMap
-		c.ifaceMethodRets[qname] = retMap
 	}
 	if node.Kind == NBlock {
 		for _, child := range node.Nodes {
@@ -1096,10 +1097,9 @@ func (c *Compiler) ifaceMethodReturnCount(ifaceType string, methodName string) (
 	if ifaceType == "" || methodName == "" {
 		return 0, false
 	}
-	if methods, ok := c.ifaceMethodRets[ifaceType]; ok {
-		if ret, ok := methods[methodName]; ok {
-			return ret, true
-		}
+	key := ifaceType + "\x00" + methodName
+	if ret, ok := c.ifaceMethodRets[key]; ok {
+		return ret, true
 	}
 	return 0, false
 }
@@ -1404,13 +1404,16 @@ func (c *Compiler) compileFunc(node *Node) {
 			if param.Type != nil && param.Type.Kind == NIdent && param.Type.Name == "string" {
 				c.localStringVars[pname] = true
 			}
-			// Track concrete type for method resolution on params
-			if param.Type != nil {
-					typeName := nodeTypeName(param.Type)
-					// Track interface-typed params
-					if c.isInterfaceTypeName(typeName) {
-						c.localTypes[pname] = typeName
-					}
+				// Track concrete type for method resolution on params
+				if param.Type != nil {
+						typeName := nodeTypeName(param.Type)
+						if isVarParam {
+							typeName = "[]" + typeName
+						}
+						// Track interface-typed params
+						if c.isInterfaceTypeName(typeName) {
+							c.localTypes[pname] = typeName
+						}
 				ct := c.qualifyTypeName(typeName, "")
 				c.localConcreteTypes[pname] = ct
 				// Also track slice elem sizes from type
@@ -3851,10 +3854,16 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		// Call with fixedCount + 1 args (fixed params + one slice)
 		c.emit(Inst{Op: OP_CALL, Name: callName, Arg: fixedCount + 1})
 	} else {
-		// Non-variadic call, or spread call — compile all args normally
+		// Non-variadic call, or spread call — compile all args normally.
 		for i, arg := range node.Nodes {
 			c.compileExpr(arg)
-			if i < len(paramTypes) && c.isInterfaceTypeName(paramTypes[i]) {
+			// For variadic spread calls, the last arg is already a variadic
+			// slice value and must not be boxed as interface{}.
+			shouldBox := true
+			if isVariadic && isSpread && i == len(node.Nodes)-1 {
+				shouldBox = false
+			}
+			if shouldBox && i < len(paramTypes) && c.isInterfaceTypeName(paramTypes[i]) {
 				c.maybeBoxValueForInterface(arg)
 			}
 		}
@@ -4225,25 +4234,25 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 	if node == nil {
 		return 1
 	}
-	if node.Kind == NCallExpr {
-		// Builtins that return nothing
-		if node.X != nil && node.X.Kind == NIdent {
-			bname := node.X.Name
-			if bname == "delete" || bname == "close" {
-				return 0
-			}
-		}
-		// Interface method calls: use the declared interface method signature.
-		if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
-			recvName := node.X.X.Name
-			if ifaceType, ok := c.localTypes[recvName]; ok {
-				if retCount, ok := c.ifaceMethodReturnCount(ifaceType, node.X.Name); ok {
-					return retCount
+		if node.Kind == NCallExpr {
+			// Builtins that return nothing
+			if node.X != nil && node.X.Kind == NIdent {
+				bname := node.X.Name
+				if bname == "delete" || bname == "close" {
+					return 0
 				}
 			}
-		}
-		// Look up the callee's return count (node.X is the callee)
-		name := c.resolveCallName(node.X)
+			// Interface method calls: use the declared interface method signature.
+			if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
+				recvName := node.X.X.Name
+				if ifaceType, ok := c.localTypes[recvName]; ok {
+					if retCount, ok := c.ifaceMethodReturnCount(ifaceType, node.X.Name); ok {
+						return retCount
+					}
+				}
+			}
+			// Look up the callee's return count (node.X is the callee)
+			name := c.resolveCallName(node.X)
 		if retCount, ok := c.funcRets[name]; ok {
 			return retCount
 		}
