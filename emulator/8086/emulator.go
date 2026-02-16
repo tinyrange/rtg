@@ -57,6 +57,8 @@ type cpu struct {
 
 	segOverrideSet bool
 	segOverride    uint16
+
+	dosMode bool
 }
 
 type Options struct {
@@ -84,6 +86,7 @@ func RunCOM(bin []byte, args []string, opts Options) (Result, error) {
 		trace:    opts.Trace,
 		maxSteps: opts.MaxSteps,
 		dbgWrite: opts.DbgWrite,
+		dosMode:  true,
 	}
 	if err := c.loadCOM(defaultPSP, bin, args); err != nil {
 		return Result{}, fmt.Errorf("load COM: %w", err)
@@ -198,7 +201,7 @@ decoded:
 		fmt.Fprintf(os.Stderr, "%04x:%04x op=%02x ax=%04x bx=%04x cx=%04x dx=%04x sp=%04x bp=%04x si=%04x di=%04x\n",
 			c.cs, c.ip, op, c.ax, c.bx, c.cx, c.dx, c.sp, c.bp, c.si, c.di)
 	}
-	if op >= 0x70 && op <= 0x7f {
+	if op >= 0x60 && op <= 0x7f {
 		return c.execJcc8(op&0x0f, csip)
 	}
 
@@ -521,21 +524,21 @@ decoded:
 		c.ip += 2
 		c.ip = uint16(int32(c.ip) + int32(rel))
 		return nil
-	case 0xc2:
+	case 0xc0, 0xc2:
 		imm := c.u16(csip + 1)
 		c.ip = c.pop16()
 		c.sp += imm
 		return nil
-	case 0xc3:
+	case 0xc1, 0xc3:
 		c.ip = c.pop16()
 		return nil
-	case 0xca:
+	case 0xc8, 0xca:
 		imm := c.u16(csip + 1)
 		c.ip = c.pop16()
 		c.cs = c.pop16()
 		c.sp += imm
 		return nil
-	case 0xcb:
+	case 0xc9, 0xcb:
 		c.ip = c.pop16()
 		c.cs = c.pop16()
 		return nil
@@ -680,6 +683,8 @@ decoded:
 	case 0x87:
 		return c.exec87(csip)
 	case 0x80:
+		return c.exec80(csip)
+	case 0x82:
 		return c.exec80(csip)
 	case 0x83:
 		return c.exec83(csip)
@@ -1052,7 +1057,7 @@ decoded:
 }
 
 func (c *cpu) handleInt(vec byte) error {
-	if vec != 0x21 {
+	if vec != 0x21 || !c.dosMode {
 		c.push16(c.flagsWord())
 		c.push16(c.cs)
 		c.push16(c.ip)
