@@ -223,6 +223,12 @@ func (g *CodeGen) idivR32(reg int) {
 	g.emitBytes(0xf7, byte(0xf8|(reg&7)))
 }
 
+// imulR32 emits one-operand `imul reg` (AX * reg -> DX:AX in 16-bit mode).
+func (g *CodeGen) imulR32(reg int) {
+	g.dos32OpPrefix()
+	g.emitBytes(0xf7, byte(0xe8|(reg&7)))
+}
+
 // shlCl32 emits `shl reg, cl`
 func (g *CodeGen) shlCl32(reg int) {
 	g.dos32OpPrefix()

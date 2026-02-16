@@ -59,10 +59,10 @@ runall="$SRC_DIR/RUNALL.BAT"
 index_txt="$SRC_DIR/INDEX.TXT"
 readme_txt="$SRC_DIR/README.TXT"
 
-to_crlf_file "$runall" "@ECHO OFF" "ECHO RTG DOS/16 FULLCOMPILER SUITE" "ECHO."
-to_crlf_file "$index_txt" "RTG DOS/16 COM TEST INDEX"
+to_crlf_file "$runall" "@ECHO OFF" "ECHO RTG DOS/8086 FULLCOMPILER SUITE" "ECHO."
+to_crlf_file "$index_txt" "RTG DOS/8086 COM TEST INDEX"
 to_crlf_file "$readme_txt" \
-  "RTG DOS/16 test disk" \
+  "RTG DOS/8086 test disk" \
   "" \
   "Usage on DOS 6.22:" \
   "  A:" \
@@ -76,7 +76,7 @@ for i in "${!tests[@]}"; do
   stem="$(basename "${tests[$i]}" .go)"
   display="$(printf "%03d/%03d %s" "$idx" "${#tests[@]}" "$stem")"
 
-  ./build/rtg -T dos/16 "${tests[$i]}" -o "$SRC_DIR/$dos_name"
+  ./build/rtg -T dos/8086 "${tests[$i]}" -o "$SRC_DIR/$dos_name"
 
   printf 'ECHO %s\r\n' "$display" >>"$runall"
   printf '%s\r\n' "$dos_name" >>"$runall"

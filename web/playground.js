@@ -274,6 +274,7 @@ function getOutputFilename(target) {
   switch (target) {
     case "wasi/wasm32": return "output.wasm";
     case "windows/386": case "windows/amd64": case "windows/arm64": return "output.exe";
+    case "dos/8086": return "output.com";
     case "c/64": case "c/32": case "c/16": return "output.c";
     case "ir": return "output.ir";
     default: return "output";
@@ -290,6 +291,7 @@ function getDownloadFilename(target) {
     case "windows/amd64": return "program-windows-amd64.exe";
     case "windows/arm64": return "program-windows-arm64.exe";
     case "linux/arm64": return "program-linux-arm64";
+    case "dos/8086": return "program-dos-8086.com";
     case "c/64": return "program-c64.c";
     case "c/32": return "program-c32.c";
     case "c/16": return "program-c16.c";

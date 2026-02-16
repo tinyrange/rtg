@@ -409,7 +409,15 @@ func (g *CodeGen) compileBinOp_i386(op Opcode) {
 	case OP_SUB:
 		g.subRR32(REG32_ECX, REG32_EAX)
 	case OP_MUL:
-		g.imulRR32(REG32_ECX, REG32_EAX)
+		if g.wordSize == 2 {
+			// 8086-safe signed multiply: AX = ECX * EAX (low 16 bits kept).
+			g.movRR32(REG32_EDX, REG32_EAX)
+			g.movRR32(REG32_EAX, REG32_ECX)
+			g.imulR32(REG32_EDX)
+			g.movRR32(REG32_ECX, REG32_EAX)
+		} else {
+			g.imulRR32(REG32_ECX, REG32_EAX)
+		}
 	case OP_DIV:
 		g.movRR32(REG32_EDX, REG32_EAX)
 		g.movRR32(REG32_EAX, REG32_ECX)
@@ -917,20 +925,24 @@ func (g *CodeGen) compileIndexAddr_i386(elemSize int) {
 func (g *CodeGen) compileLen_i386() {
 	g.opPop(REG32_EAX)
 	g.testRR32(REG32_EAX, REG32_EAX)
-	g.emitBytes(0x75, 0x04)                               // jnz +4
-	g.xorRR32(REG32_EAX, REG32_EAX)                       // 2 bytes
-	g.jmpRel8(0x03)                                       // jmp +3
+	fixNonNil := g.jccRel32(CC32_NE)
+	g.xorRR32(REG32_EAX, REG32_EAX)
+	fixDone := g.jmpRel32()
+	g.patchRel32(fixNonNil)
 	g.loadMem32(REG32_EAX, REG32_EAX, g.slotBytes_i386()) // len at offset ptr
+	g.patchRel32(fixDone)
 	g.opPush(REG32_EAX)
 }
 
 func (g *CodeGen) compileCap_i386() {
 	g.opPop(REG32_EAX)
 	g.testRR32(REG32_EAX, REG32_EAX)
-	g.emitBytes(0x75, 0x04)                                 // jnz +4
-	g.xorRR32(REG32_EAX, REG32_EAX)                         // 2 bytes
-	g.jmpRel8(0x03)                                         // jmp +3
+	fixNonNil := g.jccRel32(CC32_NE)
+	g.xorRR32(REG32_EAX, REG32_EAX)
+	fixDone := g.jmpRel32()
+	g.patchRel32(fixNonNil)
 	g.loadMem32(REG32_EAX, REG32_EAX, 2*g.slotBytes_i386()) // cap at offset 2*ptr
+	g.patchRel32(fixDone)
 	g.opPush(REG32_EAX)
 }
 

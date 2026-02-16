@@ -36,7 +36,7 @@ pass_count=0
 total_count=0
 require_pass_text="${RTG_DOS_REQUIRE_PASS:-0}"
 
-echo "== DOS 16 COM smoke ladder =="
+echo "== DOS 8086 COM smoke ladder =="
 
 for i in "${!TESTS[@]}"; do
   test_path="${TESTS[$i]}"
@@ -49,7 +49,7 @@ for i in "${!TESTS[@]}"; do
   out_path="$OUT_DIR/$dos_name"
   total_count=$((total_count + 1))
 
-  ./build/rtg -T dos/16 "$test_path" -o "$out_path"
+  ./build/rtg -T dos/8086 "$test_path" -o "$out_path"
 
   SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
     dosbox-x -noconfig -nogui -time-limit 20 \

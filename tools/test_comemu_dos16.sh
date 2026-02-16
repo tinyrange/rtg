@@ -31,7 +31,7 @@ pass_count=0
 total_count=0
 require_pass_text="${RTG_DOS_REQUIRE_PASS:-1}"
 
-echo "== COMEMU DOS 16 ladder =="
+echo "== COMEMU DOS 8086 ladder =="
 
 for i in "${!TESTS[@]}"; do
   test_path="${TESTS[$i]}"
@@ -42,7 +42,7 @@ for i in "${!TESTS[@]}"; do
   err_path="$OUT_DIR/E${num}.txt"
   total_count=$((total_count + 1))
 
-  ./build/rtg -T dos/16 "$test_path" -o "$com_path"
+  ./build/rtg -T dos/8086 "$test_path" -o "$com_path"
 
   run_ok=1
   if go run ./tools/comemu "$com_path" >"$out_path" 2>"$err_path"; then

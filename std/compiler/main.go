@@ -41,7 +41,7 @@ func runCleanup() {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|dos/16|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|dos/8086|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -111,8 +111,8 @@ func main() {
 				bits := targetWordSize * 8
 				targetGOARCH = fmt.Sprintf("c%d", bits)
 			} else {
-				if target == "dos/16" {
-					// DOS 16-bit COM backend.
+				if target == "dos/8086" {
+					// DOS 8086 COM backend.
 					targetGOOS = "dos"
 					targetGOARCH = "dos16"
 					targetPtrSize = 2
@@ -121,7 +121,7 @@ func main() {
 				}
 				slashIdx := strings.Index(target, "/")
 				if slashIdx < 0 {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/16, or c[/16|32|64]\n", target)
+					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, or c[/16|32|64]\n", target)
 					os.Exit(1)
 				}
 				targetGOOS = target[0:slashIdx]
@@ -208,7 +208,7 @@ func main() {
 	}
 
 	if len(entryFiles) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|dos/16|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|dos/8086|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
 		os.Exit(1)
 	}
 

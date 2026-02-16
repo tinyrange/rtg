@@ -5,7 +5,7 @@ package main
 // === x86-16 Assembler: mnemonic-level instruction encoding ===
 //
 // This is a 16-bit real-mode encoder for DOS-target bringup. It is intentionally
-// separate from i386.go so the dos/16 backend can migrate incrementally from the
+// separate from i386.go so the dos/8086 backend can migrate incrementally from the
 // current 32-bit stream to proper 16-bit machine code.
 
 // 16-bit general-purpose registers.

@@ -2,7 +2,7 @@
 
 package main
 
-// compileSyscallIntrinsic_dos386 lowers runtime.Syscall for the dos/16 target.
+// compileSyscallIntrinsic_dos386 lowers runtime.Syscall for the dos/8086 target.
 //
 // This is a compatibility shim over the Linux-like syscall numbers used by
 // runtime_dos_16.go:
