@@ -313,7 +313,7 @@ func countSuiteTestsInFile(file string) (int, error) {
 }
 
 func runSuiteTest(test suiteTest, flagsMask uint16, hasFlagsMask bool, trace bool) (bool, bool, string) {
-	c := &cpu{trace: trace, maxSteps: 1, allowAddr32: false}
+	c := &cpu{trace: trace, maxSteps: 1}
 
 	for _, pair := range test.Initial.RAM {
 		c.mem[pair[0]&uint32(memSize-1)] = byte(pair[1])

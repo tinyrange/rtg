@@ -57,8 +57,6 @@ type cpu struct {
 
 	segOverrideSet bool
 	segOverride    uint16
-
-	allowAddr32 bool
 }
 
 type Options struct {
@@ -83,10 +81,9 @@ func RunCOM(bin []byte, args []string, opts Options) (Result, error) {
 	WarnIfLooksLike32Bit(bin)
 
 	c := &cpu{
-		trace:       opts.Trace,
-		maxSteps:    opts.MaxSteps,
-		dbgWrite:    opts.DbgWrite,
-		allowAddr32: true,
+		trace:    opts.Trace,
+		maxSteps: opts.MaxSteps,
+		dbgWrite: opts.DbgWrite,
 	}
 	if err := c.loadCOM(defaultPSP, bin, args); err != nil {
 		return Result{}, fmt.Errorf("load COM: %w", err)
@@ -201,7 +198,7 @@ decoded:
 		fmt.Fprintf(os.Stderr, "%04x:%04x op=%02x ax=%04x bx=%04x cx=%04x dx=%04x sp=%04x bp=%04x si=%04x di=%04x\n",
 			c.cs, c.ip, op, c.ax, c.bx, c.cx, c.dx, c.sp, c.bp, c.si, c.di)
 	}
-	if ((op >= 0x60 && op <= 0x6f) || (op >= 0x70 && op <= 0x7f)) && !(op == 0x67 && c.allowAddr32) {
+	if op >= 0x70 && op <= 0x7f {
 		return c.execJcc8(op&0x0f, csip)
 	}
 
@@ -252,11 +249,6 @@ decoded:
 	}
 
 	switch op {
-	case 0x67:
-		if c.allowAddr32 {
-			return c.exec67(csip)
-		}
-		return c.execJcc8(0x7, csip)
 	case 0x04:
 		imm := c.rb(csip + 1)
 		a := c.reg8(0)
@@ -285,6 +277,10 @@ decoded:
 		return c.exec08(csip)
 	case 0x0e:
 		c.push16(c.cs)
+		c.ip++
+		return nil
+	case 0x0f:
+		c.cs = c.pop16()
 		c.ip++
 		return nil
 	case 0x0a:
@@ -525,21 +521,21 @@ decoded:
 		c.ip += 2
 		c.ip = uint16(int32(c.ip) + int32(rel))
 		return nil
-	case 0xc0, 0xc2:
+	case 0xc2:
 		imm := c.u16(csip + 1)
 		c.ip = c.pop16()
 		c.sp += imm
 		return nil
-	case 0xc1:
+	case 0xc3:
 		c.ip = c.pop16()
 		return nil
-	case 0xc8, 0xca:
+	case 0xca:
 		imm := c.u16(csip + 1)
 		c.ip = c.pop16()
 		c.cs = c.pop16()
 		c.sp += imm
 		return nil
-	case 0xc9, 0xcb:
+	case 0xcb:
 		c.ip = c.pop16()
 		c.cs = c.pop16()
 		return nil
@@ -590,9 +586,6 @@ decoded:
 		off := c.bx + uint16(c.reg8(0))
 		c.setReg8(0, c.rb(linear(seg, off)))
 		c.ip++
-		return nil
-	case 0xc3:
-		c.ip = c.pop16()
 		return nil
 	case 0x31:
 		return c.exec31(csip)
@@ -692,12 +685,8 @@ decoded:
 		return c.exec83(csip)
 	case 0x81:
 		return c.exec81(csip)
-	case 0x82:
-		return c.exec80(csip)
 	case 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97:
 		return c.exec90to97(op)
-	case 0x69:
-		return c.exec69(csip)
 	case 0x98:
 		return c.exec98(csip)
 	case 0x99:
@@ -1037,8 +1026,6 @@ decoded:
 		return nil
 	case 0xf7:
 		return c.execF7(csip, repPrefix != 0)
-	case 0x0f:
-		return c.exec0F(csip)
 	case 0x89:
 		return c.exec89(csip)
 	case 0x8b:
@@ -1064,470 +1051,8 @@ decoded:
 	}
 }
 
-func (c *cpu) exec67(pc uint32) error {
-	op := c.rb(pc + 1)
-	if op == 0x67 {
-		// Consume one prefix and continue decoding the next address-size-prefixed instruction.
-		c.ip++
-		return c.exec67(pc + 1)
-	}
-	switch op {
-	case 0x89:
-		return c.exec89Addr32(pc)
-	case 0x8b:
-		return c.exec8bAddr32(pc)
-	case 0x8d:
-		return c.exec8dAddr32(pc)
-	case 0x8c:
-		return c.exec8cAddr32(pc)
-	case 0x8e:
-		return c.exec8eAddr32(pc)
-	case 0x8f:
-		return c.exec8fAddr32(pc)
-	case 0x88:
-		return c.exec88Addr32(pc)
-	case 0x8a:
-		return c.exec8aAddr32(pc)
-	case 0x01:
-		return c.exec01Addr32(pc)
-	case 0x29:
-		return c.exec29Addr32(pc)
-	case 0x39:
-		return c.exec39Addr32(pc)
-	case 0x84:
-		return c.exec84Addr32(pc)
-	case 0x85:
-		return c.exec85Addr32(pc)
-	case 0x86:
-		return c.exec86Addr32(pc)
-	case 0x87:
-		return c.exec87Addr32(pc)
-	case 0x0f:
-		return c.exec0FAddr32(pc)
-	default:
-		return fmt.Errorf("unsupported 67-prefixed opcode %02x at %04x:%04x", op, c.cs, c.ip)
-	}
-}
-
-func (c *cpu) exec0FAddr32(pc uint32) error {
-	op2 := c.rb(pc + 2)
-	switch {
-	case op2 >= 0x80 && op2 <= 0x8f:
-		rel := int16(c.u16(pc + 3))
-		c.ip += 5
-		if c.evalCC(op2 & 0x0f) {
-			c.ip = uint16(int32(c.ip) + int32(rel))
-		}
-		return nil
-	case op2 == 0xb6 || op2 == 0xb7:
-		modrm := c.rb(pc + 3)
-		mod := (modrm >> 6) & 0x3
-		reg := int((modrm >> 3) & 0x7)
-		rm := modrm & 0x7
-		if mod == 0x3 {
-			if op2 == 0xb6 {
-				c.setReg16(reg, uint16(c.reg8(int(rm))))
-			} else {
-				c.setReg16(reg, c.reg16(int(rm)))
-			}
-			c.ip += 4
-			return nil
-		}
-		addr, dispLen, err := c.ea32(mod, rm, pc+4)
-		if err != nil {
-			return err
-		}
-		if op2 == 0xb6 {
-			c.setReg16(reg, uint16(c.rb(addr)))
-		} else {
-			c.setReg16(reg, c.u16(addr))
-		}
-		c.ip += uint16(4 + dispLen)
-		return nil
-	default:
-		if op2 >= 0x90 && op2 <= 0x9f {
-			modrm := c.rb(pc + 3)
-			mod := (modrm >> 6) & 0x3
-			cc := op2 & 0x0f
-			v := byte(0)
-			if c.evalCC(cc) {
-				v = 1
-			}
-			if mod == 0x3 {
-				c.setReg8(int(modrm&0x7), v)
-				c.ip += 4
-				return nil
-			}
-			addr, dispLen, err := c.ea32(mod, modrm&0x7, pc+4)
-			if err != nil {
-				return err
-			}
-			c.wb(addr, v)
-			c.ip += uint16(4 + dispLen)
-			return nil
-		}
-		return fmt.Errorf("unsupported 67 0f opcode %02x at %04x:%04x", op2, c.cs, c.ip)
-	}
-}
-
-func (c *cpu) exec89Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := modrm & 0x7
-	if mod == 0x3 {
-		c.setReg16(int(rm), c.reg16(reg))
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, rm, pc+3)
-	if err != nil {
-		return err
-	}
-	c.w16(addr, c.reg16(reg))
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec8bAddr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := modrm & 0x7
-	if mod == 0x3 {
-		c.setReg16(reg, c.reg16(int(rm)))
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, rm, pc+3)
-	if err != nil {
-		return err
-	}
-	c.setReg16(reg, c.u16(addr))
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec8dAddr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	rm := modrm & 0x7
-	reg := int((modrm >> 3) & 0x7)
-	addr, dispLen, err := c.ea32(mod, rm, pc+3)
-	if err != nil {
-		return err
-	}
-	c.setReg16(reg, uint16(addr&0xffff))
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec88Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := modrm & 0x7
-	if mod == 0x3 {
-		c.setReg8(int(rm), c.reg8(reg))
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, rm, pc+3)
-	if err != nil {
-		return err
-	}
-	c.wb(addr, c.reg8(reg))
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec8cAddr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	seg := int((modrm >> 3) & 0x3)
-	rm := modrm & 0x7
-	if mod == 0x3 {
-		c.setReg16(int(rm), c.segReg(seg))
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, rm, pc+3)
-	if err != nil {
-		return err
-	}
-	c.w16(addr, c.segReg(seg))
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec8eAddr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	seg := int((modrm >> 3) & 0x3)
-	rm := modrm & 0x7
-	if mod == 0x3 {
-		c.setSegReg(seg, c.reg16(int(rm)))
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, rm, pc+3)
-	if err != nil {
-		return err
-	}
-	c.setSegReg(seg, c.u16(addr))
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec8fAddr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	rm := int(modrm & 0x7)
-	v := c.pop16()
-	if mod == 0x3 {
-		c.setReg16(rm, v)
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, byte(rm), pc+3)
-	if err != nil {
-		return err
-	}
-	c.w16(addr, v)
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec8aAddr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := modrm & 0x7
-	if mod == 0x3 {
-		c.setReg8(reg, c.reg8(int(rm)))
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, rm, pc+3)
-	if err != nil {
-		return err
-	}
-	c.setReg8(reg, c.rb(addr))
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec01Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := int(modrm & 0x7)
-	if mod == 0x3 {
-		a := c.reg16(rm)
-		b := c.reg16(reg)
-		res := a + b
-		c.setReg16(rm, res)
-		c.setAddFlags16(a, b, res)
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, byte(rm), pc+3)
-	if err != nil {
-		return err
-	}
-	a := c.u16(addr)
-	b := c.reg16(reg)
-	res := a + b
-	c.w16(addr, res)
-	c.setAddFlags16(a, b, res)
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec29Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := int(modrm & 0x7)
-	if mod == 0x3 {
-		a := c.reg16(rm)
-		b := c.reg16(reg)
-		res := a - b
-		c.setReg16(rm, res)
-		c.setSubFlags16(a, b, res)
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, byte(rm), pc+3)
-	if err != nil {
-		return err
-	}
-	a := c.u16(addr)
-	b := c.reg16(reg)
-	res := a - b
-	c.w16(addr, res)
-	c.setSubFlags16(a, b, res)
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec39Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := int(modrm & 0x7)
-	if mod == 0x3 {
-		a := c.reg16(rm)
-		b := c.reg16(reg)
-		res := a - b
-		c.setSubFlags16(a, b, res)
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, byte(rm), pc+3)
-	if err != nil {
-		return err
-	}
-	a := c.u16(addr)
-	b := c.reg16(reg)
-	res := a - b
-	c.setSubFlags16(a, b, res)
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec85Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := int(modrm & 0x7)
-	if mod == 0x3 {
-		res := c.reg16(rm) & c.reg16(reg)
-		c.zf = res == 0
-		c.sf = (res & 0x8000) != 0
-		c.cf = false
-		c.of = false
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, byte(rm), pc+3)
-	if err != nil {
-		return err
-	}
-	res := c.u16(addr) & c.reg16(reg)
-	c.zf = res == 0
-	c.sf = (res & 0x8000) != 0
-	c.cf = false
-	c.of = false
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec84Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := int(modrm & 0x7)
-	if mod == 0x3 {
-		res := c.reg8(rm) & c.reg8(reg)
-		c.setLogicFlags8(res)
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, byte(rm), pc+3)
-	if err != nil {
-		return err
-	}
-	res := c.rb(addr) & c.reg8(reg)
-	c.setLogicFlags8(res)
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec86Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := int(modrm & 0x7)
-	if mod == 0x3 {
-		a := c.reg8(rm)
-		b := c.reg8(reg)
-		c.setReg8(rm, b)
-		c.setReg8(reg, a)
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, byte(rm), pc+3)
-	if err != nil {
-		return err
-	}
-	a := c.rb(addr)
-	b := c.reg8(reg)
-	c.wb(addr, b)
-	c.setReg8(reg, a)
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) exec87Addr32(pc uint32) error {
-	modrm := c.rb(pc + 2)
-	mod := (modrm >> 6) & 0x3
-	reg := int((modrm >> 3) & 0x7)
-	rm := int(modrm & 0x7)
-	if mod == 0x3 {
-		a := c.reg16(rm)
-		b := c.reg16(reg)
-		c.setReg16(rm, b)
-		c.setReg16(reg, a)
-		c.ip += 3
-		return nil
-	}
-	addr, dispLen, err := c.ea32(mod, byte(rm), pc+3)
-	if err != nil {
-		return err
-	}
-	a := c.u16(addr)
-	b := c.reg16(reg)
-	c.w16(addr, b)
-	c.setReg16(reg, a)
-	c.ip += uint16(3 + dispLen)
-	return nil
-}
-
-func (c *cpu) ea32(mod, rm byte, dispStart uint32) (uint32, int, error) {
-	consumed := 0
-	var base uint32
-	if rm == 4 {
-		sib := c.rb(dispStart)
-		consumed++
-		baseReg := sib & 0x7
-		if mod == 0 && baseReg == 5 {
-			base = uint32(c.u16(dispStart + 1))
-			consumed += 2
-		} else {
-			base = uint32(c.reg16(int(baseReg)))
-		}
-	} else if mod == 0 && rm == 5 {
-		base = uint32(c.u16(dispStart))
-		consumed += 2
-	} else {
-		base = uint32(c.reg16(int(rm)))
-	}
-	var disp int32
-	switch mod {
-	case 1:
-		disp = int32(int8(c.rb(dispStart + uint32(consumed))))
-		consumed++
-	case 2:
-		disp = int32(int16(c.u16(dispStart + uint32(consumed))))
-		consumed += 2
-	}
-	off := uint32(int32(base) + disp)
-	return linear(c.ds, uint16(off&0xffff)), consumed, nil
-}
-
 func (c *cpu) handleInt(vec byte) error {
-	if vec != 0x21 || !c.allowAddr32 {
+	if vec != 0x21 {
 		c.push16(c.flagsWord())
 		c.push16(c.cs)
 		c.push16(c.ip)
@@ -2715,37 +2240,6 @@ func (c *cpu) group1_16(op byte, a, b uint16) (uint16, bool, error) {
 	}
 }
 
-func (c *cpu) exec69(pc uint32) error {
-	// imul r16, r/m16, imm16
-	modrm := c.rb(pc + 1)
-	mod := (modrm >> 6) & 0x3
-	dst := int((modrm >> 3) & 0x7)
-	rm := int(modrm & 0x7)
-	immOff := pc + 2
-	var src uint16
-	var dispLen int
-	if mod == 0x3 {
-		src = c.reg16(rm)
-	} else {
-		addr, ok, d := c.ea16(mod, byte(rm), pc+2)
-		if !ok {
-			return fmt.Errorf("unsupported imul r/m16 form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
-		}
-		src = c.u16(addr)
-		dispLen = d
-		immOff += uint32(dispLen)
-	}
-	imm := int16(c.u16(immOff))
-	prod := int32(int16(src)) * int32(imm)
-	c.setReg16(dst, uint16(prod))
-	c.zf = uint16(prod) == 0
-	c.sf = (uint16(prod) & 0x8000) != 0
-	c.cf = false
-	c.of = false
-	c.ip += uint16(4 + dispLen)
-	return nil
-}
-
 func (c *cpu) exec99(pc uint32) error {
 	// cwd: sign-extend AX into DX:AX.
 	if (c.ax & 0x8000) != 0 {
@@ -3500,67 +2994,6 @@ func (c *cpu) execF7(pc uint32, repPrefixed bool) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported f7 /%d at %04x:%04x", subop, c.cs, c.ip)
-	}
-}
-
-func (c *cpu) exec0F(pc uint32) error {
-	op2 := c.rb(pc + 1)
-	switch op2 {
-	case 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f:
-		rel := int16(c.u16(pc + 2))
-		c.ip += 4
-		if c.evalCC(op2 & 0x0f) {
-			c.ip = uint16(int32(c.ip) + int32(rel))
-		}
-		return nil
-	case 0xaf: // imul r16, r/m16
-		modrm := c.rb(pc + 2)
-		if (modrm >> 6) != 0x3 {
-			return fmt.Errorf("unsupported imul memory form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
-		}
-		dst := int((modrm >> 3) & 0x7)
-		src := int(modrm & 0x7)
-		a := int16(c.reg16(dst))
-		b := int16(c.reg16(src))
-		c.setReg16(dst, uint16(a*b))
-		c.ip += 3
-		return nil
-	case 0xb6: // movzx r16, r/m8
-		modrm := c.rb(pc + 2)
-		if (modrm >> 6) != 0x3 {
-			return fmt.Errorf("unsupported movzx memory form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
-		}
-		dst := int((modrm >> 3) & 0x7)
-		src := int(modrm & 0x7)
-		c.setReg16(dst, uint16(c.reg8(src)))
-		c.ip += 3
-		return nil
-	case 0xb7: // movzx r16, r/m16 (effectively mov)
-		modrm := c.rb(pc + 2)
-		if (modrm >> 6) != 0x3 {
-			return fmt.Errorf("unsupported movzxw memory form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
-		}
-		dst := int((modrm >> 3) & 0x7)
-		src := int(modrm & 0x7)
-		c.setReg16(dst, c.reg16(src))
-		c.ip += 3
-		return nil
-	default:
-		if op2 >= 0x90 && op2 <= 0x9f { // setcc r/m8
-			modrm := c.rb(pc + 2)
-			if (modrm >> 6) != 0x3 {
-				return fmt.Errorf("unsupported setcc memory form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
-			}
-			cc := op2 & 0x0f
-			v := byte(0)
-			if c.evalCC(cc) {
-				v = 1
-			}
-			c.setReg8(int(modrm&0x7), v)
-			c.ip += 3
-			return nil
-		}
-		return fmt.Errorf("unsupported 0f opcode %02x at %04x:%04x", op2, c.cs, c.ip)
 	}
 }
 
