@@ -1,50 +1,53 @@
 # AGENTS.md
 
-This repository uses `tools/Buildfile` as the primary task entrypoint. Follow these rules when making changes.
+This file is the source of truth for agent instructions in this repository.
+
+RTG is a self-hosting Go compiler (`j5.nz/rtg`, Go `1.25.6`) with the main compiler in `std/compiler/`.
+Primary build/test orchestration is defined in `tools/Buildfile`.
 
 ## Mandatory Rules
 
 1. Always run `go` commands outside the sandbox.
-2. After each implemented feature, append a compiler size snapshot by running:
-   - `./tools/compiler_sizes.sh`
-3. Prefer running Buildfile targets through the project build runner (`./build/build <target>`) after `test-build` has produced `build/build`.
+2. Prefer Buildfile targets through the compiled runner after `test-build` creates `build/build`:
+   - `./build/build <target>`
+3. Do not use `go test ./...` for project validation. RTG runtime/std use `//rtg:internal` intrinsics that do not compile with the host Go toolchain.
 
-## Buildfile Targets
+## Verified Buildfile Targets
 
 - `build`
-  - Builds the main compiler binary at `build/rtg` with tags:
-    - `backend_linux_amd64`
-    - `backend_linux_i386`
-    - `backend_c`
+  - `go build -o build/rtg ./std/compiler/` (no explicit build tags).
 - `selfhost`
-  - Runs 3-stage self-hosting for default target and compares stage2 vs stage3.
+  - 3-stage self-hosting on default target and `cmp` stage2 vs stage3.
 - `selfhost-i386`
-  - Runs 3-stage self-hosting for `-T linux/386` and compares stage2 vs stage3.
+  - 3-stage self-hosting with `-T linux/386`.
 - `selfhost-c`
-  - Runs 3-stage self-hosting for `-T c/64`, compiling emitted C with `${CC:-cc}` between stages.
+  - 3-stage self-hosting with `-T c/64` and `${CC:-cc}` between stages.
+- `selfhost-wasm`
+  - 3-stage self-hosting with `-T wasi/wasm32` via `wasmtime`.
+- `selfhost-win386`
+  - 3-stage self-hosting with `-T windows/386` via `wine`.
+- `crosscompile-wasm-native`
+  - Builds compiler to WASM, then uses it to emit native `linux/amd64`, and checks stability.
 - `test`
-  - Builds and runs baseline runtime tests (`stringstest`, `filepathtest`, `sorttest`, `exectest`).
+  - Builds and runs `stringstest`, `filepathtest`, `sorttest`, `exectest`.
 - `test-i386`
-  - Builds and runs i386 target tests (`hello386`, `write386`, and selected runtime tests).
+  - Builds and runs `hello386`, `write386`, `stringstest`, `filepathtest`, `sorttest` for `linux/386`.
 - `test-build`
-  - Builds the Buildfile runner (`build/build`), lists targets, and executes `test`.
-- `sizes`
-  - Appends one CSV row to `compiler_sizes.csv` with date, git ref, and compiler sizes.
+  - Builds `build/build`, lists targets, then runs `test`.
+- `playground`
+  - Builds `web/compiler.wasm` with `-tags no_embed_std`, then runs `web/build.sh`.
 - `clean`
-  - Removes generated binaries, stages, and size-tracking artifacts.
+  - Removes generated build, stage, size, and cross-compile artifacts.
 
 ## Feature Workflow
 
 For each feature/change:
 
-1. Run the narrowest relevant validation target(s) from `tools/Buildfile`.
-2. If the change touches backend/codegen behavior, run at least one `selfhost*` target.
-3. Run `./tools/compiler_sizes.sh` to append a size snapshot for historical tracking.
-4. Include in your change summary:
-   - Which target(s) were run
-   - Whether size tracking was appended (`compiler_sizes.csv`)
+1. Run the narrowest relevant `tools/Buildfile` target(s).
+2. If backend/codegen behavior changed, run at least one `selfhost*` target relevant to the touched backend(s).
+3. In your change summary, include which Buildfile targets were run.
 
-## Notes
+## Working Notes
 
-- Size tracking may record `NA` for variants that do not currently compile in this repo state.
-- Keep build tags aligned across scripts and Buildfile targets when adding/removing backends.
+- Backend selection is primarily controlled by file build constraints; special tags like `no_backend_*` and `no_embed_std` are used in targeted flows.
+- Keep `tools/Buildfile` targets and backend/tag assumptions aligned when adding/removing backends.

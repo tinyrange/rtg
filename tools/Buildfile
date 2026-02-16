@@ -81,13 +81,9 @@ test-build: build
   sh ./build/build --list
   sh ./build/build test
 
-sizes:
-  sh ./tools/compiler_sizes.sh
-
 playground: build
   sh ./build/rtg -T wasi/wasm32 -tags no_embed_std -o web/compiler.wasm ./std/compiler/
   sh bash web/build.sh
 
 clean:
   sh rm -f build/stage* build/stage*_c.c build/stage*_c build/rtg build/rtg-build build/rtg_from_i386 build/*_386 build/hello386 build/write386 build/stringstest build/filepathtest build/sorttest build/exectest build/build build/cross_stage* build/*.wasm build/*.exe
-  sh rm -rf build/size_bins build/compiler_sizes.csv
