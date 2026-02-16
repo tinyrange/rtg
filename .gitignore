@@ -1,6 +1,3 @@
 tests/*/*
 !tests/*/*.go
-!tests/fullcompiler/
-!tests/fullcompiler/*/
-!tests/fullcompiler/*/main.go
 build/

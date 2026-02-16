@@ -591,18 +591,13 @@ func (e *Executor) handleFullCompiler(args []string) error {
 		return fmt.Errorf("unsupported fullcompiler backend: %s", backend)
 	}
 
-	tests, err := filepath.Glob("tests/fullcompiler/*/main.go")
+	tests, err := filepath.Glob("tests/*.go")
 	if err != nil {
 		return err
 	}
 	sort.Strings(tests)
 	if len(tests) == 0 {
-		return fmt.Errorf("no tests found under tests/fullcompiler/*/main.go")
-	}
-
-	expect := map[string]string{
-		"empty": "",
-		"hello": "hello world",
+		return fmt.Errorf("no tests found under tests/*.go")
 	}
 
 	rtgCompiler, err := detectRTGCompilerPath()
@@ -621,11 +616,7 @@ func (e *Executor) handleFullCompiler(args []string) error {
 	}
 
 	for _, testPath := range tests {
-		name := filepath.Base(filepath.Dir(testPath))
-		want, ok := expect[name]
-		if !ok {
-			return fmt.Errorf("unknown fullcompiler test: %s", name)
-		}
+		name := strings.TrimSuffix(filepath.Base(testPath), filepath.Ext(testPath))
 
 		var got string
 		switch backend {
@@ -687,8 +678,8 @@ func (e *Executor) handleFullCompiler(args []string) error {
 			}
 		}
 
-		if got != want {
-			return fmt.Errorf("FAIL: %s/%s expected %q got %q", backend, name, want, got)
+		if got != "PASS" {
+			return fmt.Errorf("FAIL: %s/%s expected %q got %q", backend, name, "PASS", got)
 		}
 		fmt.Printf("PASS: %s/%s\n", backend, name)
 	}
