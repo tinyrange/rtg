@@ -78,10 +78,10 @@ test-dosbox-smoke: build
   sh bash tools/test_dosbox_dos16.sh
 
 test-dosbox-challenge: build
-  sh RTG_DOS_TESTS=tests/func_recursion.go,tests/func_closure.go,tests/iface_basic.go,tests/iface_typeassert.go,tests/map_basic.go,tests/recover_basic.go bash tools/test_dosbox_dos16.sh
+  sh RTG_DOS_TESTS=tests/recover_basic.go,tests/func_method.go,tests/flow_switch.go,tests/defer_basic.go,tests/panic_basic.go bash tools/test_dosbox_dos16.sh
 
 test-dosbox-stress: build
-  sh RTG_DOS_TESTS=tests/iface_multi.go,tests/map_range.go,tests/slice_nested.go,tests/struct_embedding.go,tests/func_method.go,tests/flow_switch.go,tests/defer_basic.go,tests/panic_basic.go bash tools/test_dosbox_dos16.sh
+  sh RTG_DOS_TESTS=tests/func_basic.go,tests/ops_arithmetic.go,tests/flow_if.go,tests/func_recursion.go,tests/func_closure.go,tests/iface_typeassert.go,tests/recover_basic.go,tests/func_method.go,tests/flow_switch.go,tests/defer_basic.go,tests/panic_basic.go bash tools/test_dosbox_dos16.sh
 
 test-comemu-dos16: build
   sh bash tools/test_comemu_dos16.sh

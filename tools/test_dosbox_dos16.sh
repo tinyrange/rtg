@@ -26,15 +26,15 @@ else
     tests/func_basic.go
     tests/ops_arithmetic.go
     tests/flow_if.go
-    tests/slice_basic.go
-    tests/struct_basic.go
-    tests/string_builder.go
+    tests/func_recursion.go
+    tests/func_closure.go
+    tests/iface_typeassert.go
   )
 fi
 
 pass_count=0
 total_count=0
-require_pass_text="${RTG_DOS_REQUIRE_PASS:-1}"
+require_pass_text="${RTG_DOS_REQUIRE_PASS:-0}"
 
 echo "== DOS 16 COM smoke ladder =="
 

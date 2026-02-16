@@ -7,17 +7,17 @@ import "runtime"
 type FileMode int
 
 type File struct {
-	fd int
+	fd uintptr
 }
 
-var Stdout *File = &File{fd: 1}
-var Stderr *File = &File{fd: 2}
-var Stdin *File = &File{fd: 0}
+var Stdout *File = &File{fd: uintptr(1)}
+var Stderr *File = &File{fd: uintptr(2)}
+var Stdin *File = &File{fd: uintptr(0)}
 
 var Args []string
 
 func (f *File) Write(p []byte) (n int, err error) {
-	wrote, _, errn := runtime.SysWrite(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
+	wrote, _, errn := runtime.SysWrite(f.fd, runtime.Sliceptr(p), uintptr(len(p)))
 	if errn != 0 {
 		return int(wrote), Errno(errn)
 	}
@@ -25,7 +25,7 @@ func (f *File) Write(p []byte) (n int, err error) {
 }
 
 func (f *File) Read(p []byte) (int, error) {
-	n, _, errn := runtime.SysRead(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
+	n, _, errn := runtime.SysRead(f.fd, runtime.Sliceptr(p), uintptr(len(p)))
 	if errn != 0 {
 		return int(n), Errno(errn)
 	}
@@ -33,7 +33,7 @@ func (f *File) Read(p []byte) (int, error) {
 }
 
 func (f *File) Close() error {
-	_, _, errn := runtime.SysClose(uintptr(f.fd))
+	_, _, errn := runtime.SysClose(f.fd)
 	if errn != 0 {
 		return Errno(errn)
 	}
@@ -41,15 +41,15 @@ func (f *File) Close() error {
 }
 
 func (f *File) Fd() int {
-	return f.fd
+	return int(f.fd)
 }
 
 func NewFile(fd int) *File {
-	return &File{fd: fd}
+	return &File{fd: uintptr(fd)}
 }
 
 func Write(f *File, p []byte) (int, error) {
-	wrote, _, errn := runtime.SysWrite(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
+	wrote, _, errn := runtime.SysWrite(f.fd, runtime.Sliceptr(p), uintptr(len(p)))
 	if errn != 0 {
 		return int(wrote), Errno(errn)
 	}
@@ -57,7 +57,8 @@ func Write(f *File, p []byte) (int, error) {
 }
 
 func Exit(code int) {
-	runtime.SysExit(uintptr(code))
+	// Use raw Syscall here to avoid depending on runtime.SysExit lowering.
+	runtime.Syscall(252, uintptr(code), 0, 0, 0, 0, 0)
 }
 
 func makeCString(s string) []byte {
@@ -80,7 +81,7 @@ func OpenFile(name string, flag int, perm FileMode) (*File, error) {
 	if errn != 0 {
 		return nil, Errno(errn)
 	}
-	return &File{fd: int(fd)}, nil
+	return &File{fd: fd}, nil
 }
 
 func ReadFile(filename string) ([]byte, error) {
@@ -372,24 +373,6 @@ func Getpid() int {
 }
 
 func init() {
-	data, err := ReadFile("/proc/self/cmdline")
-	if err != nil {
-		return
-	}
-	var current []byte
-	i := 0
-	for i < len(data) {
-		if data[i] == 0 {
-			if len(current) > 0 {
-				Args = append(Args, string(current))
-			}
-			current = nil
-		} else {
-			current = append(current, data[i])
-		}
-		i++
-	}
-	if len(current) > 0 {
-		Args = append(Args, string(current))
-	}
+	// DOS has no /proc cmdline; keep Args empty until a dedicated PSP/argv path exists.
+	Args = []string{}
 }

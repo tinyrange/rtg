@@ -41,10 +41,33 @@ func Sprintf(format string, a ...interface{}) string {
 }
 
 func Fprintf(w *os.File, format string, a ...interface{}) (n int, err error) {
-	return os.Write(w, []byte(Sprintf(format, a...)))
+	s := Sprintf(format, a...)
+	if runtime.GOOS == "dos" {
+		fd := uintptr(1)
+		if w == os.Stderr {
+			fd = uintptr(2)
+		} else if w != os.Stdout {
+			fd = uintptr(w.Fd())
+		}
+		wrote, _, errn := runtime.SysWrite(fd, runtime.Stringptr(s), uintptr(len(s)))
+		if errn != 0 {
+			return int(wrote), os.Errno(errn)
+		}
+		return int(wrote), nil
+	}
+	return os.Write(w, []byte(s))
 }
 
 func Printf(format string, a ...interface{}) (n int, err error) {
+	if runtime.GOOS == "dos" {
+		s := Sprintf(format, a...)
+		b := []byte(s)
+		wrote, _, errn := runtime.SysWrite(uintptr(1), runtime.Sliceptr(b), uintptr(len(b)))
+		if errn != 0 {
+			return int(wrote), os.Errno(errn)
+		}
+		return int(wrote), nil
+	}
 	return Fprintf(os.Stdout, format, a...)
 }
 
@@ -60,6 +83,13 @@ func Println(a ...interface{}) (int, error) {
 		i++
 	}
 	result = append(result, '\n')
+	if runtime.GOOS == "dos" {
+		wrote, _, errn := runtime.SysWrite(uintptr(1), runtime.Sliceptr(result), uintptr(len(result)))
+		if errn != 0 {
+			return int(wrote), os.Errno(errn)
+		}
+		return int(wrote), nil
+	}
 	return os.Write(os.Stdout, result)
 }
 
