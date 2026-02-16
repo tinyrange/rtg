@@ -566,6 +566,7 @@ func detectRTGCompilerPath() (string, error) {
 }
 
 func (e *Executor) runAndCapture(name string, args ...string) (string, error) {
+	fmt.Fprintf(os.Stderr, "running %s %s\n", name, strings.Join(args, " "))
 	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
 	if err != nil {
@@ -780,6 +781,15 @@ func (e *Executor) handleRun(args []string) error {
 	}
 
 	binary := args[0]
+	if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(binary), ".exe") {
+		// If caller passed a suffix-less path, prefer an existing ".exe" peer.
+		if _, err := os.Stat(binary); err != nil {
+			candidate := binary + ".exe"
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				binary = candidate
+			}
+		}
+	}
 	runArgs := args[1:]
 
 	// Append extra args from command line
@@ -857,6 +867,52 @@ func shShell(cmdStr string) (name string, args []string) {
 	return "cmd", []string{"/c", cmdStr}
 }
 
+// normalizeWindowsGoBuildOutput appends ".exe" to "go build -o <path>" outputs on
+// Windows when the output has no extension. This keeps sh-based Buildfile commands
+// aligned with expected executable naming.
+func normalizeWindowsGoBuildOutput(cmdStr string) string {
+	if runtime.GOOS != "windows" {
+		return cmdStr
+	}
+
+	parts := strings.Fields(cmdStr)
+	if len(parts) < 4 {
+		return cmdStr
+	}
+
+	goBuildIdx := -1
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "go" && parts[i+1] == "build" {
+			goBuildIdx = i
+			break
+		}
+	}
+	if goBuildIdx == -1 {
+		return cmdStr
+	}
+
+	for i := goBuildIdx + 2; i < len(parts); i++ {
+		if strings.HasPrefix(parts[i], "-o=") {
+			out := strings.TrimPrefix(parts[i], "-o=")
+			if out != "" && filepath.Ext(out) == "" {
+				parts[i] = "-o=" + out + ".exe"
+				return strings.Join(parts, " ")
+			}
+			return cmdStr
+		}
+		if parts[i] == "-o" && i+1 < len(parts) {
+			out := parts[i+1]
+			if out != "" && !strings.HasPrefix(out, "-") && filepath.Ext(out) == "" {
+				parts[i+1] = out + ".exe"
+				return strings.Join(parts, " ")
+			}
+			return cmdStr
+		}
+	}
+
+	return cmdStr
+}
+
 // handleSh handles the sh command
 func (e *Executor) handleSh(args []string) error {
 	if len(args) < 1 {
@@ -864,7 +920,9 @@ func (e *Executor) handleSh(args []string) error {
 	}
 
 	cmdStr := strings.Join(args, " ")
+	cmdStr = normalizeWindowsGoBuildOutput(cmdStr)
 	name, shellArgs := shShell(cmdStr)
+	fmt.Printf("running %s %s\n", name, strings.Join(shellArgs, " "))
 	cmd := exec.Command(name, shellArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -887,16 +945,24 @@ func (cb crossBuild) IsNative() bool {
 }
 
 func (cb crossBuild) OutputName(name string) string {
-	suffix := ""
+	baseName := name
 	if cb.GOOS == "windows" {
-		suffix = ".exe"
+		// Avoid generating ".exe.exe" when caller already provides an extension.
+		if ext := filepath.Ext(baseName); strings.EqualFold(ext, ".exe") {
+			baseName = strings.TrimSuffix(baseName, ext)
+		}
 	}
 
 	if cb.IsNative() {
-		return fmt.Sprintf("%s%s", name, suffix)
-	} else {
-		return fmt.Sprintf("%s_%s_%s%s", name, cb.GOOS, cb.GOARCH, suffix)
+		if cb.GOOS == "windows" {
+			return baseName + ".exe"
+		}
+		return baseName
 	}
+	if cb.GOOS == "windows" {
+		return fmt.Sprintf("%s_%s_%s.exe", baseName, cb.GOOS, cb.GOARCH)
+	}
+	return fmt.Sprintf("%s_%s_%s", baseName, cb.GOOS, cb.GOARCH)
 }
 
 type buildOptions struct {

@@ -485,6 +485,15 @@ func alignUp(v, align int) int {
 	return (v + align - 1) & ^(align - 1)
 }
 
+// sectionSpan returns the in-memory RVA span for a section.
+// Even empty sections must consume one aligned slot so RVAs stay strictly increasing.
+func sectionSpan(size, align int) int {
+	if size <= 0 {
+		return align
+	}
+	return alignUp(size, align)
+}
+
 // === String literal helpers ===
 
 // decodeStringLiteral processes escape sequences in a string literal.

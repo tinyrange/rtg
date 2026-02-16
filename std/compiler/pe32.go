@@ -38,10 +38,21 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	// Align headers to FileAlignment
 	headersAligned := alignUp(headersRawSize, fileAlignment)
 
+	// Ensure empty initialized-data sections still emit a minimal payload.
+	// Some Windows loaders reject images with zero-sized initialized sections.
+	rdataContent := g.rodata
+	if len(rdataContent) == 0 {
+		rdataContent = []byte{0}
+	}
+	dataContent := g.data
+	if len(dataContent) == 0 {
+		dataContent = []byte{0}
+	}
+
 	// Section sizes (raw = file-aligned, virtual = section-aligned)
 	textRawSize := alignUp(len(g.code), fileAlignment)
-	rdataRawSize := alignUp(len(g.rodata), fileAlignment)
-	dataRawSize := alignUp(len(g.data), fileAlignment)
+	rdataRawSize := alignUp(len(rdataContent), fileAlignment)
+	dataRawSize := alignUp(len(dataContent), fileAlignment)
 
 	// Build .idata section
 	idataContent := g.buildIData(imports)
@@ -49,9 +60,9 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 
 	// RVAs (section-aligned)
 	textRVA := sectionAlignment // 0x1000
-	rdataRVA := textRVA + alignUp(len(g.code), sectionAlignment)
-	dataRVA := rdataRVA + alignUp(len(g.rodata), sectionAlignment)
-	idataRVA := dataRVA + alignUp(len(g.data), sectionAlignment)
+	rdataRVA := textRVA + sectionSpan(len(g.code), sectionAlignment)
+	dataRVA := rdataRVA + sectionSpan(len(rdataContent), sectionAlignment)
+	idataRVA := dataRVA + sectionSpan(len(dataContent), sectionAlignment)
 
 	// Fix up .idata internal RVAs
 	g.fixupIData(idataContent, idataRVA, imports)
@@ -62,8 +73,8 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	debugAbbrevRawSize := alignUp(len(debugAbbrev), fileAlignment)
 	debugInfoRawSize := alignUp(len(debugInfo), fileAlignment)
 
-	debugAbbrevRVA := idataRVA + alignUp(len(idataContent), sectionAlignment)
-	debugInfoRVA := debugAbbrevRVA + alignUp(len(debugAbbrev), sectionAlignment)
+	debugAbbrevRVA := idataRVA + sectionSpan(len(idataContent), sectionAlignment)
+	debugInfoRVA := debugAbbrevRVA + sectionSpan(len(debugAbbrev), sectionAlignment)
 
 	// File offsets
 	textFileOff := headersAligned
@@ -92,7 +103,7 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	totalFileSize := strtabFileOff + len(coffStrtab)
 
 	// Virtual size of image
-	imageSize := debugInfoRVA + alignUp(len(debugInfo), sectionAlignment)
+	imageSize := debugInfoRVA + sectionSpan(len(debugInfo), sectionAlignment)
 
 	// Fix up string headers in rodata
 	for _, headerOff := range g.stringMap {
@@ -163,7 +174,7 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	opt[2] = 1                                 // MajorLinkerVersion
 	opt[3] = 0                                 // MinorLinkerVersion
 	putU32(opt[4:], uint32(len(g.code)))       // SizeOfCode
-	putU32(opt[8:], uint32(len(g.rodata)))     // SizeOfInitializedData
+	putU32(opt[8:], uint32(len(rdataContent)+len(dataContent)+len(idataContent))) // SizeOfInitializedData
 	putU32(opt[12:], 0)                        // SizeOfUninitializedData
 	putU32(opt[16:], uint32(textRVA))          // AddressOfEntryPoint
 	putU32(opt[20:], uint32(textRVA))          // BaseOfCode
@@ -211,12 +222,12 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 
 	// .rdata
 	writeSection(pe[sectBase+40:], ".rdata",
-		len(g.rodata), rdataRVA, rdataRawSize, rdataFileOff,
+		len(rdataContent), rdataRVA, rdataRawSize, rdataFileOff,
 		0x40000040) // INITIALIZED_DATA | READ
 
 	// .data
 	writeSection(pe[sectBase+80:], ".data",
-		len(g.data), dataRVA, dataRawSize, dataFileOff,
+		len(dataContent), dataRVA, dataRawSize, dataFileOff,
 		0xC0000040) // INITIALIZED_DATA | READ | WRITE
 
 	// .idata
@@ -236,8 +247,8 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 
 	// Copy section data
 	copy(pe[textFileOff:], g.code)
-	copy(pe[rdataFileOff:], g.rodata)
-	copy(pe[dataFileOff:], g.data)
+	copy(pe[rdataFileOff:], rdataContent)
+	copy(pe[dataFileOff:], dataContent)
 	copy(pe[idataFileOff:], idataContent)
 	copy(pe[debugAbbrevFileOff:], debugAbbrev)
 	copy(pe[debugInfoFileOff:], debugInfo)
