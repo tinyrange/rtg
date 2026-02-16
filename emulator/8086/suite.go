@@ -14,16 +14,22 @@ import (
 
 const (
 	flagCF = uint16(1 << 0)
+	flagPF = uint16(1 << 2)
+	flagAF = uint16(1 << 4)
 	flagOF = uint16(1 << 11)
 	flagSF = uint16(1 << 7)
 	flagZF = uint16(1 << 6)
 
 	knownFlagsMask = flagCF | flagOF | flagSF | flagZF
+
+	suiteCountsCacheVersion  = 1
+	suiteCountsCacheFilename = ".suite-counts-cache.json"
 )
 
 type SuiteOptions struct {
 	SuiteDir       string
 	DocumentedOnly bool
+	SkipTests      int
 	MaxTests       int
 	MaxFailures    int
 	ProgressEvery  int
@@ -73,6 +79,17 @@ type suiteOpcode struct {
 	Reg       map[string]suiteOpcode `json:"reg"`
 }
 
+type suiteCountsCache struct {
+	Version int                        `json:"version"`
+	Files   map[string]suiteCountEntry `json:"files"`
+}
+
+type suiteCountEntry struct {
+	Count       int   `json:"count"`
+	Size        int64 `json:"size"`
+	ModTimeUnix int64 `json:"mod_time_unix"`
+}
+
 func RunSuiteV2(opts SuiteOptions, out io.Writer) (SuiteSummary, error) {
 	start := time.Now()
 	if opts.ProgressEvery <= 0 {
@@ -93,6 +110,11 @@ func RunSuiteV2(opts SuiteOptions, out io.Writer) (SuiteSummary, error) {
 	if len(files) == 0 {
 		return summary, fmt.Errorf("no .json.gz files found in %s", opts.SuiteDir)
 	}
+	fileTestCounts, err := loadSuiteFileTestCounts(opts.SuiteDir, files)
+	if err != nil {
+		return summary, err
+	}
+	skipRemaining := opts.SkipTests
 
 	for _, file := range files {
 		key := suiteKeyFromFilename(file)
@@ -101,12 +123,21 @@ func RunSuiteV2(opts SuiteOptions, out io.Writer) (SuiteSummary, error) {
 			summary.FilesSkipped++
 			continue
 		}
+		if skipRemaining >= fileTestCounts[file] {
+			skipRemaining -= fileTestCounts[file]
+			continue
+		}
+		skipInFile := 0
+		if skipRemaining > 0 {
+			skipInFile = skipRemaining
+			skipRemaining = 0
+		}
 
 		filePassed := 0
 		fileFailed := 0
 		fileUnsupported := 0
 
-		if err := runSuiteFile(file, flagsMask, hasFlagsMask, opts, &summary, &filePassed, &fileFailed, &fileUnsupported, out); err != nil {
+		if err := runSuiteFile(file, flagsMask, hasFlagsMask, skipInFile, opts, &summary, &filePassed, &fileFailed, &fileUnsupported, out); err != nil {
 			return summary, err
 		}
 		summary.FilesRun++
@@ -121,7 +152,7 @@ func RunSuiteV2(opts SuiteOptions, out io.Writer) (SuiteSummary, error) {
 	return summary, nil
 }
 
-func runSuiteFile(file string, flagsMask uint16, hasFlagsMask bool, opts SuiteOptions, summary *SuiteSummary, filePassed, fileFailed, fileUnsupported *int, out io.Writer) error {
+func runSuiteFile(file string, flagsMask uint16, hasFlagsMask bool, skipInFile int, opts SuiteOptions, summary *SuiteSummary, filePassed, fileFailed, fileUnsupported *int, out io.Writer) error {
 	f, err := os.Open(file)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", file, err)
@@ -149,18 +180,22 @@ func runSuiteFile(file string, flagsMask uint16, hasFlagsMask bool, opts SuiteOp
 		if err := dec.Decode(&test); err != nil {
 			return fmt.Errorf("decode test in %s: %w", file, err)
 		}
+		if skipInFile > 0 {
+			skipInFile--
+			continue
+		}
 		summary.TestsRun++
 		ok, unsupported, reason := runSuiteTest(test, flagsMask, hasFlagsMask, opts.Trace)
 		if ok {
 			summary.Passed++
 			*filePassed = *filePassed + 1
 		} else {
-			summary.Failed++
-			*fileFailed = *fileFailed + 1
 			if unsupported {
 				summary.Unsupported++
 				*fileUnsupported = *fileUnsupported + 1
 			}
+			summary.Failed++
+			*fileFailed = *fileFailed + 1
 			if len(summary.Failures) < 25 {
 				summary.Failures = append(summary.Failures, SuiteFailure{
 					File:   suiteKeyFromFilename(file),
@@ -188,8 +223,97 @@ func runSuiteFile(file string, flagsMask uint16, hasFlagsMask bool, opts SuiteOp
 	return nil
 }
 
+func loadSuiteFileTestCounts(suiteDir string, files []string) (map[string]int, error) {
+	cachePath := filepath.Join(suiteDir, suiteCountsCacheFilename)
+	cache := suiteCountsCache{
+		Version: suiteCountsCacheVersion,
+		Files:   make(map[string]suiteCountEntry),
+	}
+
+	if raw, err := os.ReadFile(cachePath); err == nil {
+		var parsed suiteCountsCache
+		if err := json.Unmarshal(raw, &parsed); err == nil && parsed.Version == suiteCountsCacheVersion {
+			if parsed.Files == nil {
+				parsed.Files = make(map[string]suiteCountEntry)
+			}
+			cache = parsed
+		}
+	}
+
+	counts := make(map[string]int, len(files))
+	updated := false
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", file, err)
+		}
+		base := filepath.Base(file)
+		entry, ok := cache.Files[base]
+		if ok && entry.Size == info.Size() && entry.ModTimeUnix == info.ModTime().UnixNano() {
+			counts[file] = entry.Count
+			continue
+		}
+		count, err := countSuiteTestsInFile(file)
+		if err != nil {
+			return nil, err
+		}
+		counts[file] = count
+		cache.Files[base] = suiteCountEntry{
+			Count:       count,
+			Size:        info.Size(),
+			ModTimeUnix: info.ModTime().UnixNano(),
+		}
+		updated = true
+	}
+
+	if updated {
+		if raw, err := json.Marshal(cache); err == nil {
+			tmp := cachePath + ".tmp"
+			if err := os.WriteFile(tmp, raw, 0o644); err == nil {
+				_ = os.Rename(tmp, cachePath)
+			}
+		}
+	}
+
+	return counts, nil
+}
+
+func countSuiteTestsInFile(file string) (int, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return 0, fmt.Errorf("open %s: %w", file, err)
+	}
+	defer f.Close()
+
+	gzr, err := gzip.NewReader(f)
+	if err != nil {
+		return 0, fmt.Errorf("open gzip %s: %w", file, err)
+	}
+	defer gzr.Close()
+
+	dec := json.NewDecoder(gzr)
+	tok, err := dec.Token()
+	if err != nil {
+		return 0, fmt.Errorf("read JSON start %s: %w", file, err)
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '[' {
+		return 0, fmt.Errorf("expected JSON array in %s", file)
+	}
+
+	count := 0
+	var raw json.RawMessage
+	for dec.More() {
+		if err := dec.Decode(&raw); err != nil {
+			return 0, fmt.Errorf("decode test in %s: %w", file, err)
+		}
+		count++
+	}
+	return count, nil
+}
+
 func runSuiteTest(test suiteTest, flagsMask uint16, hasFlagsMask bool, trace bool) (bool, bool, string) {
-	c := &cpu{trace: trace, maxSteps: 1}
+	c := &cpu{trace: trace, maxSteps: 1, allowAddr32: false}
 
 	for _, pair := range test.Initial.RAM {
 		c.mem[pair[0]&uint32(memSize-1)] = byte(pair[1])
@@ -310,7 +434,10 @@ func cpuReg(c *cpu, reg string) (uint16, bool) {
 }
 
 func setCPUFlags(c *cpu, flags uint16) {
+	c.extraFlags = flags &^ modeledFlagsMask
 	c.cf = (flags & flagCF) != 0
+	c.pf = (flags & flagPF) != 0
+	c.af = (flags & flagAF) != 0
 	c.of = (flags & flagOF) != 0
 	c.sf = (flags & flagSF) != 0
 	c.zf = (flags & flagZF) != 0

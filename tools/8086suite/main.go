@@ -11,16 +11,24 @@ import (
 func main() {
 	suiteDir := flag.String("suite", detectDefaultSuiteDir(), "path to V2 suite directory")
 	documentedOnly := flag.Bool("documented-only", true, "skip undefined/undocumented/FPU opcodes based on metadata")
+	skipTests := flag.Int("skip-tests", 0, "number of tests to skip before executing")
 	maxTests := flag.Int("max-tests", 0, "max tests to execute (0 means all)")
 	maxFailures := flag.Int("max-failures", 0, "stop after this many failures (0 means no cap)")
+	untilFailure := flag.Bool("until-failure", false, "run until first failure")
 	progressEvery := flag.Int("progress-every", 20_000, "print progress every N tests")
 	trace := flag.Bool("trace", false, "trace every executed instruction")
 	flag.Parse()
+
+	if *untilFailure {
+		*maxTests = 0
+		*maxFailures = 1
+	}
 
 	fmt.Printf("suite: %s\n", *suiteDir)
 	summary, err := emu8086.RunSuiteV2(emu8086.SuiteOptions{
 		SuiteDir:       *suiteDir,
 		DocumentedOnly: *documentedOnly,
+		SkipTests:      *skipTests,
 		MaxTests:       *maxTests,
 		MaxFailures:    *maxFailures,
 		ProgressEvery:  *progressEvery,
