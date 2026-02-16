@@ -533,6 +533,7 @@ const (
 	NCallExpr
 	NIndexExpr
 	NSelectorExpr
+	NTypeAssertExpr
 	NCompositeLit
 	NKeyValue
 	NPointerType
@@ -1030,6 +1031,9 @@ func (p *Parser) parseStructField() *Node {
 	node.Name = name.Val
 	if !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_RBRACE) && !p.at(TOKEN_EOF) {
 		node.Type = p.parseType()
+	} else {
+		// Embedded field: `struct { Base }`
+		node.Type = &Node{Kind: NIdent, Name: node.Name, Pos: name.Line}
 	}
 	return node
 }
@@ -1296,6 +1300,10 @@ func (p *Parser) parseSwitchStmt() *Node {
 	// Optional tag expression
 	if !p.at(TOKEN_LBRACE) {
 		tag := p.parseExprNoBrace()
+		if tag != nil && tag.Kind == NTypeAssertExpr && tag.Name == "type" {
+			node.Name = "typeswitch"
+			node.Y = tag.X
+		} else {
 		if p.at(TOKEN_SEMICOLON) {
 			// It was an init statement
 			p.advance()
@@ -1305,6 +1313,7 @@ func (p *Parser) parseSwitchStmt() *Node {
 			}
 		} else {
 			node.Y = tag
+		}
 		}
 	}
 
@@ -1562,8 +1571,22 @@ func (p *Parser) parsePostfixOps(node *Node) *Node {
 		switch p.peek().Kind {
 		case TOKEN_DOT:
 			p.advance()
-			name := p.expect(TOKEN_IDENT)
-			node = &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: node.Pos}
+			if p.at(TOKEN_LPAREN) {
+				// Type assertion: x.(T) or x.(type) (for type switches).
+				p.advance()
+				assertNode := &Node{Kind: NTypeAssertExpr, X: node, Pos: node.Pos}
+				if p.at(TOKEN_TYPE) {
+					p.advance()
+					assertNode.Name = "type"
+				} else {
+					assertNode.Type = p.parseType()
+				}
+				p.expect(TOKEN_RPAREN)
+				node = assertNode
+			} else {
+				name := p.expect(TOKEN_IDENT)
+				node = &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: node.Pos}
+			}
 		case TOKEN_LPAREN:
 			p.advance()
 			call := &Node{Kind: NCallExpr, X: node, Pos: node.Pos}
@@ -1608,7 +1631,17 @@ func (p *Parser) parsePostfixOps(node *Node) *Node {
 				}
 			}
 		case TOKEN_LBRACE:
-			if !p.noCompLit && p.isTypeLikeNode(node) {
+			allowCompLit := !p.noCompLit
+			if p.noCompLit {
+				// In noCompLit mode (e.g. if/switch headers), only allow
+				// composite literals with unambiguous non-identifier type forms.
+				// Do NOT allow selector expressions here, because values like
+				// `tok.Kind` in `switch tok.Kind { ... }` are ambiguous.
+				if node.Kind == NSliceType || node.Kind == NMapType {
+					allowCompLit = true
+				}
+			}
+			if allowCompLit && p.isTypeLikeNode(node) {
 				node = p.parseCompositeLit(node)
 			} else {
 				return node

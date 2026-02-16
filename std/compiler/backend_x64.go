@@ -773,8 +773,9 @@ func (g *CodeGen) compileIfaceCall(inst Inst) {
 	g.loadMem(REG_RCX, REG_RAX, 0)
 	g.loadMem(REG_RDX, REG_RAX, 8)
 
-	// Push concrete value as receiver onto operand stack
+	// Push receiver once and materialize it before branch dispatch.
 	g.opPush(REG_RDX)
+	g.flush()
 
 	// Restore regular args from call stack (in correct order)
 	i = argCount - 1
@@ -784,6 +785,8 @@ func (g *CodeGen) compileIfaceCall(inst Inst) {
 		g.opPush(REG_RAX)
 		i = i - 1
 	}
+	// Ensure restored args are materialized for all dispatch branches.
+	g.flush()
 
 	// Save rcx (type_id) on call stack since the call may clobber it
 	g.pushR(REG_RCX)
@@ -832,11 +835,11 @@ func (g *CodeGen) compileIfaceCall(inst Inst) {
 				g.emitBytes(0x48, 0x81, 0xf9) // cmp rcx, imm32
 				g.emitU32(uint32(entry.typeID))
 			}
-			// jne next (rel32)
-			nextFixup := g.jccRel32(CC_NE)
+				// jne next (rel32)
+				nextFixup := g.jccRel32(CC_NE)
 
-			// Call the concrete method (args already on operand stack)
-			g.emitCallPlaceholder(entry.funcName)
+				// Call the concrete method (receiver/args already on operand stack).
+				g.emitCallPlaceholder(entry.funcName)
 
 			// jmp end
 			endFixups = append(endFixups, g.jmpRel32())

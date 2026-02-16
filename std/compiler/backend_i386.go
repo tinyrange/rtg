@@ -749,8 +749,9 @@ func (g *CodeGen) compileIfaceCall_i386(inst Inst) {
 	g.loadMem32(REG32_ECX, REG32_EAX, 0) // type_id
 	g.loadMem32(REG32_EDX, REG32_EAX, 4) // concrete value
 
-	// Push concrete value as receiver
+	// Push receiver once and materialize it before branch dispatch.
 	g.opPush(REG32_EDX)
+	g.flush()
 
 	// Restore regular args
 	i = argCount - 1
@@ -760,6 +761,8 @@ func (g *CodeGen) compileIfaceCall_i386(inst Inst) {
 		g.opPush(REG32_EAX)
 		i = i - 1
 	}
+	// Ensure restored args are materialized for all dispatch branches.
+	g.flush()
 
 	// Save ecx (type_id)
 	g.pushR32(REG32_ECX)

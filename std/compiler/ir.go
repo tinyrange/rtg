@@ -180,12 +180,14 @@ type Compiler struct {
 	errors             []string
 	funcRets           map[string]int      // function name → return count
 	funcParams         map[string]int      // function name → param count
+	funcParamTypes     map[string][]string // function name → param type names (receiver first for methods)
 	funcVariadic       map[string]int      // variadic function name → count of fixed params
 	funcVariadicIface  map[string]bool     // variadic function name → true if ...interface{}
 	funcVariadicElem   map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
 	localElemSizes     map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
 	globalElemSizes    map[string]int      // qualified global name → slice element size
 	ifaceMethods       map[string][]string // interface name → method names
+	ifaceMethodRets    map[string]map[string]int // interface name → method name → return count
 	methodTable        map[string]string   // "pkg.Type.Method" → qualified IR func name
 	typeIDs            map[string]int      // concrete type qualified name → unique int
 	nextTypeID         int
@@ -230,16 +232,18 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 		irmod:             &IRModule{},
 		globals:           make(map[string]int),
 		types:             make(map[string]*TypeInfo),
-		funcRets:          make(map[string]int),
-		funcParams:        make(map[string]int),
+			funcRets:          make(map[string]int),
+			funcParams:        make(map[string]int),
+			funcParamTypes:    make(map[string][]string),
 		funcVariadic:      make(map[string]int),
 		funcVariadicIface: make(map[string]bool),
-		funcVariadicElem:  make(map[string]int),
-		globalElemSizes:   make(map[string]int),
-		ifaceMethods:      make(map[string][]string),
-		methodTable:       make(map[string]string),
-		typeIDs:           make(map[string]int),
-		nextTypeID:        3, // 1=int, 2=string are reserved
+			funcVariadicElem:  make(map[string]int),
+			globalElemSizes:   make(map[string]int),
+			ifaceMethods:      make(map[string][]string),
+			ifaceMethodRets:   make(map[string]map[string]int),
+			methodTable:       make(map[string]string),
+			typeIDs:           make(map[string]int),
+			nextTypeID:        4, // 1=int, 2=string, 3=bool are reserved
 		funcRetTypes:      make(map[string][]string),
 		globalMapVars:      make(map[string]int),
 		globalConcreteTypes: make(map[string]string),
@@ -334,7 +338,11 @@ func (c *Compiler) initBuiltinTypes() {
 	c.types["string"] = &TypeInfo{Kind: TY_STRING, Name: "string", Size: 16, Align: 8}
 	c.types["error"] = &TypeInfo{Kind: TY_INTERFACE, Name: "error", Size: 16, Align: 8}
 	c.types["int64"] = &TypeInfo{Kind: TY_INT, Name: "int64", Size: 8, Align: 8}
+	c.typeIDs["bool"] = 3
+	c.ifaceMethods["interface{}"] = []string{}
 	c.ifaceMethods["error"] = []string{"Error"}
+	c.ifaceMethodRets["interface{}"] = map[string]int{}
+	c.ifaceMethodRets["error"] = map[string]int{"Error": 1}
 }
 
 func (c *Compiler) errorf(format string, args ...interface{}) {
@@ -440,8 +448,88 @@ func (c *Compiler) lookupStructField(qualifiedType string, fieldName string) (*N
 	return nil, ""
 }
 
+func (c *Compiler) resolveFieldPathRec(qualifiedType string, fieldName string, visited map[string]bool) ([]int, bool) {
+	if qualifiedType == "" || visited[qualifiedType] {
+		return nil, false
+	}
+	visited[qualifiedType] = true
+
+	typeNode, pkgPath := c.lookupStructTypeNode(qualifiedType)
+	if typeNode == nil {
+		return nil, false
+	}
+
+	// Direct field match.
+	fieldIdx := 0
+	for _, field := range typeNode.Nodes {
+		if field.Kind != NField {
+			continue
+		}
+		if field.Name == fieldName {
+			return []int{fieldIdx * targetPtrSize}, true
+		}
+		fieldIdx++
+	}
+
+	// Promoted field match through embedded fields.
+	fieldIdx = 0
+	for _, field := range typeNode.Nodes {
+		if field.Kind != NField {
+			continue
+		}
+		if field.Type != nil && field.Name == nodeTypeName(field.Type) {
+			embeddedType := c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
+			if subPath, ok := c.resolveFieldPathRec(embeddedType, fieldName, visited); ok {
+				path := []int{fieldIdx * targetPtrSize}
+				for _, off := range subPath {
+					path = append(path, off)
+				}
+				return path, true
+			}
+		}
+		fieldIdx++
+	}
+	return nil, false
+}
+
+func (c *Compiler) resolveFieldPath(qualifiedType string, fieldName string) ([]int, bool) {
+	return c.resolveFieldPathRec(qualifiedType, fieldName, make(map[string]bool))
+}
+
 // resolveFieldType looks up the type of a struct field given a qualified type name and field name.
 func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) string {
+	if path, ok := c.resolveFieldPath(qualifiedType, fieldName); ok {
+		curType := qualifiedType
+		i := 0
+		for i < len(path) {
+			typeNode, pkgPath := c.lookupStructTypeNode(curType)
+			if typeNode == nil {
+				return ""
+			}
+			targetIdx := path[i] / targetPtrSize
+			fieldIdx := 0
+			var match *Node
+			for _, field := range typeNode.Nodes {
+				if field.Kind != NField {
+					continue
+				}
+				if fieldIdx == targetIdx {
+					match = field
+					break
+				}
+				fieldIdx++
+			}
+			if match == nil || match.Type == nil {
+				return ""
+			}
+			tname := c.qualifyTypeName(nodeTypeName(match.Type), pkgPath)
+			if i == len(path)-1 {
+				return tname
+			}
+			curType = tname
+			i++
+		}
+	}
 	field, pkgPath := c.lookupStructField(qualifiedType, fieldName)
 	if field == nil || field.Type == nil {
 		return ""
@@ -467,18 +555,8 @@ func (c *Compiler) getStructFields(typeName string) []string {
 
 // resolveFieldOffset looks up the byte offset of a struct field given a qualified type name and field name.
 func (c *Compiler) resolveFieldOffset(qualifiedType string, fieldName string) int {
-	typeNode, _ := c.lookupStructTypeNode(qualifiedType)
-	if typeNode == nil {
-		return -1
-	}
-	fieldIdx := 0
-	for _, field := range typeNode.Nodes {
-		if field.Kind == NField {
-			if field.Name == fieldName {
-				return fieldIdx * targetPtrSize
-			}
-			fieldIdx++
-		}
+	if path, ok := c.resolveFieldPath(qualifiedType, fieldName); ok && len(path) > 0 {
+		return path[0]
 	}
 	return -1
 }
@@ -926,20 +1004,31 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			c.funcRetTypes[qname] = retTypeNames
 			c.funcRets[qname] = len(retTypeNames)
 
-			// Pre-register variadic info and param count
-			paramCount := len(fn.Nodes)
-			fixedParams := 0
-			if fn.X != nil {
-				paramCount++
-				fixedParams = 1 // receiver counts as fixed
-			}
-			isVariadic := false
-			isIfaceVariadic := false
-			varElemSize := targetPtrSize
-			for _, param := range fn.Nodes {
-				if len(param.Name) > 3 && param.Name[0:3] == "..." {
-					isVariadic = true
-					if param.Type != nil && param.Type.Kind == NInterfaceType {
+				// Pre-register variadic info and param count
+				paramCount := len(fn.Nodes)
+				fixedParams := 0
+				var paramTypeNames []string
+				if fn.X != nil {
+					paramCount++
+					fixedParams = 1 // receiver counts as fixed
+					if fn.X.Type != nil {
+						paramTypeNames = append(paramTypeNames, nodeTypeName(fn.X.Type))
+					} else {
+						paramTypeNames = append(paramTypeNames, "")
+					}
+				}
+				isVariadic := false
+				isIfaceVariadic := false
+				varElemSize := targetPtrSize
+				for _, param := range fn.Nodes {
+					if param.Type != nil {
+						paramTypeNames = append(paramTypeNames, nodeTypeName(param.Type))
+					} else {
+						paramTypeNames = append(paramTypeNames, "")
+					}
+					if len(param.Name) > 3 && param.Name[0:3] == "..." {
+						isVariadic = true
+						if param.Type != nil && param.Type.Kind == NInterfaceType {
 						isIfaceVariadic = true
 					}
 					if param.Type != nil && param.Type.Kind == NIdent && param.Type.Name == "byte" {
@@ -948,9 +1037,10 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				} else {
 					fixedParams++
 				}
-			}
-			c.funcParams[qname] = paramCount
-			if isVariadic {
+				}
+				c.funcParams[qname] = paramCount
+				c.funcParamTypes[qname] = paramTypeNames
+				if isVariadic {
 				c.funcVariadic[qname] = fixedParams
 				c.funcVariadicIface[qname] = isIfaceVariadic
 				c.funcVariadicElem[qname] = varElemSize
@@ -975,19 +1065,43 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 	if node.Kind == NTypeDecl && node.Type != nil && node.Type.Kind == NInterfaceType {
 		qname := pkg.QualName(node.Name)
 		var methods []string
+		retMap := make(map[string]int)
 		for _, meth := range node.Type.Nodes {
 			if meth.Kind == NFunc {
 				methods = append(methods, meth.Name)
+				retCount := 0
+				if meth.Type != nil {
+					if meth.Type.Kind == NFuncType {
+						retCount = len(meth.Type.Nodes)
+					} else {
+						retCount = 1
+					}
+				}
+				retMap[meth.Name] = retCount
 			}
 		}
 		c.ifaceMethods[node.Name] = methods
 		c.ifaceMethods[qname] = methods
+		c.ifaceMethodRets[node.Name] = retMap
+		c.ifaceMethodRets[qname] = retMap
 	}
 	if node.Kind == NBlock {
 		for _, child := range node.Nodes {
 			c.collectInterfaceDecl(pkg, child)
 		}
 	}
+}
+
+func (c *Compiler) ifaceMethodReturnCount(ifaceType string, methodName string) (int, bool) {
+	if ifaceType == "" || methodName == "" {
+		return 0, false
+	}
+	if methods, ok := c.ifaceMethodRets[ifaceType]; ok {
+		if ret, ok := methods[methodName]; ok {
+			return ret, true
+		}
+	}
+	return 0, false
 }
 
 func (c *Compiler) collectMethodDecl(pkg *Package, node *Node) {
@@ -1292,11 +1406,11 @@ func (c *Compiler) compileFunc(node *Node) {
 			}
 			// Track concrete type for method resolution on params
 			if param.Type != nil {
-				typeName := nodeTypeName(param.Type)
-				// Track interface-typed params
-				if _, isIface := c.ifaceMethods[typeName]; isIface {
-					c.localTypes[pname] = typeName
-				}
+					typeName := nodeTypeName(param.Type)
+					// Track interface-typed params
+					if c.isInterfaceTypeName(typeName) {
+						c.localTypes[pname] = typeName
+					}
 				ct := c.qualifyTypeName(typeName, "")
 				c.localConcreteTypes[pname] = ct
 				// Also track slice elem sizes from type
@@ -1645,7 +1759,7 @@ func (c *Compiler) compileVarDecl(node *Node) {
 	// Track interface-typed variables
 	if node.Type != nil {
 		typeName := nodeTypeName(node.Type)
-		if _, isIface := c.ifaceMethods[typeName]; isIface {
+		if c.isInterfaceTypeName(typeName) {
 			c.localTypes[node.Name] = typeName
 		}
 		// Track concrete type for struct field access and method resolution
@@ -1654,6 +1768,11 @@ func (c *Compiler) compileVarDecl(node *Node) {
 	}
 	if node.X != nil {
 		c.compileExpr(node.X)
+		if node.Type != nil {
+			if c.isInterfaceTypeName(nodeTypeName(node.Type)) {
+				c.maybeBoxValueForInterface(node.X)
+			}
+		}
 		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
 	} else {
 		// Struct locals are represented as pointers to heap-allocated storage.
@@ -1707,7 +1826,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		}
 
 		// Multi-value map index: v, ok := m[key]
-		if node.Y != nil && node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X) {
+			if node.Y != nil && node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X) {
 			c.compileExpr(node.Y.X) // push map
 			c.compileExpr(node.Y.Y) // push key
 			c.emit(Inst{Op: OP_CALL, Name: "runtime.MapGet", Arg: 2})
@@ -1731,11 +1850,28 @@ func (c *Compiler) compileAssign(node *Node) {
 					c.localConcreteTypes[node.Nodes[0].Name] = c.qualifyTypeName(valType, "")
 				}
 			}
-			return
-		}
+				return
+			}
 
-		// Multi-value assignment: a, b = expr or a, b := expr
-		c.compileExpr(node.Y)
+			// Multi-value type assertion: v, ok := x.(T)
+			if node.Y != nil && node.Y.Kind == NTypeAssertExpr && len(node.Nodes) == 2 {
+				c.compileTypeAssertCommaOk(node.Y)
+				i := len(node.Nodes) - 1
+				for i >= 0 {
+					lhs := node.Nodes[i]
+					if node.Name == ":=" {
+						idx := c.addLocal(lhs.Name)
+						c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+					} else {
+						c.compileLValueSet(lhs)
+					}
+					i = i - 1
+				}
+				return
+			}
+
+			// Multi-value assignment: a, b = expr or a, b := expr
+			c.compileExpr(node.Y)
 
 		// Track interface-typed, string-typed, and concrete-typed locals from multi-value := assignments
 		if node.Name == ":=" && node.Y != nil && node.Y.Kind == NCallExpr {
@@ -1752,9 +1888,9 @@ func (c *Compiler) compileAssign(node *Node) {
 				for j, lhs := range node.Nodes {
 					if j < len(retTypes) {
 						qret := c.qualifyTypeName(retTypes[j], calleePkg)
-						if _, isIface := c.ifaceMethods[retTypes[j]]; isIface {
-							c.localTypes[lhs.Name] = retTypes[j]
-						}
+							if c.isInterfaceTypeName(retTypes[j]) {
+								c.localTypes[lhs.Name] = retTypes[j]
+							}
 						if retTypes[j] == "string" {
 							c.localStringVars[lhs.Name] = true
 						}
@@ -1957,7 +2093,30 @@ func (c *Compiler) compileAssign(node *Node) {
 
 	// Regular assignment
 	c.compileExpr(node.Y)
+	if _, ok := c.lvalueInterfaceType(node.X); ok {
+		c.maybeBoxValueForInterface(node.Y)
+	}
 	c.compileLValueSet(node.X)
+}
+
+func (c *Compiler) lvalueInterfaceType(node *Node) (string, bool) {
+	if node == nil {
+		return "", false
+	}
+	if node.Kind == NIdent {
+		if t, ok := c.localTypes[node.Name]; ok {
+			return t, true
+		}
+		if c.curPkg != nil {
+			if sym, ok := c.curPkg.Symbols[node.Name]; ok && sym.Kind == SymVar && sym.Node != nil && sym.Node.Type != nil {
+				tname := nodeTypeName(sym.Node.Type)
+				if c.isInterfaceTypeName(tname) {
+					return tname, true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 func (c *Compiler) compileLValueSet(node *Node) {
@@ -2076,8 +2235,7 @@ func (c *Compiler) maybeBoxInterface(expr *Node, retTypes []string, idx int) {
 		return
 	}
 	expectedType := retTypes[idx]
-	_, isIface := c.ifaceMethods[expectedType]
-	if !isIface {
+	if !c.isInterfaceTypeName(expectedType) {
 		return
 	}
 	// Don't box nil
@@ -2089,9 +2247,9 @@ func (c *Compiler) maybeBoxInterface(expr *Node, retTypes []string, idx int) {
 		calleeName := c.resolveCallName(expr.X)
 		if calleeRetTypes, ok := c.funcRetTypes[calleeName]; ok {
 			if idx < len(calleeRetTypes) {
-				if _, calleeReturnsIface := c.ifaceMethods[calleeRetTypes[idx]]; calleeReturnsIface {
-					return // callee already boxes
-				}
+					if c.isInterfaceTypeName(calleeRetTypes[idx]) {
+						return // callee already boxes
+					}
 			}
 		}
 	}
@@ -2113,9 +2271,14 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 		return 1 // int
 	case NStringLit:
 		return 2 // string
+	case NBasicLit:
+		if expr.Name == "true" || expr.Name == "false" {
+			return 3 // bool
+		}
+		return 0
 	case NIdent:
 		if expr.Name == "true" || expr.Name == "false" {
-			return 1 // bool treated as int
+			return 3 // bool
 		}
 		if expr.Name == "nil" {
 			return 0 // nil doesn't need boxing
@@ -2130,15 +2293,21 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 		if _, isIface := c.localTypes[expr.Name]; isIface {
 			return 0 // already interface
 		}
-		// Check if it's a global string var
-		if c.curPkg != nil {
-			if sym, ok := c.curPkg.Symbols[expr.Name]; ok && sym.Kind == SymVar && sym.Node != nil && sym.Node.Type != nil {
-				if nodeTypeName(sym.Node.Type) == "string" {
-					return 2
+			// Check if it's a global string var
+			if c.curPkg != nil {
+				if sym, ok := c.curPkg.Symbols[expr.Name]; ok && sym.Kind == SymVar && sym.Node != nil && sym.Node.Type != nil {
+					if nodeTypeName(sym.Node.Type) == "string" {
+						return 2
+					}
+					if nodeTypeName(sym.Node.Type) == "bool" {
+						return 3
+					}
 				}
 			}
-		}
-		return 1 // default to int for unknown locals
+			if ct, ok := c.localConcreteTypes[expr.Name]; ok && ct == "bool" {
+				return 3
+			}
+			return 1 // default to int for unknown locals
 	case NBinaryExpr:
 		if expr.Name == "+" || expr.Name == "-" || expr.Name == "*" || expr.Name == "/" || expr.Name == "%" {
 			if c.isStringTypedExpr(expr) {
@@ -2147,7 +2316,7 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 			return 1
 		}
 		if expr.Name == "==" || expr.Name == "!=" || expr.Name == "<" || expr.Name == ">" || expr.Name == "<=" || expr.Name == ">=" || expr.Name == "&&" || expr.Name == "||" {
-			return 1 // comparison returns int/bool
+			return 3 // bool
 		}
 	case NCallExpr:
 		if expr.X != nil && expr.X.Kind == NIdent {
@@ -2613,17 +2782,24 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 func (c *Compiler) compileSwitch(node *Node) {
 	savedDepth := c.stackDepth
 	endLabel := c.newLabel()
+	isTypeSwitch := node.Name == "typeswitch"
 
 	// Compile tag if present
 	hasTag := node.Y != nil
 	if hasTag {
-		c.compileExpr(node.Y)
+		if isTypeSwitch {
+			c.compileExpr(node.Y)
+			c.emit(Inst{Op: OP_OFFSET, Arg: 0})
+			c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+		} else {
+			c.compileExpr(node.Y)
+		}
 	}
 	caseCheckDepth := c.stackDepth // depth with tag on stack (if any)
 
 	// Detect string switch: check tag and first case value
 	isStringSwitch := false
-	if hasTag {
+	if hasTag && !isTypeSwitch {
 		if isStringExpr(node.Y) || c.isStringTypedExpr(node.Y) {
 			isStringSwitch = true
 		}
@@ -2661,49 +2837,177 @@ func (c *Compiler) compileSwitch(node *Node) {
 				caseExprs = append(caseExprs, extra)
 			}
 
-			if hasTag {
-				// Check each case value with OR logic
-				// DUP/expr/EQ/JMP_IF is net-zero on the fallthrough path
-				for _, expr := range caseExprs {
-					c.emit(Inst{Op: OP_DUP})
-					c.compileExpr(expr)
-					if isStringSwitch {
-						c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
-					} else {
-						c.emit(Inst{Op: OP_EQ})
+				if hasTag {
+					// Check each case value with OR logic
+					// DUP/expr/EQ/JMP_IF is net-zero on the fallthrough path
+					for _, expr := range caseExprs {
+						c.emit(Inst{Op: OP_DUP})
+						if isTypeSwitch {
+							c.emit(Inst{Op: OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
+							c.emit(Inst{Op: OP_EQ})
+						} else {
+							c.compileExpr(expr)
+							if isStringSwitch {
+								c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+							} else {
+								c.emit(Inst{Op: OP_EQ})
+							}
+						}
+						c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
 					}
-					c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
+				} else {
+					// No tag — each case expr is a bool condition, OR them
+					for _, expr := range caseExprs {
+						c.compileExpr(expr)
+						c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
+					}
 				}
-			} else {
-				// No tag — each case expr is a bool condition, OR them
-				for _, expr := range caseExprs {
-					c.compileExpr(expr)
-					c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
-				}
-			}
-			c.emit(Inst{Op: OP_JMP, Arg: nextLabel})
+				c.emit(Inst{Op: OP_JMP, Arg: nextLabel})
 
-			// Body is reached from JMP_IF; depth = caseCheckDepth
-			c.stackDepth = caseCheckDepth
-			c.emitLabel(bodyLabel)
-			if hasTag {
-				c.emit(Inst{Op: OP_DROP})
+				// Body is reached from JMP_IF; depth = caseCheckDepth
+				c.stackDepth = caseCheckDepth
+				c.emitLabel(bodyLabel)
+				if hasTag {
+					c.emit(Inst{Op: OP_DROP})
+				}
+				if cas.Body != nil {
+					c.compileBlock(cas.Body)
+				}
+				c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+				// Reset depth for next case's check path
+				c.stackDepth = caseCheckDepth
+				c.emitLabel(nextLabel)
 			}
-			if cas.Body != nil {
-				c.compileBlock(cas.Body)
-			}
-			c.emit(Inst{Op: OP_JMP, Arg: endLabel})
-			// Reset depth for next case's check path
-			c.stackDepth = caseCheckDepth
-			c.emitLabel(nextLabel)
 		}
-	}
 
-	if hasTag {
-		c.emit(Inst{Op: OP_DROP})
+		if hasTag {
+			c.emit(Inst{Op: OP_DROP})
+		}
+			c.emitLabel(endLabel)
+			c.stackDepth = savedDepth // switch should have net-zero effect
+}
+
+func (c *Compiler) typeIDForTypeName(tname string) int {
+	if tname == "" {
+		return 0
 	}
+	if tname == "int" {
+		return 1
+	}
+	if tname == "string" {
+		return 2
+	}
+	if tname == "bool" {
+		return 3
+	}
+	qt := c.qualifyTypeName(tname, "")
+	if id, ok := c.typeIDs[qt]; ok {
+		return id
+	}
+	id := c.nextTypeID
+	c.nextTypeID++
+	c.typeIDs[qt] = id
+	return id
+}
+
+func (c *Compiler) typeIDForTypeNode(t *Node) int {
+	if t == nil {
+		return 0
+	}
+	return c.typeIDForTypeName(nodeTypeName(t))
+}
+
+func (c *Compiler) isInterfaceTypeName(typeName string) bool {
+	if typeName == "" {
+		return false
+	}
+	if typeName == "interface{}" {
+		return true
+	}
+	_, ok := c.ifaceMethods[typeName]
+	return ok
+}
+
+func (c *Compiler) maybeBoxValueForInterface(expr *Node) {
+	if expr == nil {
+		return
+	}
+	// Already an interface-typed expression/value.
+	if ct := c.exprConcreteType(expr); c.isInterfaceTypeName(ct) {
+		return
+	}
+	if typeID := c.resolveConcreteTypeID(expr); typeID > 0 {
+		c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+		return
+	}
+	if ct := c.exprConcreteType(expr); ct != "" {
+		c.emit(Inst{Op: OP_IFACE_BOX, Arg: c.typeIDForTypeName(ct)})
+		return
+	}
+	if typeID := c.exprPrimitiveTypeID(expr); typeID > 0 {
+		c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+		return
+	}
+}
+
+func (c *Compiler) compileTypeAssertExpr(node *Node) {
+	if node == nil || node.X == nil || node.Type == nil {
+		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		return
+	}
+	typeID := c.typeIDForTypeNode(node.Type)
+
+	// Evaluate interface value and check dynamic type id.
+	c.compileExpr(node.X)
+	c.emit(Inst{Op: OP_DUP})
+	c.emit(Inst{Op: OP_OFFSET, Arg: 0})
+	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+	c.emit(Inst{Op: OP_CONST_I64, Val: int64(typeID)})
+	c.emit(Inst{Op: OP_EQ})
+
+	failLabel := c.newLabel()
+	endLabel := c.newLabel()
+	c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: failLabel})
+	c.emit(Inst{Op: OP_OFFSET, Arg: targetPtrSize})
+	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+
+	c.emitLabel(failLabel)
+	c.emit(Inst{Op: OP_DROP})
+	c.emit(Inst{Op: OP_CONST_STR, Name: "type assertion failed"})
+	c.emit(Inst{Op: OP_PANIC})
+
 	c.emitLabel(endLabel)
-	c.stackDepth = savedDepth // switch should have net-zero effect
+}
+
+func (c *Compiler) compileTypeAssertCommaOk(node *Node) {
+	if node == nil || node.X == nil || node.Type == nil {
+		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+		return
+	}
+	typeID := c.typeIDForTypeNode(node.Type)
+
+	c.compileExpr(node.X)
+	c.emit(Inst{Op: OP_DUP})
+	c.emit(Inst{Op: OP_OFFSET, Arg: 0})
+	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+	c.emit(Inst{Op: OP_CONST_I64, Val: int64(typeID)})
+	c.emit(Inst{Op: OP_EQ})
+
+	failLabel := c.newLabel()
+	endLabel := c.newLabel()
+	c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: failLabel})
+	c.emit(Inst{Op: OP_OFFSET, Arg: targetPtrSize})
+	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+	c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})
+	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+
+	c.emitLabel(failLabel)
+	c.emit(Inst{Op: OP_DROP})
+	c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+	c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+	c.emitLabel(endLabel)
 }
 
 func (c *Compiler) compileInc(node *Node) {
@@ -2746,6 +3050,8 @@ func (c *Compiler) compileExpr(node *Node) {
 		c.compileCallExpr(node)
 	case NSelectorExpr:
 		c.compileSelectorExpr(node)
+	case NTypeAssertExpr:
+		c.compileTypeAssertExpr(node)
 	case NIndexExpr:
 		c.compileIndexExpr(node)
 	case NSliceExpr:
@@ -3414,14 +3720,31 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			gqname := c.curPkg.QualName(recvName)
 			concreteType, ok = c.globalConcreteTypes[gqname]
 		}
-		if ok {
-			candidate := c.dotJoin(concreteType, methodName)
-			resolvedName, ok := c.methodTable[candidate]
-			if !ok {
-				ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
-				resolvedName, ok = c.methodTable[ptrCandidate]
-			}
 			if ok {
+				candidate := c.dotJoin(concreteType, methodName)
+				resolvedName, ok := c.methodTable[candidate]
+				if !ok {
+					ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
+					resolvedName, ok = c.methodTable[ptrCandidate]
+				}
+				if !ok {
+					if pm, found := c.findPromotedMethod(concreteType, methodName); found {
+						// Build receiver from embedded field path.
+						c.compileExpr(node.X.X)
+						i := 0
+						for i < len(pm.Offsets) {
+							c.emit(Inst{Op: OP_OFFSET, Arg: pm.Offsets[i]})
+							c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+							i++
+						}
+						for _, arg := range node.Nodes {
+							c.compileExpr(arg)
+						}
+						c.emit(Inst{Op: OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
+						return
+					}
+				}
+				if ok {
 				// Check if this method is variadic
 				fixedCount, isVariadic := c.funcVariadic[resolvedName]
 				isSpread := node.Name == "spread"
@@ -3494,6 +3817,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 
 	// Determine the function to call
 	callName := c.resolveCallName(node.X)
+	paramTypes := c.funcParamTypes[callName]
 
 	// Check if this is a variadic function call
 	fixedCount, isVariadic := c.funcVariadic[callName]
@@ -3503,7 +3827,11 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		// Compile fixed args normally
 		i := 0
 		for i < fixedCount && i < len(node.Nodes) {
-			c.compileExpr(node.Nodes[i])
+			arg := node.Nodes[i]
+			c.compileExpr(arg)
+			if i < len(paramTypes) && c.isInterfaceTypeName(paramTypes[i]) {
+				c.maybeBoxValueForInterface(arg)
+			}
 			i++
 		}
 
@@ -3524,8 +3852,11 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		c.emit(Inst{Op: OP_CALL, Name: callName, Arg: fixedCount + 1})
 	} else {
 		// Non-variadic call, or spread call — compile all args normally
-		for _, arg := range node.Nodes {
+		for i, arg := range node.Nodes {
 			c.compileExpr(arg)
+			if i < len(paramTypes) && c.isInterfaceTypeName(paramTypes[i]) {
+				c.maybeBoxValueForInterface(arg)
+			}
 		}
 
 		argCount := len(node.Nodes)
@@ -3902,6 +4233,15 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 				return 0
 			}
 		}
+		// Interface method calls: use the declared interface method signature.
+		if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
+			recvName := node.X.X.Name
+			if ifaceType, ok := c.localTypes[recvName]; ok {
+				if retCount, ok := c.ifaceMethodReturnCount(ifaceType, node.X.Name); ok {
+					return retCount
+				}
+			}
+		}
 		// Look up the callee's return count (node.X is the callee)
 		name := c.resolveCallName(node.X)
 		if retCount, ok := c.funcRets[name]; ok {
@@ -4028,22 +4368,76 @@ func (c *Compiler) compileSelectorExpr(node *Node) {
 			return
 		}
 	}
-	// Field access — resolve byte offset from concrete type
-	offset := 0
+	// Field access — resolve byte offset path from concrete type (supports promoted fields).
+	var offsets []int
 	recvType := c.resolveExprType(node.X)
 	if recvType != "" {
-		off := c.resolveFieldOffset(recvType, node.Name)
-		if off >= 0 {
-			offset = off
+		if path, ok := c.resolveFieldPath(recvType, node.Name); ok {
+			offsets = path
 		}
+	}
+	if len(offsets) == 0 {
+		offsets = []int{0}
 	}
 	c.compileExpr(node.X)
 	// Auto-deref pointer-to-struct for field access (e.g., pp.X where pp is *Point)
 	if node.X != nil && c.needsSelectorDeref(node.X) {
 		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
 	}
-	c.emit(Inst{Op: OP_OFFSET, Arg: offset})
-	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+	i := 0
+	for i < len(offsets) {
+		c.emit(Inst{Op: OP_OFFSET, Arg: offsets[i]})
+		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+		i++
+	}
+}
+
+type promotedMethodMatch struct {
+	Offsets []int
+	Target  string
+}
+
+func (c *Compiler) findPromotedMethodRec(qualifiedType string, methodName string, visited map[string]bool) (promotedMethodMatch, bool) {
+	if qualifiedType == "" || visited[qualifiedType] {
+		return promotedMethodMatch{}, false
+	}
+	visited[qualifiedType] = true
+
+	typeNode, pkgPath := c.lookupStructTypeNode(qualifiedType)
+	if typeNode == nil {
+		return promotedMethodMatch{}, false
+	}
+
+	fieldIdx := 0
+	for _, field := range typeNode.Nodes {
+		if field.Kind != NField {
+			continue
+		}
+		if field.Type != nil && field.Name == nodeTypeName(field.Type) {
+			embeddedType := c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
+			candidate := c.dotJoin(embeddedType, methodName)
+			if resolved, ok := c.methodTable[candidate]; ok {
+				return promotedMethodMatch{Offsets: []int{fieldIdx * targetPtrSize}, Target: resolved}, true
+			}
+			ptrCandidate := c.dotJoin(pointerMethodTypeName(embeddedType), methodName)
+			if resolved, ok := c.methodTable[ptrCandidate]; ok {
+				return promotedMethodMatch{Offsets: []int{fieldIdx * targetPtrSize}, Target: resolved}, true
+			}
+			if sub, ok := c.findPromotedMethodRec(embeddedType, methodName, visited); ok {
+				offsets := []int{fieldIdx * targetPtrSize}
+				for _, off := range sub.Offsets {
+					offsets = append(offsets, off)
+				}
+				return promotedMethodMatch{Offsets: offsets, Target: sub.Target}, true
+			}
+		}
+		fieldIdx++
+	}
+	return promotedMethodMatch{}, false
+}
+
+func (c *Compiler) findPromotedMethod(qualifiedType string, methodName string) (promotedMethodMatch, bool) {
+	return c.findPromotedMethodRec(qualifiedType, methodName, make(map[string]bool))
 }
 
 func (c *Compiler) compileIndexExpr(node *Node) {
@@ -4315,6 +4709,8 @@ func nodeTypeName(node *Node) string {
 		return "[]" + nodeTypeName(node.X)
 	case NMapType:
 		return "map[" + nodeTypeName(node.X) + "]" + nodeTypeName(node.Y)
+	case NInterfaceType:
+		return "interface{}"
 	}
 	return ""
 }

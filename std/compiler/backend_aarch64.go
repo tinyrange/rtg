@@ -750,8 +750,9 @@ func (g *CodeGen) compileIfaceCallArm64(inst Inst) {
 	g.emitLdr(REG_X1, REG_X0, 0) // type_id
 	g.emitLdr(REG_X2, REG_X0, 8) // concrete value
 
-	// Push concrete value as receiver
+	// Push receiver once and materialize it before branch dispatch.
 	g.opPush(REG_X2)
+	g.flush()
 
 	// Restore regular args
 	i = argCount - 1
@@ -762,6 +763,8 @@ func (g *CodeGen) compileIfaceCallArm64(inst Inst) {
 		g.opPush(REG_X0)
 		i = i - 1
 	}
+	// Ensure restored args are materialized for all dispatch branches.
+	g.flush()
 
 	// Save type_id on hardware stack
 	g.emitSubImm(REG_SP, REG_SP, 16)
