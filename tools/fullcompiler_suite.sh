@@ -16,6 +16,7 @@ case "$backend" in
 esac
 
 rtg_compiler="${RTG_COMPILER:-./build/rtg}"
+rtg_target="${RTG_TARGET:-}"
 exe=""
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) exe=".exe" ;;
@@ -36,7 +37,11 @@ for t in tests/fullcompiler/*/main.go; do
   case "$backend" in
     rtg)
       out="build/fullcompiler_${name}${exe}"
-      "$rtg_compiler" "$t" -o "$out"
+      if [ -n "$rtg_target" ]; then
+        "$rtg_compiler" -T "$rtg_target" "$t" -o "$out"
+      else
+        "$rtg_compiler" "$t" -o "$out"
+      fi
       got="$("$out")"
       ;;
     c)

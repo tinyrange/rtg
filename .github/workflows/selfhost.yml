@@ -57,7 +57,7 @@ jobs:
         run: go build -o build/build${{ matrix.suffix }} ./tools/build.go
 
       - name: Fullcompiler suite (RTG backend)
-        run: ./build/build${{ matrix.suffix }} test-fullcompiler-rtg
+        run: RTG_TARGET=${{ matrix.target }} ./build/build${{ matrix.suffix }} test-fullcompiler-rtg
 
       - name: C self-hosting (3-stage)
         if: matrix.runner != 'windows-latest'
