@@ -2,3 +2,5 @@ tests/*/*
 !tests/*/*.go
 build/
 local/
+
+.DS_Store
