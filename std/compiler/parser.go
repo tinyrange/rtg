@@ -891,17 +891,72 @@ func (p *Parser) parseTypeDecl() *Node {
 func (p *Parser) parseVarDecl() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_VAR)
-	name := p.expect(TOKEN_IDENT)
-	node := &Node{Kind: NVarDecl, Name: name.Val, Pos: pos}
-	if !p.at(TOKEN_ASSIGN) && !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_EOF) {
-		node.Type = p.parseType()
+	if p.at(TOKEN_LPAREN) {
+		p.advance()
+		var decls []*Node
+		for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
+			spec := p.parseVarDeclSpec()
+			if spec != nil {
+				decls = append(decls, spec...)
+			}
+			p.skipSemicolon()
+		}
+		p.expect(TOKEN_RPAREN)
+		p.skipSemicolon()
+		if len(decls) == 1 {
+			return decls[0]
+		}
+		return &Node{Kind: NVarDecl, Nodes: decls, Pos: pos}
 	}
+
+	decls := p.parseVarDeclSpec()
+	p.skipSemicolon()
+	if len(decls) == 1 {
+		return decls[0]
+	}
+	return &Node{Kind: NVarDecl, Nodes: decls, Pos: pos}
+}
+
+func (p *Parser) parseVarDeclSpec() []*Node {
+	specPos := p.peek().Line
+	var names []string
+	first := p.expect(TOKEN_IDENT)
+	names = append(names, first.Val)
+	for p.at(TOKEN_COMMA) {
+		p.advance()
+		name := p.expect(TOKEN_IDENT)
+		names = append(names, name.Val)
+	}
+
+	var typ *Node
+	if !p.at(TOKEN_ASSIGN) && !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
+		typ = p.parseType()
+	}
+
+	var rhs []*Node
 	if p.at(TOKEN_ASSIGN) {
 		p.advance()
-		node.X = p.parseExpr()
+		rhs = append(rhs, p.parseExpr())
+		for p.at(TOKEN_COMMA) {
+			p.advance()
+			rhs = append(rhs, p.parseExpr())
+		}
+		if len(rhs) > 1 && len(rhs) != len(names) {
+			p.errorf("invalid var declaration at line %d: %d values for %d variables", specPos, len(rhs), len(names))
+		}
 	}
-	p.skipSemicolon()
-	return node
+
+	decls := make([]*Node, 0, len(names))
+	for i, name := range names {
+		node := &Node{Kind: NVarDecl, Name: name, Pos: specPos, Type: typ}
+		if len(rhs) == len(names) {
+			node.X = rhs[i]
+		} else if len(rhs) == 1 {
+			node.X = rhs[0]
+		}
+		decls = append(decls, node)
+	}
+	return decls
 }
 
 func (p *Parser) parseConstDecl() *Node {
@@ -1218,6 +1273,21 @@ func (p *Parser) parseForStmt() *Node {
 		return node
 	}
 
+	// Empty-init 3-clause form: for ; cond; post { ... }
+	if p.at(TOKEN_SEMICOLON) {
+		p.advance()
+		if !p.at(TOKEN_SEMICOLON) {
+			node.Y = p.parseExprNoBrace()
+		}
+		p.expect(TOKEN_SEMICOLON)
+		if !p.at(TOKEN_LBRACE) {
+			node.Type = p.parseSimpleStmtNoSemicolon()
+		}
+		node.Body = p.parseBlock()
+		p.skipSemicolon()
+		return node
+	}
+
 	// Try to detect range-based for loop
 	// Patterns: for _, x := range y { ... } or for i := range y { ... }
 	first := p.parseExprNoBrace()
@@ -1304,16 +1374,16 @@ func (p *Parser) parseSwitchStmt() *Node {
 			node.Name = "typeswitch"
 			node.Y = tag.X
 		} else {
-		if p.at(TOKEN_SEMICOLON) {
-			// It was an init statement
-			p.advance()
-			node.X = tag
-			if !p.at(TOKEN_LBRACE) {
-				node.Y = p.parseExprNoBrace()
+			if p.at(TOKEN_SEMICOLON) {
+				// It was an init statement
+				p.advance()
+				node.X = tag
+				if !p.at(TOKEN_LBRACE) {
+					node.Y = p.parseExprNoBrace()
+				}
+			} else {
+				node.Y = tag
 			}
-		} else {
-			node.Y = tag
-		}
 		}
 	}
 

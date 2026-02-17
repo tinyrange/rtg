@@ -155,6 +155,21 @@ func Printf(format string, a ...interface{}) (n int, err error) {
 	return dosFormatWrite(uintptr(1), format, a)
 }
 
+func Print(a ...interface{}) (int, error) {
+	total := 0
+	i := 0
+	for i < len(a) {
+		s := runtime.Tostring(a[i])
+		n, err := dosWrite(1, s)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		i++
+	}
+	return total, nil
+}
+
 func Println(a ...interface{}) (int, error) {
 	total := 0
 	i := 0

@@ -1146,6 +1146,19 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 						}
 					}
 				}
+				continue
+			}
+			if node.Kind == NDirective && node.X != nil && node.X.Kind == NVarDecl {
+				directiveVar := node.X
+				if directiveVar.X != nil {
+					inits = append(inits, directiveVar)
+				} else if len(directiveVar.Nodes) > 0 {
+					for _, child := range directiveVar.Nodes {
+						if child.X != nil {
+							inits = append(inits, child)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1674,7 +1687,13 @@ func (c *Compiler) compileStmt(node *Node) {
 	}
 	switch node.Kind {
 	case NVarDecl:
-		c.compileVarDecl(node)
+		if len(node.Nodes) > 0 {
+			for _, child := range node.Nodes {
+				c.compileVarDecl(child)
+			}
+		} else {
+			c.compileVarDecl(node)
+		}
 	case NAssign:
 		c.compileAssign(node)
 	case NReturn:
@@ -2620,10 +2639,12 @@ func (c *Compiler) compileFor(node *Node) {
 
 	if node.Name == "range" {
 		c.compileForRange(node, loopLabel, continueLabel, breakLabel)
-	} else if node.X != nil && node.X.Kind == NAssign {
-		// 3-clause for
+	} else if node.X != nil || node.Type != nil {
+		// 3-clause for (init and/or post)
 		c.pushScope()
-		c.compileStmt(node.X)
+		if node.X != nil {
+			c.compileStmt(node.X)
+		}
 		c.emitLabel(loopLabel)
 		if node.Y != nil {
 			c.compileExpr(node.Y)
