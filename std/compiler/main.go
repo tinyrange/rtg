@@ -41,7 +41,7 @@ func runCleanup() {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|dos/8086|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
+		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
 
@@ -52,7 +52,10 @@ func main() {
 	var programArgs []string
 	i := 1
 	for i < len(os.Args) {
-		if os.Args[i] == "-run" {
+		if os.Args[i] == "-h" || os.Args[i] == "--help" {
+			printHelp(os.Args[0], os.Stdout)
+			os.Exit(0)
+		} else if os.Args[i] == "-run" {
 			runMode = true
 			i = i + 1
 		} else if os.Args[i] == "-o" && i+1 < len(os.Args) {
@@ -121,7 +124,7 @@ func main() {
 				}
 				slashIdx := strings.Index(target, "/")
 				if slashIdx < 0 {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, or c[/16|32|64]\n", target)
+					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], ir, or vm/<8|16|32|64>\n", target)
 					os.Exit(1)
 				}
 				targetGOOS = target[0:slashIdx]
@@ -208,7 +211,7 @@ func main() {
 	}
 
 	if len(entryFiles) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: %s [-o output] [-T os/arch|dos/8086|c[/16|32|64]] [-tags tag1,tag2] [-run] <file.go> [file2.go ...]\n", os.Args[0])
+		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
 
@@ -372,6 +375,57 @@ func main() {
 		}
 		os.Exit(0)
 	}
+}
+
+func printHelp(program string, out *os.File) {
+	fmt.Fprintf(out, "Usage: %s [options] <file.go> [file2.go ...]\n", program)
+	fmt.Fprintf(out, "\nOptions:\n")
+	fmt.Fprintf(out, "  -o <path>              Output path (default: output)\n")
+	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
+	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
+	fmt.Fprintf(out, "  -run                   Compile and run the output binary\n")
+	fmt.Fprintf(out, "  -size-analysis <path>  Write per-function size analysis JSON\n")
+	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
+	fmt.Fprintf(out, "  -h, --help             Show this help\n")
+	fmt.Fprintf(out, "\nDefault target: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(out, "\nPossible -T values:\n")
+	for _, target := range possibleTargets() {
+		fmt.Fprintf(out, "  %s\n", target)
+	}
+}
+
+func possibleTargets() []string {
+	var targets []string
+	targets = appendUnique(targets, runtime.GOOS+"/"+runtime.GOARCH)
+	targets = appendUnique(targets, "linux/amd64")
+	targets = appendUnique(targets, "linux/386")
+	targets = appendUnique(targets, "linux/arm64")
+	targets = appendUnique(targets, "darwin/amd64")
+	targets = appendUnique(targets, "darwin/arm64")
+	targets = appendUnique(targets, "windows/amd64")
+	targets = appendUnique(targets, "windows/386")
+	targets = appendUnique(targets, "windows/arm64")
+	targets = appendUnique(targets, "wasi/wasm32")
+	targets = appendUnique(targets, "dos/8086")
+	targets = appendUnique(targets, "c")
+	targets = appendUnique(targets, "c/16")
+	targets = appendUnique(targets, "c/32")
+	targets = appendUnique(targets, "c/64")
+	targets = appendUnique(targets, "ir")
+	targets = appendUnique(targets, "vm/8")
+	targets = appendUnique(targets, "vm/16")
+	targets = appendUnique(targets, "vm/32")
+	targets = appendUnique(targets, "vm/64")
+	return targets
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 // normalizePath replaces backslashes with forward slashes for Windows compatibility.

@@ -51,6 +51,17 @@ func Printf(format string, a ...interface{}) (n int, err error) {
 	return Fprintf(os.Stdout, format, a...)
 }
 
+func Print(a ...interface{}) (int, error) {
+	var result []byte
+	i := 0
+	for i < len(a) {
+		s := runtime.Tostring(a[i])
+		result = append(result, []byte(s)...)
+		i++
+	}
+	return os.Write(os.Stdout, result)
+}
+
 func Println(a ...interface{}) (int, error) {
 	var result []byte
 	i := 0

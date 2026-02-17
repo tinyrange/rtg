@@ -660,8 +660,15 @@ func collectDeclSymbol(pkg *Package, node *Node) {
 		sym := &Symbol{Name: node.Name, Kind: SymType, Node: node, Pkg: pkg}
 		pkg.Symbols[node.Name] = sym
 	case NVarDecl:
-		sym := &Symbol{Name: node.Name, Kind: SymVar, Node: node, Pkg: pkg}
-		pkg.Symbols[node.Name] = sym
+		if len(node.Nodes) > 0 {
+			for _, child := range node.Nodes {
+				sym := &Symbol{Name: child.Name, Kind: SymVar, Node: child, Pkg: pkg}
+				pkg.Symbols[child.Name] = sym
+			}
+		} else {
+			sym := &Symbol{Name: node.Name, Kind: SymVar, Node: node, Pkg: pkg}
+			pkg.Symbols[node.Name] = sym
+		}
 	case NConstDecl:
 		if len(node.Nodes) > 0 {
 			// Grouped const declaration
