@@ -719,7 +719,7 @@ func (g *WasmGen) stackify(code []Inst) {
 	blockTargets := make(map[int]bool)
 	for i, inst := range code {
 		switch inst.Op {
-		case OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT:
+		case OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
 			targetLabel := inst.Arg
 			// Determine if forward or backward jump
 			labelPos := -1
@@ -788,7 +788,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 		}
 
 		// Collect forward jump targets (excluding short-circuit and loop labels)
-		if inst.Op == OP_JMP || inst.Op == OP_JMP_IF || inst.Op == OP_JMP_IF_NOT {
+		if inst.Op == OP_JMP || inst.Op == OP_JMP_IF || inst.Op == OP_JMP_IF_NOT || inst.Op == OP_JMP_EQ || inst.Op == OP_JMP_NEQ || inst.Op == OP_JMP_LT || inst.Op == OP_JMP_GT || inst.Op == OP_JMP_LEQ || inst.Op == OP_JMP_GEQ {
 			targetLabel := inst.Arg
 			if excludedLabels[targetLabel] {
 				scanPos++
@@ -1017,6 +1017,19 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 			}
 			i++
 
+		case OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+			if g.dead {
+				i++
+				continue
+			}
+			g.compileCompareJump(inst)
+			depth := g.findBlockDepth(inst.Arg)
+			if depth >= 0 {
+				g.markLiveBreak(depth)
+				g.w.brIf(uint32(depth))
+			}
+			i++
+
 		default:
 			if !g.dead {
 				g.compileInst(inst)
@@ -1204,7 +1217,7 @@ func (g *WasmGen) compileInst(inst Inst) {
 	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
 		// Handled by intrinsics
 
-	case OP_LABEL, OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT:
+	case OP_LABEL, OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
 		// Handled by stackifier
 
 	default:
@@ -1238,6 +1251,43 @@ func (g *WasmGen) compileCompareOp(i32op byte, i64op byte) {
 		g.w.op(i32op)
 	}
 	g.pushType(WASM_TYPE_I32)
+}
+
+func (g *WasmGen) compileCompareJump(inst Inst) {
+	t := g.ensureBothSameType()
+	g.popType()
+	g.popType()
+	if t == WASM_TYPE_I64 {
+		switch inst.Op {
+		case OP_JMP_EQ:
+			g.w.op(OP_WASM_I64_EQ)
+		case OP_JMP_NEQ:
+			g.w.op(OP_WASM_I64_NE)
+		case OP_JMP_LT:
+			g.w.op(OP_WASM_I64_LT_S)
+		case OP_JMP_GT:
+			g.w.op(OP_WASM_I64_GT_S)
+		case OP_JMP_LEQ:
+			g.w.op(OP_WASM_I64_LE_S)
+		case OP_JMP_GEQ:
+			g.w.op(OP_WASM_I64_GE_S)
+		}
+		return
+	}
+	switch inst.Op {
+	case OP_JMP_EQ:
+		g.w.op(OP_WASM_I32_EQ)
+	case OP_JMP_NEQ:
+		g.w.op(OP_WASM_I32_NE)
+	case OP_JMP_LT:
+		g.w.op(OP_WASM_I32_LT_S)
+	case OP_JMP_GT:
+		g.w.op(OP_WASM_I32_GT_S)
+	case OP_JMP_LEQ:
+		g.w.op(OP_WASM_I32_LE_S)
+	case OP_JMP_GEQ:
+		g.w.op(OP_WASM_I32_GE_S)
+	}
 }
 
 // compileDup duplicates the top of stack, using the appropriate temp local.

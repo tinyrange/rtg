@@ -176,6 +176,18 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 		})
+	case OP_JMP_EQ:
+		g.compileCompareJump_i386(CC32_E, inst.Arg)
+	case OP_JMP_NEQ:
+		g.compileCompareJump_i386(CC32_NE, inst.Arg)
+	case OP_JMP_LT:
+		g.compileCompareJump_i386(CC32_L, inst.Arg)
+	case OP_JMP_GT:
+		g.compileCompareJump_i386(CC32_G, inst.Arg)
+	case OP_JMP_LEQ:
+		g.compileCompareJump_i386(CC32_LE, inst.Arg)
+	case OP_JMP_GEQ:
+		g.compileCompareJump_i386(CC32_GE, inst.Arg)
 
 	case OP_CALL:
 		g.compileCall_i386(inst)
@@ -410,6 +422,17 @@ func (g *CodeGen) compileCompare_i386(setccOpcode byte) {
 	g.emitBytes(0x0f, setccOpcode, 0xc1) // setCC cl
 	g.emitBytes(0x0f, 0xb6, 0xc9)        // movzx ecx, cl
 	g.opPush(REG32_ECX)
+}
+
+func (g *CodeGen) compileCompareJump_i386(cc byte, label int) {
+	g.opPop(REG32_EAX)
+	g.opPop(REG32_ECX)
+	g.cmpRR32(REG32_ECX, REG32_EAX)
+	fixup := g.jccRel32(cc)
+	g.jumpFixups = append(g.jumpFixups, JumpFixup{
+		CodeOffset: fixup,
+		LabelID:    label,
+	})
 }
 
 // === Function calls (i386) ===

@@ -811,6 +811,9 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LEQ, OP_GEQ:
 				needA = true
 				needC = true
+			case OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+				needA = true
+				needC = true
 			case OP_NEG, OP_NOT, OP_LOAD, OP_OFFSET, OP_LEN, OP_CAP, OP_JMP_IF, OP_JMP_IF_NOT:
 				needA = true
 			case OP_STORE:
@@ -974,6 +977,18 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				cWritef(bp, "  a = rtg_pop(); if (a != 0) goto L_%d;\n", in.Arg)
 			case OP_JMP_IF_NOT:
 				cWritef(bp, "  a = rtg_pop(); if (a == 0) goto L_%d;\n", in.Arg)
+			case OP_JMP_EQ:
+				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) == ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+			case OP_JMP_NEQ:
+				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) != ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+			case OP_JMP_LT:
+				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) < ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+			case OP_JMP_GT:
+				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) > ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+			case OP_JMP_LEQ:
+				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) <= ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+			case OP_JMP_GEQ:
+				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) >= ((rtg_sword)a)) goto L_%d;\n", in.Arg)
 
 			case OP_CALL:
 				if strings.HasPrefix(in.Name, "builtin.composite.") {

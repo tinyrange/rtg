@@ -88,6 +88,12 @@ const (
 	OP_GT
 	OP_LEQ
 	OP_GEQ
+	OP_JMP_EQ
+	OP_JMP_NEQ
+	OP_JMP_LT
+	OP_JMP_GT
+	OP_JMP_LEQ
+	OP_JMP_GEQ
 
 	OP_NOT
 
@@ -1611,6 +1617,8 @@ func (c *Compiler) instStackDelta(inst Inst) int {
 		return -1
 	case OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LEQ, OP_GEQ:
 		return -1
+	case OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+		return -2
 	case OP_NEG, OP_NOT:
 		return 0
 	case OP_LOAD:
@@ -2595,8 +2603,7 @@ func (c *Compiler) compileIf(node *Node) {
 		c.compileStmt(node.Nodes[0])
 	}
 
-	c.compileExpr(node.X)
-	c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: elseLabel})
+	c.compileCondJump(node.X, false, elseLabel)
 
 	branchDepth := c.stackDepth
 	c.compileBlock(node.Body)
@@ -2629,6 +2636,122 @@ func (c *Compiler) compileIf(node *Node) {
 	c.emitLabel(endLabel)
 }
 
+func (c *Compiler) invertCmpOp(op string) string {
+	switch op {
+	case "==":
+		return "!="
+	case "!=":
+		return "=="
+	case "<":
+		return ">="
+	case ">":
+		return "<="
+	case "<=":
+		return ">"
+	case ">=":
+		return "<"
+	default:
+		return ""
+	}
+}
+
+func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
+	var irOp Opcode
+	switch op {
+	case "==":
+		irOp = OP_JMP_EQ
+	case "!=":
+		irOp = OP_JMP_NEQ
+	case "<":
+		irOp = OP_JMP_LT
+	case ">":
+		irOp = OP_JMP_GT
+	case "<=":
+		irOp = OP_JMP_LEQ
+	case ">=":
+		irOp = OP_JMP_GEQ
+	default:
+		return false
+	}
+	c.compileExpr(node.X)
+	c.compileExpr(node.Y)
+	c.emit(Inst{Op: irOp, Arg: targetLabel, Width: c.exprWidth(node)})
+	return true
+}
+
+// compileCondJump emits control flow for a boolean condition.
+// If jumpIfTrue is true, it jumps to targetLabel when cond is true.
+// Otherwise it jumps when cond is false.
+func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int) {
+	if cond == nil {
+		if !jumpIfTrue {
+			c.emit(Inst{Op: OP_JMP, Arg: targetLabel})
+		}
+		return
+	}
+
+	if cond.Kind == NUnaryExpr && cond.Name == "!" {
+		c.compileCondJump(cond.X, !jumpIfTrue, targetLabel)
+		return
+	}
+
+	if cond.Kind == NBinaryExpr {
+		switch cond.Name {
+		case "&&":
+			if jumpIfTrue {
+				skipLabel := c.newLabel()
+				c.compileCondJump(cond.X, false, skipLabel)
+				c.compileCondJump(cond.Y, true, targetLabel)
+				c.emitLabel(skipLabel)
+			} else {
+				c.compileCondJump(cond.X, false, targetLabel)
+				c.compileCondJump(cond.Y, false, targetLabel)
+			}
+			return
+		case "||":
+			if jumpIfTrue {
+				c.compileCondJump(cond.X, true, targetLabel)
+				c.compileCondJump(cond.Y, true, targetLabel)
+			} else {
+				skipLabel := c.newLabel()
+				c.compileCondJump(cond.X, true, skipLabel)
+				c.compileCondJump(cond.Y, false, targetLabel)
+				c.emitLabel(skipLabel)
+			}
+			return
+		case "==", "!=", "<", ">", "<=", ">=":
+			if (cond.Name == "==" || cond.Name == "!=") && (c.isStringTypedExpr(cond.X) || c.isStringTypedExpr(cond.Y) || isStringExpr(cond.X) || isStringExpr(cond.Y)) {
+				c.compileExpr(cond.X)
+				c.compileExpr(cond.Y)
+				c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+				if (cond.Name == "==" && jumpIfTrue) || (cond.Name == "!=" && !jumpIfTrue) {
+					c.emit(Inst{Op: OP_JMP_IF, Arg: targetLabel})
+				} else {
+					c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: targetLabel})
+				}
+				return
+			}
+			cmpOp := cond.Name
+			if !jumpIfTrue {
+				inv := c.invertCmpOp(cmpOp)
+				if inv != "" {
+					cmpOp = inv
+				}
+			}
+			if c.emitCmpJump(cmpOp, cond, targetLabel) {
+				return
+			}
+		}
+	}
+
+	c.compileExpr(cond)
+	if jumpIfTrue {
+		c.emit(Inst{Op: OP_JMP_IF, Arg: targetLabel})
+	} else {
+		c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: targetLabel})
+	}
+}
+
 func (c *Compiler) compileFor(node *Node) {
 	savedDepth := c.stackDepth
 	loopLabel := c.newLabel()
@@ -2648,8 +2771,7 @@ func (c *Compiler) compileFor(node *Node) {
 		}
 		c.emitLabel(loopLabel)
 		if node.Y != nil {
-			c.compileExpr(node.Y)
-			c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: breakLabel})
+			c.compileCondJump(node.Y, false, breakLabel)
 		}
 		if node.Body != nil {
 			c.compileBlock(node.Body)
@@ -2664,8 +2786,7 @@ func (c *Compiler) compileFor(node *Node) {
 	} else if node.Y != nil {
 		// Condition-only for loop
 		c.emitLabel(loopLabel)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: breakLabel})
+		c.compileCondJump(node.Y, false, breakLabel)
 		if node.Body != nil {
 			c.compileBlock(node.Body)
 		}
@@ -2714,8 +2835,7 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 		c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
 		c.emit(Inst{Op: OP_LEN})
 	}
-	c.emit(Inst{Op: OP_LT})
-	c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: breakLabel})
+	c.emit(Inst{Op: OP_JMP_GEQ, Arg: breakLabel})
 
 	// Bind loop variables
 	if node.X != nil {
@@ -2884,22 +3004,20 @@ func (c *Compiler) compileSwitch(node *Node) {
 					c.emit(Inst{Op: OP_DUP})
 					if isTypeSwitch {
 						c.emit(Inst{Op: OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
-						c.emit(Inst{Op: OP_EQ})
 					} else {
 						c.compileExpr(expr)
 						if isStringSwitch {
 							c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
-						} else {
-							c.emit(Inst{Op: OP_EQ})
+							c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
+							continue
 						}
 					}
-					c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
+					c.emit(Inst{Op: OP_JMP_EQ, Arg: bodyLabel})
 				}
 			} else {
 				// No tag — each case expr is a bool condition, OR them
 				for _, expr := range caseExprs {
-					c.compileExpr(expr)
-					c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
+					c.compileCondJump(expr, true, bodyLabel)
 				}
 			}
 			c.emit(Inst{Op: OP_JMP, Arg: nextLabel})
@@ -3003,11 +3121,10 @@ func (c *Compiler) compileTypeAssertExpr(node *Node) {
 	c.emit(Inst{Op: OP_OFFSET, Arg: 0})
 	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
 	c.emit(Inst{Op: OP_CONST_I64, Val: int64(typeID)})
-	c.emit(Inst{Op: OP_EQ})
 
 	failLabel := c.newLabel()
 	endLabel := c.newLabel()
-	c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: failLabel})
+	c.emit(Inst{Op: OP_JMP_NEQ, Arg: failLabel})
 	c.emit(Inst{Op: OP_OFFSET, Arg: targetPtrSize})
 	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
 	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
@@ -3033,11 +3150,10 @@ func (c *Compiler) compileTypeAssertCommaOk(node *Node) {
 	c.emit(Inst{Op: OP_OFFSET, Arg: 0})
 	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
 	c.emit(Inst{Op: OP_CONST_I64, Val: int64(typeID)})
-	c.emit(Inst{Op: OP_EQ})
 
 	failLabel := c.newLabel()
 	endLabel := c.newLabel()
-	c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: failLabel})
+	c.emit(Inst{Op: OP_JMP_NEQ, Arg: failLabel})
 	c.emit(Inst{Op: OP_OFFSET, Arg: targetPtrSize})
 	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
 	c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})

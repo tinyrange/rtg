@@ -239,6 +239,18 @@ func (g *CodeGen) compileInst(inst Inst) {
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 		})
+	case OP_JMP_EQ:
+		g.compileCompareJump(CC_E, inst.Arg)
+	case OP_JMP_NEQ:
+		g.compileCompareJump(CC_NE, inst.Arg)
+	case OP_JMP_LT:
+		g.compileCompareJump(CC_L, inst.Arg)
+	case OP_JMP_GT:
+		g.compileCompareJump(CC_G, inst.Arg)
+	case OP_JMP_LEQ:
+		g.compileCompareJump(CC_LE, inst.Arg)
+	case OP_JMP_GEQ:
+		g.compileCompareJump(CC_GE, inst.Arg)
 
 	case OP_CALL:
 		g.compileCall(inst)
@@ -447,6 +459,17 @@ func (g *CodeGen) compileCompare(setccOpcode byte) {
 	g.emitBytes(0x0f, setccOpcode, 0xc1) // setCC cl
 	g.emitBytes(0x48, 0x0f, 0xb6, 0xc9)  // movzx rcx, cl
 	g.opPush(REG_RCX)
+}
+
+func (g *CodeGen) compileCompareJump(cc byte, label int) {
+	g.opPop(REG_RAX)
+	g.opPop(REG_RCX)
+	g.cmpRR(REG_RCX, REG_RAX)
+	fixup := g.jccRel32(cc)
+	g.jumpFixups = append(g.jumpFixups, JumpFixup{
+		CodeOffset: fixup,
+		LabelID:    label,
+	})
 }
 
 // === Function calls ===

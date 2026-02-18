@@ -162,6 +162,18 @@ func (g *CodeGen) compileInstArm64(inst Inst) {
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 		})
+	case OP_JMP_EQ:
+		g.compileCompareJumpArm64(COND_EQ, inst.Arg)
+	case OP_JMP_NEQ:
+		g.compileCompareJumpArm64(COND_NE, inst.Arg)
+	case OP_JMP_LT:
+		g.compileCompareJumpArm64(COND_LT, inst.Arg)
+	case OP_JMP_GT:
+		g.compileCompareJumpArm64(COND_GT, inst.Arg)
+	case OP_JMP_LEQ:
+		g.compileCompareJumpArm64(COND_LE, inst.Arg)
+	case OP_JMP_GEQ:
+		g.compileCompareJumpArm64(COND_GE, inst.Arg)
 
 	case OP_CALL:
 		g.compileCallArm64(inst)
@@ -338,6 +350,17 @@ func (g *CodeGen) compileCompareArm64(cond int) {
 	g.emitCmpRR(REG_X1, REG_X0)
 	g.emitCset(REG_X1, cond)
 	g.opPush(REG_X1)
+}
+
+func (g *CodeGen) compileCompareJumpArm64(cond int, label int) {
+	g.opPop(REG_X0)
+	g.opPop(REG_X1)
+	g.emitCmpRR(REG_X1, REG_X0)
+	fixup := g.emitBCond(cond)
+	g.jumpFixups = append(g.jumpFixups, JumpFixup{
+		CodeOffset: fixup,
+		LabelID:    label,
+	})
 }
 
 // === Function calls ===

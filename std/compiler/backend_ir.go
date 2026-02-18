@@ -69,6 +69,18 @@ func opcodeName(op Opcode) string {
 		return "leq"
 	case OP_GEQ:
 		return "geq"
+	case OP_JMP_EQ:
+		return "jmp_eq"
+	case OP_JMP_NEQ:
+		return "jmp_neq"
+	case OP_JMP_LT:
+		return "jmp_lt"
+	case OP_JMP_GT:
+		return "jmp_gt"
+	case OP_JMP_LEQ:
+		return "jmp_leq"
+	case OP_JMP_GEQ:
+		return "jmp_geq"
 	case OP_NOT:
 		return "not"
 	case OP_LOAD:
@@ -435,7 +447,7 @@ func instArgs(inst Inst, f *IRFunc, irmod *IRModule) string {
 		}
 		return s
 
-	case OP_LABEL, OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT:
+	case OP_LABEL, OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
 		return " " + fmt.Sprintf("%d", arg)
 
 	case OP_CALL, OP_CALL_INTRINSIC:

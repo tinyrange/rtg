@@ -129,7 +129,7 @@ func removeUnreachableIRCode(code []Inst) ([]Inst, bool) {
 					work = append(work, target)
 				}
 			}
-		case OP_JMP_IF, OP_JMP_IF_NOT:
+		case OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
 			next := i + 1
 			if next >= 0 && next < len(code) && !reachable[next] {
 				reachable[next] = true
@@ -268,7 +268,7 @@ func removeUnreferencedLabels(code []Inst) ([]Inst, bool) {
 	referenced := make(map[int]bool)
 	for _, inst := range code {
 		switch inst.Op {
-		case OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT:
+		case OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
 			referenced[inst.Arg] = true
 		}
 	}

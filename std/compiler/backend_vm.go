@@ -1200,6 +1200,48 @@ func (vm *VM) execFunc(f *IRFunc) {
 				ip = labels[inst.Arg]
 			}
 
+		case OP_JMP_EQ:
+			a := vm.pop()
+			c := vm.pop()
+			if vm.signExtendW(c, inst.Width) == vm.signExtendW(a, inst.Width) {
+				ip = labels[inst.Arg]
+			}
+
+		case OP_JMP_NEQ:
+			a := vm.pop()
+			c := vm.pop()
+			if vm.signExtendW(c, inst.Width) != vm.signExtendW(a, inst.Width) {
+				ip = labels[inst.Arg]
+			}
+
+		case OP_JMP_LT:
+			a := vm.pop()
+			c := vm.pop()
+			if vm.signExtendW(c, inst.Width) < vm.signExtendW(a, inst.Width) {
+				ip = labels[inst.Arg]
+			}
+
+		case OP_JMP_GT:
+			a := vm.pop()
+			c := vm.pop()
+			if vm.signExtendW(c, inst.Width) > vm.signExtendW(a, inst.Width) {
+				ip = labels[inst.Arg]
+			}
+
+		case OP_JMP_LEQ:
+			a := vm.pop()
+			c := vm.pop()
+			if vm.signExtendW(c, inst.Width) <= vm.signExtendW(a, inst.Width) {
+				ip = labels[inst.Arg]
+			}
+
+		case OP_JMP_GEQ:
+			a := vm.pop()
+			c := vm.pop()
+			if vm.signExtendW(c, inst.Width) >= vm.signExtendW(a, inst.Width) {
+				ip = labels[inst.Arg]
+			}
+
 		case OP_CALL:
 			if strings.HasPrefix(inst.Name, "builtin.composite.") {
 				vm.builtinComposite(inst.Arg)
