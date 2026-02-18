@@ -59,12 +59,21 @@ func (g *CodeGen) compileFunc_i386(f *IRFunc) {
 	}
 
 	// Resolve jump fixups within this function
+	if targetGOOS != "dos" {
+		g.relaxCurrentFuncJumps()
+	}
 	for _, fix := range g.jumpFixups {
 		labelOff, ok := g.labelOffsets[fix.LabelID]
 		if !ok {
 			continue
 		}
-		g.patchRel32At(fix.CodeOffset, labelOff)
+		switch fix.Kind {
+		case jumpFixupJmpRel8, jumpFixupJccRel8:
+			rel := labelOff - (fix.CodeOffset + 1)
+			g.code[fix.CodeOffset] = byte(rel)
+		default:
+			g.patchRel32At(fix.CodeOffset, labelOff)
+		}
 	}
 
 	g.curFunc = nil
@@ -161,6 +170,7 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
+			Kind:       jumpFixupJmpRel32,
 		})
 	case OP_JMP_IF:
 		g.opPop(REG32_EAX)
@@ -169,6 +179,8 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
+			Kind:       jumpFixupJccRel32,
+			CC:         CC32_NE,
 		})
 	case OP_JMP_IF_NOT:
 		g.opPop(REG32_EAX)
@@ -177,6 +189,8 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
+			Kind:       jumpFixupJccRel32,
+			CC:         CC32_E,
 		})
 	case OP_JMP_EQ:
 		g.compileCompareJump_i386(CC32_E, inst.Arg)
@@ -441,6 +455,8 @@ func (g *CodeGen) compileCompareJump_i386(cc byte, label int) {
 	g.jumpFixups = append(g.jumpFixups, JumpFixup{
 		CodeOffset: fixup,
 		LabelID:    label,
+		Kind:       jumpFixupJccRel32,
+		CC:         cc,
 	})
 }
 

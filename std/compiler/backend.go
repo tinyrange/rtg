@@ -75,7 +75,16 @@ type CallFixup struct {
 type JumpFixup struct {
 	CodeOffset int // offset of the 4-byte rel32 in code buffer
 	LabelID    int // label to resolve
+	Kind       int // jumpFixup* kind
+	CC         byte
 }
+
+const (
+	jumpFixupJmpRel32 = iota
+	jumpFixupJccRel32
+	jumpFixupJmpRel8
+	jumpFixupJccRel8
+)
 
 // dispatchEntry pairs a type ID with a method function name for interface dispatch.
 type dispatchEntry struct {
@@ -329,6 +338,88 @@ func (g *CodeGen) jmpRel8(off int8) {
 // jccRel8 emits `jCC rel8`.
 func (g *CodeGen) jccRel8(cc byte, off int8) {
 	g.emitBytes(byte(0x70|(cc&0x0f)), byte(off))
+}
+
+func fitsRel8(rel int) bool {
+	return rel >= -128 && rel <= 127
+}
+
+func (g *CodeGen) shiftOffsetsAfterDelete(cutPos int, removed int) {
+	if removed <= 0 {
+		return
+	}
+	for id, off := range g.labelOffsets {
+		if off > cutPos {
+			g.labelOffsets[id] = off - removed
+		}
+	}
+	i := 0
+	for i < len(g.jumpFixups) {
+		if g.jumpFixups[i].CodeOffset > cutPos {
+			g.jumpFixups[i].CodeOffset = g.jumpFixups[i].CodeOffset - removed
+		}
+		i++
+	}
+	i = 0
+	for i < len(g.callFixups) {
+		if g.callFixups[i].CodeOffset > cutPos {
+			g.callFixups[i].CodeOffset = g.callFixups[i].CodeOffset - removed
+		}
+		i++
+	}
+}
+
+// relaxCurrentFuncJumps shortens rel32 jumps/jccs to rel8 when possible for x86 backends.
+// Must be called before resolving rel32 fixups.
+func (g *CodeGen) relaxCurrentFuncJumps() {
+	changed := true
+	for changed {
+		changed = false
+		i := 0
+		for i < len(g.jumpFixups) {
+			fix := g.jumpFixups[i]
+			if fix.Kind != jumpFixupJmpRel32 && fix.Kind != jumpFixupJccRel32 {
+				i++
+				continue
+			}
+			target, ok := g.labelOffsets[fix.LabelID]
+			if !ok {
+				i++
+				continue
+			}
+			if fix.Kind == jumpFixupJmpRel32 {
+				insPos := fix.CodeOffset - 1
+				rel := target - (insPos + 2)
+				if !fitsRel8(rel) {
+					i++
+					continue
+				}
+				g.code[insPos] = 0xeb
+				g.jumpFixups[i].Kind = jumpFixupJmpRel8
+				g.jumpFixups[i].CodeOffset = insPos + 1
+				// Delete trailing bytes of old rel32 encoding.
+				g.code = append(g.code[:insPos+2], g.code[insPos+5:]...)
+				g.shiftOffsetsAfterDelete(insPos+1, 3)
+				changed = true
+				i++
+				continue
+			}
+			insPos := fix.CodeOffset - 2
+			rel := target - (insPos + 2)
+			if !fitsRel8(rel) {
+				i++
+				continue
+			}
+			g.code[insPos] = byte(0x70 | (fix.CC & 0x0f))
+			g.jumpFixups[i].Kind = jumpFixupJccRel8
+			g.jumpFixups[i].CodeOffset = insPos + 1
+			// Delete trailing bytes of old near-jcc encoding.
+			g.code = append(g.code[:insPos+2], g.code[insPos+6:]...)
+			g.shiftOffsetsAfterDelete(insPos+1, 4)
+			changed = true
+			i++
+		}
+	}
 }
 
 // ret emits `ret`.
