@@ -24,6 +24,10 @@ Primary build/test orchestration is defined in `tools/Buildfile`.
   - 3-stage self-hosting with `-T c/64` and `${CC:-cc}` between stages.
 - `selfhost-wasm`
   - 3-stage self-hosting with `-T wasi/wasm32` via `wasmtime`.
+- `test-tagset-windows386-only`
+  - Builds native stage2 then verifies the `windows/386-only` backend tag set compiles native target outputs.
+- `test-size-analysis-tagsets`
+  - Builds native stage2 then validates the full size-analysis tag-set matrix across native and WASM targets.
 - `selfhost-win386`
   - 3-stage self-hosting with `-T windows/386` via `wine`.
 - `crosscompile-wasm-native`
@@ -49,7 +53,8 @@ For each feature/change:
 
 1. Run the narrowest relevant `tools/Buildfile` target(s).
 2. If backend/codegen behavior changed, run at least one `selfhost*` target relevant to the touched backend(s).
-3. In your change summary, include which Buildfile targets were run.
+3. If backend build-tag constraints changed, run `test-size-analysis-tagsets`.
+4. In your change summary, include which Buildfile targets were run.
 
 ## Working Notes
 

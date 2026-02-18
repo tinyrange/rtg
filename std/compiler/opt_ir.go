@@ -33,9 +33,11 @@ func optimizeIRFuncCode(f *IRFunc) []Inst {
 			changed = true
 		}
 
-		code, stepChanged = threadJumps(code)
-		if stepChanged {
-			changed = true
+		if !(targetGOOS == "wasi" && targetGOARCH == "wasm32") {
+			code, stepChanged = threadJumps(code)
+			if stepChanged {
+				changed = true
+			}
 		}
 
 		code, stepChanged = removeUnreferencedLabels(code)
@@ -198,6 +200,9 @@ func threadJumps(code []Inst) ([]Inst, bool) {
 		if out[i].Op != OP_JMP {
 			continue
 		}
+		if isShortCircuitGuardJump(out, i) {
+			continue
+		}
 
 		target := out[i].Arg
 		visited := make(map[int]bool)
@@ -232,6 +237,31 @@ func threadJumps(code []Inst) ([]Inst, bool) {
 	}
 
 	return out, changed
+}
+
+// isShortCircuitGuardJump reports whether code[pos] is the "JMP endLabel"
+// guard in the canonical short-circuit pattern:
+//
+//	... JMP endLabel, LABEL targetLabel, CONST, LABEL endLabel
+//
+// The WASM backend pattern matcher depends on this exact adjacency.
+func isShortCircuitGuardJump(code []Inst, pos int) bool {
+	if pos < 0 || pos+3 >= len(code) {
+		return false
+	}
+	if code[pos].Op != OP_JMP {
+		return false
+	}
+	if code[pos+1].Op != OP_LABEL {
+		return false
+	}
+	if code[pos+2].Op != OP_CONST_BOOL && code[pos+2].Op != OP_CONST_I64 {
+		return false
+	}
+	if code[pos+3].Op != OP_LABEL {
+		return false
+	}
+	return code[pos].Arg == code[pos+3].Arg
 }
 
 func removeUnreferencedLabels(code []Inst) ([]Inst, bool) {

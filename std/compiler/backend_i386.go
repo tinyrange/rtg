@@ -2,11 +2,6 @@
 
 package main
 
-import (
-	"fmt"
-	"os"
-)
-
 func (g *CodeGen) slotBytes_i386() int {
 	if g.wordSize <= 0 {
 		return 4
@@ -16,71 +11,6 @@ func (g *CodeGen) slotBytes_i386() int {
 
 func (g *CodeGen) ptrBytes_i386() int {
 	return g.slotBytes_i386()
-}
-
-// generateI386ELF compiles an IRModule to an i386 (32-bit) ELF binary.
-func generateI386ELF(irmod *IRModule, outputPath string) error {
-	g := &CodeGen{
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		baseAddr:      0x08048000,
-		irmod:         irmod,
-		wordSize:      4,
-	}
-
-	slot := g.slotBytes_i386()
-	// Allocate .data space for globals (word-sized each)
-	for i := range irmod.Globals {
-		g.globalOffsets[i] = i * slot
-	}
-	g.data = make([]byte, len(irmod.Globals)*slot)
-
-	// Emit _start
-	g.emitStart_i386(irmod)
-
-	// First pass: compile all functions to get their offsets
-	for _, f := range irmod.Funcs {
-		g.funcOffsets[f.Name] = len(g.code)
-		g.compileFunc_i386(f)
-	}
-
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
-
-	// Resolve call fixups
-	var unresolved []string
-	for _, fix := range g.callFixups {
-		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
-			continue
-		}
-		target, ok := g.funcOffsets[fix.Target]
-		if !ok {
-			unresolved = append(unresolved, fix.Target)
-			continue
-		}
-		g.patchRel32At(fix.CodeOffset, target)
-	}
-	if len(unresolved) > 0 {
-		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
-		seen := make(map[string]bool)
-		for _, name := range unresolved {
-			if !seen[name] {
-				fmt.Fprintf(os.Stderr, "  %s\n", name)
-				seen[name] = true
-			}
-		}
-		return fmt.Errorf("%d unresolved calls", len(unresolved))
-	}
-
-	// Build and write ELF
-	elf := g.buildELF32(irmod)
-	err := os.WriteFile(outputPath, elf, 0755)
-	if err != nil {
-		return fmt.Errorf("write output: %v", err)
-	}
-
-	return nil
 }
 
 // compileFunc_i386 generates i386 code for a single IR function.

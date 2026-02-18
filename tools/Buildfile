@@ -15,6 +15,36 @@ selfhost-strip: build
   sh ./build/stage2 -s -o build/stage_out compiler && mv build/stage_out build/stage3
   sh cmp build/stage2 build/stage3 && echo "PASS: stripped self-hosting OK"
 
+selfhost-size-native-tags: build
+  sh ./build/rtg -o build/stage1 ./std/compiler/
+  sh ./build/stage1 -o build/stage2 compiler
+  sh ./build/stage2 -size-analysis build/stage2.size.default.json -o build/rtg.stage2.default compiler
+  sh ./build/stage2 -s -size-analysis build/stage2.size.default.strip.json -o build/rtg.stage2.default.strip compiler
+  sh ./build/stage2 -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386 -size-analysis build/stage2.size.native_only.json -o build/rtg.stage2.native_only compiler
+  sh ./build/stage2 -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir -size-analysis build/stage2.size.native_strict.json -o build/rtg.stage2.native_strict compiler
+  sh ./build/rtg.stage2.default -h >/dev/null
+  sh ./build/rtg.stage2.default.strip -h >/dev/null
+  sh ./build/rtg.stage2.native_only -h >/dev/null
+  sh ./build/rtg.stage2.native_strict -h >/dev/null
+  sh ls -lh build/rtg.stage2.default build/rtg.stage2.default.strip build/rtg.stage2.native_only build/rtg.stage2.native_strict
+  sh ls -lh build/stage2.size.default.json build/stage2.size.default.strip.json build/stage2.size.native_only.json build/stage2.size.native_strict.json
+  sh echo "PASS: native stage2 size-analysis tag sets OK"
+
+test-tagset-windows386-only: build
+  sh ./build/rtg -o build/stage1 ./std/compiler/
+  sh ./build/stage1 -o build/stage2 compiler
+  sh for t in windows/386 windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/arm64; do out=build/tagcheck_$(echo "$t" | tr / _)_windows_i386_only; ./build/stage2 -T "$t" -tags no_backend_linux_amd64,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 -o "$out" ./std/compiler/; done
+  sh echo "PASS: windows/386-only tag set builds for native targets"
+
+test-size-analysis-tagsets: build
+  sh ./build/rtg -o build/stage1 ./std/compiler/
+  sh ./build/stage1 -o build/stage2 compiler
+  sh rm -f build/*.go
+  sh echo package build > build/_rtg_buildpkg.go
+  sh set -eu; for t in windows/386 windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/arm64 wasi/wasm32; do tid=$(echo "$t" | tr / _); case "$t" in windows/*) ext=.exe ;; wasi/wasm32) ext=.wasm ;; *) ext= ;; esac; for cfg in full no_embed_std backend_linux_amd64_only backend_windows_i386_only backend_windows_amd64_only backend_arm64_only backend_wasi_wasm32_only; do echo "matrix: $t / $cfg"; tags=; case "$cfg" in full) tags= ;; no_embed_std) tags=no_embed_std ;; backend_linux_amd64_only) tags=no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; backend_windows_i386_only) tags=no_backend_linux_amd64,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; backend_windows_amd64_only) tags=no_backend_linux_amd64,no_backend_windows_i386,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; backend_arm64_only) tags=no_backend_linux_amd64,no_backend_windows_i386,no_backend_windows_amd64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; backend_wasi_wasm32_only) tags=no_backend_linux_amd64,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; *) echo "unknown cfg $cfg" >&2; exit 1 ;; esac; out=build/sizecheck_${tid}_${cfg}${ext}; json=build/sizecheck_${tid}_${cfg}.json; if [ "$cfg" = full ]; then ./build/stage2 -T "$t" -size-analysis "$json" -o "$out" ./std/compiler/; else ./build/stage2 -T "$t" -tags "$tags" -size-analysis "$json" -o "$out" ./std/compiler/; fi; done; done
+  sh rm -f build/_rtg_buildpkg.go
+  sh echo "PASS: size-analysis tagset matrix OK"
+
 selfhost-i386: build
   sh ./build/rtg -T linux/386 -o build/stage1_i386 ./std/compiler/
   sh ./build/stage1_i386 -T linux/386 -o build/stage2_i386 compiler
@@ -114,4 +144,4 @@ playground: build
   sh bash web/build.sh
 
 clean:
-  sh rm -f build/stage* build/stage*_c.c build/stage*_c build/rtg build/rtg-build build/rtg_from_i386 build/*_386 build/build build/cross_stage* build/*.wasm build/*.exe build/fullcompiler_* build/fullcompiler_c_*
+  sh rm -f build/stage* build/stage*_c.c build/stage*_c build/stage2.size*.json build/sizecheck_* build/rtg build/rtg-build build/rtg_from_i386 build/rtg.stage2.* build/tagcheck_* build/*_386 build/build build/cross_stage* build/*.wasm build/*.exe build/fullcompiler_* build/fullcompiler_c_*
