@@ -899,6 +899,8 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				cWritef(bp, "  rtg_push(locals[%d]);\n", in.Arg)
 			case OP_LOCAL_SET:
 				cWritef(bp, "  locals[%d] = rtg_pop();\n", in.Arg)
+			case OP_LOCAL_ADD_IMM:
+				cWritef(bp, "  locals[%d] = (rtg_word)((rtg_sword)locals[%d] + (rtg_sword)%d);\n", in.Arg, in.Arg, int64(in.Val))
 			case OP_LOCAL_ADDR:
 				cWritef(bp, "  rtg_push((rtg_word)(rtg_size)&locals[%d]);\n", in.Arg)
 			case OP_GLOBAL_GET:

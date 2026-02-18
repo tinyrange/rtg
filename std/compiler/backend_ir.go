@@ -23,6 +23,8 @@ func opcodeName(op Opcode) string {
 		return "local_get"
 	case OP_LOCAL_SET:
 		return "local_set"
+	case OP_LOCAL_ADD_IMM:
+		return "local_add_imm"
 	case OP_LOCAL_ADDR:
 		return "local_addr"
 	case OP_GLOBAL_GET:
@@ -435,6 +437,12 @@ func instArgs(inst Inst, f *IRFunc, irmod *IRModule) string {
 
 	case OP_LOCAL_GET, OP_LOCAL_SET, OP_LOCAL_ADDR:
 		s := " " + fmt.Sprintf("%d", arg)
+		if arg < len(f.Locals) {
+			s = s + "                     ; " + irQuote(f.Locals[arg].Name)
+		}
+		return s + w
+	case OP_LOCAL_ADD_IMM:
+		s := " " + fmt.Sprintf("%d", arg) + ", " + fmt.Sprintf("%d", val)
 		if arg < len(f.Locals) {
 			s = s + "                     ; " + irQuote(f.Locals[arg].Name)
 		}

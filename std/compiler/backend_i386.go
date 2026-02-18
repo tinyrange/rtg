@@ -90,6 +90,8 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 		g.compileLocalGet_i386(inst.Arg)
 	case OP_LOCAL_SET:
 		g.compileLocalSet_i386(inst.Arg)
+	case OP_LOCAL_ADD_IMM:
+		g.compileLocalAddImm_i386(inst.Arg, int32(inst.Val))
 	case OP_LOCAL_ADDR:
 		g.compileLocalAddr_i386(inst.Arg)
 
@@ -304,6 +306,13 @@ func (g *CodeGen) compileLocalGet_i386(idx int) {
 func (g *CodeGen) compileLocalSet_i386(idx int) {
 	g.opPop(REG32_EAX)
 	offset := (idx + 1) * g.slotBytes_i386()
+	g.emitStoreLocal32(offset, REG32_EAX)
+}
+
+func (g *CodeGen) compileLocalAddImm_i386(idx int, imm int32) {
+	offset := (idx + 1) * g.slotBytes_i386()
+	g.emitLoadLocal32(offset, REG32_EAX)
+	g.addRI32(REG32_EAX, imm)
 	g.emitStoreLocal32(offset, REG32_EAX)
 }
 

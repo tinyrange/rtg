@@ -151,6 +151,8 @@ func (g *CodeGen) compileInst(inst Inst) {
 		g.compileLocalGet(inst.Arg)
 	case OP_LOCAL_SET:
 		g.compileLocalSet(inst.Arg)
+	case OP_LOCAL_ADD_IMM:
+		g.compileLocalAddImm(inst.Arg, int32(inst.Val))
 	case OP_LOCAL_ADDR:
 		g.compileLocalAddr(inst.Arg)
 
@@ -359,6 +361,11 @@ func (g *CodeGen) compileLocalSet(idx int) {
 	g.opPop(REG_RAX)
 	offset := (idx + 1) * 8
 	g.emitStoreLocal(offset, REG_RAX)
+}
+
+func (g *CodeGen) compileLocalAddImm(idx int, imm int32) {
+	offset := (idx + 1) * 8
+	g.emitAddLocalImm(offset, imm)
 }
 
 func (g *CodeGen) compileLocalAddr(idx int) {

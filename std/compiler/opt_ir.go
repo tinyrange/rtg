@@ -18,6 +18,11 @@ func optimizeIRFuncCode(f *IRFunc) []Inst {
 		changed = false
 
 		var stepChanged bool
+		code, stepChanged = foldLocalAddImm(code, f.Locals)
+		if stepChanged {
+			changed = true
+		}
+
 		code, stepChanged = foldNotConditionalJumps(code)
 		if stepChanged {
 			changed = true
@@ -52,6 +57,59 @@ func optimizeIRFuncCode(f *IRFunc) []Inst {
 	}
 
 	return code
+}
+
+// foldLocalAddImm rewrites:
+//
+//	LOCAL_GET n; CONST_I64 k; ADD; LOCAL_SET n
+//	LOCAL_GET n; CONST_I64 k; SUB; LOCAL_SET n
+//
+// to:
+//
+//	LOCAL_ADD_IMM n, (+/-k)
+//
+// when the local is word-sized.
+func foldLocalAddImm(code []Inst, locals []IRLocal) ([]Inst, bool) {
+	if len(code) < 4 {
+		return code, false
+	}
+	changed := false
+	out := make([]Inst, 0, len(code))
+	i := 0
+	for i < len(code) {
+		if i+3 < len(code) &&
+			code[i].Op == OP_LOCAL_GET &&
+			code[i+1].Op == OP_CONST_I64 &&
+			(code[i+2].Op == OP_ADD || code[i+2].Op == OP_SUB) &&
+			code[i+3].Op == OP_LOCAL_SET &&
+			code[i].Arg == code[i+3].Arg {
+
+			idx := code[i].Arg
+			if idx >= 0 && idx < len(locals) {
+				// Keep semantics simple: only fold word-sized locals.
+				if locals[idx].Width == 0 {
+					imm := code[i+1].Val
+					if code[i+2].Op == OP_SUB {
+						imm = -imm
+					}
+					imm32 := int32(imm)
+					if int64(imm32) == imm {
+						out = append(out, Inst{
+							Op:  OP_LOCAL_ADD_IMM,
+							Arg: idx,
+							Val: int64(imm32),
+						})
+						changed = true
+						i += 4
+						continue
+					}
+				}
+			}
+		}
+		out = append(out, code[i])
+		i++
+	}
+	return out, changed
 }
 
 // foldNotConditionalJumps rewrites:

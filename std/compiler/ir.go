@@ -61,6 +61,7 @@ const (
 
 	OP_LOCAL_GET
 	OP_LOCAL_SET
+	OP_LOCAL_ADD_IMM
 	OP_LOCAL_ADDR
 	OP_GLOBAL_GET
 	OP_GLOBAL_SET
@@ -1607,6 +1608,8 @@ func (c *Compiler) instStackDelta(inst Inst) int {
 		return 1
 	case OP_LOCAL_SET, OP_GLOBAL_SET:
 		return -1
+	case OP_LOCAL_ADD_IMM:
+		return 0
 	case OP_DROP:
 		return -1
 	case OP_DUP:

@@ -1108,6 +1108,8 @@ func (g *WasmGen) compileInst(inst Inst) {
 		g.compileLocalGet(inst.Arg)
 	case OP_LOCAL_SET:
 		g.compileLocalSet(inst.Arg)
+	case OP_LOCAL_ADD_IMM:
+		g.compileLocalAddImm(inst.Arg, int32(inst.Val))
 	case OP_LOCAL_ADDR:
 		g.compileLocalAddr(inst.Arg)
 
@@ -1340,6 +1342,20 @@ func (g *WasmGen) compileLocalSet(idx int) {
 		g.w.localGet(uint32(g.tempLocal))
 		g.w.i32Store(2, uint32(offset))
 	}
+}
+
+func (g *WasmGen) compileLocalAddImm(idx int, imm int32) {
+	g.compileLocalGet(idx)
+	if g.peekType() == WASM_TYPE_I64 {
+		g.w.i64Const(int64(imm))
+		g.pushType(WASM_TYPE_I64)
+		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
+	} else {
+		g.w.i32Const(imm)
+		g.pushType(WASM_TYPE_I32)
+		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
+	}
+	g.compileLocalSet(idx)
 }
 
 func (g *WasmGen) compileLocalAddr(idx int) {

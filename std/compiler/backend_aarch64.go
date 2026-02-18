@@ -92,6 +92,8 @@ func (g *CodeGen) compileInstArm64(inst Inst) {
 		g.compileLocalGetArm64(inst.Arg)
 	case OP_LOCAL_SET:
 		g.compileLocalSetArm64(inst.Arg)
+	case OP_LOCAL_ADD_IMM:
+		g.compileLocalAddImmArm64(inst.Arg, int32(inst.Val))
 	case OP_LOCAL_ADDR:
 		g.compileLocalAddrArm64(inst.Arg)
 
@@ -278,6 +280,20 @@ func (g *CodeGen) compileLocalGetArm64(idx int) {
 func (g *CodeGen) compileLocalSetArm64(idx int) {
 	g.opPop(REG_X0)
 	offset := (idx + 1) * 8
+	g.emitStoreLocalArm64(offset, REG_X0)
+}
+
+func (g *CodeGen) compileLocalAddImmArm64(idx int, imm int32) {
+	offset := (idx + 1) * 8
+	g.emitLoadLocalArm64(offset, REG_X0)
+	if imm >= 0 && imm < 4096 {
+		g.emitAddImm(REG_X0, REG_X0, uint32(imm))
+	} else if imm < 0 && imm > -4096 {
+		g.emitSubImm(REG_X0, REG_X0, uint32(-imm))
+	} else {
+		g.emitLoadImm64Compact(REG_X1, uint64(int64(imm)))
+		g.emitAddRR(REG_X0, REG_X0, REG_X1)
+	}
 	g.emitStoreLocalArm64(offset, REG_X0)
 }
 

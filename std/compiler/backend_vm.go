@@ -992,6 +992,12 @@ func (vm *VM) execFunc(f *IRFunc) {
 			w := vm.effectiveWidth(inst.Width)
 			vm.storeN(localsAddr+uint64(inst.Arg)*slotPitch, vm.pop(), w)
 
+		case OP_LOCAL_ADD_IMM:
+			w := vm.effectiveWidth(inst.Width)
+			addr := localsAddr + uint64(inst.Arg)*slotPitch
+			v := vm.loadN(addr, w)
+			vm.storeN(addr, v+uint64(inst.Val), w)
+
 		case OP_LOCAL_ADDR:
 			vm.push(localsAddr + uint64(inst.Arg)*slotPitch)
 

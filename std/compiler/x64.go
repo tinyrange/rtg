@@ -102,6 +102,31 @@ func (g *CodeGen) emitLeaLocal(offset int, reg int) {
 	}
 }
 
+// emitAddLocalImm emits `add qword [rbp - offset], imm{8,32}`.
+func (g *CodeGen) emitAddLocalImm(offset int, imm int32) {
+	negOff := -offset
+	if imm >= -128 && imm <= 127 {
+		// 48 83 /0 ib
+		if negOff >= -128 && negOff <= 127 {
+			g.emitBytes(0x48, 0x83, 0x45, byte(negOff), byte(imm))
+		} else {
+			g.emitBytes(0x48, 0x83, 0x85)
+			g.emitU32(uint32(int32(negOff)))
+			g.emitByte(byte(imm))
+		}
+		return
+	}
+	// 48 81 /0 id
+	if negOff >= -128 && negOff <= 127 {
+		g.emitBytes(0x48, 0x81, 0x45, byte(negOff))
+		g.emitU32(uint32(imm))
+	} else {
+		g.emitBytes(0x48, 0x81, 0x85)
+		g.emitU32(uint32(int32(negOff)))
+		g.emitU32(uint32(imm))
+	}
+}
+
 // === x86 stack push/pop ===
 
 // pushR emits `push reg` (handles r8-r15 with REX.B prefix)
