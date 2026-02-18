@@ -327,6 +327,7 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
 	c.irmod.IfaceMethodRets = c.ifaceMethodRets
+	optimizeIRModule(c.irmod)
 
 	return c.irmod, c.errors
 }
