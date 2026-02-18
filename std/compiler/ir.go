@@ -2752,9 +2752,20 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 		if isMap && node.Type != nil {
 			valType := c.resolveMapValueType(node.Type)
 			if valType != "" {
-				c.localConcreteTypes[node.Y.Name] = c.qualifyTypeName(valType, "")
+				qvalType := c.qualifyTypeName(valType, "")
+				c.localConcreteTypes[node.Y.Name] = qvalType
 				if valType == "string" {
 					c.localStringVars[node.Y.Name] = true
+				}
+				// Range values can themselves be maps (map[K]V); preserve that
+				// metadata so downstream indexing compiles as map access.
+				if keyType, nestedValType, ok := parseMapTypeName(qvalType); ok {
+					if keyType == "string" {
+						c.localMapVars[node.Y.Name] = 1
+					} else {
+						c.localMapVars[node.Y.Name] = 0
+					}
+					c.localMapValueTypes[node.Y.Name] = nestedValType
 				}
 			}
 		}
