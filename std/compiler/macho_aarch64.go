@@ -37,36 +37,38 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	bindOpcodes := g.buildBindOpcodes()
 
 	// === Build string table and symbol entries ===
-	strtab := []byte{0} // index 0 = empty string
-
+	strtab := []byte{}
 	var syms []machoSymEntry
+	if !stripBinary {
+		strtab = append(strtab, 0) // index 0 = empty string
 
-	// _main entry point (the code before the first compiled function)
-	mainNameOff := len(strtab)
-	strtab = append(strtab, []byte("_main")...)
-	strtab = append(strtab, 0)
-	mainSize := uint64(0)
-	if len(irmod.Funcs) > 0 {
-		mainSize = uint64(g.funcOffsets[irmod.Funcs[0].Name])
-	} else {
-		mainSize = uint64(textSize)
-	}
-	syms = append(syms, machoSymEntry{mainNameOff, 0, mainSize, 0x0F}) // N_SECT|N_EXT
-
-	// All compiled functions
-	for i, f := range irmod.Funcs {
-		nameOff := len(strtab)
-		strtab = append(strtab, []byte(f.Name)...)
+		// _main entry point (the code before the first compiled function)
+		mainNameOff := len(strtab)
+		strtab = append(strtab, []byte("_main")...)
 		strtab = append(strtab, 0)
-
-		funcStart := g.funcOffsets[f.Name]
-		var funcSize int
-		if i+1 < len(irmod.Funcs) {
-			funcSize = g.funcOffsets[irmod.Funcs[i+1].Name] - funcStart
+		mainSize := uint64(0)
+		if len(irmod.Funcs) > 0 {
+			mainSize = uint64(g.funcOffsets[irmod.Funcs[0].Name])
 		} else {
-			funcSize = textSize - funcStart
+			mainSize = uint64(textSize)
 		}
-		syms = append(syms, machoSymEntry{nameOff, uint64(funcStart), uint64(funcSize), 0x0E}) // N_SECT (local)
+		syms = append(syms, machoSymEntry{mainNameOff, 0, mainSize, 0x0F}) // N_SECT|N_EXT
+
+		// All compiled functions
+		for i, f := range irmod.Funcs {
+			nameOff := len(strtab)
+			strtab = append(strtab, []byte(f.Name)...)
+			strtab = append(strtab, 0)
+
+			funcStart := g.funcOffsets[f.Name]
+			var funcSize int
+			if i+1 < len(irmod.Funcs) {
+				funcSize = g.funcOffsets[irmod.Funcs[i+1].Name] - funcStart
+			} else {
+				funcSize = textSize - funcStart
+			}
+			syms = append(syms, machoSymEntry{nameOff, uint64(funcStart), uint64(funcSize), 0x0E}) // N_SECT (local)
+		}
 	}
 
 	// Build export trie for _main
@@ -84,12 +86,19 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	lcDylinkerSize := alignUp(12+len(dylinkerPath), 8)
 	lcDylibSize := alignUp(24+len(dylibPath), 8)
 	lcMainSize := 24
-	lcSymtabSize := 24
-	lcDysymtabSize := 80
+	lcSymtabSize := 0
+	lcDysymtabSize := 0
+	if !stripBinary {
+		lcSymtabSize = 24
+		lcDysymtabSize = 80
+	}
 	lcDyldInfoSize := 48
 	lcCodeSigSize := 16
 
 	ncmds := 11
+	if stripBinary {
+		ncmds = ncmds - 2
+	}
 	lcTotal := lcSegSize + // PAGEZERO
 		lcSegSize + 2*lcSectSize + // TEXT
 		lcSegSize + 2*lcSectSize + // DATA
@@ -204,9 +213,9 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 
 	// === Mach-O Header (32 bytes) ===
 	putU32(bin[0:], 0xFEEDFACF)
-	putU32(bin[4:], 0x0100000C)  // CPU_TYPE_ARM64
-	putU32(bin[8:], 0x00000000)  // CPU_SUBTYPE_ALL
-	putU32(bin[12:], 0x02)       // MH_EXECUTE
+	putU32(bin[4:], 0x0100000C) // CPU_TYPE_ARM64
+	putU32(bin[8:], 0x00000000) // CPU_SUBTYPE_ALL
+	putU32(bin[12:], 0x02)      // MH_EXECUTE
 	putU32(bin[16:], uint32(ncmds))
 	putU32(bin[20:], uint32(lcTotal))
 	putU32(bin[24:], 0x00200085) // MH_NOUNDEFS|MH_DYLDLINK|MH_TWOLEVEL|MH_PIE
@@ -327,35 +336,37 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	putU64(bin[off+16:], 0) // stacksize
 	off += lcMainSize
 
-	// LC_SYMTAB
-	putU32(bin[off:], 0x02)
-	putU32(bin[off+4:], uint32(lcSymtabSize))
-	putU32(bin[off+8:], uint32(symtabOff))
-	putU32(bin[off+12:], uint32(symtabNEntries))
-	putU32(bin[off+16:], uint32(strtabOff))
-	putU32(bin[off+20:], uint32(strtabSize))
-	off += lcSymtabSize
+	if !stripBinary {
+		// LC_SYMTAB
+		putU32(bin[off:], 0x02)
+		putU32(bin[off+4:], uint32(lcSymtabSize))
+		putU32(bin[off+8:], uint32(symtabOff))
+		putU32(bin[off+12:], uint32(symtabNEntries))
+		putU32(bin[off+16:], uint32(strtabOff))
+		putU32(bin[off+20:], uint32(strtabSize))
+		off += lcSymtabSize
 
-	// LC_DYSYMTAB
-	putU32(bin[off:], 0x0B)
-	putU32(bin[off+4:], uint32(lcDysymtabSize))
-	// ilocalsym = 0, nlocalsym = number of local symbols
-	nLocalSyms := 0
-	nExtSyms := 0
-	for _, sym := range syms {
-		if sym.ntype&0x01 != 0 { // N_EXT
-			nExtSyms++
-		} else {
-			nLocalSyms++
+		// LC_DYSYMTAB
+		putU32(bin[off:], 0x0B)
+		putU32(bin[off+4:], uint32(lcDysymtabSize))
+		// ilocalsym = 0, nlocalsym = number of local symbols
+		nLocalSyms := 0
+		nExtSyms := 0
+		for _, sym := range syms {
+			if sym.ntype&0x01 != 0 { // N_EXT
+				nExtSyms++
+			} else {
+				nLocalSyms++
+			}
 		}
+		putU32(bin[off+8:], 0)                       // ilocalsym
+		putU32(bin[off+12:], uint32(nLocalSyms))     // nlocalsym
+		putU32(bin[off+16:], uint32(nLocalSyms))     // iextdefsym (starts after locals)
+		putU32(bin[off+20:], uint32(nExtSyms))       // nextdefsym
+		putU32(bin[off+24:], uint32(symtabNEntries)) // iundefsym (no undefs)
+		putU32(bin[off+28:], 0)                      // nundefsym
+		off += lcDysymtabSize
 	}
-	putU32(bin[off+8:], 0)                     // ilocalsym
-	putU32(bin[off+12:], uint32(nLocalSyms))   // nlocalsym
-	putU32(bin[off+16:], uint32(nLocalSyms))   // iextdefsym (starts after locals)
-	putU32(bin[off+20:], uint32(nExtSyms))     // nextdefsym
-	putU32(bin[off+24:], uint32(symtabNEntries)) // iundefsym (no undefs)
-	putU32(bin[off+28:], 0)                    // nundefsym
-	off += lcDysymtabSize
 
 	// LC_DYLD_INFO_ONLY
 	putU32(bin[off:], 0x80000022)
@@ -386,36 +397,38 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	copy(bin[bindOff:], bindOpcodes)
 	copy(bin[exportOff:], exportTrie)
 
-	// Symbol table: nlist_64 entries sorted with locals first, then externals
-	// Sort: locals first, then externals (required by LC_DYSYMTAB)
-	symOff := symtabOff
-	// Write local symbols first
-	for _, sym := range syms {
-		if sym.ntype&0x01 != 0 { // N_EXT — skip for now
-			continue
+	if !stripBinary {
+		// Symbol table: nlist_64 entries sorted with locals first, then externals
+		// Sort: locals first, then externals (required by LC_DYSYMTAB)
+		symOff := symtabOff
+		// Write local symbols first
+		for _, sym := range syms {
+			if sym.ntype&0x01 != 0 { // N_EXT — skip for now
+				continue
+			}
+			nlist := bin[symOff:]
+			putU32(nlist[0:], uint32(sym.nameOff))
+			nlist[4] = sym.ntype
+			nlist[5] = 1 // n_sect: 1 = __text
+			putU64(nlist[8:], textSectionVAddr+sym.value)
+			symOff += nlistSize
 		}
-		nlist := bin[symOff:]
-		putU32(nlist[0:], uint32(sym.nameOff))
-		nlist[4] = sym.ntype
-		nlist[5] = 1 // n_sect: 1 = __text
-		putU64(nlist[8:], textSectionVAddr+sym.value)
-		symOff += nlistSize
-	}
-	// Write external symbols
-	for _, sym := range syms {
-		if sym.ntype&0x01 == 0 { // not N_EXT — skip
-			continue
+		// Write external symbols
+		for _, sym := range syms {
+			if sym.ntype&0x01 == 0 { // not N_EXT — skip
+				continue
+			}
+			nlist := bin[symOff:]
+			putU32(nlist[0:], uint32(sym.nameOff))
+			nlist[4] = sym.ntype
+			nlist[5] = 1 // n_sect: 1 = __text
+			putU64(nlist[8:], textSectionVAddr+sym.value)
+			symOff += nlistSize
 		}
-		nlist := bin[symOff:]
-		putU32(nlist[0:], uint32(sym.nameOff))
-		nlist[4] = sym.ntype
-		nlist[5] = 1 // n_sect: 1 = __text
-		putU64(nlist[8:], textSectionVAddr+sym.value)
-		symOff += nlistSize
-	}
 
-	// String table
-	copy(bin[strtabOff:], strtab)
+		// String table
+		copy(bin[strtabOff:], strtab)
+	}
 
 	// Compute and embed ad-hoc code signature
 	codeSignEnd := codeSignOff + sigSize

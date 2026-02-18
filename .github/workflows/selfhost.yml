@@ -209,7 +209,7 @@ jobs:
               if [ "$ci" -gt 0 ]; then matrix_json+=','; fi
 
               out="build/size_${target_key}_${cfg_id}"
-              cmd=(./build/stage2 -T "$target")
+              cmd=(./build/stage2 -T "$target" -s)
               if [ -n "$tags" ]; then
                 cmd+=(-tags "$tags")
               fi

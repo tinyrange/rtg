@@ -9,6 +9,12 @@ selfhost: build
   sh ./build/stage2 -o build/stage_out compiler && mv build/stage_out build/stage3
   sh cmp build/stage2 build/stage3 && echo "PASS: self-hosting OK"
 
+selfhost-strip: build
+  sh ./build/rtg -s -o build/stage1 ./std/compiler/
+  sh ./build/stage1 -s -o build/stage_out compiler && mv build/stage_out build/stage2
+  sh ./build/stage2 -s -o build/stage_out compiler && mv build/stage_out build/stage3
+  sh cmp build/stage2 build/stage3 && echo "PASS: stripped self-hosting OK"
+
 selfhost-i386: build
   sh ./build/rtg -T linux/386 -o build/stage1_i386 ./std/compiler/
   sh ./build/stage1_i386 -T linux/386 -o build/stage2_i386 compiler

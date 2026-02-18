@@ -145,6 +145,9 @@ func (g *CodeGen) buildELF64(irmod *IRModule) []byte {
 	shdrTableSize := shdrCount * shdrEntrySize
 
 	totalSize := shdrOffset + shdrTableSize
+	if stripBinary {
+		totalSize = loadedSize
+	}
 
 	// Entry point
 	entryAddr := textVAddr // _start is at beginning of .text
@@ -162,7 +165,7 @@ func (g *CodeGen) buildELF64(irmod *IRModule) []byte {
 	elf[6] = 1 // EV_CURRENT
 	elf[7] = 0 // ELFOSABI_NONE
 	// bytes 8-15: padding (zero)
-	putU16(elf[16:], 2) // e_type: ET_EXEC
+	putU16(elf[16:], 2)      // e_type: ET_EXEC
 	var eMachine uint16 = 62 // EM_X86_64
 	if g.isArm64 {
 		eMachine = 183 // EM_AARCH64
@@ -171,14 +174,23 @@ func (g *CodeGen) buildELF64(irmod *IRModule) []byte {
 	putU32(elf[20:], 1)                     // e_version: EV_CURRENT
 	putU64(elf[24:], entryAddr)             // e_entry
 	putU64(elf[32:], uint64(elfHeaderSize)) // e_phoff
-	putU64(elf[40:], uint64(shdrOffset))    // e_shoff
+	if stripBinary {
+		putU64(elf[40:], 0) // e_shoff
+	} else {
+		putU64(elf[40:], uint64(shdrOffset)) // e_shoff
+	}
 	putU32(elf[48:], 0)                     // e_flags
 	putU16(elf[52:], uint16(elfHeaderSize)) // e_ehsize
 	putU16(elf[54:], uint16(phdrSize))      // e_phentsize
 	putU16(elf[56:], 1)                     // e_phnum
 	putU16(elf[58:], uint16(shdrEntrySize)) // e_shentsize
-	putU16(elf[60:], uint16(shdrCount))     // e_shnum
-	putU16(elf[62:], 6)                     // e_shstrndx: index of .shstrtab
+	if stripBinary {
+		putU16(elf[60:], 0) // e_shnum
+		putU16(elf[62:], 0) // e_shstrndx
+	} else {
+		putU16(elf[60:], uint16(shdrCount)) // e_shnum
+		putU16(elf[62:], 6)                 // e_shstrndx: index of .shstrtab
+	}
 
 	// Program header (single PT_LOAD, RWX)
 	phdr := elf[elfHeaderSize:]
@@ -196,82 +208,83 @@ func (g *CodeGen) buildELF64(irmod *IRModule) []byte {
 	copy(elf[rodataOffset:], g.rodata)
 	copy(elf[dataOffset:], g.data)
 
-	// Copy debug sections (not part of PT_LOAD)
-	copy(elf[symtabOffset:], symtab)
-	copy(elf[strtabOffset:], strtab)
-	copy(elf[shstrtabOffset:], shstrtab)
+	if !stripBinary {
+		// Copy debug sections (not part of PT_LOAD)
+		copy(elf[symtabOffset:], symtab)
+		copy(elf[strtabOffset:], strtab)
+		copy(elf[shstrtabOffset:], shstrtab)
 
-	// === Write section header table ===
-	shdr := elf[shdrOffset:]
+		// === Write section header table ===
+		shdr := elf[shdrOffset:]
 
-	// Section 0: SHT_NULL (all zeros — already zero from make())
+		// Section 0: SHT_NULL (all zeros — already zero from make())
 
-	// Section 1: .text
-	s := shdr[1*shdrEntrySize:]
-	putU32(s[0:], uint32(shNameText))  // sh_name
-	putU32(s[4:], 1)                   // sh_type: SHT_PROGBITS
-	putU64(s[8:], 6)                   // sh_flags: SHF_ALLOC|SHF_EXECINSTR
-	putU64(s[16:], textVAddr)          // sh_addr
-	putU64(s[24:], uint64(textOffset)) // sh_offset
-	putU64(s[32:], uint64(textSize))   // sh_size
-	putU32(s[40:], 0)                  // sh_link
-	putU32(s[44:], 0)                  // sh_info
-	putU64(s[48:], 16)                 // sh_addralign
-	putU64(s[56:], 0)                  // sh_entsize
+		// Section 1: .text
+		s := shdr[1*shdrEntrySize:]
+		putU32(s[0:], uint32(shNameText))  // sh_name
+		putU32(s[4:], 1)                   // sh_type: SHT_PROGBITS
+		putU64(s[8:], 6)                   // sh_flags: SHF_ALLOC|SHF_EXECINSTR
+		putU64(s[16:], textVAddr)          // sh_addr
+		putU64(s[24:], uint64(textOffset)) // sh_offset
+		putU64(s[32:], uint64(textSize))   // sh_size
+		putU32(s[40:], 0)                  // sh_link
+		putU32(s[44:], 0)                  // sh_info
+		putU64(s[48:], 16)                 // sh_addralign
+		putU64(s[56:], 0)                  // sh_entsize
 
-	// Section 2: .rodata
-	s = shdr[2*shdrEntrySize:]
-	putU32(s[0:], uint32(shNameRodata))
-	putU32(s[4:], 1) // SHT_PROGBITS
-	putU64(s[8:], 2) // SHF_ALLOC
-	putU64(s[16:], rodataVAddr)
-	putU64(s[24:], uint64(rodataOffset))
-	putU64(s[32:], uint64(rodataSize))
-	putU64(s[48:], 8) // sh_addralign
+		// Section 2: .rodata
+		s = shdr[2*shdrEntrySize:]
+		putU32(s[0:], uint32(shNameRodata))
+		putU32(s[4:], 1) // SHT_PROGBITS
+		putU64(s[8:], 2) // SHF_ALLOC
+		putU64(s[16:], rodataVAddr)
+		putU64(s[24:], uint64(rodataOffset))
+		putU64(s[32:], uint64(rodataSize))
+		putU64(s[48:], 8) // sh_addralign
 
-	// Section 3: .data
-	s = shdr[3*shdrEntrySize:]
-	putU32(s[0:], uint32(shNameData))
-	putU32(s[4:], 1) // SHT_PROGBITS
-	putU64(s[8:], 3) // SHF_ALLOC|SHF_WRITE
-	putU64(s[16:], dataVAddr)
-	putU64(s[24:], uint64(dataOffset))
-	putU64(s[32:], uint64(dataSize))
-	putU64(s[48:], 8) // sh_addralign
+		// Section 3: .data
+		s = shdr[3*shdrEntrySize:]
+		putU32(s[0:], uint32(shNameData))
+		putU32(s[4:], 1) // SHT_PROGBITS
+		putU64(s[8:], 3) // SHF_ALLOC|SHF_WRITE
+		putU64(s[16:], dataVAddr)
+		putU64(s[24:], uint64(dataOffset))
+		putU64(s[32:], uint64(dataSize))
+		putU64(s[48:], 8) // sh_addralign
 
-	// Section 4: .symtab
-	s = shdr[4*shdrEntrySize:]
-	putU32(s[0:], uint32(shNameSymtab))
-	putU32(s[4:], 2)  // SHT_SYMTAB
-	putU64(s[8:], 0)  // no flags
-	putU64(s[16:], 0) // sh_addr: not loaded
-	putU64(s[24:], uint64(symtabOffset))
-	putU64(s[32:], uint64(symtabSize))
-	putU32(s[40:], 5)                    // sh_link: index of .strtab
-	putU32(s[44:], 1)                    // sh_info: index of first global symbol (after null)
-	putU64(s[48:], 8)                    // sh_addralign
-	putU64(s[56:], uint64(symEntrySize)) // sh_entsize
+		// Section 4: .symtab
+		s = shdr[4*shdrEntrySize:]
+		putU32(s[0:], uint32(shNameSymtab))
+		putU32(s[4:], 2)  // SHT_SYMTAB
+		putU64(s[8:], 0)  // no flags
+		putU64(s[16:], 0) // sh_addr: not loaded
+		putU64(s[24:], uint64(symtabOffset))
+		putU64(s[32:], uint64(symtabSize))
+		putU32(s[40:], 5)                    // sh_link: index of .strtab
+		putU32(s[44:], 1)                    // sh_info: index of first global symbol (after null)
+		putU64(s[48:], 8)                    // sh_addralign
+		putU64(s[56:], uint64(symEntrySize)) // sh_entsize
 
-	// Section 5: .strtab
-	s = shdr[5*shdrEntrySize:]
-	putU32(s[0:], uint32(shNameStrtab))
-	putU32(s[4:], 3) // SHT_STRTAB
-	putU64(s[8:], 0)
-	putU64(s[16:], 0)
-	putU64(s[24:], uint64(strtabOffset))
-	putU64(s[32:], uint64(len(strtab)))
-	putU64(s[48:], 1) // sh_addralign
+		// Section 5: .strtab
+		s = shdr[5*shdrEntrySize:]
+		putU32(s[0:], uint32(shNameStrtab))
+		putU32(s[4:], 3) // SHT_STRTAB
+		putU64(s[8:], 0)
+		putU64(s[16:], 0)
+		putU64(s[24:], uint64(strtabOffset))
+		putU64(s[32:], uint64(len(strtab)))
+		putU64(s[48:], 1) // sh_addralign
 
-	// Section 6: .shstrtab
-	s = shdr[6*shdrEntrySize:]
-	putU32(s[0:], uint32(shNameShstrtab))
-	putU32(s[4:], 3) // SHT_STRTAB
-	putU64(s[8:], 0)
-	putU64(s[16:], 0)
-	putU64(s[24:], uint64(shstrtabOffset))
-	putU64(s[32:], uint64(len(shstrtab)))
-	putU64(s[48:], 1) // sh_addralign
+		// Section 6: .shstrtab
+		s = shdr[6*shdrEntrySize:]
+		putU32(s[0:], uint32(shNameShstrtab))
+		putU32(s[4:], 3) // SHT_STRTAB
+		putU64(s[8:], 0)
+		putU64(s[16:], 0)
+		putU64(s[24:], uint64(shstrtabOffset))
+		putU64(s[32:], uint64(len(shstrtab)))
+		putU64(s[48:], 1) // sh_addralign
+	}
 
 	return elf
 }
-

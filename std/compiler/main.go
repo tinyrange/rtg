@@ -25,6 +25,7 @@ var targetCModel int = 0                  // 16/32/64 when targetBackend==c
 var targetWordSize int = defaultPtrSize() // word size in bytes
 var buildTags []string
 var compilerDebug bool
+var stripBinary bool
 
 // Temp file paths for -run mode; cleaned up on exit.
 var runTmpSrc string
@@ -39,6 +40,49 @@ func runCleanup() {
 	}
 }
 
+func tempDirPath() string {
+	tmpDir := os.Getenv("TMPDIR") // macOS, some Linux
+	if tmpDir == "" {
+		tmpDir = os.Getenv("TEMP") // Windows
+	}
+	if tmpDir == "" {
+		tmpDir = os.Getenv("TMP") // Windows fallback
+	}
+	if tmpDir == "" {
+		tmpDir = "/tmp" // Linux/Unix fallback
+	}
+	return tmpDir
+}
+
+func pathSep() string {
+	if runtime.GOOS == "windows" {
+		return "\\"
+	}
+	return "/"
+}
+
+func readStdinSourceToTemp() error {
+	if runTmpSrc == "" {
+		pid := fmt.Sprintf("%d", os.Getpid())
+		runTmpSrc = tempDirPath() + pathSep() + "rtg-run-" + pid + ".go"
+	}
+	var src []byte
+	buf := make([]byte, 4096)
+	for {
+		n, _ := os.Stdin.Read(buf)
+		if n > 0 {
+			src = append(src, buf[0:n]...)
+		}
+		if n == 0 {
+			break
+		}
+	}
+	if len(src) == 0 {
+		return fmt.Errorf("no input on stdin")
+	}
+	return os.WriteFile(runTmpSrc, src, 0644)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printHelp(os.Args[0], os.Stderr)
@@ -49,6 +93,7 @@ func main() {
 	var entryFiles []string
 	var extraTags string
 	var runMode bool
+	var stdinInput bool
 	var programArgs []string
 	i := 1
 	for i < len(os.Args) {
@@ -145,36 +190,39 @@ func main() {
 		} else if os.Args[i] == "-debug" {
 			compilerDebug = true
 			i = i + 1
+		} else if os.Args[i] == "-strip" || os.Args[i] == "-s" {
+			stripBinary = true
+			i = i + 1
 		} else if os.Args[i] == "--" {
 			i = i + 1
 			for i < len(os.Args) {
 				programArgs = append(programArgs, os.Args[i])
 				i = i + 1
 			}
+		} else if os.Args[i] == "-" {
+			stdinInput = true
+			i = i + 1
 		} else {
 			entryFiles = append(entryFiles, normalizePath(os.Args[i]))
 			i = i + 1
 		}
 	}
+	if stdinInput {
+		err := readStdinSourceToTemp()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "rtg: failed to read stdin source: %v\n", err)
+			runCleanup()
+			os.Exit(1)
+		}
+		entryFiles = append(entryFiles, runTmpSrc)
+	}
 	if runMode {
-		// Determine temp directory (portable across OSes)
-		tmpDir := os.Getenv("TMPDIR") // macOS, some Linux
-		if tmpDir == "" {
-			tmpDir = os.Getenv("TEMP") // Windows
-		}
-		if tmpDir == "" {
-			tmpDir = os.Getenv("TMP") // Windows fallback
-		}
-		if tmpDir == "" {
-			tmpDir = "/tmp" // Linux/Unix fallback
-		}
-
-		sep := "/"
-		if runtime.GOOS == "windows" {
-			sep = "\\"
-		}
+		tmpDir := tempDirPath()
+		sep := pathSep()
 		pid := fmt.Sprintf("%d", os.Getpid())
-		runTmpSrc = tmpDir + sep + "rtg-run-" + pid + ".go"
+		if runTmpSrc == "" {
+			runTmpSrc = tmpDir + sep + "rtg-run-" + pid + ".go"
+		}
 		runTmpBin = tmpDir + sep + "rtg-run-" + pid
 		if targetGOOS == "windows" {
 			runTmpBin = runTmpBin + ".exe"
@@ -182,24 +230,9 @@ func main() {
 
 		// Read from stdin if no entry files
 		if len(entryFiles) == 0 {
-			var src []byte
-			buf := make([]byte, 4096)
-			for {
-				n, _ := os.Stdin.Read(buf)
-				if n > 0 {
-					src = append(src, buf[0:n]...)
-				}
-				if n == 0 {
-					break
-				}
-			}
-			if len(src) == 0 {
-				fmt.Fprintf(os.Stderr, "rtg -run: no input on stdin and no files specified\n")
-				os.Exit(1)
-			}
-			err := os.WriteFile(runTmpSrc, src, 0644)
+			err := readStdinSourceToTemp()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "rtg -run: failed to write temp source: %v\n", err)
+				fmt.Fprintf(os.Stderr, "rtg -run: failed to read stdin source: %v\n", err)
 				runCleanup()
 				os.Exit(1)
 			}
@@ -235,6 +268,9 @@ func main() {
 		}
 	}
 	buildTags = append(buildTags, "rtg")
+	if sizeAnalysisPath != "" {
+		stripBinary = true
+	}
 
 	// Initialize embedded std if available
 	initEmbeddedStd()
@@ -375,6 +411,8 @@ func main() {
 		}
 		os.Exit(0)
 	}
+
+	runCleanup()
 }
 
 func printHelp(program string, out *os.File) {
@@ -386,6 +424,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -run                   Compile and run the output binary\n")
 	fmt.Fprintf(out, "  -size-analysis <path>  Write per-function size analysis JSON\n")
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
+	fmt.Fprintf(out, "  -strip, -s             Strip symbol/debug metadata from native binaries\n")
 	fmt.Fprintf(out, "  -h, --help             Show this help\n")
 	fmt.Fprintf(out, "\nDefault target: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(out, "\nPossible -T values:\n")
