@@ -10,7 +10,10 @@ const (
 	TOKEN_EOF TokenKind = iota
 	TOKEN_IDENT
 	TOKEN_INT
+	TOKEN_FLOAT
+	TOKEN_IMAG
 	TOKEN_STRING
+	TOKEN_RAW_STRING
 	TOKEN_RUNE
 	TOKEN_COMMENT
 
@@ -96,7 +99,8 @@ const (
 
 var tokenNames = map[TokenKind]string{
 	TOKEN_EOF: "EOF", TOKEN_IDENT: "IDENT", TOKEN_INT: "INT",
-	TOKEN_STRING: "STRING", TOKEN_RUNE: "RUNE", TOKEN_COMMENT: "COMMENT",
+	TOKEN_FLOAT: "FLOAT", TOKEN_IMAG: "IMAG",
+	TOKEN_STRING: "STRING", TOKEN_RAW_STRING: "RAW_STRING", TOKEN_RUNE: "RUNE", TOKEN_COMMENT: "COMMENT",
 	TOKEN_PACKAGE: "package", TOKEN_IMPORT: "import", TOKEN_FUNC: "func",
 	TOKEN_TYPE: "type", TOKEN_STRUCT: "struct", TOKEN_INTERFACE: "interface",
 	TOKEN_VAR: "var", TOKEN_CONST: "const", TOKEN_IF: "if", TOKEN_ELSE: "else",
@@ -202,7 +206,7 @@ func (l *Lexer) advance() byte {
 }
 
 func needsSemicolon(kind TokenKind) bool {
-	if kind == TOKEN_IDENT || kind == TOKEN_INT || kind == TOKEN_STRING || kind == TOKEN_RUNE {
+	if kind == TOKEN_IDENT || kind == TOKEN_INT || kind == TOKEN_FLOAT || kind == TOKEN_IMAG || kind == TOKEN_STRING || kind == TOKEN_RAW_STRING || kind == TOKEN_RUNE {
 		return true
 	}
 	if kind == TOKEN_RPAREN || kind == TOKEN_RBRACK || kind == TOKEN_RBRACE {
@@ -223,6 +227,16 @@ func isLetter(ch byte) bool {
 
 func isDigit(ch byte) bool {
 	return ch >= '0' && ch <= '9'
+}
+
+func isExpDigitStart(ch byte, next byte) bool {
+	if isDigit(ch) {
+		return true
+	}
+	if (ch == '+' || ch == '-') && isDigit(next) {
+		return true
+	}
+	return false
 }
 
 func (l *Lexer) skipWhitespaceAndComments() (bool, *Token) {
@@ -277,6 +291,7 @@ func (l *Lexer) scanNumber() Token {
 	line := l.line
 	col := l.col
 	start := l.pos
+	isFloat := false
 	if l.peek() == '0' && l.peekAt(1) == 'x' {
 		l.advance()
 		l.advance()
@@ -287,6 +302,30 @@ func (l *Lexer) scanNumber() Token {
 		for !l.atEnd() && isDigit(l.peek()) {
 			l.advance()
 		}
+		if l.peek() == '.' && isDigit(l.peekAt(1)) {
+			isFloat = true
+			l.advance()
+			for !l.atEnd() && isDigit(l.peek()) {
+				l.advance()
+			}
+		}
+		if (l.peek() == 'e' || l.peek() == 'E') && isExpDigitStart(l.peekAt(1), l.peekAt(2)) {
+			isFloat = true
+			l.advance()
+			if l.peek() == '+' || l.peek() == '-' {
+				l.advance()
+			}
+			for !l.atEnd() && isDigit(l.peek()) {
+				l.advance()
+			}
+		}
+		if l.peek() == 'i' {
+			l.advance()
+			return Token{Kind: TOKEN_IMAG, Val: l.src[start:l.pos], Line: line, Col: col}
+		}
+	}
+	if isFloat {
+		return Token{Kind: TOKEN_FLOAT, Val: l.src[start:l.pos], Line: line, Col: col}
 	}
 	return Token{Kind: TOKEN_INT, Val: l.src[start:l.pos], Line: line, Col: col}
 }
@@ -307,6 +346,21 @@ func (l *Lexer) scanString() Token {
 		l.advance() // skip closing "
 	}
 	return Token{Kind: TOKEN_STRING, Val: val, Line: line, Col: col}
+}
+
+func (l *Lexer) scanRawString() Token {
+	line := l.line
+	col := l.col
+	l.advance() // skip opening `
+	start := l.pos
+	for !l.atEnd() && l.peek() != '`' {
+		l.advance()
+	}
+	val := l.src[start:l.pos]
+	if !l.atEnd() {
+		l.advance() // skip closing `
+	}
+	return Token{Kind: TOKEN_RAW_STRING, Val: val, Line: line, Col: col}
 }
 
 func (l *Lexer) scanRune() Token {
@@ -354,6 +408,8 @@ func (l *Lexer) Tokenize() []Token {
 			tok = l.scanNumber()
 		} else if ch == '"' {
 			tok = l.scanString()
+		} else if ch == '`' {
+			tok = l.scanRawString()
 		} else if ch == '\'' {
 			tok = l.scanRune()
 		} else {
@@ -1001,6 +1057,10 @@ func (p *Parser) parseType() *Node {
 	switch p.peek().Kind {
 	case TOKEN_IDENT:
 		tok := p.advance()
+		if tok.Val == "float32" || tok.Val == "float64" || tok.Val == "complex64" || tok.Val == "complex128" {
+			p.errorf("%s type is not supported at line %d", tok.Val, tok.Line)
+			return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
+		}
 		node := &Node{Kind: NIdent, Name: tok.Val, Pos: tok.Line}
 		if p.at(TOKEN_DOT) {
 			p.advance()
@@ -1577,9 +1637,21 @@ func (p *Parser) parsePrimaryExpr() *Node {
 	case TOKEN_INT:
 		tok := p.advance()
 		node = &Node{Kind: NIntLit, Name: tok.Val, Pos: tok.Line}
+	case TOKEN_FLOAT:
+		tok := p.advance()
+		p.errorf("float literals are not supported at line %d col %d", tok.Line, tok.Col)
+		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
+	case TOKEN_IMAG:
+		tok := p.advance()
+		p.errorf("imaginary literals are not supported at line %d col %d", tok.Line, tok.Col)
+		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 	case TOKEN_STRING:
 		tok := p.advance()
 		node = &Node{Kind: NStringLit, Name: tok.Val, Pos: tok.Line}
+	case TOKEN_RAW_STRING:
+		tok := p.advance()
+		p.errorf("raw string literals are not supported at line %d col %d", tok.Line, tok.Col)
+		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 	case TOKEN_RUNE:
 		tok := p.advance()
 		node = &Node{Kind: NRuneLit, Name: tok.Val, Pos: tok.Line}

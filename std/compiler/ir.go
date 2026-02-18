@@ -369,7 +369,7 @@ func isBuiltinName(name string) bool {
 	case 'l':
 		return name == "len"
 	case 'c':
-		return name == "cap" || name == "copy" || name == "close"
+		return name == "cap" || name == "copy" || name == "close" || name == "complex"
 	case 'a':
 		return name == "append"
 	case 'm':
@@ -381,7 +381,7 @@ func isBuiltinName(name string) bool {
 	case 'd':
 		return name == "delete"
 	case 'i':
-		return name == "int" || name == "int16" || name == "int32" || name == "int64" || name == "iota"
+		return name == "int" || name == "int16" || name == "int32" || name == "int64" || name == "iota" || name == "imag"
 	case 'u':
 		return name == "uint" || name == "uint16" || name == "uint32" || name == "uint64" || name == "uintptr"
 	case 'b':
@@ -389,9 +389,9 @@ func isBuiltinName(name string) bool {
 	case 's':
 		return name == "string"
 	case 'f':
-		return name == "float64" || name == "false"
+		return name == "false" || name == "float32" || name == "float64"
 	case 'r':
-		return name == "rune"
+		return name == "rune" || name == "recover" || name == "real"
 	case 'e':
 		return name == "error"
 	case 't':
@@ -3628,6 +3628,21 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	// Check for builtins
 	if node.X != nil && node.X.Kind == NIdent {
 		name := node.X.Name
+		if name == "recover" {
+			c.errorf("%s: recover is not supported (panic/recover runtime is not implemented)", c.curFunc.Name)
+			c.emit(Inst{Op: OP_CONST_NIL})
+			return
+		}
+		if name == "complex" || name == "real" || name == "imag" {
+			c.errorf("%s: %s builtin is not supported (complex numbers are not implemented)", c.curFunc.Name, name)
+			c.emit(Inst{Op: OP_CONST_NIL})
+			return
+		}
+		if name == "float32" || name == "float64" {
+			c.errorf("%s: %s conversion is not supported (floating-point support is not implemented)", c.curFunc.Name, name)
+			c.emit(Inst{Op: OP_CONST_NIL})
+			return
+		}
 		if name == "len" {
 			if len(node.Nodes) > 0 && c.isMapExpr(node.Nodes[0]) {
 				c.compileExpr(node.Nodes[0])
