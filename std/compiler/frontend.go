@@ -27,15 +27,16 @@ type Symbol struct {
 
 // Package represents a parsed Go package.
 type Package struct {
-	Name         string
-	Path         string
-	Dir          string
-	Files        []*Node
-	Imports      []string
-	Symbols      map[string]*Symbol
-	Inits        []*Node
-	qualNames    map[string]string // name → "Path.name"
-	qualPtrNames map[string]string // name → "Path.*name"
+	Name          string
+	Path          string
+	Dir           string
+	Files         []*Node
+	Imports       []string
+	ImportAliases map[string]string
+	Symbols       map[string]*Symbol
+	Inits         []*Node
+	qualNames     map[string]string // name → "Path.name"
+	qualPtrNames  map[string]string // name → "Path.*name"
 }
 
 func (pkg *Package) QualName(name string) string {
@@ -150,6 +151,21 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 	var worklist []string
 	for _, imp := range mainPkg.Imports {
 		worklist = append(worklist, imp)
+	}
+	// Runtime is required by compiler-emitted helpers (alloc/map/string/etc),
+	// even for programs that do not explicitly import it.
+	if mainPkg.Path != "runtime" {
+		hasRuntime := false
+		for _, imp := range mainPkg.Imports {
+			if imp == "runtime" {
+				hasRuntime = true
+				break
+			}
+		}
+		if !hasRuntime {
+			mainPkg.Imports = append(mainPkg.Imports, "runtime")
+			worklist = append(worklist, "runtime")
+		}
 	}
 
 	for len(worklist) > 0 {
@@ -686,6 +702,7 @@ func shouldIncludeContent(content string, name string) bool {
 // collectImports walks NFile.Nodes for NImport nodes and returns deduplicated import paths.
 func collectImports(pkg *Package) []string {
 	seen := make(map[string]bool)
+	aliases := make(map[string]string)
 	var result []string
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
@@ -695,9 +712,16 @@ func collectImports(pkg *Package) []string {
 					seen[path] = true
 					result = append(result, path)
 				}
+				if node.X != nil && node.X.Kind == NIdent {
+					alias := node.X.Name
+					if alias != "" && alias != "_" && alias != "." {
+						aliases[alias] = path
+					}
+				}
 			}
 		}
 	}
+	pkg.ImportAliases = aliases
 	return result
 }
 
@@ -823,6 +847,12 @@ func ValidateModule(mod *Module) []string {
 			ipkg, iok := mod.Packages[imp]
 			if iok {
 				importMap[ipkg.Name] = ipkg
+			}
+		}
+		for alias, imp := range pkg.ImportAliases {
+			ipkg, iok := mod.Packages[imp]
+			if iok {
+				importMap[alias] = ipkg
 			}
 		}
 		for _, file := range pkg.Files {

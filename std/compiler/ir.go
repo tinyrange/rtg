@@ -200,6 +200,7 @@ type Compiler struct {
 	typeIDs             map[string]int      // concrete type qualified name → unique int
 	nextTypeID          int
 	localTypes          map[string]string   // local var name → type name (for interface-typed locals)
+	localTypeDecls      map[string]*Node    // local type name → type declaration node (function scope)
 	localStringVars     map[string]bool     // local var name → true if the local is a string
 	localConcreteTypes  map[string]string   // local var name → qualified type name for method resolution
 	funcRetTypes        map[string][]string // function name → return type names
@@ -361,6 +362,30 @@ func (c *Compiler) errorf(format string, args ...interface{}) {
 	c.errors = append(c.errors, msg)
 }
 
+func (c *Compiler) lookupCurrentTypeDecl(name string) (*Node, bool) {
+	if c.localTypeDecls != nil {
+		if n, ok := c.localTypeDecls[name]; ok && n != nil {
+			return n, true
+		}
+	}
+	if c.curPkg != nil {
+		if sym, ok := c.curPkg.Symbols[name]; ok && sym.Kind == SymType && sym.Node != nil {
+			return sym.Node, true
+		}
+	}
+	return nil, false
+}
+
+func (c *Compiler) registerLocalTypeDecl(node *Node) {
+	if node == nil || node.Kind != NTypeDecl || node.Name == "" {
+		return
+	}
+	if c.localTypeDecls == nil {
+		c.localTypeDecls = make(map[string]*Node)
+	}
+	c.localTypeDecls[node.Name] = node
+}
+
 func isBuiltinName(name string) bool {
 	if len(name) == 0 {
 		return false
@@ -401,6 +426,13 @@ func isBuiltinName(name string) bool {
 }
 
 func (c *Compiler) resolvePackage(pkgName string) *Package {
+	if c.curPkg != nil && c.curPkg.ImportAliases != nil {
+		if path, ok := c.curPkg.ImportAliases[pkgName]; ok {
+			if pkg, ok := c.mod.Packages[path]; ok {
+				return pkg
+			}
+		}
+	}
 	for _, imp := range c.curPkg.Imports {
 		pkg, ok := c.mod.Packages[imp]
 		if ok && pkg.Name == pkgName {
@@ -432,6 +464,11 @@ func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 	pkg, ok := c.mod.Packages[pkgPath]
 	if !ok {
 		return nil, ""
+	}
+	if pkgPath == c.curPkg.Path {
+		if localDecl, ok := c.localTypeDecls[typeName]; ok && localDecl != nil && localDecl.Type != nil {
+			return localDecl.Type, pkgPath
+		}
 	}
 	sym, ok := pkg.Symbols[typeName]
 	if !ok || sym.Kind != SymType || sym.Node == nil {
@@ -1344,6 +1381,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
 	c.localTypes = make(map[string]string)
+	c.localTypeDecls = make(map[string]*Node)
 	c.localStringVars = make(map[string]bool)
 	c.localAddrOf = make(map[string]bool)
 	c.localConcreteTypes = make(map[string]string)
@@ -1759,6 +1797,9 @@ func (c *Compiler) compileStmt(node *Node) {
 		} else {
 			c.compileVarDecl(node)
 		}
+	case NTypeDecl:
+		// Local type declaration
+		c.registerLocalTypeDecl(node)
 	case NBlock:
 		c.compileBlock(node)
 	default:
@@ -2290,8 +2331,7 @@ func (c *Compiler) resolveConcreteTypeID(expr *Node) int {
 	}
 	// Pattern: Errno(x) — type conversion call (unqualified)
 	if expr.Kind == NCallExpr && expr.X != nil && expr.X.Kind == NIdent {
-		sym, ok := c.curPkg.Symbols[expr.X.Name]
-		if ok && sym.Kind == SymType {
+		if _, ok := c.lookupCurrentTypeDecl(expr.X.Name); ok {
 			qtype := c.curPkg.QualName(expr.X.Name)
 			if id, ok := c.typeIDs[qtype]; ok {
 				return id
@@ -2743,6 +2783,11 @@ func (c *Compiler) compileSwitch(node *Node) {
 	savedDepth := c.stackDepth
 	endLabel := c.newLabel()
 	isTypeSwitch := node.Name == "typeswitch"
+	needsScope := node.X != nil
+	if needsScope {
+		c.pushScope()
+		c.compileStmt(node.X)
+	}
 
 	// Compile tag if present
 	hasTag := node.Y != nil
@@ -2842,6 +2887,9 @@ func (c *Compiler) compileSwitch(node *Node) {
 		c.emit(Inst{Op: OP_DROP})
 	}
 	c.emitLabel(endLabel)
+	if needsScope {
+		c.popScope()
+	}
 	c.stackDepth = savedDepth // switch should have net-zero effect
 }
 
@@ -3427,6 +3475,11 @@ func (c *Compiler) needsSelectorDeref(node *Node) bool {
 	if !ok {
 		return false
 	}
+	if pkg.Path == c.curPkg.Path {
+		if localDecl, ok := c.localTypeDecls[tName]; ok && localDecl != nil && localDecl.Type != nil {
+			return localDecl.Type.Kind == NStructType
+		}
+	}
 	sym, ok := pkg.Symbols[tName]
 	if !ok || sym.Kind != SymType || sym.Node == nil {
 		return false
@@ -3489,6 +3542,11 @@ func (c *Compiler) isPointerToStructDeref(node *Node) bool {
 		// Missing package/type metadata in later self-host stages: prefer no-op
 		// for named pointer types to preserve struct-handle semantics.
 		return true
+	}
+	if pkg.Path == c.curPkg.Path {
+		if localDecl, ok := c.localTypeDecls[tName]; ok && localDecl != nil && localDecl.Type != nil {
+			return localDecl.Type.Kind == NStructType
+		}
 	}
 	sym, ok := pkg.Symbols[tName]
 	if !ok || sym.Kind != SymType || sym.Node == nil {
@@ -3708,8 +3766,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 
 	// Check for user-defined type conversions (e.g. Errno(val))
 	if node.X != nil && node.X.Kind == NIdent && len(node.Nodes) == 1 {
-		sym, ok := c.curPkg.Symbols[node.X.Name]
-		if ok && sym.Kind == SymType {
+		if _, ok := c.lookupCurrentTypeDecl(node.X.Name); ok {
 			c.compileExpr(node.Nodes[0])
 			c.emit(Inst{Op: OP_CONVERT, Name: node.X.Name})
 			return
@@ -4099,6 +4156,9 @@ func (c *Compiler) resolveCallName(node *Node) string {
 			return node.Name
 		}
 		// Check if it's a function or type in current package
+		if _, ok := c.lookupCurrentTypeDecl(node.Name); ok {
+			return c.curPkg.QualName(node.Name)
+		}
 		sym, ok := c.curPkg.Symbols[node.Name]
 		if ok {
 			if sym.Kind != SymFunc && sym.Kind != SymType {

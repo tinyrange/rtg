@@ -729,17 +729,38 @@ func (p *Parser) parseImportGroup() []*Node {
 	if p.at(TOKEN_LPAREN) {
 		p.advance()
 		for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
-			tok := p.expect(TOKEN_STRING)
-			imports = append(imports, &Node{Kind: NImport, Name: tok.Val, Pos: tok.Line})
+			spec := p.parseImportSpec()
+			imports = append(imports, spec)
 			p.skipSemicolon()
 		}
 		p.expect(TOKEN_RPAREN)
 	} else {
-		tok := p.expect(TOKEN_STRING)
-		imports = append(imports, &Node{Kind: NImport, Name: tok.Val, Pos: tok.Line})
+		spec := p.parseImportSpec()
+		imports = append(imports, spec)
 	}
 	p.skipSemicolon()
 	return imports
+}
+
+func (p *Parser) parseImportSpec() *Node {
+	alias := ""
+	aliasPos := p.peek().Line
+	if p.at(TOKEN_IDENT) {
+		aliasTok := p.advance()
+		alias = aliasTok.Val
+		aliasPos = aliasTok.Line
+	} else if p.at(TOKEN_DOT) {
+		aliasTok := p.advance()
+		alias = "."
+		aliasPos = aliasTok.Line
+	}
+
+	tok := p.expect(TOKEN_STRING)
+	n := &Node{Kind: NImport, Name: tok.Val, Pos: tok.Line}
+	if alias != "" {
+		n.X = &Node{Kind: NIdent, Name: alias, Pos: aliasPos}
+	}
+	return n
 }
 
 func (p *Parser) parseTopDecl() *Node {
@@ -924,6 +945,9 @@ func (p *Parser) parseTypeDecl() *Node {
 		for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
 			name := p.expect(TOKEN_IDENT)
 			node := &Node{Kind: NTypeDecl, Name: name.Val, Pos: name.Line}
+			if p.at(TOKEN_ASSIGN) {
+				p.advance()
+			}
 			node.Type = p.parseType()
 			decls = append(decls, node)
 			p.skipSemicolon()
@@ -939,6 +963,9 @@ func (p *Parser) parseTypeDecl() *Node {
 
 	name := p.expect(TOKEN_IDENT)
 	node := &Node{Kind: NTypeDecl, Name: name.Val, Pos: pos}
+	if p.at(TOKEN_ASSIGN) {
+		p.advance()
+	}
 	node.Type = p.parseType()
 	p.skipSemicolon()
 	return node
@@ -1222,6 +1249,8 @@ func (p *Parser) parseStmt() *Node {
 		return p.parseVarDecl()
 	case TOKEN_CONST:
 		return p.parseConstDecl()
+	case TOKEN_TYPE:
+		return p.parseTypeDecl()
 	case TOKEN_BREAK:
 		pos := p.peek().Line
 		p.advance()
@@ -1427,22 +1456,36 @@ func (p *Parser) parseSwitchStmt() *Node {
 	p.expect(TOKEN_SWITCH)
 	node := &Node{Kind: NSwitch, Pos: pos}
 
-	// Optional tag expression
+	// Optional init statement and/or tag expression
 	if !p.at(TOKEN_LBRACE) {
-		tag := p.parseExprNoBrace()
-		if tag != nil && tag.Kind == NTypeAssertExpr && tag.Name == "type" {
-			node.Name = "typeswitch"
-			node.Y = tag.X
+		old := p.noCompLit
+		p.noCompLit = true
+		first := p.parseSimpleStmtNoSemicolon()
+		p.noCompLit = old
+
+		if p.at(TOKEN_SEMICOLON) {
+			p.advance()
+			node.X = first
+			if !p.at(TOKEN_LBRACE) {
+				tag := p.parseExprNoBrace()
+				if tag != nil && tag.Kind == NTypeAssertExpr && tag.Name == "type" {
+					node.Name = "typeswitch"
+					node.Y = tag.X
+				} else {
+					node.Y = tag
+				}
+			}
 		} else {
-			if p.at(TOKEN_SEMICOLON) {
-				// It was an init statement
-				p.advance()
-				node.X = tag
-				if !p.at(TOKEN_LBRACE) {
-					node.Y = p.parseExprNoBrace()
+			if first != nil && first.Kind == NExprStmt {
+				tag := first.X
+				if tag != nil && tag.Kind == NTypeAssertExpr && tag.Name == "type" {
+					node.Name = "typeswitch"
+					node.Y = tag.X
+				} else {
+					node.Y = tag
 				}
 			} else {
-				node.Y = tag
+				node.Y = first
 			}
 		}
 	}
