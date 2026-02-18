@@ -520,8 +520,7 @@ func (g *CodeGen) compileCompositeLitCall_i386(inst Inst) {
 
 func (g *CodeGen) compileReturn_i386(inst Inst) {
 	g.flush()
-	g.movRR32(REG32_ESP, REG32_EBP)
-	g.popR32(REG32_EBP)
+	g.leave()
 	g.ret()
 }
 

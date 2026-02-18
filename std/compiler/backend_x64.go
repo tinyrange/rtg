@@ -514,8 +514,7 @@ func (g *CodeGen) compileCompositeLitCall(inst Inst) {
 
 func (g *CodeGen) compileReturn(inst Inst) {
 	g.flush()
-	g.movRR(REG_RSP, REG_RBP)
-	g.popR(REG_RBP)
+	g.leave()
 	g.ret()
 }
 

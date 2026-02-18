@@ -330,6 +330,11 @@ func (g *CodeGen) ret() {
 	g.emitByte(0xc3)
 }
 
+// leave emits `leave`.
+func (g *CodeGen) leave() {
+	g.emitByte(0xc9)
+}
+
 // int3 emits `int3` (breakpoint trap).
 func (g *CodeGen) int3() {
 	g.emitByte(0xcc)
