@@ -65,6 +65,9 @@ func generateWin386PE(irmod *IRModule, outputPath string) error {
 	}
 
 	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	if g.needTostringHelper {
+		g.emitTostringHelperI386()
+	}
 
 	// Resolve call fixups (skip $rodata_header$, $data_addr$, $iat$ — handled by buildPE32)
 	var unresolved []string
@@ -117,10 +120,10 @@ func (g *CodeGen) emitStart_win386(irmod *IRModule) {
 	// Allocate 16MB operand stack via VirtualAlloc
 	// VirtualAlloc(NULL, 16*1048576, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
 	// stdcall: push args right-to-left, callee cleans stack
-	g.pushImm32(0x04)            // PAGE_READWRITE
-	g.pushImm32(0x3000)          // MEM_COMMIT | MEM_RESERVE
-	g.pushImm32(16 * 1048576)    // dwSize = 16MB
-	g.pushImm32(0)               // lpAddress = NULL
+	g.pushImm32(0x04)         // PAGE_READWRITE
+	g.pushImm32(0x3000)       // MEM_COMMIT | MEM_RESERVE
+	g.pushImm32(16 * 1048576) // dwSize = 16MB
+	g.pushImm32(0)            // lpAddress = NULL
 	g.emitCallIAT("VirtualAlloc")
 	// EAX = base of allocation
 
@@ -183,11 +186,11 @@ func (g *CodeGen) loadFdAsHandle(localOffset int) {
 func (g *CodeGen) compileSyscallMmap_win386() {
 	// VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
 	// param 1 = size (local 2)
-	g.pushImm32(0x04)       // PAGE_READWRITE
-	g.pushImm32(0x3000)     // MEM_COMMIT | MEM_RESERVE
+	g.pushImm32(0x04)   // PAGE_READWRITE
+	g.pushImm32(0x3000) // MEM_COMMIT | MEM_RESERVE
 	g.emitLoadLocal32(2*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // size
-	g.pushImm32(0)          // lpAddress = NULL
+	g.pushR32(REG32_EAX) // size
+	g.pushImm32(0)       // lpAddress = NULL
 	g.emitCallIAT("VirtualAlloc")
 
 	// EAX = address or NULL on failure
@@ -215,12 +218,12 @@ func (g *CodeGen) compileSyscallWrite_win386() {
 	g.subRI32(REG32_ESP, 4)
 	g.movRR32(REG32_ECX, REG32_ESP) // &written
 
-	g.pushImm32(0)          // lpOverlapped = NULL
-	g.pushR32(REG32_ECX)    // &written
+	g.pushImm32(0)       // lpOverlapped = NULL
+	g.pushR32(REG32_ECX) // &written
 	g.emitLoadLocal32(3*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // nNumberOfBytesToWrite
+	g.pushR32(REG32_EAX) // nNumberOfBytesToWrite
 	g.emitLoadLocal32(2*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpBuffer
+	g.pushR32(REG32_EAX) // lpBuffer
 
 	// Translate fd to handle
 	g.loadFdAsHandle(1 * 4)
@@ -236,9 +239,9 @@ func (g *CodeGen) compileSyscallWrite_win386() {
 	fixOk := g.jccRel32(CC32_NE)
 	// Failed: get error
 	g.emitCallIAT("GetLastError")
-	g.compileConstI32(0)     // r1 = 0
-	g.compileConstI32(0)     // r2 = 0
-	g.opPush(REG32_EAX)     // err
+	g.compileConstI32(0) // r1 = 0
+	g.compileConstI32(0) // r2 = 0
+	g.opPush(REG32_EAX)  // err
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -256,15 +259,15 @@ func (g *CodeGen) compileSyscallRead_win386() {
 	g.subRI32(REG32_ESP, 4)
 	g.movRR32(REG32_ECX, REG32_ESP) // &nread
 
-	g.pushImm32(0)          // lpOverlapped = NULL
-	g.pushR32(REG32_ECX)    // &nread
+	g.pushImm32(0)       // lpOverlapped = NULL
+	g.pushR32(REG32_ECX) // &nread
 	g.emitLoadLocal32(3*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // nNumberOfBytesToRead
+	g.pushR32(REG32_EAX) // nNumberOfBytesToRead
 	g.emitLoadLocal32(2*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpBuffer
+	g.pushR32(REG32_EAX) // lpBuffer
 
 	g.loadFdAsHandle(1 * 4)
-	g.pushR32(REG32_EAX)   // hFile
+	g.pushR32(REG32_EAX) // hFile
 
 	g.emitCallIAT("ReadFile")
 
@@ -315,14 +318,14 @@ func (g *CodeGen) compileSyscallOpen_win386() {
 	g.patchRel32(fixOpenDone)
 
 	// Push CreateFileA args right-to-left
-	g.pushImm32(0)          // hTemplateFile = NULL
-	g.pushImm32(0x80)       // dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL
-	g.pushR32(REG32_EDX)    // dwCreationDisposition
-	g.pushImm32(0)          // lpSecurityAttributes = NULL
-	g.pushImm32(3)          // dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE
-	g.pushR32(REG32_ECX)    // dwDesiredAccess
+	g.pushImm32(0)       // hTemplateFile = NULL
+	g.pushImm32(0x80)    // dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL
+	g.pushR32(REG32_EDX) // dwCreationDisposition
+	g.pushImm32(0)       // lpSecurityAttributes = NULL
+	g.pushImm32(3)       // dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE
+	g.pushR32(REG32_ECX) // dwDesiredAccess
 	g.emitLoadLocal32(1*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpFileName
+	g.pushR32(REG32_EAX) // lpFileName
 
 	g.emitCallIAT("CreateFileA")
 
@@ -395,9 +398,9 @@ func (g *CodeGen) compileSyscallExit_win386() {
 func (g *CodeGen) compileSyscallMkdir_win386() {
 	// CreateDirectoryA(lpPathName, lpSecurityAttributes)
 	// param 0=path (local 1)
-	g.pushImm32(0)          // lpSecurityAttributes = NULL
+	g.pushImm32(0) // lpSecurityAttributes = NULL
 	g.emitLoadLocal32(1*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpPathName
+	g.pushR32(REG32_EAX) // lpPathName
 
 	g.emitCallIAT("CreateDirectoryA")
 
@@ -475,9 +478,9 @@ func (g *CodeGen) compileSyscallGetcwd_win386() {
 	// GetCurrentDirectoryA(nBufferLength, lpBuffer)
 	// param 0=buf (local 1), param 1=bufsize (local 2)
 	g.emitLoadLocal32(1*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpBuffer
+	g.pushR32(REG32_EAX) // lpBuffer
 	g.emitLoadLocal32(2*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // nBufferLength
+	g.pushR32(REG32_EAX) // nBufferLength
 
 	g.emitCallIAT("GetCurrentDirectoryA")
 
@@ -493,7 +496,7 @@ func (g *CodeGen) compileSyscallGetcwd_win386() {
 	g.patchRel32(fixOk)
 	// Convert backslashes to forward slashes in-place
 	// EAX = length, buf is at local 1
-	g.movRR32(REG32_ECX, REG32_EAX) // save length
+	g.movRR32(REG32_ECX, REG32_EAX)   // save length
 	g.emitLoadLocal32(1*4, REG32_EDX) // buf ptr
 	// Include null terminator in count: n = eax + 1
 	g.addRI32(REG32_EAX, 1)
@@ -560,9 +563,9 @@ func (g *CodeGen) compileSyscallFindFirstFile_win386() {
 	// FindFirstFileA(lpFileName, lpFindFileData)
 	// param 0=pattern (local 1), param 1=buf (local 2)
 	g.emitLoadLocal32(2*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpFindFileData
+	g.pushR32(REG32_EAX) // lpFindFileData
 	g.emitLoadLocal32(1*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpFileName
+	g.pushR32(REG32_EAX) // lpFileName
 
 	g.emitCallIAT("FindFirstFileA")
 
@@ -631,13 +634,13 @@ func (g *CodeGen) compileSyscallCreateProcess_win386() {
 	g.pushR32(REG32_EAX)
 	g.emitLoadLocal32(3*4, REG32_EAX) // startupInfo
 	g.pushR32(REG32_EAX)
-	g.pushImm32(0)          // lpCurrentDirectory = NULL
+	g.pushImm32(0)                    // lpCurrentDirectory = NULL
 	g.emitLoadLocal32(5*4, REG32_EAX) // lpEnvironment
 	g.pushR32(REG32_EAX)
-	g.pushImm32(0)          // dwCreationFlags = 0
-	g.pushImm32(1)          // bInheritHandles = TRUE
-	g.pushImm32(0)          // lpThreadAttributes = NULL
-	g.pushImm32(0)          // lpProcessAttributes = NULL
+	g.pushImm32(0)                    // dwCreationFlags = 0
+	g.pushImm32(1)                    // bInheritHandles = TRUE
+	g.pushImm32(0)                    // lpThreadAttributes = NULL
+	g.pushImm32(0)                    // lpProcessAttributes = NULL
 	g.emitLoadLocal32(2*4, REG32_EAX) // lpCommandLine
 	g.pushR32(REG32_EAX)
 	g.emitLoadLocal32(1*4, REG32_EAX) // lpApplicationName
@@ -666,9 +669,9 @@ func (g *CodeGen) compileSyscallWaitProcess_win386() {
 
 	// WaitForSingleObject(hProcess, INFINITE=0xFFFFFFFF)
 	g.emitMovRegImm32(REG32_EAX, 0xFFFFFFFF)
-	g.pushR32(REG32_EAX)   // dwMilliseconds = INFINITE
+	g.pushR32(REG32_EAX) // dwMilliseconds = INFINITE
 	g.emitLoadLocal32(1*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // hHandle
+	g.pushR32(REG32_EAX) // hHandle
 
 	g.emitCallIAT("WaitForSingleObject")
 
@@ -697,14 +700,14 @@ func (g *CodeGen) compileSyscallCreatePipe_win386() {
 	g.subRI32(REG32_ESP, 12) // allocate SECURITY_ATTRIBUTES on stack
 	g.movRR32(REG32_ECX, REG32_ESP)
 	g.emitMovRegImm32(REG32_EAX, 12)
-	g.storeMem32(REG32_ECX, 0, REG32_EAX)  // nLength = 12
+	g.storeMem32(REG32_ECX, 0, REG32_EAX) // nLength = 12
 	g.xorRR32(REG32_EAX, REG32_EAX)
-	g.storeMem32(REG32_ECX, 4, REG32_EAX)  // lpSecurityDescriptor = NULL
+	g.storeMem32(REG32_ECX, 4, REG32_EAX) // lpSecurityDescriptor = NULL
 	g.emitMovRegImm32(REG32_EAX, 1)
-	g.storeMem32(REG32_ECX, 8, REG32_EAX)  // bInheritHandle = TRUE
+	g.storeMem32(REG32_ECX, 8, REG32_EAX) // bInheritHandle = TRUE
 
-	g.pushImm32(0)          // nSize = 0 (default)
-	g.pushR32(REG32_ECX)    // lpPipeAttributes
+	g.pushImm32(0)                    // nSize = 0 (default)
+	g.pushR32(REG32_ECX)              // lpPipeAttributes
 	g.emitLoadLocal32(2*4, REG32_EAX) // &hWritePipe
 	g.pushR32(REG32_EAX)
 	g.emitLoadLocal32(1*4, REG32_EAX) // &hReadPipe
@@ -751,10 +754,10 @@ func (g *CodeGen) compileSyscallStat_win386() {
 	g.subRI32(REG32_ESP, 36)
 	g.movRR32(REG32_ECX, REG32_ESP)
 
-	g.pushR32(REG32_ECX)    // lpFileInformation
-	g.pushImm32(0)          // fInfoLevelId = GetFileExInfoStandard
+	g.pushR32(REG32_ECX) // lpFileInformation
+	g.pushImm32(0)       // fInfoLevelId = GetFileExInfoStandard
 	g.emitLoadLocal32(1*4, REG32_EAX)
-	g.pushR32(REG32_EAX)   // lpFileName
+	g.pushR32(REG32_EAX) // lpFileName
 
 	g.emitCallIAT("GetFileAttributesExA")
 
@@ -815,7 +818,7 @@ func (g *CodeGen) compilePanic_win386() {
 	g.addRI32(REG32_ESP, 4)    // clean written_space
 
 	// Write newline: push '\n' onto stack as a 1-byte buffer
-	g.emitBytes(0x6a, 0x0a) // push 0x0a
+	g.emitBytes(0x6a, 0x0a)         // push 0x0a
 	g.movRR32(REG32_ESI, REG32_ESP) // ESI = &'\n'
 
 	// GetStdHandle(STD_ERROR_HANDLE)
@@ -827,11 +830,11 @@ func (g *CodeGen) compilePanic_win386() {
 	g.subRI32(REG32_ESP, 4) // written_space
 	g.movRR32(REG32_EDX, REG32_ESP)
 
-	g.pushImm32(0)          // lpOverlapped
-	g.pushR32(REG32_EDX)    // &written
-	g.pushImm32(1)          // nBytes = 1
-	g.pushR32(REG32_ESI)    // lpBuffer = &'\n'
-	g.pushR32(REG32_ECX)    // hFile
+	g.pushImm32(0)       // lpOverlapped
+	g.pushR32(REG32_EDX) // &written
+	g.pushImm32(1)       // nBytes = 1
+	g.pushR32(REG32_ESI) // lpBuffer = &'\n'
+	g.pushR32(REG32_ECX) // hFile
 
 	g.emitCallIAT("WriteFile")
 	g.addRI32(REG32_ESP, 8) // clean written_space(4) + '\n' slot(4)

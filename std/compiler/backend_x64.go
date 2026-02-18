@@ -77,7 +77,7 @@ func generateAmd64ELF(irmod *IRModule, outputPath string) error {
 // compileFunc generates x86-64 code for a single IR function.
 func (g *CodeGen) compileFunc(f *IRFunc) {
 	g.curFunc = f
-	g.hasPending = false
+	g.configureOperandCache(REG_R13, REG_R14)
 	g.curFrameSize = len(f.Locals)
 	// Intrinsic functions may have Params > 0 but empty Locals.
 	// Ensure the frame is large enough to hold all param slots.
@@ -617,7 +617,7 @@ func (g *CodeGen) emitTostringHelperX64() {
 	}
 	g.hasTostringHelper = true
 	g.funcOffsets[outlinedTostringHelper] = len(g.code)
-	g.hasPending = false
+	g.configureOperandCache(REG_R13, REG_R14)
 
 	g.pushR(REG_RBP)
 	g.movRR(REG_RBP, REG_RSP)
@@ -899,12 +899,12 @@ func (g *CodeGen) compileLoad(size int) {
 	if size == 1 {
 		g.emitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.xorRR(REG_RAX, REG_RAX)
-		g.jmpRel8(0x04)                    // jmp +4 (skip load)
+		g.emitBytes(0xeb, 0x04)            // jmp +4 (skip load)
 		g.loadMemByte(REG_RAX, REG_RCX, 0) // movzx rax, byte [rcx]
 	} else {
 		g.emitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.xorRR(REG_RAX, REG_RAX)
-		g.jmpRel8(0x03)                // jmp +3 (skip load)
+		g.emitBytes(0xeb, 0x03)        // jmp +3 (skip load)
 		g.loadMem(REG_RAX, REG_RCX, 0) // mov rax, [rcx]
 	}
 	g.opPush(REG_RAX)
@@ -956,7 +956,7 @@ func (g *CodeGen) compileLen() {
 	g.testRR(REG_RAX, REG_RAX)
 	g.emitBytes(0x75, 0x05)   // jnz +5 (skip zero case)
 	g.xorRR(REG_RAX, REG_RAX) // 3 bytes
-	g.jmpRel8(0x04)           // jmp +4 (skip load) 2 bytes
+	g.emitBytes(0xeb, 0x04)   // jmp +4 (skip load) 2 bytes
 	g.loadMem(REG_RAX, REG_RAX, 8)
 	g.opPush(REG_RAX)
 }
@@ -966,7 +966,7 @@ func (g *CodeGen) compileCap() {
 	g.testRR(REG_RAX, REG_RAX)
 	g.emitBytes(0x75, 0x05)         // jnz +5 (skip zero case)
 	g.xorRR(REG_RAX, REG_RAX)       // 3 bytes
-	g.jmpRel8(0x04)                 // jmp +4 (skip load) 2 bytes
+	g.emitBytes(0xeb, 0x04)         // jmp +4 (skip load) 2 bytes
 	g.loadMem(REG_RAX, REG_RAX, 16) // cap at offset 16 (2*8)
 	g.opPush(REG_RAX)
 }

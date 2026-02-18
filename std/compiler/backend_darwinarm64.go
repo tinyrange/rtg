@@ -182,7 +182,7 @@ func (g *CodeGen) emitSyscallReturnArm64() {
 	g.rawPush(REG_X0) // err=-X2
 
 	g.patchArm64BAt(doneFixup, len(g.code))
-	g.hasPending = false // clean state after merge
+	g.clearOperandCache() // clean state after merge
 }
 
 // emitSyscallReturnPtrArm64 handles pointer-returning calls (NULL or MAP_FAILED = error).
@@ -213,7 +213,7 @@ func (g *CodeGen) emitSyscallReturnPtrArm64() {
 	g.rawPush(REG_X0) // err=1
 
 	g.patchArm64BAt(doneFixup, len(g.code))
-	g.hasPending = false // clean state after merge
+	g.clearOperandCache() // clean state after merge
 }
 
 // compilePanicArm64 handles panic on macOS ARM64.

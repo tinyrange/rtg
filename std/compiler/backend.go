@@ -44,6 +44,9 @@ type CodeGen struct {
 	// Pending push optimization: tracks a push that hasn't been emitted yet
 	hasPending bool
 	pendingReg int
+	cacheRegs  []int
+	cacheFree  []int
+	cacheStack []int
 
 	// Word size for the target architecture (8 for amd64, 4 for i386)
 	wordSize int
@@ -351,11 +354,70 @@ func (g *CodeGen) int3() {
 // and i386 (EDI-based, 4-byte slots).
 
 func (g *CodeGen) flush() {
+	if len(g.cacheRegs) > 0 && len(g.cacheStack) > 0 {
+		for _, reg := range g.cacheStack {
+			g.rawPush(reg)
+		}
+		g.cacheStack = g.cacheStack[:0]
+		g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
+		g.hasPending = false
+		return
+	}
 	if !g.hasPending {
 		return
 	}
 	g.hasPending = false
 	g.rawPush(g.pendingReg)
+}
+
+func (g *CodeGen) configureOperandCache(regs ...int) {
+	g.cacheRegs = append(g.cacheRegs[:0], regs...)
+	g.clearOperandCache()
+}
+
+func (g *CodeGen) syncPendingFromCache() {
+	if len(g.cacheStack) == 0 {
+		g.hasPending = false
+		return
+	}
+	g.hasPending = true
+	g.pendingReg = g.cacheStack[len(g.cacheStack)-1]
+}
+
+func (g *CodeGen) clearOperandCache() {
+	g.hasPending = false
+	g.cacheStack = g.cacheStack[:0]
+	g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
+}
+
+func (g *CodeGen) moveReg(dst, src int) {
+	if dst == src {
+		return
+	}
+	if g.isArm64 {
+		g.emitMovRRArm64(dst, src)
+		return
+	}
+	if g.wordSize == 2 {
+		g.emitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+		return
+	}
+	if g.wordSize == 4 {
+		if targetGOOS == "dos" {
+			g.emitBytes(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+		} else {
+			g.emitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+		}
+		return
+	}
+	rex := byte(0x48)
+	if src >= 8 {
+		rex |= 0x04
+	}
+	if dst >= 8 {
+		rex |= 0x01
+	}
+	g.emitBytes(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 }
 
 func (g *CodeGen) rawPush(reg int) {
@@ -415,12 +477,41 @@ func (g *CodeGen) rawPop(reg int) {
 }
 
 func (g *CodeGen) opPush(reg int) {
+	if len(g.cacheRegs) > 0 {
+		if len(g.cacheFree) == 0 {
+			spill := g.cacheStack[0]
+			g.rawPush(spill)
+			g.cacheStack = g.cacheStack[1:]
+			g.cacheFree = append(g.cacheFree, spill)
+		}
+		slot := len(g.cacheFree) - 1
+		dst := g.cacheFree[slot]
+		g.cacheFree = g.cacheFree[:slot]
+		g.moveReg(dst, reg)
+		g.cacheStack = append(g.cacheStack, dst)
+		g.syncPendingFromCache()
+		return
+	}
 	g.flush()
 	g.hasPending = true
 	g.pendingReg = reg
 }
 
 func (g *CodeGen) opPop(reg int) {
+	if len(g.cacheRegs) > 0 {
+		if len(g.cacheStack) > 0 {
+			last := len(g.cacheStack) - 1
+			src := g.cacheStack[last]
+			g.cacheStack = g.cacheStack[:last]
+			g.cacheFree = append(g.cacheFree, src)
+			g.moveReg(reg, src)
+			g.syncPendingFromCache()
+			return
+		}
+		g.rawPop(reg)
+		g.syncPendingFromCache()
+		return
+	}
 	if g.hasPending {
 		g.hasPending = false
 		if reg != g.pendingReg {
@@ -451,6 +542,35 @@ func (g *CodeGen) opPop(reg int) {
 }
 
 func (g *CodeGen) opLoad(reg int) {
+	if len(g.cacheRegs) > 0 {
+		if len(g.cacheStack) > 0 {
+			g.moveReg(reg, g.cacheStack[len(g.cacheStack)-1])
+			g.syncPendingFromCache()
+			return
+		}
+		if g.isArm64 {
+			g.emitLdr(reg, REG_X28, 0)
+			g.syncPendingFromCache()
+			return
+		}
+		if g.wordSize == 4 {
+			if targetGOOS == "dos" {
+				g.emitBytes(0x66, 0x67, 0x8b, byte(0x07|(reg<<3)))
+			} else {
+				g.emitBytes(0x8b, byte(0x07|(reg<<3)))
+			}
+		} else if g.wordSize == 2 {
+			g.emitBytes(0x8b, byte(0x05|(reg<<3)))
+		} else {
+			rex := byte(0x49)
+			if reg >= 8 {
+				rex = 0x4d
+			}
+			g.emitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+		}
+		g.syncPendingFromCache()
+		return
+	}
 	if g.hasPending {
 		if reg != g.pendingReg {
 			if g.isArm64 {
@@ -522,6 +642,30 @@ func (g *CodeGen) opStore(reg int) {
 }
 
 func (g *CodeGen) opDrop() {
+	if len(g.cacheRegs) > 0 {
+		if len(g.cacheStack) > 0 {
+			last := len(g.cacheStack) - 1
+			g.cacheFree = append(g.cacheFree, g.cacheStack[last])
+			g.cacheStack = g.cacheStack[:last]
+			g.syncPendingFromCache()
+			return
+		}
+		if g.isArm64 {
+			g.emitAddImm(REG_X28, REG_X28, 8)
+		} else if g.wordSize == 4 {
+			if targetGOOS == "dos" {
+				g.emitBytes(0x66, 0x67, 0x83, 0xc7, 0x04)
+			} else {
+				g.emitBytes(0x83, 0xc7, 0x04)
+			}
+		} else if g.wordSize == 2 {
+			g.emitBytes(0x83, 0xc7, 0x02)
+		} else {
+			g.emitBytes(0x49, 0x83, 0xc7, 0x08)
+		}
+		g.syncPendingFromCache()
+		return
+	}
 	if g.hasPending {
 		g.hasPending = false
 		return

@@ -10,7 +10,7 @@ package main
 // compileFuncArm64 generates ARM64 code for a single IR function.
 func (g *CodeGen) compileFuncArm64(f *IRFunc) {
 	g.curFunc = f
-	g.hasPending = false
+	g.clearOperandCache()
 	g.curFrameSize = len(f.Locals)
 	if f.Params > g.curFrameSize {
 		g.curFrameSize = f.Params
@@ -472,7 +472,7 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
 		g.emitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
-		g.hasPending = false
+		g.clearOperandCache()
 	case "SysClosedir":
 		g.emitLoadLocalArm64(1*8, REG_X0) // dirp
 		g.emitCallGOT("_closedir")
@@ -514,7 +514,7 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
 		g.emitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
-		g.hasPending = false
+		g.clearOperandCache()
 	case "SysGetargv":
 		argvOff := (len(g.irmod.Globals) + 1) * 8
 		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argvOff))
@@ -522,7 +522,7 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
 		g.emitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
-		g.hasPending = false
+		g.clearOperandCache()
 	case "SysGetenvp":
 		envpOff := (len(g.irmod.Globals) + 2) * 8
 		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(envpOff))
@@ -530,7 +530,7 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
 		g.emitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
-		g.hasPending = false
+		g.clearOperandCache()
 	case "SysGetpid":
 		g.emitCallGOT("_getpid")
 		g.emitSyscallReturnArm64()
@@ -612,7 +612,7 @@ func (g *CodeGen) emitTostringHelperArm64() {
 	}
 	g.hasTostringHelper = true
 	g.funcOffsets[outlinedTostringHelper] = len(g.code)
-	g.hasPending = false
+	g.clearOperandCache()
 
 	g.emitStp(REG_FP, REG_LR, REG_SP, -16)
 	g.emitMovRRArm64(REG_FP, REG_SP)

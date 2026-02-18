@@ -149,7 +149,7 @@ func (g *CodeGen) compileSyscallIntrinsicArm64(paramCount int) {
 	g.rawPush(REG_X0) // err=-X2
 
 	g.patchArm64BAt(doneFixup, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 // compilePanicArm64Linux handles panic on Linux ARM64 using direct syscalls.

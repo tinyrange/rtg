@@ -225,7 +225,7 @@ func (g *CodeGen) emitWinApiReturnArm64(successReg int) {
 	g.rawPush(REG_X0) // err=0
 
 	g.patchArm64BAt(fixDone, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 // === Intrinsic dispatcher ===
@@ -331,7 +331,7 @@ func (g *CodeGen) compileSyscallMmap_winarm64() {
 	g.rawPush(REG_X0) // r2=0
 	g.rawPush(REG_X0) // err=0
 	g.patchArm64BAt(fixDone, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallWrite_winarm64() {
@@ -381,7 +381,7 @@ func (g *CodeGen) compileSyscallWrite_winarm64() {
 	g.rawPush(REG_X0) // r2=0
 	g.rawPush(REG_X0) // err=0
 	g.patchArm64BAt(fixDone, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallRead_winarm64() {
@@ -426,7 +426,7 @@ func (g *CodeGen) compileSyscallRead_winarm64() {
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
 	g.patchArm64BAt(fixDone, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallOpen_winarm64() {
@@ -501,7 +501,7 @@ func (g *CodeGen) compileSyscallOpen_winarm64() {
 	g.rawPush(REG_X0) // r2=0
 	g.rawPush(REG_X0) // err=0
 	g.patchArm64BAt(fixOpenEnd, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallClose_winarm64() {
@@ -550,7 +550,7 @@ func (g *CodeGen) compileSyscallClose_winarm64() {
 
 	g.patchArm64BAt(fixCloseEnd, len(g.code))
 	g.patchArm64BAt(fixCloseDone, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallExit_winarm64() {
@@ -565,7 +565,7 @@ func (g *CodeGen) compileSyscallExit_winarm64() {
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallMkdir_winarm64() {
@@ -616,7 +616,7 @@ func (g *CodeGen) compileSyscallMkdir_winarm64() {
 
 	g.patchArm64BAt(fixDone, len(g.code))
 	g.patchArm64BAt(fixDone2, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallRmdir_winarm64() {
@@ -665,7 +665,7 @@ func (g *CodeGen) emitWinApiReturnSimpleArm64() {
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
 	g.patchArm64BAt(fixDone, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallGetcwd_winarm64() {
@@ -723,7 +723,7 @@ func (g *CodeGen) compileSyscallGetcwd_winarm64() {
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
 	g.patchArm64BAt(fixDoneCwd, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallGetdents_winarm64() {
@@ -732,7 +732,7 @@ func (g *CodeGen) compileSyscallGetdents_winarm64() {
 	g.rawPush(REG_X0)
 	g.emitLoadImm64Compact(REG_X0, 1) // ENOSYS
 	g.rawPush(REG_X0)
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallStat_winarm64() {
@@ -763,7 +763,7 @@ func (g *CodeGen) compileSyscallGetCommandLine_winarm64() {
 	g.emitMovZ(REG_X0, 0, 0)
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallGetEnvStrings_winarm64() {
@@ -776,7 +776,7 @@ func (g *CodeGen) compileSyscallGetEnvStrings_winarm64() {
 	g.emitMovZ(REG_X0, 0, 0)
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallGetpid_winarm64() {
@@ -789,7 +789,7 @@ func (g *CodeGen) compileSyscallGetpid_winarm64() {
 	g.emitMovZ(REG_X0, 0, 0)
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallFindFirstFile_winarm64() {
@@ -827,7 +827,7 @@ func (g *CodeGen) compileSyscallFindFirstFile_winarm64() {
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
 	g.patchArm64BAt(fixDone, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallFindNextFile_winarm64() {
@@ -859,7 +859,7 @@ func (g *CodeGen) compileSyscallFindNextFile_winarm64() {
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
 	g.patchArm64BAt(fixDone, len(g.code))
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallFindClose_winarm64() {
@@ -873,7 +873,7 @@ func (g *CodeGen) compileSyscallFindClose_winarm64() {
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallCreateProcess_winarm64() {
@@ -932,7 +932,7 @@ func (g *CodeGen) compileSyscallWaitProcess_winarm64() {
 	g.emitMovZ(REG_X0, 0, 0)
 	g.rawPush(REG_X0) // r2=0
 	g.rawPush(REG_X0) // err=0
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 func (g *CodeGen) compileSyscallCreatePipe_winarm64() {
@@ -978,7 +978,7 @@ func (g *CodeGen) compileSyscallSetStdHandle_winarm64() {
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
 	g.rawPush(REG_X0)
-	g.hasPending = false
+	g.clearOperandCache()
 }
 
 // compilePanicArm64Windows handles panic on Windows ARM64.

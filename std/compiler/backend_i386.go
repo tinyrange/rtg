@@ -16,7 +16,11 @@ func (g *CodeGen) ptrBytes_i386() int {
 // compileFunc_i386 generates i386 code for a single IR function.
 func (g *CodeGen) compileFunc_i386(f *IRFunc) {
 	g.curFunc = f
-	g.hasPending = false
+	if targetGOOS != "dos" && g.wordSize == 4 {
+		g.configureOperandCache(REG32_EBX, REG32_ESI)
+	} else {
+		g.clearOperandCache()
+	}
 	g.curFrameSize = len(f.Locals)
 	if f.Params > g.curFrameSize {
 		g.curFrameSize = f.Params
@@ -594,7 +598,11 @@ func (g *CodeGen) emitTostringHelperI386() {
 	}
 	g.hasTostringHelper = true
 	g.funcOffsets[outlinedTostringHelper] = len(g.code)
-	g.hasPending = false
+	if targetGOOS != "dos" && g.wordSize == 4 {
+		g.configureOperandCache(REG32_EBX, REG32_ESI)
+	} else {
+		g.clearOperandCache()
+	}
 
 	slot := g.slotBytes_i386()
 	g.pushR32(REG32_EBP)
@@ -828,12 +836,12 @@ func (g *CodeGen) compileLoad_i386(size int) {
 	if size == 1 {
 		g.emitBytes(0x75, 0x04)                  // jnz +4
 		g.xorRR32(REG32_EAX, REG32_EAX)          // 2 bytes
-		g.jmpRel8(0x03)                          // jmp +3
+		g.emitBytes(0xeb, 0x03)                  // jmp +3
 		g.loadMemByte32(REG32_EAX, REG32_ECX, 0) // movzx eax, byte [ecx]
 	} else {
 		g.emitBytes(0x75, 0x04)              // jnz +4
 		g.xorRR32(REG32_EAX, REG32_EAX)      // 2 bytes
-		g.jmpRel8(0x02)                      // jmp +2
+		g.emitBytes(0xeb, 0x02)              // jmp +2
 		g.loadMem32(REG32_EAX, REG32_ECX, 0) // mov eax, [ecx]
 	}
 	g.opPush(REG32_EAX)
