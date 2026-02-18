@@ -630,8 +630,10 @@ func (g *CodeGen) compileMakestringIntrinsic() {
 }
 
 func (g *CodeGen) compileTostringIntrinsic() {
-	g.needTostringHelper = true
-	g.emitCallPlaceholder(outlinedTostringHelper)
+	// OP_CALL_INTRINSIC is emitted inside intrinsic wrapper functions where
+	// parameters are in frame locals, not on the operand stack. Inline the
+	// body directly so it reads Param 0 via emitLoadLocal.
+	g.compileTostringIntrinsicBodyX64()
 }
 
 func (g *CodeGen) emitTostringHelperX64() {
@@ -662,23 +664,33 @@ func (g *CodeGen) emitTostringHelperX64() {
 
 func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 	// Param 0 = value (could be string ptr or interface box ptr)
-	// Heuristic: if [ptr+0] < 256, it's a type_id (interface box); otherwise it's a string data pointer
+	// Heuristic:
+	// - canonical interface box: [ptr+0]=type_id (<256), [ptr+8]=value
+	// - string header pointer: [ptr+0]=data_ptr (>=256)
+	// - tolerate swapped boxes: [ptr+0]=value, [ptr+8]=type_id (<256)
 	g.emitLoadLocal(1*8, REG_RAX) // load value
 
-	// Test: is rax a valid pointer? Check if [rax] < 256
+	// Load first qword and check canonical interface layout.
 	g.loadMem(REG_RCX, REG_RAX, 0)
 	g.emitBytes(0x48, 0x81, 0xf9) // cmp rcx, 256
 	g.emitU32(256)
+	ifaceCaseFixup := g.jccRel32(0x82) // jb
+
+	// [ptr+0] >= 256: either string pointer or swapped interface box.
+	g.loadMem(REG_RDX, REG_RAX, 8)
+	g.emitBytes(0x48, 0x81, 0xfa) // cmp rdx, 256
+	g.emitU32(256)
 	stringCaseFixup := g.jccRel32(CC_AE)
 
-	// Interface case: rcx = type_id, [rax+8] = concrete value
-	// Push concrete value as receiver, then call Error/String method via dispatch
-	g.loadMem(REG_RDX, REG_RAX, 8)
-	// Push concrete value onto operand stack
-	g.opPush(REG_RDX)
+	// Swapped interface layout: rcx=value, rdx=type_id.
+	g.opPush(REG_RCX)
+	g.movRR(REG_RCX, REG_RDX)
+	dispatchFixup := g.jmpRel32()
 
-	// Save type_id (rcx) for dispatch
-	g.pushR(REG_RCX)
+	// Canonical interface layout: rcx=type_id, [rax+8]=value.
+	g.patchRel32(ifaceCaseFixup)
+	g.loadMem(REG_RDX, REG_RAX, 8)
+	g.opPush(REG_RDX)
 
 	// Generate dispatch chain for "Error" method
 	var entries []dispatchEntry
@@ -697,7 +709,7 @@ func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 		}
 	}
 
-	g.popR(REG_RCX) // type_id
+	g.patchRel32(dispatchFixup)
 
 	// Always generate dispatch chain (with built-in int/string + user types)
 	endFixups := make([]int, 0)
@@ -797,11 +809,13 @@ func (g *CodeGen) compileIfaceBox(inst Inst) {
 	// Store type_id at [box+0]
 	g.emitByte(0xb8) // mov eax, imm32
 	g.emitU32(uint32(typeID))
-	g.storeMem(REG_RCX, 0, REG_RAX)
+	// Emit stores directly to avoid depending on generic store helper
+	// argument lowering in self-hosted compilers.
+	g.emitBytes(rexRR(REG_RAX, REG_RCX), 0x89, 0x01) // mov [rcx], rax
 
 	// Restore concrete value and store at [box+8]
 	g.popR(REG_RAX)
-	g.storeMem(REG_RCX, 8, REG_RAX)
+	g.emitBytes(rexRR(REG_RAX, REG_RCX), 0x89, 0x41, 0x08) // mov [rcx+8], rax
 
 	// Push box pointer as result
 	g.opPush(REG_RCX)

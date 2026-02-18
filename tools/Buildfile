@@ -95,8 +95,13 @@ crosscompile-wasm-native: build
   sh ./build/rtg -T wasi/wasm32 -o build/cross_stage1.wasm ./std/compiler/
   sh wasmtime --dir=. build/cross_stage1.wasm -T linux/amd64 -o build/cross_stage2 compiler
   sh chmod +x build/cross_stage2
+  sh ./build/cross_stage2 -h >/dev/null
+  sh ./build/cross_stage2 -o build/cross_smoke tests/func_variadic.go
+  sh ./build/cross_smoke >/dev/null
   sh ./build/cross_stage2 -o build/cross_stage3 compiler
   sh ./build/cross_stage3 -o build/cross_stage4 compiler
+  sh ./build/cross_stage3 -h >/dev/null
+  sh ./build/cross_stage4 -h >/dev/null
   sh cmp build/cross_stage3 build/cross_stage4 && echo "PASS: wasm->native cross-compile OK"
 
 test-fullcompiler-rtg: build

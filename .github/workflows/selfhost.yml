@@ -101,6 +101,9 @@ jobs:
       - name: Build Buildfile runner
         run: go build -o build/build ./tools/build.go
 
+      - name: WASM to native cross-compile smoke
+        run: ./build/build crosscompile-wasm-native
+
       - name: Fullcompiler suite (WASM backend)
         run: ./build/build test-fullcompiler-wasm
 
