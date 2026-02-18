@@ -368,12 +368,16 @@ func (l *Lexer) scanRune() Token {
 	col := l.col
 	l.advance() // skip opening '
 	start := l.pos
-	if l.peek() == '\\' {
+	for !l.atEnd() && l.peek() != '\'' && l.peek() != '\n' && l.peek() != '\r' {
+		if l.peek() == '\\' && l.peekAt(1) != 0 {
+			l.advance()
+			l.advance()
+			continue
+		}
 		l.advance()
 	}
-	l.advance()
 	val := l.src[start:l.pos]
-	if !l.atEnd() {
+	if !l.atEnd() && l.peek() == '\'' {
 		l.advance() // skip closing '
 	}
 	return Token{Kind: TOKEN_RUNE, Val: val, Line: line, Col: col}

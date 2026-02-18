@@ -215,6 +215,8 @@ type Compiler struct {
 	deferNames          []string
 	deferArgStarts      []int
 	deferArgCounts      []int
+	deferRetCounts      []int
+	namedResultNames    []string
 	dotJoinCache        map[string]map[string]string // a → b → "a.b"
 	qualifyTypeCache    map[string]string            // "typeName\x00pkgPath" → qualified result
 }
@@ -394,7 +396,7 @@ func isBuiltinName(name string) bool {
 	case 'l':
 		return name == "len"
 	case 'c':
-		return name == "cap" || name == "copy" || name == "close" || name == "complex"
+		return name == "cap" || name == "copy" || name == "close" || name == "complex" || name == "clear"
 	case 'a':
 		return name == "append"
 	case 'm':
@@ -1390,6 +1392,8 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.deferNames = nil
 	c.deferArgStarts = nil
 	c.deferArgCounts = nil
+	c.deferRetCounts = nil
+	c.namedResultNames = nil
 	c.pushScope()
 
 	// Extract return type names for interface boxing
@@ -1502,6 +1506,7 @@ func (c *Compiler) compileFunc(node *Node) {
 			for _, ret := range node.Type.Nodes {
 				if ret.Name != "" {
 					c.addLocal(ret.Name)
+					c.namedResultNames = append(c.namedResultNames, ret.Name)
 				}
 			}
 		} else {
@@ -1770,10 +1775,17 @@ func (c *Compiler) compileStmt(node *Node) {
 	case NDeferStmt:
 		if node.X != nil && node.X.Kind == NCallExpr {
 			name := c.resolveCallName(node.X.X)
+			fixedCount, isVariadic := c.funcVariadic[name]
+			isIfaceVar := isVariadic && c.funcVariadicIface[name]
 			argStart := -1
 			argCount := 0
 			for _, arg := range node.X.Nodes {
 				c.compileExpr(arg)
+				if isIfaceVar && argCount >= fixedCount {
+					if typeID := c.exprPrimitiveTypeID(arg); typeID > 0 {
+						c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+					}
+				}
 				idx := c.addLocal(fmt.Sprintf("_defer_%d_%d", len(c.deferNames), argCount))
 				c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
 				if argStart < 0 {
@@ -1787,6 +1799,11 @@ func (c *Compiler) compileStmt(node *Node) {
 			c.deferNames = append(c.deferNames, name)
 			c.deferArgStarts = append(c.deferArgStarts, argStart)
 			c.deferArgCounts = append(c.deferArgCounts, argCount)
+			retCount := 0
+			if n, ok := c.funcRets[name]; ok {
+				retCount = n
+			}
+			c.deferRetCounts = append(c.deferRetCounts, retCount)
 		}
 	case NConstDecl:
 		// Local const — treat like var
@@ -2204,12 +2221,77 @@ func (c *Compiler) emitDeferredCalls() {
 		name := c.deferNames[idx]
 		argStart := c.deferArgStarts[idx]
 		argCount := c.deferArgCounts[idx]
-		k := 0
-		for k < argCount {
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: argStart + k})
-			k++
+		fixedCount, isVariadic := c.funcVariadic[name]
+		if isVariadic {
+			if fixedCount > argCount {
+				fixedCount = argCount
+			}
+			k := 0
+			for k < fixedCount {
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: argStart + k})
+				k++
+			}
+			variadicCount := argCount - fixedCount
+			if variadicCount < 0 {
+				variadicCount = 0
+			}
+			varElemSz := targetPtrSize
+			if esz, ok := c.funcVariadicElem[name]; ok {
+				varElemSz = esz
+			}
+			sliceHdrSize := 4 * targetPtrSize
+			allocSize := sliceHdrSize + variadicCount*varElemSz
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(allocSize)})
+			c.emit(Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
+			tmpIdx := c.addLocal("$defer_varslice")
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(sliceHdrSize)})
+			c.emit(Inst{Op: OP_ADD})
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(Inst{Op: OP_STORE})
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(variadicCount)})
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(targetPtrSize)})
+			c.emit(Inst{Op: OP_ADD})
+			c.emit(Inst{Op: OP_STORE})
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(variadicCount)})
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(2 * targetPtrSize)})
+			c.emit(Inst{Op: OP_ADD})
+			c.emit(Inst{Op: OP_STORE})
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(varElemSz)})
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(3 * targetPtrSize)})
+			c.emit(Inst{Op: OP_ADD})
+			c.emit(Inst{Op: OP_STORE})
+			j := 0
+			for j < variadicCount {
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: argStart + fixedCount + j})
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
+				c.emit(Inst{Op: OP_CONST_I64, Val: int64(sliceHdrSize + j*varElemSz)})
+				c.emit(Inst{Op: OP_ADD})
+				c.emit(Inst{Op: OP_STORE, Arg: varElemSz})
+				j++
+			}
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(Inst{Op: OP_CALL, Name: name, Arg: fixedCount + 1})
+		} else {
+			k := 0
+			for k < argCount {
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: argStart + k})
+				k++
+			}
+			c.emit(Inst{Op: OP_CALL, Name: name, Arg: argCount})
 		}
-		c.emit(Inst{Op: OP_CALL, Name: name, Arg: argCount})
+		dropCount := 0
+		if idx < len(c.deferRetCounts) {
+			dropCount = c.deferRetCounts[idx]
+		}
+		for dropCount > 0 {
+			c.emit(Inst{Op: OP_DROP})
+			dropCount--
+		}
 		di++
 	}
 }
@@ -2217,6 +2299,26 @@ func (c *Compiler) emitDeferredCalls() {
 func (c *Compiler) compileReturn(node *Node) {
 	count := 0
 	retTypes := c.funcRetTypes[c.curFunc.Name]
+	bareReturn := node.X == nil && len(node.Nodes) == 0
+	if bareReturn && len(c.namedResultNames) > 0 {
+		for i, name := range c.namedResultNames {
+			idx, ok := c.lookupLocal(name)
+			if !ok {
+				continue
+			}
+			w := 0
+			if idx < len(c.curFunc.Locals) {
+				w = c.curFunc.Locals[idx].Width
+			}
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: idx, Width: w})
+			if i < len(retTypes) && c.isInterfaceTypeName(retTypes[i]) {
+				if typeID := c.typeIDForTypeName(c.localConcreteTypes[name]); typeID > 0 {
+					c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+				}
+			}
+			count++
+		}
+	}
 
 	if node.X != nil {
 		c.compileExpr(node.X)
@@ -2663,6 +2765,7 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 	c.pushScope()
 
 	isMap := c.isMapExpr(node.Type)
+	isString := !isMap && c.isStringTypedExpr(node.Type)
 
 	// Compile the iterable and store it
 	c.compileExpr(node.Type)
@@ -2702,6 +2805,33 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 			c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
 		}
 		c.emit(Inst{Op: OP_LOCAL_SET, Arg: keyIdx})
+	}
+	if isString {
+		sizeIdx := c.addLocal("$rsize")
+		runeIdx := c.addLocal("$rrune")
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
+		c.emit(Inst{Op: OP_CALL, Name: "runtime.StringDecodeRune", Arg: 2})
+		c.emit(Inst{Op: OP_LOCAL_SET, Arg: sizeIdx})
+		c.emit(Inst{Op: OP_LOCAL_SET, Arg: runeIdx})
+		if node.Y != nil {
+			valIdx := c.addLocal(node.Y.Name)
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: runeIdx})
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: valIdx})
+			c.localConcreteTypes[node.Y.Name] = "int"
+		}
+		if node.Body != nil {
+			c.compileBlock(node.Body)
+		}
+		c.emitLabel(continueLabel)
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: sizeIdx})
+		c.emit(Inst{Op: OP_ADD})
+		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idxIdx})
+		c.emit(Inst{Op: OP_JMP, Arg: loopLabel})
+		c.emitLabel(breakLabel)
+		c.popScope()
+		return
 	}
 	if node.Y != nil {
 		valIdx := c.addLocal(node.Y.Name)
@@ -3736,7 +3866,84 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			c.compileMake(node)
 			return
 		}
+		if name == "new" {
+			if len(node.Nodes) == 0 {
+				c.emit(Inst{Op: OP_CONST_NIL})
+				return
+			}
+			size := targetPtrSize
+			t := node.Nodes[0]
+			if t != nil {
+				typeName := c.qualifyTypeName(nodeTypeName(t), "")
+				if typeNode, _ := c.lookupStructTypeNode(typeName); typeNode != nil {
+					slots := len(typeNode.Nodes)
+					if slots <= 0 {
+						slots = 1
+					}
+					size = slots * targetPtrSize
+				} else {
+					switch nodeTypeName(t) {
+					case "byte", "bool":
+						size = 1
+					case "int16", "uint16":
+						size = 2
+					case "int32", "uint32":
+						size = 4
+					}
+				}
+			}
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(size)})
+			c.emit(Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
+			c.emit(Inst{Op: OP_DUP})
+			c.emit(Inst{Op: OP_CONST_I64, Val: int64(size)})
+			c.emit(Inst{Op: OP_CALL, Name: "runtime.Memzero", Arg: 2})
+			return
+		}
+		if name == "clear" {
+			if len(node.Nodes) == 1 {
+				keyKind := c.mapExprKeyKind(node.Nodes[0])
+				if keyKind >= 0 {
+					c.emit(Inst{Op: OP_CONST_I64, Val: int64(keyKind)})
+					c.emit(Inst{Op: OP_CALL, Name: "runtime.MapMake", Arg: 1})
+					c.compileLValueSet(node.Nodes[0])
+				}
+			}
+			return
+		}
+		if name == "print" || name == "println" {
+			writeArg := func(arg *Node) {
+				c.compileExpr(arg)
+				if !c.isStringTypedExpr(arg) {
+					c.maybeBoxValueForInterface(arg)
+					c.emit(Inst{Op: OP_CALL, Name: "runtime.Tostring", Arg: 1})
+				}
+				tmp := c.addLocal("$print_s")
+				c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmp})
+				c.emit(Inst{Op: OP_CONST_I64, Val: 1})
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmp})
+				c.emit(Inst{Op: OP_CALL, Name: "runtime.Stringptr", Arg: 1})
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmp})
+				c.emit(Inst{Op: OP_LEN})
+				c.emit(Inst{Op: OP_CALL, Name: "runtime.SysWrite", Arg: 3})
+				c.emit(Inst{Op: OP_DROP})
+				c.emit(Inst{Op: OP_DROP})
+				c.emit(Inst{Op: OP_DROP})
+			}
+			for i, arg := range node.Nodes {
+				if name == "println" && i > 0 {
+					writeArg(&Node{Kind: NStringLit, Name: " ", Pos: node.Pos})
+				}
+				writeArg(arg)
+			}
+			if name == "println" {
+				writeArg(&Node{Kind: NStringLit, Name: "\n", Pos: node.Pos})
+			}
+			return
+		}
 		if name == "panic" {
+			if len(c.deferNames) > 0 {
+				c.emitDeferredCalls()
+			}
 			if len(node.Nodes) > 0 {
 				c.compileExpr(node.Nodes[0])
 			} else {
@@ -3748,8 +3955,16 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		// Type conversions: int(), uintptr(), byte(), string(), int16(), int32()
 		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "string" || name == "int16" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" {
 			c.compileExpr(node.Nodes[0])
-			if name == "string" && c.isExprByte(node.Nodes[0]) {
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.ByteToString", Arg: 1})
+			if name == "string" {
+				if c.isExprByte(node.Nodes[0]) {
+					c.emit(Inst{Op: OP_CALL, Name: "runtime.ByteToString", Arg: 1})
+				} else if c.isStringTypedExpr(node.Nodes[0]) {
+					// no-op
+				} else if c.exprConcreteType(node.Nodes[0]) == "[]byte" {
+					c.emit(Inst{Op: OP_CONVERT, Name: name})
+				} else {
+					c.emit(Inst{Op: OP_CALL, Name: "runtime.RuneToString", Arg: 1})
+				}
 			} else {
 				c.emit(Inst{Op: OP_CONVERT, Name: name})
 			}
@@ -4887,7 +5102,21 @@ func parseRuneLiteral(s string) int {
 		}
 		return int(s[1])
 	}
-	return int(s[0])
+	// Decode UTF-8 leading rune.
+	b0 := s[0]
+	if b0 < 0x80 {
+		return int(b0)
+	}
+	if (b0&0xE0) == 0xC0 && len(s) >= 2 {
+		return int(b0&0x1F)<<6 | int(s[1]&0x3F)
+	}
+	if (b0&0xF0) == 0xE0 && len(s) >= 3 {
+		return int(b0&0x0F)<<12 | int(s[1]&0x3F)<<6 | int(s[2]&0x3F)
+	}
+	if (b0&0xF8) == 0xF0 && len(s) >= 4 {
+		return int(b0&0x07)<<18 | int(s[1]&0x3F)<<12 | int(s[2]&0x3F)<<6 | int(s[3]&0x3F)
+	}
+	return int(b0)
 }
 
 // encodeStringLiteral converts raw bytes to an escaped string literal format

@@ -153,6 +153,93 @@ func ByteToString(b byte) string {
 	return Makestring(ptr, 1)
 }
 
+// RuneToString converts a Unicode code point to a UTF-8 string.
+func RuneToString(r int) string {
+	if r < 0 {
+		r = 0xFFFD
+	}
+	if r <= 0x7F {
+		return ByteToString(byte(r))
+	}
+	if r <= 0x7FF {
+		ptr := Alloc(2)
+		buf := Makeslice(ptr, 2, 2)
+		buf[0] = byte(0xC0 | ((r >> 6) & 0x1F))
+		buf[1] = byte(0x80 | (r & 0x3F))
+		return Makestring(ptr, 2)
+	}
+	if r <= 0xFFFF {
+		ptr := Alloc(3)
+		buf := Makeslice(ptr, 3, 3)
+		buf[0] = byte(0xE0 | ((r >> 12) & 0x0F))
+		buf[1] = byte(0x80 | ((r >> 6) & 0x3F))
+		buf[2] = byte(0x80 | (r & 0x3F))
+		return Makestring(ptr, 3)
+	}
+	if r > 0x10FFFF {
+		r = 0xFFFD
+	}
+	ptr := Alloc(4)
+	buf := Makeslice(ptr, 4, 4)
+	buf[0] = byte(0xF0 | ((r >> 18) & 0x07))
+	buf[1] = byte(0x80 | ((r >> 12) & 0x3F))
+	buf[2] = byte(0x80 | ((r >> 6) & 0x3F))
+	buf[3] = byte(0x80 | (r & 0x3F))
+	return Makestring(ptr, 4)
+}
+
+// StringDecodeRune decodes a UTF-8 rune from s at byte index i.
+// Returns (rune, width). Invalid encodings return U+FFFD width 1.
+func StringDecodeRune(s string, i int) (int, int) {
+	if i < 0 || i >= len(s) {
+		return 0, 0
+	}
+	b0 := int(s[i])
+	if b0 < 0x80 {
+		return b0, 1
+	}
+	if b0 < 0xC2 {
+		return 0xFFFD, 1
+	}
+	if b0 < 0xE0 {
+		if i+1 >= len(s) {
+			return 0xFFFD, 1
+		}
+		b1 := int(s[i+1])
+		if (b1 & 0xC0) != 0x80 {
+			return 0xFFFD, 1
+		}
+		r := ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+		return r, 2
+	}
+	if b0 < 0xF0 {
+		if i+2 >= len(s) {
+			return 0xFFFD, 1
+		}
+		b1 := int(s[i+1])
+		b2 := int(s[i+2])
+		if (b1&0xC0) != 0x80 || (b2&0xC0) != 0x80 {
+			return 0xFFFD, 1
+		}
+		r := ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+		return r, 3
+	}
+	if b0 < 0xF8 {
+		if i+3 >= len(s) {
+			return 0xFFFD, 1
+		}
+		b1 := int(s[i+1])
+		b2 := int(s[i+2])
+		b3 := int(s[i+3])
+		if (b1&0xC0) != 0x80 || (b2&0xC0) != 0x80 || (b3&0xC0) != 0x80 {
+			return 0xFFFD, 1
+		}
+		r := ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+		return r, 4
+	}
+	return 0xFFFD, 1
+}
+
 // IntToString converts an integer to its decimal string representation.
 func IntToString(n int) string {
 	if n == 0 {
