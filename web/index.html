@@ -104,6 +104,11 @@
       gap: 6px;
       flex-wrap: wrap;
     }
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
     #target-select {
       background: var(--bg-raised);
       color: var(--text);
@@ -147,6 +152,76 @@
     }
     .btn-gray:hover:not(:disabled) {
       background: linear-gradient(180deg, #4a5a74 0%, #3a4a60 100%);
+    }
+    #tags-panel {
+      position: fixed;
+      top: 42px;
+      right: 12px;
+      width: 280px;
+      max-height: 62vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      z-index: 120;
+    }
+    .tags-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-dim);
+      background: linear-gradient(180deg, #1a2540 0%, #141c2e 100%);
+    }
+    .tags-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-dim);
+    }
+    .tags-header-left {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tags-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #btn-rescan-tags {
+      font-size: 10px;
+      padding: 2px 6px;
+    }
+    #tags-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    #tags-list {
+      overflow-y: auto;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .tag-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+    }
+    .tag-row input {
+      accent-color: var(--accent);
+    }
+    .tags-empty {
+      color: var(--text-muted);
+      font-family: var(--font-ui);
     }
 
     /* ── Panel Layout ──────────────────────────────────────── */
@@ -769,6 +844,12 @@
       #toolbar h1 { font-size: 13px; }
       .btn { padding: 4px 8px; font-size: 11px; }
       #target-select { font-size: 11px; padding: 3px 4px; }
+      #tags-panel {
+        top: 40px;
+        right: 8px;
+        width: calc(100vw - 16px);
+        max-height: 50vh;
+      }
     }
 
     @media (max-width: 480px) {
@@ -786,25 +867,40 @@
       <h1>RTG <span class="toolbar-dim">Playground</span></h1>
     </div>
     <div id="toolbar-buttons">
-      <select id="target-select">
-        <option value="wasi/wasm32">wasi/wasm32</option>
-        <option value="linux/amd64">linux/amd64</option>
-        <option value="linux/386">linux/386</option>
-        <option value="darwin/arm64">darwin/arm64</option>
-        <option value="linux/arm64">linux/arm64</option>
-        <option value="windows/386">windows/386</option>
-        <option value="windows/amd64">windows/amd64</option>
-        <option value="windows/arm64">windows/arm64</option>
-        <option value="c/64">c/64</option>
-        <option value="c/32">c/32</option>
-        <option value="c/16">c/16</option>
-        <option value="dos/8086">dos/8086</option>
-        <option value="ir">ir</option>
-      </select>
+      <div class="toolbar-group">
+        <select id="target-select">
+          <option value="wasi/wasm32">wasi/wasm32</option>
+          <option value="linux/amd64">linux/amd64</option>
+          <option value="linux/386">linux/386</option>
+          <option value="darwin/arm64">darwin/arm64</option>
+          <option value="linux/arm64">linux/arm64</option>
+          <option value="windows/386">windows/386</option>
+          <option value="windows/amd64">windows/amd64</option>
+          <option value="windows/arm64">windows/arm64</option>
+          <option value="c/64">c/64</option>
+          <option value="c/32">c/32</option>
+          <option value="c/16">c/16</option>
+          <option value="dos/8086">dos/8086</option>
+          <option value="ir">ir</option>
+        </select>
+        <button id="btn-tags" class="btn btn-gray">Build Tags</button>
+      </div>
       <button id="btn-compile" class="btn btn-blue">Compile</button>
       <button id="btn-run" class="btn btn-green" disabled>Run</button>
       <button id="btn-download" class="btn btn-gray hidden" disabled>Download</button>
     </div>
+  </div>
+  <div id="tags-panel" class="hidden">
+    <div class="tags-header">
+      <div class="tags-header-left">
+        <span class="tags-title">Build Tags</span>
+        <span id="tags-meta">Loading...</span>
+      </div>
+      <div class="tags-actions">
+        <button id="btn-rescan-tags" class="btn btn-gray">Rescan</button>
+      </div>
+    </div>
+    <div id="tags-list"></div>
   </div>
 
   <!-- Main panels -->

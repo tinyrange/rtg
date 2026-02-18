@@ -9,6 +9,8 @@ let compiledTarget = null; // target the last compile was for
 let compilerModule = null; // cached WebAssembly.Module for the compiler
 let saveTimer = null;
 let dirty = true;         // files changed since last compile
+let availableBuildTags = [];
+let enabledBuildTags = loadEnabledBuildTags();
 
 // --- DOM ---
 const editor = document.getElementById("editor");
@@ -30,6 +32,11 @@ const irViewer = document.getElementById("ir-viewer");
 const irContent = document.getElementById("ir-content");
 const irFuncList = document.getElementById("ir-func-list");
 const irFuncSearch = document.getElementById("ir-func-search");
+const btnTags = document.getElementById("btn-tags");
+const tagsPanel = document.getElementById("tags-panel");
+const tagsList = document.getElementById("tags-list");
+const tagsMeta = document.getElementById("tags-meta");
+const btnRescanTags = document.getElementById("btn-rescan-tags");
 
 // --- Init ---
 function init() {
@@ -38,8 +45,11 @@ function init() {
   openFile("user/main.go");
   setupEditorEvents();
   setupButtons();
+  setupTagPanel();
+  renderBuildTags();
   loadCompilerModule();
   updateDirtyIndicator();
+  discoverBuildTags();
 }
 
 // --- LocalStorage ---
@@ -67,6 +77,22 @@ func main() {
 
 function saveUserFiles() {
   localStorage.setItem("rtg2-user-files", JSON.stringify(userFiles));
+}
+
+function loadEnabledBuildTags() {
+  try {
+    const stored = localStorage.getItem("rtg2-build-tags");
+    if (!stored) return new Set();
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((t) => typeof t === "string" && t.length > 0));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveEnabledBuildTags() {
+  localStorage.setItem("rtg2-build-tags", JSON.stringify(Array.from(enabledBuildTags).sort()));
 }
 
 // --- Dirty tracking ---
@@ -241,6 +267,7 @@ function setupButtons() {
     btnDownload.disabled = true;
     btnDownload.classList.add("hidden");
     showIRViewer(false);
+    discoverBuildTags();
   });
 
   btnNewFile.addEventListener("click", () => {
@@ -267,6 +294,74 @@ function setupButtons() {
     renderFileTree();
     openFile("user/main.go");
   });
+}
+
+function setupTagPanel() {
+  btnTags.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const nowVisible = tagsPanel.classList.toggle("hidden") === false;
+    if (nowVisible) discoverBuildTags();
+  });
+  document.addEventListener("click", (e) => {
+    if (tagsPanel.classList.contains("hidden")) return;
+    if (tagsPanel.contains(e.target) || e.target === btnTags) return;
+    tagsPanel.classList.add("hidden");
+  });
+  btnRescanTags.addEventListener("click", () => {
+    discoverBuildTags();
+  });
+}
+
+function renderBuildTags() {
+  tagsList.replaceChildren();
+
+  if (availableBuildTags.length === 0) {
+    const msg = document.createElement("div");
+    msg.className = "tags-empty";
+    msg.textContent = "No tags found yet.";
+    tagsList.appendChild(msg);
+    tagsMeta.textContent = "0 tags";
+    return;
+  }
+
+  let enabledCount = 0;
+  for (const tag of availableBuildTags) {
+    const row = document.createElement("label");
+    row.className = "tag-row";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = enabledBuildTags.has(tag);
+    if (cb.checked) enabledCount++;
+    cb.addEventListener("change", () => {
+      if (cb.checked) {
+        enabledBuildTags.add(tag);
+      } else {
+        enabledBuildTags.delete(tag);
+      }
+      saveEnabledBuildTags();
+      markDirty();
+      renderBuildTags();
+    });
+
+    const text = document.createElement("span");
+    text.textContent = tag;
+    row.appendChild(cb);
+    row.appendChild(text);
+    tagsList.appendChild(row);
+  }
+
+  tagsMeta.textContent = `${enabledCount}/${availableBuildTags.length} enabled`;
+}
+
+function getSelectedBuildTags() {
+  return Array.from(enabledBuildTags).sort();
+}
+
+function isGoosGoarchTag(tag) {
+  const knownOS = new Set(["linux", "darwin", "windows", "freebsd", "wasi", "dos", "c"]);
+  const knownArch = new Set(["amd64", "386", "arm64", "arm", "wasm32", "dos16", "c8", "c16", "c32", "c64"]);
+  return knownOS.has(tag) || knownArch.has(tag);
 }
 
 // --- Target helpers ---
@@ -318,8 +413,85 @@ async function loadCompilerModule() {
     }
     compilerModule = await WebAssembly.compileStreaming(fetch("compiler.wasm"));
     setStatus("Ready");
+    discoverBuildTags();
   } catch (e) {
     setStatus("Error loading compiler: " + e.message);
+  }
+}
+
+async function runCompilerInWasi(fs, args, handlers = {}) {
+  const wasi = createWASI(fs, args, {
+    onStdout: handlers.onStdout || (() => {}),
+    onStderr: handlers.onStderr || (() => {}),
+  });
+
+  const instance = await WebAssembly.instantiate(compilerModule, wasi.imports);
+  wasi.setMemory(instance.exports.memory);
+
+  let exitCode = 0;
+  try {
+    instance.exports._start();
+  } catch (e) {
+    if (e instanceof WASIExit) {
+      exitCode = e.code;
+    } else {
+      throw e;
+    }
+  }
+
+  return exitCode;
+}
+
+function appendTagArgs(args) {
+  const tags = getSelectedBuildTags();
+  if (tags.length > 0) {
+    args.push("-tags", tags.join(","));
+  }
+}
+
+async function discoverBuildTags() {
+  if (!compilerModule) return;
+
+  tagsMeta.textContent = "Scanning...";
+  const previous = availableBuildTags.slice();
+
+  try {
+    const fs = new VirtualFS();
+    for (const [path, content] of Object.entries(STD_LIBRARY)) {
+      fs.addFile(path, content);
+    }
+    for (const [path, content] of Object.entries(userFiles)) {
+      fs.addFile(path, content);
+    }
+
+    const args = ["rtg", "-T", targetSelect.value, "-parse-only", "-list-build-tags", "build-tags.txt"];
+    appendTagArgs(args);
+    args.push("user/");
+
+    const exitCode = await runCompilerInWasi(fs, args);
+    if (exitCode !== 0) {
+      availableBuildTags = previous;
+      tagsMeta.textContent = "Scan failed";
+      return;
+    }
+
+    const raw = fs.readFile("build-tags.txt");
+    const text = raw ? new TextDecoder().decode(raw) : "";
+    const discovered = text
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !isGoosGoarchTag(s));
+    availableBuildTags = Array.from(new Set(discovered)).sort();
+
+    // Drop tags that no longer exist in the discovered list.
+    for (const tag of Array.from(enabledBuildTags)) {
+      if (!availableBuildTags.includes(tag)) enabledBuildTags.delete(tag);
+    }
+    saveEnabledBuildTags();
+    renderBuildTags();
+  } catch {
+    availableBuildTags = previous;
+    tagsMeta.textContent = "Scan failed";
   }
 }
 
@@ -361,27 +533,14 @@ async function compile() {
     const entryFile = "user/main.go";
     const isIR = target === "ir";
     const args = ["rtg", "-T", target];
+    appendTagArgs(args);
     if (!isIR) args.push("-size-analysis", "size-analysis.json");
     args.push("-o", outputFile, entryFile);
 
-    const wasi = createWASI(fs, args, {
+    const exitCode = await runCompilerInWasi(fs, args, {
       onStdout: (data) => appendOutput(new TextDecoder().decode(data), "stdout"),
       onStderr: (data) => appendOutput(new TextDecoder().decode(data), "stderr"),
     });
-
-    const instance = await WebAssembly.instantiate(compilerModule, wasi.imports);
-    wasi.setMemory(instance.exports.memory);
-
-    let exitCode = 0;
-    try {
-      instance.exports._start();
-    } catch (e) {
-      if (e instanceof WASIExit) {
-        exitCode = e.code;
-      } else {
-        throw e;
-      }
-    }
 
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 
@@ -796,25 +955,12 @@ window.selfCompileAndDownload = async function(target) {
     }
 
     const args = ["rtg", "-T", target, "-o", outputFile, "std/compiler/"];
+    appendTagArgs(args);
 
-    const wasi = createWASI(fs, args, {
+    const exitCode = await runCompilerInWasi(fs, args, {
       onStdout: (data) => appendOutput(new TextDecoder().decode(data), "stdout"),
       onStderr: (data) => appendOutput(new TextDecoder().decode(data), "stderr"),
     });
-
-    const instance = await WebAssembly.instantiate(compilerModule, wasi.imports);
-    wasi.setMemory(instance.exports.memory);
-
-    let exitCode = 0;
-    try {
-      instance.exports._start();
-    } catch (e) {
-      if (e instanceof WASIExit) {
-        exitCode = e.code;
-      } else {
-        throw e;
-      }
-    }
 
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 

@@ -70,6 +70,36 @@ type Module struct {
 	Entry    *Package
 }
 
+var discoveredBuildTags []string
+
+func resetDiscoveredBuildTags() {
+	discoveredBuildTags = nil
+}
+
+func addDiscoveredBuildTag(tag string) {
+	if tag == "" || tag == "true" || tag == "false" {
+		return
+	}
+	for _, existing := range discoveredBuildTags {
+		if existing == tag {
+			return
+		}
+	}
+	discoveredBuildTags = append(discoveredBuildTags, tag)
+}
+
+func getDiscoveredBuildTags() []string {
+	var tags []string
+	for _, tag := range discoveredBuildTags {
+		if isKnownOS(tag) || isKnownArch(tag) {
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	sortStrings(tags)
+	return tags
+}
+
 // ResolveModule parses entry files and recursively resolves all imports.
 func ResolveModule(baseDir string, entryFiles []string) *Module {
 	mod := &Module{
@@ -222,6 +252,8 @@ func shouldIncludeFile(path string, name string) bool {
 		return true // if can't read, include by default
 	}
 	content := string(src)
+	collectBuildTagsFromContent(content)
+	collectBuildTagsFromFilename(name)
 
 	// Scan first few lines for //go:build
 	pos := 0
@@ -304,6 +336,70 @@ func splitString(s string, sep byte) []string {
 	return result
 }
 
+func collectBuildTagsFromContent(content string) {
+	// Scan first few lines for //go:build expression.
+	pos := 0
+	for pos < len(content) {
+		eol := pos
+		for eol < len(content) && content[eol] != '\n' {
+			eol++
+		}
+		line := content[pos:eol]
+		trimmed := trimLeftSpace(line)
+		if len(trimmed) == 0 {
+			pos = eol + 1
+			continue
+		}
+		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
+			collectBuildTagsFromExpr(trimmed[11:len(trimmed)])
+			return
+		}
+		if len(trimmed) >= 2 && trimmed[0:2] == "//" {
+			pos = eol + 1
+			continue
+		}
+		return
+	}
+}
+
+func collectBuildTagsFromExpr(expr string) {
+	i := 0
+	for i < len(expr) {
+		if isAlphaNum(expr[i]) || expr[i] == '_' {
+			start := i
+			for i < len(expr) && (isAlphaNum(expr[i]) || expr[i] == '_') {
+				i++
+			}
+			addDiscoveredBuildTag(expr[start:i])
+			continue
+		}
+		i++
+	}
+}
+
+func collectBuildTagsFromFilename(name string) {
+	if !isGoFile(name) {
+		return
+	}
+	base := name[0 : len(name)-3]
+	parts := splitString(base, '_')
+	if len(parts) >= 3 {
+		maybearch := parts[len(parts)-1]
+		maybeos := parts[len(parts)-2]
+		if isKnownOS(maybeos) && isKnownArch(maybearch) {
+			addDiscoveredBuildTag(maybeos)
+			addDiscoveredBuildTag(maybearch)
+			return
+		}
+	}
+	if len(parts) >= 2 {
+		last := parts[len(parts)-1]
+		if isKnownOS(last) || isKnownArch(last) {
+			addDiscoveredBuildTag(last)
+		}
+	}
+}
+
 // trimLeftSpace trims leading spaces and tabs.
 func trimLeftSpace(s string) string {
 	i := 0
@@ -315,12 +411,12 @@ func trimLeftSpace(s string) string {
 
 // isKnownOS returns true if s is a known GOOS value.
 func isKnownOS(s string) bool {
-	return s == "linux" || s == "darwin" || s == "windows" || s == "freebsd" || s == "wasi"
+	return s == "linux" || s == "darwin" || s == "windows" || s == "freebsd" || s == "wasi" || s == "dos" || s == "c"
 }
 
 // isKnownArch returns true if s is a known GOARCH value.
 func isKnownArch(s string) bool {
-	return s == "amd64" || s == "386" || s == "arm64" || s == "arm" || s == "wasm32"
+	return s == "amd64" || s == "386" || s == "arm64" || s == "arm" || s == "wasm32" || s == "dos16" || s == "c8" || s == "c16" || s == "c32" || s == "c64"
 }
 
 // hasTag checks if a tag is in the active build tag set.
@@ -534,6 +630,9 @@ func parseSource(name string, src string) *Node {
 // shouldIncludeContent checks if source content should be included based on build tags.
 // This is like shouldIncludeFile but takes content directly instead of reading from disk.
 func shouldIncludeContent(content string, name string) bool {
+	collectBuildTagsFromContent(content)
+	collectBuildTagsFromFilename(name)
+
 	// 1. Check //go:build directive in content (takes precedence)
 	pos := 0
 	for pos < len(content) {

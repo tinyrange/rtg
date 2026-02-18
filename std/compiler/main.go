@@ -92,6 +92,8 @@ func main() {
 	outputPath := "output"
 	var entryFiles []string
 	var extraTags string
+	var parseOnly bool
+	var buildTagsPath string
 	var runMode bool
 	var stdinInput bool
 	var programArgs []string
@@ -183,6 +185,12 @@ func main() {
 			i = i + 2
 		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
 			sizeAnalysisPath = os.Args[i+1]
+			i = i + 2
+		} else if os.Args[i] == "-parse-only" {
+			parseOnly = true
+			i = i + 1
+		} else if os.Args[i] == "-list-build-tags" && i+1 < len(os.Args) {
+			buildTagsPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-tags" && i+1 < len(os.Args) {
 			extraTags = os.Args[i+1]
@@ -307,9 +315,29 @@ func main() {
 	if compilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
 	}
+	resetDiscoveredBuildTags()
 	mod := ResolveModule(baseDir, entryFiles)
 	if compilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
+	}
+
+	if buildTagsPath != "" {
+		tags := getDiscoveredBuildTags()
+		var out string
+		for _, t := range tags {
+			out = out + t + "\n"
+		}
+		err := os.WriteFile(buildTagsPath, []byte(out), 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
+			runCleanup()
+			os.Exit(1)
+		}
+	}
+
+	if parseOnly {
+		runCleanup()
+		os.Exit(0)
 	}
 
 	// Validate cross-package references
@@ -421,6 +449,8 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -o <path>              Output path (default: output)\n")
 	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
+	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
+	fmt.Fprintf(out, "  -list-build-tags <p>   Write discovered build tags (one per line)\n")
 	fmt.Fprintf(out, "  -run                   Compile and run the output binary\n")
 	fmt.Fprintf(out, "  -size-analysis <path>  Write per-function size analysis JSON\n")
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
