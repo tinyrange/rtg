@@ -3,11 +3,12 @@ package main
 // optimizeIRModule runs lightweight, backend-independent IR cleanups.
 func optimizeIRModule(irmod *IRModule) {
 	for _, f := range irmod.Funcs {
-		f.Code = optimizeIRFuncCode(f.Code)
+		f.Code = optimizeIRFuncCode(f)
 	}
 }
 
-func optimizeIRFuncCode(code []Inst) []Inst {
+func optimizeIRFuncCode(f *IRFunc) []Inst {
+	code := f.Code
 	if len(code) == 0 {
 		return code
 	}
@@ -17,6 +18,11 @@ func optimizeIRFuncCode(code []Inst) []Inst {
 		changed = false
 
 		var stepChanged bool
+		code, stepChanged = deadLocalStoreToDrop(code, len(f.Locals))
+		if stepChanged {
+			changed = true
+		}
+
 		code, stepChanged = removeUnreachableIRCode(code)
 		if stepChanged {
 			changed = true
@@ -39,6 +45,50 @@ func optimizeIRFuncCode(code []Inst) []Inst {
 	}
 
 	return code
+}
+
+// deadLocalStoreToDrop rewrites LOCAL_SET to DROP when the local is never read
+// and its address is never taken anywhere in the function.
+func deadLocalStoreToDrop(code []Inst, numLocals int) ([]Inst, bool) {
+	if len(code) == 0 || numLocals <= 0 {
+		return code, false
+	}
+
+	localRead := make([]bool, numLocals)
+	localAddrTaken := make([]bool, numLocals)
+
+	for _, inst := range code {
+		switch inst.Op {
+		case OP_LOCAL_GET:
+			if inst.Arg >= 0 && inst.Arg < numLocals {
+				localRead[inst.Arg] = true
+			}
+		case OP_LOCAL_ADDR:
+			if inst.Arg >= 0 && inst.Arg < numLocals {
+				localAddrTaken[inst.Arg] = true
+			}
+		}
+	}
+
+	changed := false
+	out := make([]Inst, len(code))
+	copy(out, code)
+	for i := range out {
+		inst := out[i]
+		if inst.Op != OP_LOCAL_SET {
+			continue
+		}
+		if inst.Arg < 0 || inst.Arg >= numLocals {
+			continue
+		}
+		if localRead[inst.Arg] || localAddrTaken[inst.Arg] {
+			continue
+		}
+
+		out[i] = Inst{Op: OP_DROP}
+		changed = true
+	}
+	return out, changed
 }
 
 func buildLabelIndex(code []Inst) map[int]int {
