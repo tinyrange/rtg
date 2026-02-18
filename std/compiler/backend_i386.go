@@ -13,14 +13,18 @@ func (g *CodeGen) ptrBytes_i386() int {
 	return g.slotBytes_i386()
 }
 
-// compileFunc_i386 generates i386 code for a single IR function.
-func (g *CodeGen) compileFunc_i386(f *IRFunc) {
-	g.curFunc = f
+func (g *CodeGen) initOperandCache_i386() {
 	if targetGOOS != "dos" && g.wordSize == 4 {
 		g.configureOperandCache(REG32_EBX, REG32_ESI)
 	} else {
 		g.clearOperandCache()
 	}
+}
+
+// compileFunc_i386 generates i386 code for a single IR function.
+func (g *CodeGen) compileFunc_i386(f *IRFunc) {
+	g.curFunc = f
+	g.initOperandCache_i386()
 	g.curFrameSize = len(f.Locals)
 	if f.Params > g.curFrameSize {
 		g.curFrameSize = f.Params
@@ -218,7 +222,7 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 // === Constant loading (i386) ===
 
 func (g *CodeGen) compileConstI32(val int64) {
-	g.flush()
+	g.prepareForClobber(REG32_EAX)
 	if g.wordSize == 2 {
 		v16 := uint16(val)
 		if v16 == 0 {
@@ -239,7 +243,7 @@ func (g *CodeGen) compileConstI32(val int64) {
 }
 
 func (g *CodeGen) compileConstStr_i386(s string) {
-	g.flush()
+	g.prepareForClobber(REG32_EAX)
 	decoded := decodeStringLiteral(s)
 
 	headerOff, ok := g.stringMap[decoded]
@@ -279,7 +283,7 @@ func (g *CodeGen) compileConstStr_i386(s string) {
 // === Local variable access (i386) ===
 
 func (g *CodeGen) compileLocalGet_i386(idx int) {
-	g.flush()
+	g.prepareForClobber(REG32_EAX)
 	offset := (idx + 1) * g.slotBytes_i386()
 	g.emitLoadLocal32(offset, REG32_EAX)
 	g.opPush(REG32_EAX)
@@ -292,7 +296,7 @@ func (g *CodeGen) compileLocalSet_i386(idx int) {
 }
 
 func (g *CodeGen) compileLocalAddr_i386(idx int) {
-	g.flush()
+	g.prepareForClobber(REG32_EAX)
 	offset := (idx + 1) * g.slotBytes_i386()
 	g.emitLeaLocal32(offset, REG32_EAX)
 	g.opPush(REG32_EAX)
@@ -301,7 +305,7 @@ func (g *CodeGen) compileLocalAddr_i386(idx int) {
 // === Global variable access (i386) ===
 
 func (g *CodeGen) compileGlobalGet_i386(inst Inst) {
-	g.flush()
+	g.prepareForClobber(REG32_EAX, REG32_ECX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code) - g.wordSize,
@@ -322,7 +326,7 @@ func (g *CodeGen) compileGlobalSet_i386(inst Inst) {
 }
 
 func (g *CodeGen) compileGlobalAddr_i386(inst Inst) {
-	g.flush()
+	g.prepareForClobber(REG32_EAX)
 	g.emitMovRegImm32(REG32_EAX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code) - g.wordSize,
@@ -598,11 +602,7 @@ func (g *CodeGen) emitTostringHelperI386() {
 	}
 	g.hasTostringHelper = true
 	g.funcOffsets[outlinedTostringHelper] = len(g.code)
-	if targetGOOS != "dos" && g.wordSize == 4 {
-		g.configureOperandCache(REG32_EBX, REG32_ESI)
-	} else {
-		g.clearOperandCache()
-	}
+	g.initOperandCache_i386()
 
 	slot := g.slotBytes_i386()
 	g.pushR32(REG32_EBP)
@@ -767,12 +767,10 @@ func (g *CodeGen) compileIfaceCall_i386(inst Inst) {
 
 	// Push receiver once and materialize it before branch dispatch.
 	g.opPush(REG32_EDX)
-	g.flush()
 
 	// Restore regular args
 	i = argCount - 1
 	for i >= 0 {
-		g.flush()
 		g.popR32(REG32_EAX)
 		g.opPush(REG32_EAX)
 		i = i - 1

@@ -417,6 +417,38 @@ func (g *CodeGen) moveReg(dst, src int) {
 	g.emitBytes(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 }
 
+func (g *CodeGen) prepareForClobber(regs ...int) {
+	if !g.hasPending {
+		return
+	}
+	conflict := false
+	for _, reg := range regs {
+		if reg == g.pendingReg {
+			conflict = true
+			break
+		}
+	}
+	if !conflict {
+		return
+	}
+	if len(g.cacheRegs) > 0 {
+		if len(g.cacheFree) == 0 {
+			spill := g.cacheStack[0]
+			g.rawPush(spill)
+			g.cacheStack = g.cacheStack[1:]
+			g.cacheFree = append(g.cacheFree, spill)
+		}
+		slot := len(g.cacheFree) - 1
+		dst := g.cacheFree[slot]
+		g.cacheFree = g.cacheFree[:slot]
+		g.moveReg(dst, g.pendingReg)
+		g.cacheStack = append(g.cacheStack, dst)
+		g.hasPending = false
+		return
+	}
+	g.flush()
+}
+
 func (g *CodeGen) rawPush(reg int) {
 	if g.isArm64 {
 		// SUB X28, X28, #8; STR Xreg, [X28]
@@ -473,6 +505,46 @@ func (g *CodeGen) rawPop(reg int) {
 	}
 }
 
+func (g *CodeGen) rawLoad(reg int) {
+	if g.isArm64 {
+		g.emitLdr(reg, REG_X28, 0)
+		return
+	}
+	if g.wordSize == 4 {
+		if targetGOOS == "dos" {
+			g.emitBytes(0x66, 0x67, 0x8b, byte(0x07|(reg<<3)))
+		} else {
+			g.emitBytes(0x8b, byte(0x07|(reg<<3)))
+		}
+	} else if g.wordSize == 2 {
+		g.emitBytes(0x8b, byte(0x05|(reg<<3)))
+	} else {
+		rex := byte(0x49)
+		if reg >= 8 {
+			rex = 0x4d
+		}
+		g.emitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+	}
+}
+
+func (g *CodeGen) rawDrop() {
+	if g.isArm64 {
+		g.emitAddImm(REG_X28, REG_X28, 8)
+		return
+	}
+	if g.wordSize == 4 {
+		if targetGOOS == "dos" {
+			g.emitBytes(0x66, 0x67, 0x83, 0xc7, 0x04)
+		} else {
+			g.emitBytes(0x83, 0xc7, 0x04)
+		}
+	} else if g.wordSize == 2 {
+		g.emitBytes(0x83, 0xc7, 0x02)
+	} else {
+		g.emitBytes(0x49, 0x83, 0xc7, 0x08)
+	}
+}
+
 func (g *CodeGen) opPush(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
@@ -517,28 +589,7 @@ func (g *CodeGen) opPop(reg int) {
 	}
 	if g.hasPending {
 		g.hasPending = false
-		if reg != g.pendingReg {
-			if g.isArm64 {
-				g.emitMovRRArm64(reg, g.pendingReg)
-			} else if g.wordSize == 2 {
-				g.emitBytes(0x89, byte(0xc0|((g.pendingReg&7)<<3)|(reg&7)))
-			} else if g.wordSize == 4 {
-				if targetGOOS == "dos" {
-					g.emitBytes(0x66, 0x89, byte(0xc0|((g.pendingReg&7)<<3)|(reg&7)))
-				} else {
-					g.emitBytes(0x89, byte(0xc0|((g.pendingReg&7)<<3)|(reg&7)))
-				}
-			} else {
-				rex := byte(0x48)
-				if g.pendingReg >= 8 {
-					rex |= 0x04
-				}
-				if reg >= 8 {
-					rex |= 0x01
-				}
-				g.emitBytes(rex, 0x89, byte(0xc0|((g.pendingReg&7)<<3)|(reg&7)))
-			}
-		}
+		g.moveReg(reg, g.pendingReg)
 		return
 	}
 	g.rawPop(reg)
@@ -554,72 +605,15 @@ func (g *CodeGen) opLoad(reg int) {
 			g.moveReg(reg, g.cacheStack[len(g.cacheStack)-1])
 			return
 		}
-		if g.isArm64 {
-			g.emitLdr(reg, REG_X28, 0)
-			return
-		}
-		if g.wordSize == 4 {
-			if targetGOOS == "dos" {
-				g.emitBytes(0x66, 0x67, 0x8b, byte(0x07|(reg<<3)))
-			} else {
-				g.emitBytes(0x8b, byte(0x07|(reg<<3)))
-			}
-		} else if g.wordSize == 2 {
-			g.emitBytes(0x8b, byte(0x05|(reg<<3)))
-		} else {
-			rex := byte(0x49)
-			if reg >= 8 {
-				rex = 0x4d
-			}
-			g.emitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
-		}
+		g.rawLoad(reg)
 		return
 	}
 	if g.hasPending {
-		if reg != g.pendingReg {
-			if g.isArm64 {
-				g.emitMovRRArm64(reg, g.pendingReg)
-			} else if g.wordSize == 2 {
-				g.emitBytes(0x89, byte(0xc0|((g.pendingReg&7)<<3)|(reg&7)))
-			} else if g.wordSize == 4 {
-				if targetGOOS == "dos" {
-					g.emitBytes(0x66, 0x89, byte(0xc0|((g.pendingReg&7)<<3)|(reg&7)))
-				} else {
-					g.emitBytes(0x89, byte(0xc0|((g.pendingReg&7)<<3)|(reg&7)))
-				}
-			} else {
-				rex := byte(0x48)
-				if g.pendingReg >= 8 {
-					rex |= 0x04
-				}
-				if reg >= 8 {
-					rex |= 0x01
-				}
-				g.emitBytes(rex, 0x89, byte(0xc0|((g.pendingReg&7)<<3)|(reg&7)))
-			}
-		}
+		g.moveReg(reg, g.pendingReg)
 		g.flush()
 		return
 	}
-	if g.isArm64 {
-		g.emitLdr(reg, REG_X28, 0)
-		return
-	}
-	if g.wordSize == 4 {
-		if targetGOOS == "dos" {
-			g.emitBytes(0x66, 0x67, 0x8b, byte(0x07|(reg<<3)))
-		} else {
-			g.emitBytes(0x8b, byte(0x07|(reg<<3)))
-		}
-	} else if g.wordSize == 2 {
-		g.emitBytes(0x8b, byte(0x05|(reg<<3)))
-	} else {
-		rex := byte(0x49)
-		if reg >= 8 {
-			rex = 0x4d
-		}
-		g.emitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
-	}
+	g.rawLoad(reg)
 }
 
 func (g *CodeGen) opStore(reg int) {
@@ -657,40 +651,14 @@ func (g *CodeGen) opDrop() {
 			g.cacheStack = g.cacheStack[:last]
 			return
 		}
-		if g.isArm64 {
-			g.emitAddImm(REG_X28, REG_X28, 8)
-		} else if g.wordSize == 4 {
-			if targetGOOS == "dos" {
-				g.emitBytes(0x66, 0x67, 0x83, 0xc7, 0x04)
-			} else {
-				g.emitBytes(0x83, 0xc7, 0x04)
-			}
-		} else if g.wordSize == 2 {
-			g.emitBytes(0x83, 0xc7, 0x02)
-		} else {
-			g.emitBytes(0x49, 0x83, 0xc7, 0x08)
-		}
+		g.rawDrop()
 		return
 	}
 	if g.hasPending {
 		g.hasPending = false
 		return
 	}
-	if g.isArm64 {
-		g.emitAddImm(REG_X28, REG_X28, 8)
-		return
-	}
-	if g.wordSize == 4 {
-		if targetGOOS == "dos" {
-			g.emitBytes(0x66, 0x67, 0x83, 0xc7, 0x04)
-		} else {
-			g.emitBytes(0x83, 0xc7, 0x04)
-		}
-	} else if g.wordSize == 2 {
-		g.emitBytes(0x83, 0xc7, 0x02)
-	} else {
-		g.emitBytes(0x49, 0x83, 0xc7, 0x08)
-	}
+	g.rawDrop()
 }
 
 // === ARM64 GOT helpers ===

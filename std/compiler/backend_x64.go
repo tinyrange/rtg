@@ -285,7 +285,7 @@ func (g *CodeGen) compileInst(inst Inst) {
 // === Constant loading ===
 
 func (g *CodeGen) compileConstI64(val int64) {
-	g.flush()
+	g.prepareForClobber(REG_RAX)
 	if val == 0 {
 		g.xorRR(REG_RAX, REG_RAX) // 3 bytes instead of 10
 	} else if val > 0 && val <= 0x7fffffff {
@@ -303,7 +303,7 @@ func (g *CodeGen) compileConstI64(val int64) {
 }
 
 func (g *CodeGen) compileConstStr(s string) {
-	g.flush()
+	g.prepareForClobber(REG_RAX)
 	decoded := decodeStringLiteral(s)
 
 	headerOff, ok := g.stringMap[decoded]
@@ -337,7 +337,7 @@ func (g *CodeGen) compileConstStr(s string) {
 // === Local variable access ===
 
 func (g *CodeGen) compileLocalGet(idx int) {
-	g.flush()
+	g.prepareForClobber(REG_RAX)
 	offset := (idx + 1) * 8
 	g.emitLoadLocal(offset, REG_RAX)
 	g.opPush(REG_RAX)
@@ -350,7 +350,7 @@ func (g *CodeGen) compileLocalSet(idx int) {
 }
 
 func (g *CodeGen) compileLocalAddr(idx int) {
-	g.flush()
+	g.prepareForClobber(REG_RAX)
 	offset := (idx + 1) * 8
 	g.emitLeaLocal(offset, REG_RAX)
 	g.opPush(REG_RAX)
@@ -359,7 +359,7 @@ func (g *CodeGen) compileLocalAddr(idx int) {
 // === Global variable access ===
 
 func (g *CodeGen) compileGlobalGet(inst Inst) {
-	g.flush()
+	g.prepareForClobber(REG_RAX, REG_RCX)
 	g.emitMovRegImm64(REG_RCX, uint64(inst.Arg*8)) // offset placeholder
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code) - 8,
@@ -380,7 +380,7 @@ func (g *CodeGen) compileGlobalSet(inst Inst) {
 }
 
 func (g *CodeGen) compileGlobalAddr(inst Inst) {
-	g.flush()
+	g.prepareForClobber(REG_RAX)
 	g.emitMovRegImm64(REG_RAX, uint64(inst.Arg*8)) // offset placeholder
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code) - 8,
@@ -808,12 +808,10 @@ func (g *CodeGen) compileIfaceCall(inst Inst) {
 
 	// Push receiver once and materialize it before branch dispatch.
 	g.opPush(REG_RDX)
-	g.flush()
 
 	// Restore regular args from call stack (in correct order)
 	i = argCount - 1
 	for i >= 0 {
-		g.flush()
 		g.popR(REG_RAX)
 		g.opPush(REG_RAX)
 		i = i - 1

@@ -210,13 +210,13 @@ func (g *CodeGen) compileInstArm64(inst Inst) {
 // === Constant loading ===
 
 func (g *CodeGen) compileConstI64Arm64(val int64) {
-	g.flush()
+	g.prepareForClobber(REG_X0)
 	g.emitLoadImm64Compact(REG_X0, uint64(val))
 	g.opPush(REG_X0)
 }
 
 func (g *CodeGen) compileConstStrArm64(s string) {
-	g.flush()
+	g.prepareForClobber(REG_X0, REG_X1)
 	decoded := decodeStringLiteral(s)
 
 	headerOff, ok := g.stringMap[decoded]
@@ -257,7 +257,7 @@ func (g *CodeGen) compileConstStrArm64(s string) {
 // === Local variable access ===
 
 func (g *CodeGen) compileLocalGetArm64(idx int) {
-	g.flush()
+	g.prepareForClobber(REG_X0)
 	offset := (idx + 1) * 8
 	g.emitLoadLocalArm64(offset, REG_X0)
 	g.opPush(REG_X0)
@@ -270,7 +270,7 @@ func (g *CodeGen) compileLocalSetArm64(idx int) {
 }
 
 func (g *CodeGen) compileLocalAddrArm64(idx int) {
-	g.flush()
+	g.prepareForClobber(REG_X0)
 	offset := (idx + 1) * 8
 	g.emitLeaLocalArm64(offset, REG_X0)
 	g.opPush(REG_X0)
@@ -279,7 +279,7 @@ func (g *CodeGen) compileLocalAddrArm64(idx int) {
 // === Global variable access ===
 
 func (g *CodeGen) compileGlobalGetArm64(inst Inst) {
-	g.flush()
+	g.prepareForClobber(REG_X0)
 	g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(inst.Arg*8))
 	g.opPush(REG_X0)
 }
@@ -291,7 +291,7 @@ func (g *CodeGen) compileGlobalSetArm64(inst Inst) {
 }
 
 func (g *CodeGen) compileGlobalAddrArm64(inst Inst) {
-	g.flush()
+	g.prepareForClobber(REG_X0)
 	g.emitAdrpAdd(REG_X0, "$data_addr$", uint64(inst.Arg*8))
 	g.opPush(REG_X0)
 }
@@ -778,12 +778,10 @@ func (g *CodeGen) compileIfaceCallArm64(inst Inst) {
 
 	// Push receiver once and materialize it before branch dispatch.
 	g.opPush(REG_X2)
-	g.flush()
 
 	// Restore regular args
 	i = argCount - 1
 	for i >= 0 {
-		g.flush()
 		g.emitLdr(REG_X0, REG_SP, 0)
 		g.emitAddImm(REG_SP, REG_SP, 16)
 		g.opPush(REG_X0)
