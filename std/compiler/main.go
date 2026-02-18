@@ -1,3 +1,5 @@
+//go:build !no_frontend
+
 package main
 
 import (
@@ -94,6 +96,8 @@ func main() {
 	var extraTags string
 	var parseOnly bool
 	var buildTagsPath string
+	var emitIRBinaryPath string
+	var fromIRBinaryPath string
 	var runMode bool
 	var stdinInput bool
 	var programArgs []string
@@ -189,6 +193,18 @@ func main() {
 		} else if os.Args[i] == "-parse-only" {
 			parseOnly = true
 			i = i + 1
+		} else if (os.Args[i] == "-emit-ir-binary" || os.Args[i] == "-from-ir-binary") && i+1 < len(os.Args) {
+			if !irBinaryEnabled {
+				fmt.Fprintf(os.Stderr, "IR binary I/O is experimental; rebuild with -tags exp_ir_binary\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			if os.Args[i] == "-emit-ir-binary" {
+				emitIRBinaryPath = os.Args[i+1]
+			} else {
+				fromIRBinaryPath = os.Args[i+1]
+			}
+			i = i + 2
 		} else if os.Args[i] == "-list-build-tags" && i+1 < len(os.Args) {
 			buildTagsPath = os.Args[i+1]
 			i = i + 2
@@ -216,6 +232,11 @@ func main() {
 		}
 	}
 	if stdinInput {
+		if fromIRBinaryPath != "" {
+			fmt.Fprintf(os.Stderr, "cannot use - with -from-ir-binary\n")
+			runCleanup()
+			os.Exit(1)
+		}
 		err := readStdinSourceToTemp()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "rtg: failed to read stdin source: %v\n", err)
@@ -251,7 +272,12 @@ func main() {
 		outputPath = runTmpBin
 	}
 
-	if len(entryFiles) == 0 {
+	if fromIRBinaryPath != "" && len(entryFiles) > 0 {
+		fmt.Fprintf(os.Stderr, "cannot combine source files with -from-ir-binary\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if fromIRBinaryPath == "" && len(entryFiles) == 0 {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
@@ -283,95 +309,130 @@ func main() {
 	// Initialize embedded std if available
 	initEmbeddedStd()
 
-	// Determine base directory for the std library.
-	// When embedded std is available, skip the disk search entirely.
-	var baseDir string
-	if hasEmbeddedStd() {
-		baseDir = "."
+	var irmod *IRModule
+	if fromIRBinaryPath != "" {
+		if parseOnly {
+			fmt.Fprintf(os.Stderr, "-parse-only is not valid with -from-ir-binary\n")
+			runCleanup()
+			os.Exit(1)
+		}
+		if buildTagsPath != "" {
+			fmt.Fprintf(os.Stderr, "-list-build-tags is not valid with -from-ir-binary\n")
+			runCleanup()
+			os.Exit(1)
+		}
+		var err error
+		irmod, err = readIRBinary(fromIRBinaryPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading IR binary: %v\n", err)
+			runCleanup()
+			os.Exit(1)
+		}
+		if compilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
+		}
 	} else {
-		cwd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error getting working directory: %v\n", err)
+		// Determine base directory for the std library.
+		// When embedded std is available, skip the disk search entirely.
+		var baseDir string
+		if hasEmbeddedStd() {
+			baseDir = "."
+		} else {
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error getting working directory: %v\n", err)
+				runCleanup()
+				os.Exit(1)
+			}
+			// Walk up from cwd until we find a directory containing std/runtime/runtime.go
+			baseDir = cwd
+			search := cwd
+			for {
+				_, err := os.ReadFile(search + "/std/runtime/runtime.go")
+				if err == nil {
+					baseDir = search
+					break
+				}
+				parent := dirName(search)
+				if parent == search || parent == "" {
+					break
+				}
+				search = parent
+			}
+		}
+
+		if compilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
+		}
+		resetDiscoveredBuildTags()
+		mod := ResolveModule(baseDir, entryFiles)
+		if compilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
+		}
+
+		if buildTagsPath != "" {
+			tags := getDiscoveredBuildTags()
+			var out string
+			for _, t := range tags {
+				out = out + t + "\n"
+			}
+			err := os.WriteFile(buildTagsPath, []byte(out), 0644)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
+				runCleanup()
+				os.Exit(1)
+			}
+		}
+
+		if parseOnly {
+			runCleanup()
+			os.Exit(0)
+		}
+
+		// Validate cross-package references
+		valErrs := ValidateModule(mod)
+		if len(valErrs) > 0 {
+			fmt.Fprintf(os.Stderr, "\n%d validation errors:\n", len(valErrs))
+			for _, e := range valErrs {
+				fmt.Fprintf(os.Stderr, "  %s\n", e)
+			}
 			runCleanup()
 			os.Exit(1)
 		}
-		// Walk up from cwd until we find a directory containing std/runtime/runtime.go
-		baseDir = cwd
-		search := cwd
-		for {
-			_, err := os.ReadFile(search + "/std/runtime/runtime.go")
-			if err == nil {
-				baseDir = search
-				break
-			}
-			parent := dirName(search)
-			if parent == search || parent == "" {
-				break
-			}
-			search = parent
-		}
-	}
 
-	if compilerDebug {
-		fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
-	}
-	resetDiscoveredBuildTags()
-	mod := ResolveModule(baseDir, entryFiles)
-	if compilerDebug {
-		fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
-	}
-
-	if buildTagsPath != "" {
-		tags := getDiscoveredBuildTags()
-		var out string
-		for _, t := range tags {
-			out = out + t + "\n"
+		// Compile to IR
+		if compilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
 		}
-		err := os.WriteFile(buildTagsPath, []byte(out), 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
+		var errs []string
+		irmod, errs = CompileModule(mod)
+
+		if len(errs) > 0 {
+			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "  %s\n", e)
+			}
 			runCleanup()
 			os.Exit(1)
 		}
-	}
 
-	if parseOnly {
-		runCleanup()
-		os.Exit(0)
-	}
-
-	// Validate cross-package references
-	valErrs := ValidateModule(mod)
-	if len(valErrs) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d validation errors:\n", len(valErrs))
-		for _, e := range valErrs {
-			fmt.Fprintf(os.Stderr, "  %s\n", e)
+		if compilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
-		runCleanup()
-		os.Exit(1)
-	}
-
-	// Compile to IR
-	if compilerDebug {
-		fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
-	}
-	irmod, errs := CompileModule(mod)
-
-	if len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "  %s\n", e)
+		eliminateDeadFunctions(irmod)
+		if compilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
 		}
-		runCleanup()
-		os.Exit(1)
-	}
-
-	if compilerDebug {
-		fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
-	}
-	eliminateDeadFunctions(irmod)
-	if compilerDebug {
-		fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
+		if emitIRBinaryPath != "" {
+			err := writeIRBinary(irmod, emitIRBinaryPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error writing IR binary: %v\n", err)
+				runCleanup()
+				os.Exit(1)
+			}
+			runCleanup()
+			os.Exit(0)
+		}
 	}
 
 	// Set VM program arguments if using VM backend
@@ -450,6 +511,10 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
+	if irBinaryEnabled {
+		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")
+		fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
+	}
 	fmt.Fprintf(out, "  -list-build-tags <p>   Write discovered build tags (one per line)\n")
 	fmt.Fprintf(out, "  -run                   Compile and run the output binary\n")
 	fmt.Fprintf(out, "  -size-analysis <path>  Write per-function size analysis JSON\n")
