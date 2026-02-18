@@ -18,6 +18,11 @@ func optimizeIRFuncCode(f *IRFunc) []Inst {
 		changed = false
 
 		var stepChanged bool
+		code, stepChanged = foldNotConditionalJumps(code)
+		if stepChanged {
+			changed = true
+		}
+
 		code, stepChanged = deadLocalStoreToDrop(code, len(f.Locals))
 		if stepChanged {
 			changed = true
@@ -47,6 +52,42 @@ func optimizeIRFuncCode(f *IRFunc) []Inst {
 	}
 
 	return code
+}
+
+// foldNotConditionalJumps rewrites:
+//
+//	NOT; JMP_IF L     -> JMP_IF_NOT L
+//	NOT; JMP_IF_NOT L -> JMP_IF L
+//
+// when adjacent in the instruction stream.
+func foldNotConditionalJumps(code []Inst) ([]Inst, bool) {
+	if len(code) < 2 {
+		return code, false
+	}
+
+	changed := false
+	out := make([]Inst, 0, len(code))
+	for i := 0; i < len(code); i++ {
+		if i+1 < len(code) && code[i].Op == OP_NOT {
+			next := code[i+1]
+			if next.Op == OP_JMP_IF {
+				next.Op = OP_JMP_IF_NOT
+				out = append(out, next)
+				i++
+				changed = true
+				continue
+			}
+			if next.Op == OP_JMP_IF_NOT {
+				next.Op = OP_JMP_IF
+				out = append(out, next)
+				i++
+				changed = true
+				continue
+			}
+		}
+		out = append(out, code[i])
+	}
+	return out, changed
 }
 
 // deadLocalStoreToDrop rewrites LOCAL_SET to DROP when the local is never read

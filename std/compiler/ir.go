@@ -3973,6 +3973,24 @@ func (c *Compiler) compileCallExpr(node *Node) {
 
 	// Determine the function to call
 	callName := c.resolveCallName(node.X)
+	if callName == "runtime.ReadPtr" && len(node.Nodes) == 1 {
+		c.compileExpr(node.Nodes[0])
+		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+		return
+	}
+	if callName == "runtime.WritePtr" && len(node.Nodes) == 2 {
+		c.compileExpr(node.Nodes[1])
+		c.compileExpr(node.Nodes[0])
+		c.emit(Inst{Op: OP_STORE, Arg: targetPtrSize})
+		return
+	}
+	if callName == "runtime.WriteByte" && len(node.Nodes) == 2 {
+		c.compileExpr(node.Nodes[1])
+		c.compileExpr(node.Nodes[0])
+		c.emit(Inst{Op: OP_STORE, Arg: 1})
+		return
+	}
+
 	paramTypes := c.funcParamTypes[callName]
 
 	// Check if this is a variadic function call
@@ -4204,11 +4222,18 @@ func parseMapTypeName(typeName string) (string, string, bool) {
 	return keyType, valType, true
 }
 
+func isRuntimeMemBuiltinName(name string) bool {
+	return name == "ReadPtr" || name == "WritePtr" || name == "WriteByte"
+}
+
 func (c *Compiler) resolveCallName(node *Node) string {
 	if node == nil {
 		return ""
 	}
 	if node.Kind == NIdent {
+		if c.curPkg != nil && c.curPkg.Path == "runtime" && isRuntimeMemBuiltinName(node.Name) {
+			return "runtime." + node.Name
+		}
 		// Check if it's a local variable (e.g. function literal)
 		_, isLocal := c.lookupLocal(node.Name)
 		if isLocal {
@@ -4233,6 +4258,9 @@ func (c *Compiler) resolveCallName(node *Node) string {
 		if pkg != nil {
 			sym, hasSym := pkg.Symbols[node.Name]
 			if !hasSym {
+				if pkg.Path == "runtime" && isRuntimeMemBuiltinName(node.Name) {
+					return pkg.QualName(node.Name)
+				}
 				c.errorf("%s: %s.%s not found in package %s", c.curFunc.Name, node.X.Name, node.Name, pkg.Path)
 			} else if sym.Kind != SymFunc && sym.Kind != SymType {
 				c.errorf("%s: %s.%s is not callable", c.curFunc.Name, node.X.Name, node.Name)
@@ -4406,6 +4434,12 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 		}
 		// Look up the callee's return count (node.X is the callee)
 		name := c.resolveCallName(node.X)
+		if name == "runtime.WritePtr" || name == "runtime.WriteByte" {
+			return 0
+		}
+		if name == "runtime.ReadPtr" {
+			return 1
+		}
 		if retCount, ok := c.funcRets[name]; ok {
 			return retCount
 		}

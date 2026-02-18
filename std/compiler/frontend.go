@@ -844,7 +844,8 @@ func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors 
 		target, isImport := imports[node.X.Name]
 		if isImport {
 			_, hasSym := target.Symbols[node.Name]
-			if !hasSym {
+			allowRuntimeMemBuiltin := target.Path == "runtime" && isRuntimeMemBuiltinName(node.Name)
+			if !hasSym && !allowRuntimeMemBuiltin {
 				*errors = append(*errors, fmt.Sprintf("%s: %s.%s undefined (package %s has no symbol %s)", pkg.Path, node.X.Name, node.Name, target.Path, node.Name))
 			}
 		}

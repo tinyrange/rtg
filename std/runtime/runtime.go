@@ -29,21 +29,6 @@ func Makestring(ptr uintptr, slen int) string
 //rtg:internal Tostring
 func Tostring(v interface{}) string
 
-// ReadPtr reads 8 bytes at the given address and returns them as uintptr.
-//
-//rtg:internal ReadPtr
-func ReadPtr(addr uintptr) uintptr
-
-// WritePtr writes an 8-byte value to the given address.
-//
-//rtg:internal WritePtr
-func WritePtr(addr uintptr, val uintptr)
-
-// WriteByte writes a single byte to the given address.
-//
-//rtg:internal WriteByte
-func WriteByte(addr uintptr, val byte)
-
 // === Memory allocator ===
 
 func runtimePanic(msg string) {
