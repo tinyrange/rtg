@@ -1766,6 +1766,43 @@ func (c *Compiler) compileStmt(node *Node) {
 	}
 }
 
+func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
+	i := len(lhsNodes) - 1
+	for i >= 0 {
+		lhs := lhsNodes[i]
+		if define {
+			idx := c.addLocal(lhs.Name)
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+		} else {
+			c.compileLValueSet(lhs)
+		}
+		i = i - 1
+	}
+}
+
+func (c *Compiler) compileCompoundAssign(node *Node, op Opcode) {
+	w := c.exprWidth(node.X)
+	c.compileLValueGet(node.X)
+	c.compileExpr(node.Y)
+	c.emit(Inst{Op: op, Width: w})
+	c.compileLValueSet(node.X)
+}
+
+func (c *Compiler) setLocalMapMetadata(name string, keyType string, valType string) {
+	if keyType == "string" {
+		c.localMapVars[name] = 1
+	} else {
+		c.localMapVars[name] = 0
+	}
+	c.localMapValueTypes[name] = valType
+}
+
+func (c *Compiler) setLocalMapMetadataFromQualified(name string, qtype string) {
+	if keyType, valType, ok := parseMapTypeName(qtype); ok {
+		c.setLocalMapMetadata(name, keyType, valType)
+	}
+}
+
 func (c *Compiler) compileVarDecl(node *Node) {
 	idx := c.addLocal(node.Name)
 	// Mark uint64/int64 locals for i64 on wasm32
@@ -1844,22 +1881,13 @@ func (c *Compiler) compileVarDecl(node *Node) {
 
 func (c *Compiler) compileAssign(node *Node) {
 	if len(node.Nodes) > 0 {
+		isDefine := node.Name == ":="
 		// Multi-value assignment with comma-separated RHS: a, b := 1, 2
 		if node.Body != nil && node.Body.Kind == NBlock && len(node.Body.Nodes) > 0 {
 			for _, rhs := range node.Body.Nodes {
 				c.compileExpr(rhs)
 			}
-			i := len(node.Nodes) - 1
-			for i >= 0 {
-				lhs := node.Nodes[i]
-				if node.Name == ":=" {
-					idx := c.addLocal(lhs.Name)
-					c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
-				} else {
-					c.compileLValueSet(lhs)
-				}
-				i = i - 1
-			}
+			c.assignStackValuesToLHS(node.Nodes, isDefine)
 			return
 		}
 
@@ -1870,19 +1898,9 @@ func (c *Compiler) compileAssign(node *Node) {
 			c.emit(Inst{Op: OP_CALL, Name: "runtime.MapGet", Arg: 2})
 			// MapGet returns (value, ok) — both on stack
 			// Assign in reverse order: ok first (top of stack), then value
-			i := len(node.Nodes) - 1
-			for i >= 0 {
-				lhs := node.Nodes[i]
-				if node.Name == ":=" {
-					idx := c.addLocal(lhs.Name)
-					c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
-				} else {
-					c.compileLValueSet(lhs)
-				}
-				i = i - 1
-			}
+			c.assignStackValuesToLHS(node.Nodes, isDefine)
 			// Track concrete type of the map value variable (node.Nodes[0])
-			if node.Name == ":=" && len(node.Nodes) >= 1 {
+			if isDefine && len(node.Nodes) >= 1 {
 				valType := c.resolveMapValueType(node.Y.X)
 				if valType != "" {
 					c.localConcreteTypes[node.Nodes[0].Name] = c.qualifyTypeName(valType, "")
@@ -1894,17 +1912,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		// Multi-value type assertion: v, ok := x.(T)
 		if node.Y != nil && node.Y.Kind == NTypeAssertExpr && len(node.Nodes) == 2 {
 			c.compileTypeAssertCommaOk(node.Y)
-			i := len(node.Nodes) - 1
-			for i >= 0 {
-				lhs := node.Nodes[i]
-				if node.Name == ":=" {
-					idx := c.addLocal(lhs.Name)
-					c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
-				} else {
-					c.compileLValueSet(lhs)
-				}
-				i = i - 1
-			}
+			c.assignStackValuesToLHS(node.Nodes, isDefine)
 			return
 		}
 
@@ -1912,7 +1920,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		c.compileExpr(node.Y)
 
 		// Track interface-typed, string-typed, and concrete-typed locals from multi-value := assignments
-		if node.Name == ":=" && node.Y != nil && node.Y.Kind == NCallExpr {
+		if isDefine && node.Y != nil && node.Y.Kind == NCallExpr {
 			calleeName := c.resolveCallName(node.Y.X)
 			if retTypes, ok := c.funcRetTypes[calleeName]; ok {
 				// Determine the package of the callee for type qualification
@@ -1936,14 +1944,7 @@ func (c *Compiler) compileAssign(node *Node) {
 							elemType := qret[2:len(qret)]
 							c.localElemSizes[lhs.Name] = c.typeElemSize(elemType)
 						}
-						if keyType, valType, ok := parseMapTypeName(qret); ok {
-							if keyType == "string" {
-								c.localMapVars[lhs.Name] = 1
-							} else {
-								c.localMapVars[lhs.Name] = 0
-							}
-							c.localMapValueTypes[lhs.Name] = valType
-						}
+						c.setLocalMapMetadataFromQualified(lhs.Name, qret)
 						// Track concrete type for method resolution
 						c.localConcreteTypes[lhs.Name] = qret
 					}
@@ -1952,17 +1953,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		}
 
 		// Assign to each LHS in reverse order (values are on stack)
-		i := len(node.Nodes) - 1
-		for i >= 0 {
-			lhs := node.Nodes[i]
-			if node.Name == ":=" {
-				idx := c.addLocal(lhs.Name)
-				c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
-			} else {
-				c.compileLValueSet(lhs)
-			}
-			i = i - 1
-		}
+		c.assignStackValuesToLHS(node.Nodes, isDefine)
 		return
 	}
 
@@ -1993,14 +1984,7 @@ func (c *Compiler) compileAssign(node *Node) {
 				c.localElemSizes[node.X.Name] = c.typeElemSize(ct[2:len(ct)])
 			}
 			// Track map variables from concrete return type
-			if keyType, valType, ok := parseMapTypeName(ct); ok {
-				if keyType == "string" {
-					c.localMapVars[node.X.Name] = 1
-				} else {
-					c.localMapVars[node.X.Name] = 0
-				}
-				c.localMapValueTypes[node.X.Name] = valType
-			}
+			c.setLocalMapMetadataFromQualified(node.X.Name, ct)
 		}
 		// Track map variables from composite literals: m := map[K]V{...}
 		if node.Y != nil && node.Y.Kind == NCompositeLit && node.Y.Type != nil && node.Y.Type.Kind == NMapType {
@@ -2015,11 +1999,11 @@ func (c *Compiler) compileAssign(node *Node) {
 				c.localElemSizes[node.X.Name] = c.sliceElemSize(node.Y.Nodes[0])
 			}
 			if len(node.Y.Nodes) > 0 && node.Y.Nodes[0].Kind == NMapType {
+				keyType := nodeTypeName(node.Y.Nodes[0].X)
 				c.localMapVars[node.X.Name] = c.mapKeyKind(node.Y.Nodes[0].X)
 				if node.Y.Nodes[0].Y != nil {
 					valType := nodeTypeName(node.Y.Nodes[0].Y)
 					c.localMapValueTypes[node.X.Name] = valType
-					keyType := nodeTypeName(node.Y.Nodes[0].X)
 					c.localConcreteTypes[node.X.Name] = "map[" + c.qualifyTypeName(keyType, "") + "]" + c.qualifyTypeName(valType, "")
 				}
 			}
@@ -2029,93 +2013,36 @@ func (c *Compiler) compileAssign(node *Node) {
 		return
 	}
 
-	if node.Name == "+=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_ADD, Width: w})
-		c.compileLValueSet(node.X)
+	switch node.Name {
+	case "+=":
+		c.compileCompoundAssign(node, OP_ADD)
 		return
-	}
-
-	if node.Name == "-=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_SUB, Width: w})
-		c.compileLValueSet(node.X)
+	case "-=":
+		c.compileCompoundAssign(node, OP_SUB)
 		return
-	}
-
-	if node.Name == "*=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_MUL, Width: w})
-		c.compileLValueSet(node.X)
+	case "*=":
+		c.compileCompoundAssign(node, OP_MUL)
 		return
-	}
-
-	if node.Name == "/=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_DIV, Width: w})
-		c.compileLValueSet(node.X)
+	case "/=":
+		c.compileCompoundAssign(node, OP_DIV)
 		return
-	}
-
-	if node.Name == "%=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_MOD, Width: w})
-		c.compileLValueSet(node.X)
+	case "%=":
+		c.compileCompoundAssign(node, OP_MOD)
 		return
-	}
-
-	if node.Name == "|=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_OR, Width: w})
-		c.compileLValueSet(node.X)
+	case "|=":
+		c.compileCompoundAssign(node, OP_OR)
 		return
-	}
-
-	if node.Name == "&=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_AND, Width: w})
-		c.compileLValueSet(node.X)
+	case "&=":
+		c.compileCompoundAssign(node, OP_AND)
 		return
-	}
-
-	if node.Name == "^=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_XOR, Width: w})
-		c.compileLValueSet(node.X)
+	case "^=":
+		c.compileCompoundAssign(node, OP_XOR)
 		return
-	}
-
-	if node.Name == "<<=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_SHL, Width: w})
-		c.compileLValueSet(node.X)
+	case "<<=":
+		c.compileCompoundAssign(node, OP_SHL)
 		return
-	}
-
-	if node.Name == ">>=" {
-		w := c.exprWidth(node.X)
-		c.compileLValueGet(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_SHR, Width: w})
-		c.compileLValueSet(node.X)
+	case ">>=":
+		c.compileCompoundAssign(node, OP_SHR)
 		return
 	}
 
@@ -2304,174 +2231,56 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 	if expr == nil {
 		return 0
 	}
+	if typeID := c.resolveConcreteTypeID(expr); typeID > 0 {
+		return typeID
+	}
 	switch expr.Kind {
 	case NIntLit, NRuneLit:
-		return 1 // int
+		return 1
 	case NStringLit:
-		return 2 // string
+		return 2
 	case NBasicLit:
 		if expr.Name == "true" || expr.Name == "false" {
-			return 3 // bool
+			return 3
 		}
 		return 0
 	case NIdent:
 		if expr.Name == "true" || expr.Name == "false" {
-			return 3 // bool
-		}
-		if expr.Name == "nil" {
-			return 0 // nil doesn't need boxing
-		}
-		if c.localStringVars[expr.Name] {
-			return 2 // string variable
-		}
-		// Check if it's a local — assume int if not a known slice/interface
-		if _, isSlice := c.localElemSizes[expr.Name]; isSlice {
-			return 0 // slice, pass as-is
-		}
-		if _, isIface := c.localTypes[expr.Name]; isIface {
-			return 0 // already interface
-		}
-		// Check if it's a global string var
-		if c.curPkg != nil {
-			if sym, ok := c.curPkg.Symbols[expr.Name]; ok && sym.Kind == SymVar && sym.Node != nil && sym.Node.Type != nil {
-				if nodeTypeName(sym.Node.Type) == "string" {
-					return 2
-				}
-				if nodeTypeName(sym.Node.Type) == "bool" {
-					return 3
-				}
-			}
-		}
-		if ct, ok := c.localConcreteTypes[expr.Name]; ok && ct == "bool" {
 			return 3
 		}
-		return 1 // default to int for unknown locals
-	case NBinaryExpr:
-		if expr.Name == "+" || expr.Name == "-" || expr.Name == "*" || expr.Name == "/" || expr.Name == "%" {
-			if c.isStringTypedExpr(expr) {
-				return 2
-			}
-			return 1
+		if expr.Name == "nil" {
+			return 0
 		}
-		if expr.Name == "==" || expr.Name == "!=" || expr.Name == "<" || expr.Name == ">" || expr.Name == "<=" || expr.Name == ">=" || expr.Name == "&&" || expr.Name == "||" {
-			return 3 // bool
-		}
-	case NCallExpr:
-		if expr.X != nil && expr.X.Kind == NIdent {
-			name := expr.X.Name
-			if name == "len" || name == "cap" || name == "int" || name == "uintptr" || name == "byte" || name == "int16" || name == "int32" || name == "int64" {
-				return 1
-			}
-			if name == "string" {
-				return 2
-			}
-		}
-		calleeName := c.resolveCallName(expr.X)
-		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
-			if retTypes[0] == "string" {
-				return 2
-			}
-			if retTypes[0] == "error" || retTypes[0] == "interface{}" {
-				return 0 // already interface
-			}
-		}
-		// Check if callee returns a known named type with a type_id
-		typeID := c.resolveConcreteTypeID(expr)
-		if typeID > 0 {
-			return typeID
-		}
-		return 1 // default to int for unknown calls
 	case NUnaryExpr:
 		if expr.Name == "&" {
-			typeID := c.resolveConcreteTypeID(expr)
-			if typeID > 0 {
-				return typeID
-			}
-			return 0 // pointer, might be interface already
-		}
-		if expr.Name == "*" {
-			// Pointer dereference: check the pointed-to type
-			if expr.X != nil && expr.X.Kind == NIdent {
-				if ct, ok := c.localConcreteTypes[expr.X.Name]; ok {
-					// ct is like "main.*int" — extract the pointed-to type
-					dotIdx := -1
-					for i := 0; i < len(ct); i++ {
-						if ct[i] == '.' {
-							dotIdx = i
-						}
-					}
-					if dotIdx >= 0 {
-						rest := ct[dotIdx+1 : len(ct)]
-						if len(rest) > 1 && rest[0] == '*' {
-							inner := rest[1:len(rest)]
-							if inner == "string" {
-								return 2
-							}
-							if inner == "int" || inner == "byte" || inner == "bool" || inner == "int16" || inner == "int32" || inner == "int64" || inner == "uint16" || inner == "uintptr" {
-								return 1
-							}
-						}
-					}
-				}
-			}
-			return 1 // default: deref of pointer to scalar
+			return 0
 		}
 		if expr.Name == "!" || expr.Name == "-" || expr.Name == "^" {
 			return 1
 		}
-	case NSelectorExpr:
-		// Struct field access — check if it's a string field
-		if c.isStringTypedExpr(expr) {
-			return 2
-		}
-		return 1 // default to int for unknown fields
-	case NIndexExpr:
-		// Determine element type from the base expression
-		if expr.X != nil && expr.X.Kind == NIdent {
-			// String indexing returns byte (int)
-			if c.localStringVars[expr.X.Name] {
-				return 1
-			}
-			// Check if it's a known slice type
-			if _, isSlice := c.localElemSizes[expr.X.Name]; isSlice {
-				return 1 // scalar element from known slice
-			}
-			// Check concrete type — if it's a slice of strings, return 2
-			if ct, ok := c.localConcreteTypes[expr.X.Name]; ok {
-				if c.concreteTypeIsStringSlice(ct) {
-					return 2
-				}
-				if c.concreteTypeIsStructSlice(ct) {
-					return 0 // struct element — don't box
-				}
-			}
-		}
-		return 1 // default: assume scalar element
 	case NSliceExpr:
 		if c.isStringTypedExpr(expr.X) {
-			return 2 // string slice produces string
+			return 2
 		}
-		return 0 // slice reslice produces slice
+		return 0
 	}
-	return 0
-}
-
-func (c *Compiler) concreteTypeIsStringSlice(ct string) bool {
-	return ct == "[]string"
-}
-
-func (c *Compiler) concreteTypeIsStructSlice(ct string) bool {
-	if len(ct) <= 2 {
-		return false
+	if c.isStringTypedExpr(expr) {
+		return 2
 	}
-	if ct[0] != '[' || ct[1] != ']' {
-		return false
+	t := c.resolveExprType(expr)
+	if t == "bool" {
+		return 3
 	}
-	elem := ct[2:len(ct)]
-	if elem == "string" || elem == "int" || elem == "byte" || elem == "bool" || elem == "int16" || elem == "int32" || elem == "int64" || elem == "uint16" || elem == "uintptr" {
-		return false
+	if t == "string" {
+		return 2
 	}
-	return true
+	if t == "error" || t == "interface{}" {
+		return 0
+	}
+	if len(t) > 1 && t[0] == '[' && t[1] == ']' {
+		return 0
+	}
+	return 1
 }
 
 // resolveConcreteTypeID detects the concrete type from AST patterns and returns its type ID.
@@ -2724,9 +2533,7 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 			return
 		case "==", "!=", "<", ">", "<=", ">=":
 			if (cond.Name == "==" || cond.Name == "!=") && (c.isStringTypedExpr(cond.X) || c.isStringTypedExpr(cond.Y) || isStringExpr(cond.X) || isStringExpr(cond.Y)) {
-				c.compileExpr(cond.X)
-				c.compileExpr(cond.Y)
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+				c.emitStringEqualCall(cond.X, cond.Y)
 				if (cond.Name == "==" && jumpIfTrue) || (cond.Name == "!=" && !jumpIfTrue) {
 					c.emit(Inst{Op: OP_JMP_IF, Arg: targetLabel})
 				} else {
@@ -2831,11 +2638,10 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 
 	// Compare index < len(iterable)
 	c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
+	c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
 	if isMap {
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
 		c.emit(Inst{Op: OP_CALL, Name: "runtime.MapLen", Arg: 1})
 	} else {
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
 		c.emit(Inst{Op: OP_LEN})
 	}
 	c.emit(Inst{Op: OP_JMP_GEQ, Arg: breakLabel})
@@ -2859,15 +2665,13 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 	}
 	if node.Y != nil {
 		valIdx := c.addLocal(node.Y.Name)
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
 		if isMap {
 			// For maps, value = MapEntryValue(hdr, idx)
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
 			c.emit(Inst{Op: OP_CALL, Name: "runtime.MapEntryValue", Arg: 2})
 		} else {
 			elemSize := c.exprElemSize(node.Type)
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
 			c.emit(Inst{Op: OP_INDEX_ADDR, Arg: elemSize})
 			c.emit(Inst{Op: OP_LOAD, Arg: elemSize})
 		}
@@ -2883,14 +2687,7 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 				}
 				// Range values can themselves be maps (map[K]V); preserve that
 				// metadata so downstream indexing compiles as map access.
-				if keyType, nestedValType, ok := parseMapTypeName(qvalType); ok {
-					if keyType == "string" {
-						c.localMapVars[node.Y.Name] = 1
-					} else {
-						c.localMapVars[node.Y.Name] = 0
-					}
-					c.localMapValueTypes[node.Y.Name] = nestedValType
-				}
+				c.setLocalMapMetadataFromQualified(node.Y.Name, qvalType)
 			}
 		}
 		if !isMap && node.Type != nil {
@@ -3111,14 +2908,16 @@ func (c *Compiler) maybeBoxValueForInterface(expr *Node) {
 	}
 }
 
-func (c *Compiler) compileTypeAssertExpr(node *Node) {
+func (c *Compiler) compileTypeAssert(node *Node, commaOk bool) {
 	if node == nil || node.X == nil || node.Type == nil {
 		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		if commaOk {
+			c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+		}
 		return
 	}
 	typeID := c.typeIDForTypeNode(node.Type)
 
-	// Evaluate interface value and check dynamic type id.
 	c.compileExpr(node.X)
 	c.emit(Inst{Op: OP_DUP})
 	c.emit(Inst{Op: OP_OFFSET, Arg: 0})
@@ -3130,43 +2929,29 @@ func (c *Compiler) compileTypeAssertExpr(node *Node) {
 	c.emit(Inst{Op: OP_JMP_NEQ, Arg: failLabel})
 	c.emit(Inst{Op: OP_OFFSET, Arg: targetPtrSize})
 	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+	if commaOk {
+		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})
+	}
 	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
 
 	c.emitLabel(failLabel)
 	c.emit(Inst{Op: OP_DROP})
-	c.emit(Inst{Op: OP_CONST_STR, Name: "type assertion failed"})
-	c.emit(Inst{Op: OP_PANIC})
-
+	if commaOk {
+		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+	} else {
+		c.emit(Inst{Op: OP_CONST_STR, Name: "type assertion failed"})
+		c.emit(Inst{Op: OP_PANIC})
+	}
 	c.emitLabel(endLabel)
 }
 
+func (c *Compiler) compileTypeAssertExpr(node *Node) {
+	c.compileTypeAssert(node, false)
+}
+
 func (c *Compiler) compileTypeAssertCommaOk(node *Node) {
-	if node == nil || node.X == nil || node.Type == nil {
-		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
-		return
-	}
-	typeID := c.typeIDForTypeNode(node.Type)
-
-	c.compileExpr(node.X)
-	c.emit(Inst{Op: OP_DUP})
-	c.emit(Inst{Op: OP_OFFSET, Arg: 0})
-	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(typeID)})
-
-	failLabel := c.newLabel()
-	endLabel := c.newLabel()
-	c.emit(Inst{Op: OP_JMP_NEQ, Arg: failLabel})
-	c.emit(Inst{Op: OP_OFFSET, Arg: targetPtrSize})
-	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
-	c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})
-	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
-
-	c.emitLabel(failLabel)
-	c.emit(Inst{Op: OP_DROP})
-	c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-	c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
-	c.emitLabel(endLabel)
+	c.compileTypeAssert(node, true)
 }
 
 func (c *Compiler) compileInc(node *Node) {
@@ -3451,64 +3236,44 @@ func (c *Compiler) constIntArg(node *Node) (int, bool) {
 	return 0, false
 }
 
-func isPointerLikeTypeName(t string) bool {
-	if t == "uintptr" {
-		return true
-	}
-	if len(t) > 0 && t[0] == '*' {
-		return true
-	}
-	if strings.Contains(t, ".*") {
-		return true
-	}
-	return false
+func (c *Compiler) emitStringEqualCall(x *Node, y *Node) {
+	c.compileExpr(x)
+	c.compileExpr(y)
+	c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
 }
 
-func (c *Compiler) isOffsetBaseExpr(node *Node) bool {
-	if node == nil {
-		return false
+func (c *Compiler) compileLogicalBinary(node *Node, isAnd bool) {
+	branchLabel := c.newLabel()
+	endLabel := c.newLabel()
+	c.compileExpr(node.X)
+	if isAnd {
+		c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: branchLabel})
+	} else {
+		c.emit(Inst{Op: OP_JMP_IF, Arg: branchLabel})
 	}
-	if node.Kind == NUnaryExpr && node.Name == "&" {
-		return true
+	// Conditional jump popped condition; now compile Y (pushes 1 value)
+	savedDepth := c.stackDepth
+	c.compileExpr(node.Y)
+	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+	// Alternate branch starts at same depth after conditional jump
+	c.stackDepth = savedDepth
+	c.emitLabel(branchLabel)
+	if isAnd {
+		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+	} else {
+		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})
 	}
-	if node.Kind == NCallExpr && node.X != nil && node.X.Kind == NIdent && node.X.Name == "uintptr" {
-		return true
-	}
-	return isPointerLikeTypeName(c.resolveExprType(node))
+	c.emitLabel(endLabel)
 }
 
 func (c *Compiler) compileBinaryExpr(node *Node) {
 	// Short-circuit for && and ||
 	if node.Name == "&&" {
-		falseLabel := c.newLabel()
-		endLabel := c.newLabel()
-		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: falseLabel})
-		// JMP_IF_NOT popped condition; now compile Y (pushes 1 value)
-		savedDepth := c.stackDepth
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_JMP, Arg: endLabel})
-		// False branch starts at the same depth as after JMP_IF_NOT
-		c.stackDepth = savedDepth
-		c.emitLabel(falseLabel)
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
-		c.emitLabel(endLabel)
+		c.compileLogicalBinary(node, true)
 		return
 	}
 	if node.Name == "||" {
-		trueLabel := c.newLabel()
-		endLabel := c.newLabel()
-		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_JMP_IF, Arg: trueLabel})
-		// JMP_IF popped condition; now compile Y (pushes 1 value)
-		savedDepth := c.stackDepth
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_JMP, Arg: endLabel})
-		// True branch starts at the same depth as after JMP_IF
-		c.stackDepth = savedDepth
-		c.emitLabel(trueLabel)
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})
-		c.emitLabel(endLabel)
+		c.compileLogicalBinary(node, false)
 		return
 	}
 
@@ -3521,15 +3286,11 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 		return
 	}
 	if isStr && node.Name == "==" {
-		c.compileExpr(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+		c.emitStringEqualCall(node.X, node.Y)
 		return
 	}
 	if isStr && node.Name == "!=" {
-		c.compileExpr(node.X)
-		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+		c.emitStringEqualCall(node.X, node.Y)
 		c.emit(Inst{Op: OP_NOT})
 		return
 	}
@@ -3824,6 +3585,45 @@ func (c *Compiler) packVariadicSlice(args []*Node, firstArgIdx int, varCount int
 	c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
 }
 
+func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName string) {
+	c.compileExpr(receiver)
+	for _, arg := range args {
+		c.compileExpr(arg)
+	}
+	c.emit(Inst{Op: OP_CALL, Name: callName, Arg: len(args) + 1})
+}
+
+func runtimeMemBuiltinReturnCount(name string) (int, bool) {
+	if name == "runtime.ReadPtr" {
+		return 1, true
+	}
+	if name == "runtime.WritePtr" || name == "runtime.WriteByte" {
+		return 0, true
+	}
+	return 0, false
+}
+
+func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool {
+	if callName == "runtime.ReadPtr" && len(args) == 1 {
+		c.compileExpr(args[0])
+		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+		return true
+	}
+	if callName == "runtime.WritePtr" && len(args) == 2 {
+		c.compileExpr(args[1])
+		c.compileExpr(args[0])
+		c.emit(Inst{Op: OP_STORE, Arg: targetPtrSize})
+		return true
+	}
+	if callName == "runtime.WriteByte" && len(args) == 2 {
+		c.compileExpr(args[1])
+		c.compileExpr(args[0])
+		c.emit(Inst{Op: OP_STORE, Arg: 1})
+		return true
+	}
+	return false
+}
+
 func (c *Compiler) compileCallExpr(node *Node) {
 	// Check for builtins
 	if node.X != nil && node.X.Kind == NIdent {
@@ -3920,22 +3720,14 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		recvName := node.X.X.Name
 		methodName := node.X.Name
 		if ifaceType, ok := c.localTypes[recvName]; ok {
-			if methods, ok := c.ifaceMethods[ifaceType]; ok {
-				isIfaceMethod := false
-				for _, m := range methods {
-					if m == methodName {
-						isIfaceMethod = true
-					}
+			if _, hasMethod := c.ifaceMethodReturnCount(ifaceType, methodName); hasMethod {
+				// Push receiver (interface pointer) then args
+				c.compileExpr(node.X.X)
+				for _, arg := range node.Nodes {
+					c.compileExpr(arg)
 				}
-				if isIfaceMethod {
-					// Push receiver (interface pointer) then args
-					c.compileExpr(node.X.X)
-					for _, arg := range node.Nodes {
-						c.compileExpr(arg)
-					}
-					c.emit(Inst{Op: OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(node.Nodes)})
-					return
-				}
+				c.emit(Inst{Op: OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(node.Nodes)})
+				return
 			}
 		}
 	}
@@ -3951,12 +3743,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			concreteType, ok = c.globalConcreteTypes[gqname]
 		}
 		if ok {
-			candidate := c.dotJoin(concreteType, methodName)
-			resolvedName, ok := c.methodTable[candidate]
-			if !ok {
-				ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
-				resolvedName, ok = c.methodTable[ptrCandidate]
-			}
+			resolvedName, ok := c.resolveMethodByConcreteType(concreteType, methodName)
 			if !ok {
 				if pm, found := c.findPromotedMethod(concreteType, methodName); found {
 					// Build receiver from embedded field path.
@@ -4000,11 +3787,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					c.emit(Inst{Op: OP_CALL, Name: resolvedName, Arg: fixedCount + 1})
 				} else {
 					// Non-variadic or spread: push receiver first, then args
-					c.compileExpr(node.X.X)
-					for _, arg := range node.Nodes {
-						c.compileExpr(arg)
-					}
-					c.emit(Inst{Op: OP_CALL, Name: resolvedName, Arg: len(node.Nodes) + 1})
+					c.emitCallWithReceiver(node.X.X, node.Nodes, resolvedName)
 				}
 				return
 			}
@@ -4025,19 +3808,10 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			if concreteType, ok := c.localConcreteTypes[root.Name]; ok {
 				fieldType := c.resolveFieldType(concreteType, fieldName)
 				if fieldType != "" {
-					candidate := c.dotJoin(fieldType, methodName)
-					resolvedName, ok := c.methodTable[candidate]
-					if !ok {
-						ptrCandidate := c.dotJoin(pointerMethodTypeName(fieldType), methodName)
-						resolvedName, ok = c.methodTable[ptrCandidate]
-					}
+					resolvedName, ok := c.resolveMethodByConcreteType(fieldType, methodName)
 					if ok {
 						// Push receiver (the field access) first, then args
-						c.compileExpr(node.X.X)
-						for _, arg := range node.Nodes {
-							c.compileExpr(arg)
-						}
-						c.emit(Inst{Op: OP_CALL, Name: resolvedName, Arg: len(node.Nodes) + 1})
+						c.emitCallWithReceiver(node.X.X, node.Nodes, resolvedName)
 						return
 					}
 				}
@@ -4047,21 +3821,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 
 	// Determine the function to call
 	callName := c.resolveCallName(node.X)
-	if callName == "runtime.ReadPtr" && len(node.Nodes) == 1 {
-		c.compileExpr(node.Nodes[0])
-		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
-		return
-	}
-	if callName == "runtime.WritePtr" && len(node.Nodes) == 2 {
-		c.compileExpr(node.Nodes[1])
-		c.compileExpr(node.Nodes[0])
-		c.emit(Inst{Op: OP_STORE, Arg: targetPtrSize})
-		return
-	}
-	if callName == "runtime.WriteByte" && len(node.Nodes) == 2 {
-		c.compileExpr(node.Nodes[1])
-		c.compileExpr(node.Nodes[0])
-		c.emit(Inst{Op: OP_STORE, Arg: 1})
+	if c.emitRuntimeMemBuiltinCall(callName, node.Nodes) {
 		return
 	}
 
@@ -4243,6 +4003,16 @@ func pointerMethodTypeName(typeName string) string {
 	return typeName[0:dot+1] + "*" + typeName[dot+1:len(typeName)]
 }
 
+func (c *Compiler) resolveMethodByConcreteType(concreteType string, methodName string) (string, bool) {
+	candidate := c.dotJoin(concreteType, methodName)
+	if resolved, ok := c.methodTable[candidate]; ok {
+		return resolved, true
+	}
+	ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
+	resolved, ok := c.methodTable[ptrCandidate]
+	return resolved, ok
+}
+
 // findUniqueMethodByName finds a method implementation by bare method name.
 // Returns (resolvedName, true) only when exactly one method matches.
 func (c *Compiler) findUniqueMethodByName(methodName string) (string, bool) {
@@ -4352,12 +4122,7 @@ func (c *Compiler) resolveCallName(node *Node) string {
 			}
 		}
 		if concreteType != "" {
-			candidate := c.dotJoin(concreteType, node.Name)
-			if resolved, ok := c.methodTable[candidate]; ok {
-				return resolved
-			}
-			ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), node.Name)
-			if resolved, ok := c.methodTable[ptrCandidate]; ok {
+			if resolved, ok := c.resolveMethodByConcreteType(concreteType, node.Name); ok {
 				return resolved
 			}
 		}
@@ -4384,12 +4149,7 @@ func (c *Compiler) resolveCallName(node *Node) string {
 			if concreteType, ok := c.localConcreteTypes[root.Name]; ok {
 				fieldType := c.resolveFieldType(concreteType, fieldName)
 				if fieldType != "" {
-					candidate := c.dotJoin(fieldType, methodName)
-					if resolved, ok := c.methodTable[candidate]; ok {
-						return resolved
-					}
-					ptrCandidate := c.dotJoin(pointerMethodTypeName(fieldType), methodName)
-					if resolved, ok := c.methodTable[ptrCandidate]; ok {
+					if resolved, ok := c.resolveMethodByConcreteType(fieldType, methodName); ok {
 						return resolved
 					}
 				}
@@ -4508,11 +4268,8 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 		}
 		// Look up the callee's return count (node.X is the callee)
 		name := c.resolveCallName(node.X)
-		if name == "runtime.WritePtr" || name == "runtime.WriteByte" {
-			return 0
-		}
-		if name == "runtime.ReadPtr" {
-			return 1
+		if ret, ok := runtimeMemBuiltinReturnCount(name); ok {
+			return ret
 		}
 		if retCount, ok := c.funcRets[name]; ok {
 			return retCount
