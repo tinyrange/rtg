@@ -35,6 +35,9 @@ func generateAmd64ELF(irmod *IRModule, outputPath string) error {
 	}
 
 	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	if g.needTostringHelper {
+		g.emitTostringHelperX64()
+	}
 
 	// Resolve call fixups (skip special targets that are resolved in buildELF64)
 	var unresolved []string
@@ -604,6 +607,37 @@ func (g *CodeGen) compileMakestringIntrinsic() {
 }
 
 func (g *CodeGen) compileTostringIntrinsic() {
+	g.needTostringHelper = true
+	g.emitCallPlaceholder(outlinedTostringHelper)
+}
+
+func (g *CodeGen) emitTostringHelperX64() {
+	if g.hasTostringHelper {
+		return
+	}
+	g.hasTostringHelper = true
+	g.funcOffsets[outlinedTostringHelper] = len(g.code)
+	g.hasPending = false
+
+	g.pushR(REG_RBP)
+	g.movRR(REG_RBP, REG_RSP)
+
+	frameBytes := 8
+	if targetGOOS == "windows" {
+		frameBytes = alignUp(frameBytes, 16)
+	}
+	if frameBytes > 0 {
+		g.subRI(REG_RSP, int32(frameBytes))
+	}
+
+	g.opPop(REG_RAX)
+	g.emitStoreLocal(1*8, REG_RAX)
+
+	g.compileTostringIntrinsicBodyX64()
+	g.compileReturn(Inst{})
+}
+
+func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 	// Param 0 = value (could be string ptr or interface box ptr)
 	// Heuristic: if [ptr+0] < 256, it's a type_id (interface box); otherwise it's a string data pointer
 	g.emitLoadLocal(1*8, REG_RAX) // load value

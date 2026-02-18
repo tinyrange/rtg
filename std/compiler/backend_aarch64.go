@@ -602,6 +602,32 @@ func (g *CodeGen) compileMakestringIntrinsicArm64() {
 }
 
 func (g *CodeGen) compileTostringIntrinsicArm64() {
+	g.needTostringHelper = true
+	g.emitCallPlaceholderArm64(outlinedTostringHelper)
+}
+
+func (g *CodeGen) emitTostringHelperArm64() {
+	if g.hasTostringHelper {
+		return
+	}
+	g.hasTostringHelper = true
+	g.funcOffsets[outlinedTostringHelper] = len(g.code)
+	g.hasPending = false
+
+	g.emitStp(REG_FP, REG_LR, REG_SP, -16)
+	g.emitMovRRArm64(REG_FP, REG_SP)
+
+	frameBytes := 16
+	g.emitSubImm(REG_SP, REG_SP, uint32(frameBytes))
+
+	g.opPop(REG_X0)
+	g.emitStoreLocalArm64(1*8, REG_X0)
+
+	g.compileTostringIntrinsicBodyArm64()
+	g.compileReturnArm64(Inst{})
+}
+
+func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // load value
 
 	// Test: is [rax] < 256 → interface box

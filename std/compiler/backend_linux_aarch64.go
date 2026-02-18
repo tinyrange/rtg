@@ -36,6 +36,9 @@ func generateLinuxArm64ELF(irmod *IRModule, outputPath string) error {
 	}
 
 	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	if g.needTostringHelper {
+		g.emitTostringHelperArm64()
+	}
 
 	// Resolve call fixups (skip special targets handled by buildELF64)
 	var unresolved []string
@@ -78,12 +81,12 @@ func generateLinuxArm64ELF(irmod *IRModule, outputPath string) error {
 func (g *CodeGen) emitStartArm64Linux(irmod *IRModule) {
 	// Allocate operand stack: mmap(NULL, 1MB, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)
 	// Linux ARM64: SYS_mmap = 222, MAP_ANONYMOUS = 0x20, MAP_PRIVATE = 0x02 → flags = 0x22
-	g.emitMovZ(REG_X0, 0, 0)                          // addr = NULL
+	g.emitMovZ(REG_X0, 0, 0)                           // addr = NULL
 	g.emitLoadImm64Compact(REG_X1, 1048576)            // len = 1MB
 	g.emitLoadImm64Compact(REG_X2, 3)                  // PROT_READ|PROT_WRITE
 	g.emitLoadImm64Compact(REG_X3, 0x22)               // MAP_PRIVATE|MAP_ANONYMOUS
 	g.emitLoadImm64Compact(REG_X4, 0xFFFFFFFFFFFFFFFF) // fd = -1
-	g.emitMovZ(REG_X5, 0, 0)                          // offset = 0
+	g.emitMovZ(REG_X5, 0, 0)                           // offset = 0
 	g.emitLoadImm64Compact(REG_X8, 222)                // SYS_mmap
 	g.emitSvc()
 
@@ -174,7 +177,7 @@ func (g *CodeGen) compilePanicArm64Linux() {
 	g.emitLdr(REG_X2, REG_X0, 8) // len
 
 	// write(2, data_ptr, len): X8=64, X0=2, X1=buf, X2=count
-	g.emitLoadImm64Compact(REG_X0, 2) // fd = stderr
+	g.emitLoadImm64Compact(REG_X0, 2)  // fd = stderr
 	g.emitLoadImm64Compact(REG_X8, 64) // SYS_write
 	g.emitSvc()
 
@@ -182,10 +185,10 @@ func (g *CodeGen) compilePanicArm64Linux() {
 	g.emitLoadImm64Compact(REG_X0, 0x0A) // '\n'
 	g.emitSubImm(REG_SP, REG_SP, 16)
 	g.emitStrb(REG_X0, REG_SP, 0)
-	g.emitLoadImm64Compact(REG_X0, 2)    // fd = stderr
-	g.emitMovRRArm64(REG_X1, REG_SP)     // buf = SP
-	g.emitLoadImm64Compact(REG_X2, 1)    // len = 1
-	g.emitLoadImm64Compact(REG_X8, 64)   // SYS_write
+	g.emitLoadImm64Compact(REG_X0, 2)  // fd = stderr
+	g.emitMovRRArm64(REG_X1, REG_SP)   // buf = SP
+	g.emitLoadImm64Compact(REG_X2, 1)  // len = 1
+	g.emitLoadImm64Compact(REG_X8, 64) // SYS_write
 	g.emitSvc()
 	g.emitAddImm(REG_SP, REG_SP, 16)
 

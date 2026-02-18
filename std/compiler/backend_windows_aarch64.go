@@ -66,6 +66,9 @@ func generateWinArm64PE(irmod *IRModule, outputPath string) error {
 	}
 
 	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	if g.needTostringHelper {
+		g.emitTostringHelperArm64()
+	}
 
 	// Resolve call fixups (skip $rodata_header$, $data_addr$, $iat$ — handled by buildPE64)
 	var unresolved []string
@@ -113,10 +116,10 @@ func (g *CodeGen) emitStartArm64Windows(irmod *IRModule) {
 
 	// Allocate 16MB operand stack via VirtualAlloc
 	// VirtualAlloc(NULL, 16*1048576, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
-	g.emitMovZ(REG_X0, 0, 0)                          // lpAddress = NULL
-	g.emitLoadImm64Compact(REG_X1, 16*1048576)         // dwSize = 16MB
-	g.emitLoadImm64Compact(REG_X2, 0x3000)             // MEM_COMMIT | MEM_RESERVE
-	g.emitLoadImm64Compact(REG_X3, 0x04)               // PAGE_READWRITE
+	g.emitMovZ(REG_X0, 0, 0)                   // lpAddress = NULL
+	g.emitLoadImm64Compact(REG_X1, 16*1048576) // dwSize = 16MB
+	g.emitLoadImm64Compact(REG_X2, 0x3000)     // MEM_COMMIT | MEM_RESERVE
+	g.emitLoadImm64Compact(REG_X3, 0x04)       // PAGE_READWRITE
 	g.emitCallIATArm64("VirtualAlloc")
 
 	// X28 = result + 16MB (operand stack top, grows down)
@@ -170,7 +173,7 @@ func (g *CodeGen) loadFdAsHandleArm64(localOffset int) {
 	// fd is 0, 1, or 2: nStdHandle = -10 - fd
 	g.emitNeg(REG_X0, REG_X0)
 	g.emitLoadImm64Compact(REG_X1, 0xFFFFFFFFFFFFFFF6) // -10
-	g.emitAddRR(REG_X0, REG_X0, REG_X1) // X0 = -10 - fd
+	g.emitAddRR(REG_X0, REG_X0, REG_X1)                // X0 = -10 - fd
 
 	// Save X28 on machine stack
 	g.emitSubImm(REG_SP, REG_SP, 16)
@@ -299,10 +302,10 @@ func (g *CodeGen) compileCallIntrinsicArm64Windows(inst Inst) {
 
 func (g *CodeGen) compileSyscallMmap_winarm64() {
 	// VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
-	g.emitMovZ(REG_X0, 0, 0)                      // lpAddress = NULL
-	g.emitLoadLocalArm64(2*8, REG_X1)              // size
-	g.emitLoadImm64Compact(REG_X2, 0x3000)         // MEM_COMMIT | MEM_RESERVE
-	g.emitLoadImm64Compact(REG_X3, 0x04)           // PAGE_READWRITE
+	g.emitMovZ(REG_X0, 0, 0)               // lpAddress = NULL
+	g.emitLoadLocalArm64(2*8, REG_X1)      // size
+	g.emitLoadImm64Compact(REG_X2, 0x3000) // MEM_COMMIT | MEM_RESERVE
+	g.emitLoadImm64Compact(REG_X3, 0x04)   // PAGE_READWRITE
 
 	g.emitSubImm(REG_SP, REG_SP, 16)
 	g.emitStr(REG_X28, REG_SP, 0)
@@ -342,11 +345,11 @@ func (g *CodeGen) compileSyscallWrite_winarm64() {
 	g.emitStr(REG_X0, REG_SP, 8)
 
 	// Prepare args
-	g.emitLdr(REG_X0, REG_SP, 8)       // hFile
-	g.emitLoadLocalArm64(2*8, REG_X1)   // lpBuffer
-	g.emitLoadLocalArm64(3*8, REG_X2)   // nNumberOfBytesToWrite
-	g.emitAddImm(REG_X3, REG_SP, 16)    // &nwritten
-	g.emitMovZ(REG_X4, 0, 0)            // lpOverlapped = NULL
+	g.emitLdr(REG_X0, REG_SP, 8)      // hFile
+	g.emitLoadLocalArm64(2*8, REG_X1) // lpBuffer
+	g.emitLoadLocalArm64(3*8, REG_X2) // nNumberOfBytesToWrite
+	g.emitAddImm(REG_X3, REG_SP, 16)  // &nwritten
+	g.emitMovZ(REG_X4, 0, 0)          // lpOverlapped = NULL
 
 	g.emitCallIATArm64("WriteFile")
 
@@ -389,11 +392,11 @@ func (g *CodeGen) compileSyscallRead_winarm64() {
 	g.loadFdAsHandleArm64(1 * 8)
 	g.emitStr(REG_X0, REG_SP, 8)
 
-	g.emitLdr(REG_X0, REG_SP, 8)       // hFile
-	g.emitLoadLocalArm64(2*8, REG_X1)   // lpBuffer
-	g.emitLoadLocalArm64(3*8, REG_X2)   // nNumberOfBytesToRead
-	g.emitAddImm(REG_X3, REG_SP, 16)    // &nread
-	g.emitMovZ(REG_X4, 0, 0)            // lpOverlapped
+	g.emitLdr(REG_X0, REG_SP, 8)      // hFile
+	g.emitLoadLocalArm64(2*8, REG_X1) // lpBuffer
+	g.emitLoadLocalArm64(3*8, REG_X2) // nNumberOfBytesToRead
+	g.emitAddImm(REG_X3, REG_SP, 16)  // &nread
+	g.emitMovZ(REG_X4, 0, 0)          // lpOverlapped
 
 	g.emitCallIATArm64("ReadFile")
 
@@ -433,13 +436,13 @@ func (g *CodeGen) compileSyscallOpen_winarm64() {
 
 	// Default: GENERIC_READ, OPEN_EXISTING
 	g.emitLoadImm64Compact(REG_X3, 0x80000000) // dwDesiredAccess = GENERIC_READ
-	g.emitLoadImm64Compact(REG_X4, 3)           // dwCreationDisposition = OPEN_EXISTING
+	g.emitLoadImm64Compact(REG_X4, 3)          // dwCreationDisposition = OPEN_EXISTING
 
 	// Check for O_WRONLY|O_CREAT|O_TRUNC (577 = 0x241)
 	g.emitCmpImm(REG_X0, 577)
 	fixNotWrite := g.emitBCond(COND_NE)
 	g.emitLoadImm64Compact(REG_X3, 0x40000000) // GENERIC_WRITE
-	g.emitLoadImm64Compact(REG_X4, 2)           // CREATE_ALWAYS
+	g.emitLoadImm64Compact(REG_X4, 2)          // CREATE_ALWAYS
 	fixOpenDone := g.emitB()
 
 	g.patchArm64BCondAt(fixNotWrite, len(g.code))
@@ -447,7 +450,7 @@ func (g *CodeGen) compileSyscallOpen_winarm64() {
 	g.emitCmpImm(REG_X0, 2)
 	fixNotRdwr := g.emitBCond(COND_NE)
 	g.emitLoadImm64Compact(REG_X3, 0xC0000000) // GENERIC_READ | GENERIC_WRITE
-	g.emitLoadImm64Compact(REG_X4, 3)           // OPEN_EXISTING
+	g.emitLoadImm64Compact(REG_X4, 3)          // OPEN_EXISTING
 
 	g.patchArm64BCondAt(fixNotRdwr, len(g.code))
 	g.patchArm64BAt(fixOpenDone, len(g.code))
@@ -460,13 +463,13 @@ func (g *CodeGen) compileSyscallOpen_winarm64() {
 
 	// CreateFileA args: X0=lpFileName, X1=dwDesiredAccess, X2=dwShareMode,
 	// X3=lpSecurityAttributes, X4=dwCreationDisposition, X5=dwFlagsAndAttributes, X6=hTemplateFile
-	g.emitLoadLocalArm64(1*8, REG_X0)           // lpFileName
-	g.emitLdr(REG_X1, REG_SP, 8)                // dwDesiredAccess
-	g.emitLoadImm64Compact(REG_X2, 3)           // dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE
-	g.emitMovZ(REG_X3, 0, 0)                    // lpSecurityAttributes = NULL
-	g.emitLdr(REG_X4, REG_SP, 16)               // dwCreationDisposition
-	g.emitLoadImm64Compact(REG_X5, 0x80)         // dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL
-	g.emitMovZ(REG_X6, 0, 0)                    // hTemplateFile = NULL
+	g.emitLoadLocalArm64(1*8, REG_X0)    // lpFileName
+	g.emitLdr(REG_X1, REG_SP, 8)         // dwDesiredAccess
+	g.emitLoadImm64Compact(REG_X2, 3)    // dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE
+	g.emitMovZ(REG_X3, 0, 0)             // lpSecurityAttributes = NULL
+	g.emitLdr(REG_X4, REG_SP, 16)        // dwCreationDisposition
+	g.emitLoadImm64Compact(REG_X5, 0x80) // dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL
+	g.emitMovZ(REG_X6, 0, 0)             // hTemplateFile = NULL
 
 	g.emitCallIATArm64("CreateFileA")
 
@@ -667,8 +670,8 @@ func (g *CodeGen) emitWinApiReturnSimpleArm64() {
 
 func (g *CodeGen) compileSyscallGetcwd_winarm64() {
 	// GetCurrentDirectoryA(nBufferLength, lpBuffer)
-	g.emitLoadLocalArm64(2*8, REG_X0)  // nBufferLength
-	g.emitLoadLocalArm64(1*8, REG_X1)  // lpBuffer
+	g.emitLoadLocalArm64(2*8, REG_X0) // nBufferLength
+	g.emitLoadLocalArm64(1*8, REG_X1) // lpBuffer
 
 	g.emitSubImm(REG_SP, REG_SP, 16)
 	g.emitStr(REG_X28, REG_SP, 0)
@@ -695,7 +698,7 @@ func (g *CodeGen) compileSyscallGetcwd_winarm64() {
 
 	g.patchArm64BCondAt(fixOk, len(g.code))
 	// Convert backslashes to forward slashes
-	g.emitMovRRArm64(REG_X2, REG_X0) // save length
+	g.emitMovRRArm64(REG_X2, REG_X0)  // save length
 	g.emitLoadLocalArm64(1*8, REG_X3) // buf ptr
 	g.emitMovZ(REG_X4, 0, 0)          // i = 0
 
@@ -738,9 +741,9 @@ func (g *CodeGen) compileSyscallStat_winarm64() {
 	g.emitSubImm(REG_SP, REG_SP, 64)
 	g.emitStr(REG_X28, REG_SP, 0)
 
-	g.emitLoadLocalArm64(1*8, REG_X0)           // lpFileName
-	g.emitMovZ(REG_X1, 0, 0)                    // fInfoLevelId = GetFileExInfoStandard
-	g.emitAddImm(REG_X2, REG_SP, 16)            // lpFileInformation
+	g.emitLoadLocalArm64(1*8, REG_X0) // lpFileName
+	g.emitMovZ(REG_X1, 0, 0)          // fInfoLevelId = GetFileExInfoStandard
+	g.emitAddImm(REG_X2, REG_SP, 16)  // lpFileInformation
 
 	g.emitCallIATArm64("GetFileAttributesExA")
 
@@ -881,19 +884,19 @@ func (g *CodeGen) compileSyscallCreateProcess_winarm64() {
 	g.emitSubImm(REG_SP, REG_SP, 32)
 	g.emitStr(REG_X28, REG_SP, 0)
 
-	g.emitLoadLocalArm64(1*8, REG_X0)  // lpApplicationName
-	g.emitLoadLocalArm64(2*8, REG_X1)  // lpCommandLine
-	g.emitMovZ(REG_X2, 0, 0)           // lpProcessAttributes = NULL
-	g.emitMovZ(REG_X3, 0, 0)           // lpThreadAttributes = NULL
-	g.emitLoadImm64Compact(REG_X4, 1)  // bInheritHandles = TRUE
-	g.emitMovZ(REG_X5, 0, 0)           // dwCreationFlags = 0
-	g.emitLoadLocalArm64(5*8, REG_X6)  // lpEnvironment
-	g.emitMovZ(REG_X7, 0, 0)           // lpCurrentDirectory = NULL
+	g.emitLoadLocalArm64(1*8, REG_X0) // lpApplicationName
+	g.emitLoadLocalArm64(2*8, REG_X1) // lpCommandLine
+	g.emitMovZ(REG_X2, 0, 0)          // lpProcessAttributes = NULL
+	g.emitMovZ(REG_X3, 0, 0)          // lpThreadAttributes = NULL
+	g.emitLoadImm64Compact(REG_X4, 1) // bInheritHandles = TRUE
+	g.emitMovZ(REG_X5, 0, 0)          // dwCreationFlags = 0
+	g.emitLoadLocalArm64(5*8, REG_X6) // lpEnvironment
+	g.emitMovZ(REG_X7, 0, 0)          // lpCurrentDirectory = NULL
 
 	// Args 9 and 10 go on stack (after the shadow space / spill area)
-	g.emitLoadLocalArm64(3*8, REG_X9)  // lpStartupInfo
+	g.emitLoadLocalArm64(3*8, REG_X9) // lpStartupInfo
 	g.emitStr(REG_X9, REG_SP, 16)
-	g.emitLoadLocalArm64(4*8, REG_X9)  // lpProcessInformation
+	g.emitLoadLocalArm64(4*8, REG_X9) // lpProcessInformation
 	g.emitStr(REG_X9, REG_SP, 24)
 
 	g.emitCallIATArm64("CreateProcessA")
@@ -909,8 +912,8 @@ func (g *CodeGen) compileSyscallWaitProcess_winarm64() {
 	g.emitSubImm(REG_SP, REG_SP, 32)
 	g.emitStr(REG_X28, REG_SP, 0)
 
-	g.emitLoadLocalArm64(1*8, REG_X0)               // hProcess
-	g.emitLoadImm64Compact(REG_X1, 0xFFFFFFFF)       // INFINITE
+	g.emitLoadLocalArm64(1*8, REG_X0)          // hProcess
+	g.emitLoadImm64Compact(REG_X1, 0xFFFFFFFF) // INFINITE
 	g.emitCallIATArm64("WaitForSingleObject")
 
 	// GetExitCodeProcess(hProcess, &exitCode)
@@ -941,11 +944,11 @@ func (g *CodeGen) compileSyscallCreatePipe_winarm64() {
 
 	// Build SECURITY_ATTRIBUTES at SP+16
 	g.emitLoadImm64Compact(REG_X0, 24)
-	g.emitStr(REG_X0, REG_SP, 16)     // nLength = 24 (stored as 8 bytes, but only low 4 matter)
+	g.emitStr(REG_X0, REG_SP, 16) // nLength = 24 (stored as 8 bytes, but only low 4 matter)
 	g.emitMovZ(REG_X0, 0, 0)
-	g.emitStr(REG_X0, REG_SP, 24)     // lpSecurityDescriptor = NULL
+	g.emitStr(REG_X0, REG_SP, 24) // lpSecurityDescriptor = NULL
 	g.emitLoadImm64Compact(REG_X0, 1)
-	g.emitStr(REG_X0, REG_SP, 32)     // bInheritHandle = TRUE (stored as 8 bytes, low 4 matter)
+	g.emitStr(REG_X0, REG_SP, 32) // bInheritHandle = TRUE (stored as 8 bytes, low 4 matter)
 
 	g.emitLoadLocalArm64(1*8, REG_X0) // &hReadPipe
 	g.emitLoadLocalArm64(2*8, REG_X1) // &hWritePipe
@@ -1031,9 +1034,9 @@ func (g *CodeGen) compilePanicArm64Windows() {
 	g.emitCallIATArm64("GetStdHandle")
 	g.emitMovRRArm64(REG_X9, REG_X0) // save handle
 
-	g.emitSubImm(REG_SP, REG_SP, 16) // nwritten space
-	g.emitMovRRArm64(REG_X0, REG_X9) // hFile
-	g.emitAddImm(REG_X1, REG_SP, 16) // lpBuffer = &'\n' (at SP+16)
+	g.emitSubImm(REG_SP, REG_SP, 16)  // nwritten space
+	g.emitMovRRArm64(REG_X0, REG_X9)  // hFile
+	g.emitAddImm(REG_X1, REG_SP, 16)  // lpBuffer = &'\n' (at SP+16)
 	g.emitLoadImm64Compact(REG_X2, 1) // nBytes = 1
 	g.emitMovRRArm64(REG_X3, REG_SP)  // &nwritten
 	g.emitMovZ(REG_X4, 0, 0)          // lpOverlapped

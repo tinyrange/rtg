@@ -584,6 +584,33 @@ func (g *CodeGen) compileMakestringIntrinsic_i386() {
 }
 
 func (g *CodeGen) compileTostringIntrinsic_i386() {
+	g.needTostringHelper = true
+	g.emitCallPlaceholder(outlinedTostringHelper)
+}
+
+func (g *CodeGen) emitTostringHelperI386() {
+	if g.hasTostringHelper {
+		return
+	}
+	g.hasTostringHelper = true
+	g.funcOffsets[outlinedTostringHelper] = len(g.code)
+	g.hasPending = false
+
+	slot := g.slotBytes_i386()
+	g.pushR32(REG32_EBP)
+	g.movRR32(REG32_EBP, REG32_ESP)
+	if slot > 0 {
+		g.subRI32(REG32_ESP, int32(slot))
+	}
+
+	g.opPop(REG32_EAX)
+	g.emitStoreLocal32(1*slot, REG32_EAX)
+
+	g.compileTostringIntrinsicBody_i386()
+	g.compileReturn_i386(Inst{})
+}
+
+func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 	// Param 0 = value (could be string ptr or interface box ptr)
 	// Heuristic: if [ptr+0] < 256, it's a type_id (interface box)
 	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX) // load value

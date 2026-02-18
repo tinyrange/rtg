@@ -33,6 +33,9 @@ func generateI386ELF(irmod *IRModule, outputPath string) error {
 	}
 
 	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	if g.needTostringHelper {
+		g.emitTostringHelperI386()
+	}
 
 	var unresolved []string
 	for _, fix := range g.callFixups {

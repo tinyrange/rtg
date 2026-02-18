@@ -53,7 +53,13 @@ type CodeGen struct {
 	gotEntries      map[string]int // libSystem symbol name → GOT slot index
 	gotSymbols      []string       // ordered list of imported symbols
 	stringRodataMap map[int]int    // string header offset in data → rodata offset of bytes
+
+	// Outlined intrinsic helpers
+	needTostringHelper bool
+	hasTostringHelper  bool
 }
+
+const outlinedTostringHelper = "$rtg.tostring$"
 
 // CallFixup records a location in code that needs a relative call target patched.
 type CallFixup struct {

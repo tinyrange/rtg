@@ -42,6 +42,9 @@ func generateDOSCOM386(irmod *IRModule, outputPath string) error {
 		g.compileFunc_i386(f)
 	}
 	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	if g.needTostringHelper {
+		g.emitTostringHelperI386()
+	}
 
 	var unresolved []string
 	for _, fix := range g.callFixups {

@@ -39,6 +39,9 @@ func generateDarwinArm64(irmod *IRModule, outputPath string) error {
 	}
 
 	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	if g.needTostringHelper {
+		g.emitTostringHelperArm64()
+	}
 
 	// Resolve call fixups (skip special targets handled by buildMachO64)
 	var unresolved []string
@@ -119,12 +122,12 @@ func (g *CodeGen) emitStartArm64(irmod *IRModule) {
 
 	// Allocate operand stack: mmap(NULL, 1MB, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)
 	// macOS: MAP_ANONYMOUS = 0x1000, MAP_PRIVATE = 0x02 → flags = 0x1002
-	g.emitMovZ(REG_X0, 0, 0)                                   // addr = NULL
-	g.emitLoadImm64Compact(REG_X1, 1048576)                     // len = 1MB
-	g.emitLoadImm64Compact(REG_X2, 3)                           // PROT_READ|PROT_WRITE
-	g.emitLoadImm64Compact(REG_X3, 0x1002)                      // MAP_PRIVATE|MAP_ANON
-	g.emitLoadImm64Compact(REG_X4, 0xFFFFFFFFFFFFFFFF)          // fd = -1
-	g.emitMovZ(REG_X5, 0, 0)                                   // offset = 0
+	g.emitMovZ(REG_X0, 0, 0)                           // addr = NULL
+	g.emitLoadImm64Compact(REG_X1, 1048576)            // len = 1MB
+	g.emitLoadImm64Compact(REG_X2, 3)                  // PROT_READ|PROT_WRITE
+	g.emitLoadImm64Compact(REG_X3, 0x1002)             // MAP_PRIVATE|MAP_ANON
+	g.emitLoadImm64Compact(REG_X4, 0xFFFFFFFFFFFFFFFF) // fd = -1
+	g.emitMovZ(REG_X5, 0, 0)                           // offset = 0
 	g.emitCallGOT("_mmap")
 
 	// X28 = mmap result + 1MB (top of operand stack, grows down)
@@ -245,9 +248,9 @@ func (g *CodeGen) compilePanicArm64() {
 	g.emitLoadImm64Compact(REG_X0, 0x0A) // '\n'
 	g.emitSubImm(REG_SP, REG_SP, 16)
 	g.emitStrb(REG_X0, REG_SP, 0)
-	g.emitLoadImm64Compact(REG_X0, 2)    // fd = stderr
-	g.emitMovRRArm64(REG_X1, REG_SP)     // buf = SP
-	g.emitLoadImm64Compact(REG_X2, 1)    // len = 1
+	g.emitLoadImm64Compact(REG_X0, 2) // fd = stderr
+	g.emitMovRRArm64(REG_X1, REG_SP)  // buf = SP
+	g.emitLoadImm64Compact(REG_X2, 1) // len = 1
 	g.emitCallGOT("_write")
 	g.emitAddImm(REG_SP, REG_SP, 16)
 

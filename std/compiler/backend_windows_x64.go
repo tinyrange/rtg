@@ -65,6 +65,9 @@ func generateWinAmd64PE(irmod *IRModule, outputPath string) error {
 	}
 
 	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	if g.needTostringHelper {
+		g.emitTostringHelperX64()
+	}
 
 	// Resolve call fixups (skip $rodata_header$, $data_addr$, $iat$ — handled by buildPE64)
 	var unresolved []string
@@ -223,7 +226,7 @@ func (g *CodeGen) loadFdAsHandle64(localOffset int) {
 
 	// fd is 0, 1, or 2: nStdHandle = -10 - fd
 	g.negR(REG_RAX)
-	g.addRI(REG_RAX, -10)    // rax = -10 - fd
+	g.addRI(REG_RAX, -10)     // rax = -10 - fd
 	g.movRR(REG_RCX, REG_RAX) // arg1
 	g.emitCallIAT("GetStdHandle")
 	// RAX = handle
@@ -243,10 +246,10 @@ func (g *CodeGen) compileSyscallMmap_win64() {
 	// 4 args in regs, needs 32-byte shadow space
 	g.subRI(REG_RSP, 32)
 
-	g.xorRR(REG_RCX, REG_RCX)             // lpAddress = NULL
-	g.emitLoadLocal(2*8, REG_RDX)          // size
-	g.emitMovRegImm64(REG_R8, 0x3000)     // MEM_COMMIT | MEM_RESERVE
-	g.emitMovRegImm64(REG_R9, 0x04)       // PAGE_READWRITE
+	g.xorRR(REG_RCX, REG_RCX)         // lpAddress = NULL
+	g.emitLoadLocal(2*8, REG_RDX)     // size
+	g.emitMovRegImm64(REG_R8, 0x3000) // MEM_COMMIT | MEM_RESERVE
+	g.emitMovRegImm64(REG_R9, 0x04)   // PAGE_READWRITE
 	g.emitCallIAT("VirtualAlloc")
 
 	g.addRI(REG_RSP, 32)
@@ -278,10 +281,10 @@ func (g *CodeGen) compileSyscallWrite_win64() {
 	g.loadFdAsHandle64(1 * 8)
 	g.movRR(REG_RCX, REG_RAX) // hFile
 
-	g.emitLoadLocal(2*8, REG_RDX)                                        // lpBuffer
-	g.emitLoadLocal(3*8, REG_R8)                                         // nNumberOfBytesToWrite
-	g.emitBytes(0x4c, 0x8d, 0x4c, 0x24, 0x28)                           // lea r9, [rsp+40] = &nwritten
-	g.emitBytes(0x48, 0xc7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00)  // mov qword [rsp+32], 0 (lpOverlapped)
+	g.emitLoadLocal(2*8, REG_RDX)                                     // lpBuffer
+	g.emitLoadLocal(3*8, REG_R8)                                      // nNumberOfBytesToWrite
+	g.emitBytes(0x4c, 0x8d, 0x4c, 0x24, 0x28)                         // lea r9, [rsp+40] = &nwritten
+	g.emitBytes(0x48, 0xc7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00) // mov qword [rsp+32], 0 (lpOverlapped)
 
 	g.emitCallIAT("WriteFile")
 
@@ -297,9 +300,9 @@ func (g *CodeGen) compileSyscallWrite_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
-	g.compileConstI64(0)     // r1 = 0
-	g.compileConstI64(0)     // r2 = 0
-	g.opPush(REG_RAX)       // err
+	g.compileConstI64(0) // r1 = 0
+	g.compileConstI64(0) // r2 = 0
+	g.opPush(REG_RAX)    // err
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -318,9 +321,9 @@ func (g *CodeGen) compileSyscallRead_win64() {
 	g.loadFdAsHandle64(1 * 8)
 	g.movRR(REG_RCX, REG_RAX) // hFile
 
-	g.emitLoadLocal(2*8, REG_RDX)       // lpBuffer
-	g.emitLoadLocal(3*8, REG_R8)        // nNumberOfBytesToRead
-	g.emitBytes(0x4c, 0x8d, 0x4c, 0x24, 0x28) // lea r9, [rsp+40] = &nread
+	g.emitLoadLocal(2*8, REG_RDX)                                     // lpBuffer
+	g.emitLoadLocal(3*8, REG_R8)                                      // nNumberOfBytesToRead
+	g.emitBytes(0x4c, 0x8d, 0x4c, 0x24, 0x28)                         // lea r9, [rsp+40] = &nread
 	g.emitBytes(0x48, 0xc7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00) // mov qword [rsp+32], 0 (lpOverlapped)
 
 	g.emitCallIAT("ReadFile")
@@ -382,13 +385,13 @@ func (g *CodeGen) compileSyscallOpen_win64() {
 	g.subRI(REG_RSP, 64)
 
 	// Set up args
-	g.emitLoadLocal(1*8, REG_RCX)         // lpFileName
+	g.emitLoadLocal(1*8, REG_RCX) // lpFileName
 	// Restore dwDesiredAccess from saved
 	g.loadMem(REG_RDX, REG_RSP, 64+8) // dwDesiredAccess (pushed second-to-last)
-	g.emitMovRegImm64(REG_R8, 3)          // dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE
-	g.xorRR(REG_R9, REG_R9)               // lpSecurityAttributes = NULL
+	g.emitMovRegImm64(REG_R8, 3)      // dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE
+	g.xorRR(REG_R9, REG_R9)           // lpSecurityAttributes = NULL
 	// Stack args at [rsp+32], [rsp+40], [rsp+48]
-	g.loadMem(REG_RAX, REG_RSP, 64) // dwCreationDisposition (pushed last)
+	g.loadMem(REG_RAX, REG_RSP, 64)  // dwCreationDisposition (pushed last)
 	g.storeMem(REG_RSP, 32, REG_RAX) // [rsp+32] = dwCreationDisposition
 	g.emitMovRegImm64(REG_RAX, 0x80)
 	g.storeMem(REG_RSP, 40, REG_RAX) // [rsp+40] = FILE_ATTRIBUTE_NORMAL
@@ -476,8 +479,8 @@ func (g *CodeGen) compileSyscallExit_win64() {
 func (g *CodeGen) compileSyscallMkdir_win64() {
 	// CreateDirectoryA(lpPathName, lpSecurityAttributes)
 	g.subRI(REG_RSP, 32)
-	g.emitLoadLocal(1*8, REG_RCX)   // lpPathName
-	g.xorRR(REG_RDX, REG_RDX)       // lpSecurityAttributes = NULL
+	g.emitLoadLocal(1*8, REG_RCX) // lpPathName
+	g.xorRR(REG_RDX, REG_RDX)     // lpSecurityAttributes = NULL
 	g.emitCallIAT("CreateDirectoryA")
 	g.addRI(REG_RSP, 32)
 
@@ -553,8 +556,8 @@ func (g *CodeGen) emitWinApiReturn64() {
 func (g *CodeGen) compileSyscallGetcwd_win64() {
 	// GetCurrentDirectoryA(nBufferLength, lpBuffer)
 	g.subRI(REG_RSP, 32)
-	g.emitLoadLocal(2*8, REG_RCX)    // nBufferLength
-	g.emitLoadLocal(1*8, REG_RDX)    // lpBuffer
+	g.emitLoadLocal(2*8, REG_RCX) // nBufferLength
+	g.emitLoadLocal(1*8, REG_RDX) // lpBuffer
 	g.emitCallIAT("GetCurrentDirectoryA")
 	g.addRI(REG_RSP, 32)
 
@@ -571,9 +574,9 @@ func (g *CodeGen) compileSyscallGetcwd_win64() {
 
 	g.patchRel32(fixOk)
 	// Convert backslashes to forward slashes in-place
-	g.movRR(REG_RCX, REG_RAX)        // save length
-	g.emitLoadLocal(1*8, REG_RDX)    // buf ptr
-	g.opPush(REG_RCX)                // save length on operand stack
+	g.movRR(REG_RCX, REG_RAX)     // save length
+	g.emitLoadLocal(1*8, REG_RDX) // buf ptr
+	g.opPush(REG_RCX)             // save length on operand stack
 
 	// Loop: replace '\' with '/'
 	g.xorRR(REG_RSI, REG_RSI) // i = 0
@@ -613,9 +616,9 @@ func (g *CodeGen) compileSyscallStat_win64() {
 	// 32 shadow + 48 for struct + pad = 80 -> round to 80 (already 16-aligned)
 	g.subRI(REG_RSP, 80)
 
-	g.emitLoadLocal(1*8, REG_RCX)               // lpFileName
-	g.xorRR(REG_RDX, REG_RDX)                    // fInfoLevelId = GetFileExInfoStandard
-	g.emitBytes(0x4c, 0x8d, 0x44, 0x24, 0x20)   // lea r8, [rsp+32] = lpFileInformation
+	g.emitLoadLocal(1*8, REG_RCX)             // lpFileName
+	g.xorRR(REG_RDX, REG_RDX)                 // fInfoLevelId = GetFileExInfoStandard
+	g.emitBytes(0x4c, 0x8d, 0x44, 0x24, 0x20) // lea r8, [rsp+32] = lpFileInformation
 	g.emitCallIAT("GetFileAttributesExA")
 
 	g.addRI(REG_RSP, 80)
@@ -725,14 +728,14 @@ func (g *CodeGen) compileSyscallCreateProcess_win64() {
 	// Allocate: 32 shadow + 6*8 stack args = 80 -> round to 80 (16-aligned)
 	g.subRI(REG_RSP, 80)
 
-	g.emitLoadLocal(1*8, REG_RCX)   // lpApplicationName
-	g.emitLoadLocal(2*8, REG_RDX)   // lpCommandLine
-	g.xorRR(REG_R8, REG_R8)         // lpProcessAttributes = NULL
-	g.xorRR(REG_R9, REG_R9)         // lpThreadAttributes = NULL
+	g.emitLoadLocal(1*8, REG_RCX) // lpApplicationName
+	g.emitLoadLocal(2*8, REG_RDX) // lpCommandLine
+	g.xorRR(REG_R8, REG_R8)       // lpProcessAttributes = NULL
+	g.xorRR(REG_R9, REG_R9)       // lpThreadAttributes = NULL
 
 	// Stack args at [rsp+32..rsp+72]
 	g.emitByte(0xb8)
-	g.emitU32(1) // mov eax, 1
+	g.emitU32(1)                     // mov eax, 1
 	g.storeMem(REG_RSP, 32, REG_RAX) // bInheritHandles = TRUE
 	g.xorRR(REG_RAX, REG_RAX)
 	g.storeMem(REG_RSP, 40, REG_RAX) // dwCreationFlags = 0
@@ -771,13 +774,13 @@ func (g *CodeGen) compileSyscallWaitProcess_win64() {
 
 	// WaitForSingleObject(hProcess, INFINITE=0xFFFFFFFF)
 	g.subRI(REG_RSP, 32)
-	g.emitLoadLocal(1*8, REG_RCX) // hProcess
+	g.emitLoadLocal(1*8, REG_RCX)          // hProcess
 	g.emitMovRegImm64(REG_RDX, 0xFFFFFFFF) // INFINITE
 	g.emitCallIAT("WaitForSingleObject")
 
 	// GetExitCodeProcess(hProcess, &exitCode)
-	g.emitLoadLocal(1*8, REG_RCX)  // hProcess
-	g.emitLoadLocal(2*8, REG_RDX)  // exitCodeBuf
+	g.emitLoadLocal(1*8, REG_RCX) // hProcess
+	g.emitLoadLocal(2*8, REG_RDX) // exitCodeBuf
 	g.emitCallIAT("GetExitCodeProcess")
 	g.addRI(REG_RSP, 32)
 
@@ -806,8 +809,8 @@ func (g *CodeGen) compileSyscallCreatePipe_win64() {
 	g.emitU32(1)
 	g.storeMem(REG_RSP, 48, REG_RAX) // bInheritHandle = TRUE
 
-	g.emitLoadLocal(1*8, REG_RCX)            // &hReadPipe
-	g.emitLoadLocal(2*8, REG_RDX)            // &hWritePipe
+	g.emitLoadLocal(1*8, REG_RCX)             // &hReadPipe
+	g.emitLoadLocal(2*8, REG_RDX)             // &hWritePipe
 	g.emitBytes(0x4c, 0x8d, 0x44, 0x24, 0x20) // lea r8, [rsp+32] = lpPipeAttributes
 	g.xorRR(REG_R9, REG_R9)                   // nSize = 0 (default)
 
@@ -862,8 +865,8 @@ func (g *CodeGen) compilePanicWin64() {
 	// Save string info to RBX/R12 (callee-saved, safe across Win64 API calls)
 	g.pushR(REG_RBX)
 	g.pushR(REG_R12)
-	g.loadMem(REG_RBX, REG_RAX, 0)  // RBX = data_ptr
-	g.loadMem(REG_R12, REG_RAX, 8)  // R12 = len
+	g.loadMem(REG_RBX, REG_RAX, 0) // RBX = data_ptr
+	g.loadMem(REG_R12, REG_RAX, 8) // R12 = len
 
 	// GetStdHandle(STD_ERROR_HANDLE = -12)
 	g.subRI(REG_RSP, 32)
@@ -875,16 +878,16 @@ func (g *CodeGen) compilePanicWin64() {
 	// Reuse stack: 32 shadow + 8 for 5th arg + 8 for nwritten = 48
 	g.addRI(REG_RSP, 32)
 	g.subRI(REG_RSP, 48)
-	g.movRR(REG_RCX, REG_RAX)       // hFile = stderr
-	g.movRR(REG_RDX, REG_RBX)       // lpBuffer = data_ptr
-	g.movRR(REG_R8, REG_R12)        // nBytes = len
-	g.emitBytes(0x4c, 0x8d, 0x4c, 0x24, 0x28) // lea r9, [rsp+40] = &nwritten
+	g.movRR(REG_RCX, REG_RAX)                                         // hFile = stderr
+	g.movRR(REG_RDX, REG_RBX)                                         // lpBuffer = data_ptr
+	g.movRR(REG_R8, REG_R12)                                          // nBytes = len
+	g.emitBytes(0x4c, 0x8d, 0x4c, 0x24, 0x28)                         // lea r9, [rsp+40] = &nwritten
 	g.emitBytes(0x48, 0xc7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00) // mov qword [rsp+32], 0 (lpOverlapped)
 	g.emitCallIAT("WriteFile")
 	g.addRI(REG_RSP, 48)
 
 	// Write newline: push '\n' onto stack as a 1-byte buffer
-	g.emitBytes(0x6a, 0x0a) // push 0x0a
+	g.emitBytes(0x6a, 0x0a)   // push 0x0a
 	g.movRR(REG_RBX, REG_RSP) // RBX = &'\n'
 
 	// GetStdHandle(STD_ERROR_HANDLE)
@@ -895,10 +898,10 @@ func (g *CodeGen) compilePanicWin64() {
 
 	// WriteFile newline
 	g.subRI(REG_RSP, 48)
-	g.movRR(REG_RCX, REG_RAX)       // hFile
-	g.movRR(REG_RDX, REG_RBX)       // lpBuffer = &'\n'
-	g.emitMovRegImm64(REG_R8, 1)    // nBytes = 1
-	g.emitBytes(0x4c, 0x8d, 0x4c, 0x24, 0x28) // lea r9, [rsp+40]
+	g.movRR(REG_RCX, REG_RAX)                                         // hFile
+	g.movRR(REG_RDX, REG_RBX)                                         // lpBuffer = &'\n'
+	g.emitMovRegImm64(REG_R8, 1)                                      // nBytes = 1
+	g.emitBytes(0x4c, 0x8d, 0x4c, 0x24, 0x28)                         // lea r9, [rsp+40]
 	g.emitBytes(0x48, 0xc7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00) // mov qword [rsp+32], 0
 	g.emitCallIAT("WriteFile")
 	g.addRI(REG_RSP, 48)
