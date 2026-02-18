@@ -171,11 +171,11 @@ jobs:
           config_tags=(
             ""
             "no_embed_std"
-            "no_embed_std,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_linux_i386,no_backend_c,no_backend_dos_i386,no_backend_ir"
-            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir"
-            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_i386,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir"
+            "no_embed_std,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_darwin_arm64,no_backend_wasi_wasm32,no_backend_linux_i386,no_backend_c,no_backend_dos_i386,no_backend_ir"
+            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_darwin_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir"
+            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_i386,no_backend_arm64,no_backend_darwin_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir"
             "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_i386,no_backend_windows_amd64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir"
-            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_c,no_backend_dos_i386,no_backend_ir"
+            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_darwin_arm64,no_backend_c,no_backend_dos_i386,no_backend_ir"
           )
 
           json_escape() {
