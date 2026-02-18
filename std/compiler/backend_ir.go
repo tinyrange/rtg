@@ -416,7 +416,7 @@ func instArgs(inst Inst, f *IRFunc, irmod *IRModule) string {
 	case OP_CONST_STR:
 		return " " + irQuote(name)
 	case OP_CONST_BOOL:
-		if val != 0 {
+		if arg != 0 {
 			return " true"
 		}
 		return " false"
