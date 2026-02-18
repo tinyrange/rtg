@@ -225,7 +225,7 @@ jobs:
             matrix_json+='}'
           done
 
-          matrix_json+=',"generated_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","commit":"'"${GITHUB_SHA}"'"}'
+          matrix_json+='},"generated_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","commit":"'"${GITHUB_SHA}"'"}'
           printf '%s\n' "$matrix_json" > build/compiler-size-data.json
 
       - name: Upsert persistent issue comment
