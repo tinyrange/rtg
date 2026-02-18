@@ -217,6 +217,11 @@ type Compiler struct {
 	deferArgCounts      []int
 	deferRetCounts      []int
 	namedResultNames    []string
+	labelIDs            map[string]int
+	funcLitSeq          int
+	localFuncTargets    map[string]string
+	localMethodTargets  map[string]string
+	localMethodRecv     map[string]int
 	dotJoinCache        map[string]map[string]string // a → b → "a.b"
 	qualifyTypeCache    map[string]string            // "typeName\x00pkgPath" → qualified result
 }
@@ -752,6 +757,13 @@ func (c *Compiler) resolveExprType(node *Node) string {
 	// Call expression: check return type
 	if node.Kind == NCallExpr {
 		calleeName := c.resolveCallName(node.X)
+		if node.X != nil && node.X.Kind == NIdent {
+			if target, ok := c.localFuncTargets[node.X.Name]; ok {
+				calleeName = target
+			} else if target, ok := c.localMethodTargets[node.X.Name]; ok {
+				calleeName = target
+			}
+		}
 		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
 			return c.qualifyTypeName(retTypes[0], "")
 		}
@@ -1394,6 +1406,10 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.deferArgCounts = nil
 	c.deferRetCounts = nil
 	c.namedResultNames = nil
+	c.labelIDs = make(map[string]int)
+	c.localFuncTargets = make(map[string]string)
+	c.localMethodTargets = make(map[string]string)
+	c.localMethodRecv = make(map[string]int)
 	c.pushScope()
 
 	// Extract return type names for interface boxing
@@ -1900,6 +1916,11 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		c.localConcreteTypes[node.Name] = ct
 	}
 	if node.X != nil {
+		if c.registerFuncValueBinding(node.Name, node.X) {
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
+			return
+		}
 		c.compileExpr(node.X)
 		if node.Type != nil {
 			if c.isInterfaceTypeName(nodeTypeName(node.Type)) {
@@ -1935,6 +1956,109 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
 		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
 	}
+}
+
+func (c *Compiler) compileFuncLiteral(lit *Node) string {
+	name := fmt.Sprintf("$lit_%d", c.funcLitSeq)
+	c.funcLitSeq++
+	fn := &Node{
+		Kind: NFunc, Name: name, Pos: lit.Pos,
+		Nodes: lit.Nodes, Type: lit.Type, Body: lit.Body,
+	}
+	// Save current function compilation state.
+	savedCurFunc := c.curFunc
+	savedScopes := c.scopes
+	savedLocalElem := c.localElemSizes
+	savedLocalTypes := c.localTypes
+	savedLocalTypeDecls := c.localTypeDecls
+	savedLocalStrings := c.localStringVars
+	savedLocalAddr := c.localAddrOf
+	savedLocalConcrete := c.localConcreteTypes
+	savedLocalMapVars := c.localMapVars
+	savedLocalMapVals := c.localMapValueTypes
+	savedDefNames := c.deferNames
+	savedDefStarts := c.deferArgStarts
+	savedDefCounts := c.deferArgCounts
+	savedDefRetCounts := c.deferRetCounts
+	savedNamed := c.namedResultNames
+	savedLabelIDs := c.labelIDs
+	savedStackDepth := c.stackDepth
+	savedFuncTargets := c.localFuncTargets
+	savedMethodTargets := c.localMethodTargets
+	savedMethodRecv := c.localMethodRecv
+
+	c.compileFunc(fn)
+
+	// Restore caller function state.
+	c.curFunc = savedCurFunc
+	c.scopes = savedScopes
+	c.localElemSizes = savedLocalElem
+	c.localTypes = savedLocalTypes
+	c.localTypeDecls = savedLocalTypeDecls
+	c.localStringVars = savedLocalStrings
+	c.localAddrOf = savedLocalAddr
+	c.localConcreteTypes = savedLocalConcrete
+	c.localMapVars = savedLocalMapVars
+	c.localMapValueTypes = savedLocalMapVals
+	c.deferNames = savedDefNames
+	c.deferArgStarts = savedDefStarts
+	c.deferArgCounts = savedDefCounts
+	c.deferRetCounts = savedDefRetCounts
+	c.namedResultNames = savedNamed
+	c.labelIDs = savedLabelIDs
+	c.stackDepth = savedStackDepth
+	c.localFuncTargets = savedFuncTargets
+	c.localMethodTargets = savedMethodTargets
+	c.localMethodRecv = savedMethodRecv
+	return c.curPkg.QualName(name)
+}
+
+func (c *Compiler) registerFuncValueBinding(localName string, rhs *Node) bool {
+	if rhs == nil || localName == "" {
+		return false
+	}
+	if rhs.Kind == NIdent {
+		if target, ok := c.localFuncTargets[rhs.Name]; ok {
+			c.localFuncTargets[localName] = target
+			delete(c.localMethodTargets, localName)
+			delete(c.localMethodRecv, localName)
+			return true
+		}
+		if c.curPkg != nil {
+			if sym, ok := c.curPkg.Symbols[rhs.Name]; ok && sym.Kind == SymFunc {
+				c.localFuncTargets[localName] = c.curPkg.QualName(rhs.Name)
+				delete(c.localMethodTargets, localName)
+				delete(c.localMethodRecv, localName)
+				return true
+			}
+		}
+	}
+	if rhs.Kind == NSelectorExpr && rhs.X != nil && rhs.X.Kind == NIdent {
+		recvName := rhs.X.Name
+		recvType := c.localConcreteTypes[recvName]
+		if recvType == "" {
+			gqname := c.curPkg.QualName(recvName)
+			recvType = c.globalConcreteTypes[gqname]
+		}
+		if recvType != "" {
+			if target, ok := c.resolveMethodByConcreteType(recvType, rhs.Name); ok {
+				if recvIdx, ok := c.lookupLocal(recvName); ok {
+					c.localMethodTargets[localName] = target
+					c.localMethodRecv[localName] = recvIdx
+					delete(c.localFuncTargets, localName)
+					return true
+				}
+			}
+		}
+	}
+	if rhs.Kind == NFuncType && rhs.Body != nil {
+		target := c.compileFuncLiteral(rhs)
+		c.localFuncTargets[localName] = target
+		delete(c.localMethodTargets, localName)
+		delete(c.localMethodRecv, localName)
+		return true
+	}
+	return false
 }
 
 func (c *Compiler) compileAssign(node *Node) {
@@ -2066,7 +2190,17 @@ func (c *Compiler) compileAssign(node *Node) {
 				}
 			}
 		}
-		c.compileExpr(node.Y)
+		// Track []byte conversion results: x := []byte(str)
+		if node.Y != nil && node.Y.Kind == NCallExpr && node.Y.X != nil && node.Y.X.Kind == NSliceType &&
+			node.Y.X.X != nil && node.Y.X.X.Kind == NIdent && node.Y.X.X.Name == "byte" {
+			c.localElemSizes[node.X.Name] = 1
+			c.localConcreteTypes[node.X.Name] = "[]byte"
+		}
+		if c.registerFuncValueBinding(node.X.Name, node.Y) {
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		} else {
+			c.compileExpr(node.Y)
+		}
 		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
 		return
 	}
@@ -2115,6 +2249,14 @@ func (c *Compiler) compileAssign(node *Node) {
 	}
 
 	// Regular assignment
+	if node.X != nil && node.X.Kind == NIdent && c.registerFuncValueBinding(node.X.Name, node.Y) {
+		idx, ok := c.lookupLocal(node.X.Name)
+		if ok {
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+			return
+		}
+	}
 	c.compileExpr(node.Y)
 	if _, ok := c.lvalueInterfaceType(node.X); ok {
 		c.maybeBoxValueForInterface(node.Y)
@@ -2514,6 +2656,13 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 			return c.exprConcreteType(expr.Nodes[0])
 		}
 		calleeName := c.resolveCallName(expr.X)
+		if expr.X != nil && expr.X.Kind == NIdent {
+			if target, ok := c.localFuncTargets[expr.X.Name]; ok {
+				calleeName = target
+			} else if target, ok := c.localMethodTargets[expr.X.Name]; ok {
+				calleeName = target
+			}
+		}
 		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
 			// Extract package path from callee name for proper qualification
 			// For pkg.Func calls, find the package containing this function
@@ -2913,6 +3062,63 @@ func (c *Compiler) compileSwitch(node *Node) {
 	savedDepth := c.stackDepth
 	endLabel := c.newLabel()
 	isTypeSwitch := node.Name == "typeswitch"
+
+	if isTypeSwitch {
+		c.pushScope()
+		ifaceIdx := c.addLocal("$typeswitch_iface")
+		c.compileExpr(node.Y)
+		c.emit(Inst{Op: OP_LOCAL_SET, Arg: ifaceIdx})
+
+		bindIdx := -1
+		if node.Type != nil && node.Type.Kind == NIdent && node.Type.Name != "" {
+			bindIdx = c.addLocal(node.Type.Name)
+			c.localConcreteTypes[node.Type.Name] = "int"
+		}
+
+		for _, cas := range node.Nodes {
+			bodyLabel := c.newLabel()
+			nextLabel := c.newLabel()
+			if cas.Name == "default" {
+				c.emitLabel(bodyLabel)
+				if cas.Body != nil {
+					c.compileBlock(cas.Body)
+				}
+				c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+				c.emitLabel(nextLabel)
+				continue
+			}
+			var caseExprs []*Node
+			caseExprs = append(caseExprs, cas.X)
+			for _, extra := range cas.Nodes {
+				caseExprs = append(caseExprs, extra)
+			}
+			for _, expr := range caseExprs {
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: ifaceIdx})
+				c.emit(Inst{Op: OP_OFFSET, Arg: 0})
+				c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+				c.emit(Inst{Op: OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
+				c.emit(Inst{Op: OP_JMP_EQ, Arg: bodyLabel})
+			}
+			c.emit(Inst{Op: OP_JMP, Arg: nextLabel})
+			c.emitLabel(bodyLabel)
+			if bindIdx >= 0 {
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: ifaceIdx})
+				c.emit(Inst{Op: OP_OFFSET, Arg: targetPtrSize})
+				c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+				c.emit(Inst{Op: OP_LOCAL_SET, Arg: bindIdx})
+			}
+			if cas.Body != nil {
+				c.compileBlock(cas.Body)
+			}
+			c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+			c.emitLabel(nextLabel)
+		}
+		c.emitLabel(endLabel)
+		c.popScope()
+		c.stackDepth = savedDepth
+		return
+	}
+
 	needsScope := node.X != nil
 	if needsScope {
 		c.pushScope()
@@ -2922,19 +3128,13 @@ func (c *Compiler) compileSwitch(node *Node) {
 	// Compile tag if present
 	hasTag := node.Y != nil
 	if hasTag {
-		if isTypeSwitch {
-			c.compileExpr(node.Y)
-			c.emit(Inst{Op: OP_OFFSET, Arg: 0})
-			c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
-		} else {
-			c.compileExpr(node.Y)
-		}
+		c.compileExpr(node.Y)
 	}
 	caseCheckDepth := c.stackDepth // depth with tag on stack (if any)
 
 	// Detect string switch: check tag and first case value
 	isStringSwitch := false
-	if hasTag && !isTypeSwitch {
+	if hasTag {
 		if isStringExpr(node.Y) || c.isStringTypedExpr(node.Y) {
 			isStringSwitch = true
 		}
@@ -2950,22 +3150,51 @@ func (c *Compiler) compileSwitch(node *Node) {
 		}
 	}
 
-	for _, cas := range node.Nodes {
-		bodyLabel := c.newLabel()
+	caseBodyLabels := make([]int, len(node.Nodes))
+	for i := range node.Nodes {
+		caseBodyLabels[i] = c.newLabel()
+	}
+	compileCaseBody := func(cas *Node, doFallthrough bool) {
+		if cas.Body == nil {
+			return
+		}
+		if !doFallthrough {
+			c.compileBlock(cas.Body)
+			return
+		}
+		c.pushScope()
+		last := len(cas.Body.Nodes) - 1
+		for i, stmt := range cas.Body.Nodes {
+			if i == last && stmt != nil && stmt.Kind == NBranch && stmt.Name == "fallthrough" {
+				break
+			}
+			c.compileStmt(stmt)
+		}
+		c.popScope()
+	}
+	hasFallthrough := func(cas *Node) bool {
+		if cas == nil || cas.Body == nil || len(cas.Body.Nodes) == 0 {
+			return false
+		}
+		last := cas.Body.Nodes[len(cas.Body.Nodes)-1]
+		return last != nil && last.Kind == NBranch && last.Name == "fallthrough"
+	}
+
+	for i, cas := range node.Nodes {
+		bodyLabel := caseBodyLabels[i]
 		nextLabel := c.newLabel()
 
 		if cas.Name == "default" {
 			c.emitLabel(bodyLabel)
-			if hasTag {
-				c.emit(Inst{Op: OP_DROP})
+			doFallthrough := hasFallthrough(cas) && i+1 < len(caseBodyLabels)
+			compileCaseBody(cas, doFallthrough)
+			if doFallthrough {
+				c.emit(Inst{Op: OP_JMP, Arg: caseBodyLabels[i+1]})
+			} else {
+				c.emit(Inst{Op: OP_JMP, Arg: endLabel})
 			}
-			if cas.Body != nil {
-				c.compileBlock(cas.Body)
-			}
-			c.emit(Inst{Op: OP_JMP, Arg: endLabel})
-			c.stackDepth = caseCheckDepth // reset for next case
+			c.stackDepth = caseCheckDepth
 		} else {
-			// Collect all case values: first in cas.X, rest in cas.Nodes
 			var caseExprs []*Node
 			caseExprs = append(caseExprs, cas.X)
 			for _, extra := range cas.Nodes {
@@ -2973,41 +3202,32 @@ func (c *Compiler) compileSwitch(node *Node) {
 			}
 
 			if hasTag {
-				// Check each case value with OR logic
-				// DUP/expr/EQ/JMP_IF is net-zero on the fallthrough path
 				for _, expr := range caseExprs {
 					c.emit(Inst{Op: OP_DUP})
-					if isTypeSwitch {
-						c.emit(Inst{Op: OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
-					} else {
-						c.compileExpr(expr)
-						if isStringSwitch {
-							c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
-							c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
-							continue
-						}
+					c.compileExpr(expr)
+					if isStringSwitch {
+						c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+						c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
+						continue
 					}
 					c.emit(Inst{Op: OP_JMP_EQ, Arg: bodyLabel})
 				}
 			} else {
-				// No tag — each case expr is a bool condition, OR them
 				for _, expr := range caseExprs {
 					c.compileCondJump(expr, true, bodyLabel)
 				}
 			}
 			c.emit(Inst{Op: OP_JMP, Arg: nextLabel})
 
-			// Body is reached from JMP_IF; depth = caseCheckDepth
 			c.stackDepth = caseCheckDepth
 			c.emitLabel(bodyLabel)
-			if hasTag {
-				c.emit(Inst{Op: OP_DROP})
+			doFallthrough := hasFallthrough(cas) && i+1 < len(caseBodyLabels)
+			compileCaseBody(cas, doFallthrough)
+			if doFallthrough {
+				c.emit(Inst{Op: OP_JMP, Arg: caseBodyLabels[i+1]})
+			} else {
+				c.emit(Inst{Op: OP_JMP, Arg: endLabel})
 			}
-			if cas.Body != nil {
-				c.compileBlock(cas.Body)
-			}
-			c.emit(Inst{Op: OP_JMP, Arg: endLabel})
-			// Reset depth for next case's check path
 			c.stackDepth = caseCheckDepth
 			c.emitLabel(nextLabel)
 		}
@@ -3144,6 +3364,20 @@ func (c *Compiler) compileBranch(node *Node) {
 		c.emit(Inst{Op: OP_JMP, Arg: c.breaks[len(c.breaks)-1]})
 	} else if node.Name == "continue" && len(c.continues) > 0 {
 		c.emit(Inst{Op: OP_JMP, Arg: c.continues[len(c.continues)-1]})
+	} else if node.Name == "label" && node.X != nil {
+		id, ok := c.labelIDs[node.X.Name]
+		if !ok {
+			id = c.newLabel()
+			c.labelIDs[node.X.Name] = id
+		}
+		c.emitLabel(id)
+	} else if node.Name == "goto" && node.X != nil {
+		id, ok := c.labelIDs[node.X.Name]
+		if !ok {
+			id = c.newLabel()
+			c.labelIDs[node.X.Name] = id
+		}
+		c.emit(Inst{Op: OP_JMP, Arg: id})
 	}
 }
 
@@ -3319,6 +3553,13 @@ func (c *Compiler) isStringTypedExpr(node *Node) bool {
 		// Check if function returns string
 		if node.X != nil {
 			calleeName := c.resolveCallName(node.X)
+			if node.X.Kind == NIdent {
+				if target, ok := c.localFuncTargets[node.X.Name]; ok {
+					calleeName = target
+				} else if target, ok := c.localMethodTargets[node.X.Name]; ok {
+					calleeName = target
+				}
+			}
 			if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
 				return retTypes[0] == "string"
 			}
@@ -3813,6 +4054,26 @@ func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool
 }
 
 func (c *Compiler) compileCallExpr(node *Node) {
+	if node.X != nil && node.X.Kind == NIdent {
+		if target, ok := c.localFuncTargets[node.X.Name]; ok {
+			for _, arg := range node.Nodes {
+				c.compileExpr(arg)
+			}
+			c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes)})
+			return
+		}
+		if target, ok := c.localMethodTargets[node.X.Name]; ok {
+			recvIdx, rok := c.localMethodRecv[node.X.Name]
+			if rok {
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: recvIdx})
+				for _, arg := range node.Nodes {
+					c.compileExpr(arg)
+				}
+				c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes) + 1})
+				return
+			}
+		}
+	}
 	// Check for builtins
 	if node.X != nil && node.X.Kind == NIdent {
 		name := node.X.Name
@@ -3956,11 +4217,12 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "string" || name == "int16" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" {
 			c.compileExpr(node.Nodes[0])
 			if name == "string" {
+				argType := c.resolveExprType(node.Nodes[0])
 				if c.isExprByte(node.Nodes[0]) {
 					c.emit(Inst{Op: OP_CALL, Name: "runtime.ByteToString", Arg: 1})
 				} else if c.isStringTypedExpr(node.Nodes[0]) {
 					// no-op
-				} else if c.exprConcreteType(node.Nodes[0]) == "[]byte" {
+				} else if c.exprConcreteType(node.Nodes[0]) == "[]byte" || argType == "[]byte" {
 					c.emit(Inst{Op: OP_CONVERT, Name: name})
 				} else {
 					c.emit(Inst{Op: OP_CALL, Name: "runtime.RuneToString", Arg: 1})
@@ -4888,6 +5150,9 @@ func (c *Compiler) compileSliceExpr(node *Node) {
 	// Use StringSlice for string-typed targets, SliceReslice for slices
 	if c.isStringTypedExpr(node.X) {
 		c.emit(Inst{Op: OP_CALL, Name: "runtime.StringSlice", Arg: 3})
+	} else if node.Type != nil {
+		c.compileExpr(node.Type)
+		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceResliceFull", Arg: 4})
 	} else {
 		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceReslice", Arg: 3})
 	}

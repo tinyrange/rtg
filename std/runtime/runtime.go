@@ -488,6 +488,27 @@ func SliceReslice(hdr uintptr, low int, high int) uintptr {
 	return newHdr
 }
 
+// SliceResliceFull creates a new slice header for s[low:high:max].
+func SliceResliceFull(hdr uintptr, low int, high int, max int) uintptr {
+	if hdr == 0 {
+		if low == 0 && high == 0 && max == 0 {
+			return 0
+		}
+		runtimePanic("slice of nil slice")
+	}
+	elemSize := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
+	oldData := ReadPtr(hdr)
+	newData := oldData + uintptr(low*elemSize)
+	newLen := high - low
+	newCap := max - low
+	newHdr := Alloc(SliceHdrSize)
+	WritePtr(newHdr, newData)
+	WritePtr(newHdr+uintptr(SliceOffLen), uintptr(newLen))
+	WritePtr(newHdr+uintptr(SliceOffCap), uintptr(newCap))
+	WritePtr(newHdr+uintptr(SliceOffEsz), uintptr(elemSize))
+	return newHdr
+}
+
 // === Map operations ===
 // Maps use a simple linear-scan table.
 // Map header (SliceHdrSize bytes): {data_ptr, len, cap, keyKind}
