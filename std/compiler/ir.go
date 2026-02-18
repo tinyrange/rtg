@@ -3418,6 +3418,62 @@ func (c *Compiler) isExprByte(node *Node) bool {
 	return false
 }
 
+func (c *Compiler) constIntArg(node *Node) (int, bool) {
+	if node == nil {
+		return 0, false
+	}
+	switch node.Kind {
+	case NIntLit:
+		v := parseIntLiteral(node.Name)
+		iv := int(v)
+		return iv, int64(iv) == v
+	case NRuneLit:
+		v := int64(parseRuneLiteral(node.Name))
+		iv := int(v)
+		return iv, int64(iv) == v
+	case NIdent:
+		qname := c.curPkg.QualName(node.Name)
+		if v, ok := c.constValues[qname]; ok {
+			iv := int(v)
+			return iv, int64(iv) == v
+		}
+	case NCallExpr:
+		if node.X != nil && node.X.Kind == NIdent && len(node.Nodes) == 1 {
+			name := node.X.Name
+			if name == "uintptr" || name == "uint" || name == "int" || name == "int64" || name == "uint64" {
+				return c.constIntArg(node.Nodes[0])
+			}
+		}
+	}
+	return 0, false
+}
+
+func isPointerLikeTypeName(t string) bool {
+	if t == "uintptr" {
+		return true
+	}
+	if len(t) > 0 && t[0] == '*' {
+		return true
+	}
+	if strings.Contains(t, ".*") {
+		return true
+	}
+	return false
+}
+
+func (c *Compiler) isOffsetBaseExpr(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == NUnaryExpr && node.Name == "&" {
+		return true
+	}
+	if node.Kind == NCallExpr && node.X != nil && node.X.Kind == NIdent && node.X.Name == "uintptr" {
+		return true
+	}
+	return isPointerLikeTypeName(c.resolveExprType(node))
+}
+
 func (c *Compiler) compileBinaryExpr(node *Node) {
 	// Short-circuit for && and ||
 	if node.Name == "&&" {
@@ -3473,6 +3529,21 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 		c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
 		c.emit(Inst{Op: OP_NOT})
 		return
+	}
+
+	// Word-sized + constant => OFFSET (smaller than const+add stack sequence).
+	// This covers pointer/uintptr arithmetic and other word-sized arithmetic forms.
+	if node.Name == "+" && c.exprWidth(node) == 0 {
+		if off, ok := c.constIntArg(node.Y); ok {
+			c.compileExpr(node.X)
+			c.emit(Inst{Op: OP_OFFSET, Arg: off})
+			return
+		}
+		if off, ok := c.constIntArg(node.X); ok {
+			c.compileExpr(node.Y)
+			c.emit(Inst{Op: OP_OFFSET, Arg: off})
+			return
+		}
 	}
 
 	c.compileExpr(node.X)
