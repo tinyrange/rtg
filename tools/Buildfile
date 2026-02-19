@@ -180,7 +180,7 @@ test-fullcompiler-c: build
 test-fullcompiler-wasm: build
   fullcompiler wasm
 
-test: test-fullcompiler-rtg
+test: test-fullcompiler-rtg selfhost selfhost-c selfhost-wasm
 
 test-dosbox-smoke: build
   sh bash tools/test_dosbox_dos16.sh

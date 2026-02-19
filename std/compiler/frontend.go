@@ -131,7 +131,7 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 		mainPkg.Imports = collectImports(mainPkg)
 	} else if arg != "." {
 		// Bare package name: try embedded std first, then directory scan
-		mainPkg = parsePackageFromEmbed(arg)
+		mainPkg = parsePackageFromStdlibSources(baseDir, arg)
 		if mainPkg == nil {
 			mainPkg = parsePackageDir(entryDir, "main")
 		}
@@ -177,19 +177,15 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 			continue
 		}
 
-		// Try embedded std first, then fall back to disk
-		pkg := parsePackageFromEmbed(importPath)
+		pkg := parsePackageFromStdlibSources(baseDir, importPath)
 		if pkg == nil {
-			dir := resolveImportDir(baseDir, importPath)
-			if dir == "" {
+			dirs := resolveImportDirs(baseDir, importPath)
+			if len(dirs) == 0 {
 				fmt.Fprintf(os.Stderr, "warning: cannot resolve import %s\n", importPath)
 				continue
 			}
-			pkg = parsePackageDir(dir, importPath)
-			if pkg == nil {
-				fmt.Fprintf(os.Stderr, "warning: no Go files for import %s in %s\n", importPath, dir)
-				continue
-			}
+			fmt.Fprintf(os.Stderr, "warning: no Go files for import %s\n", importPath)
+			continue
 		}
 		mod.Packages[importPath] = pkg
 
@@ -215,9 +211,57 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 	return mod
 }
 
-// resolveImportDir maps an import path to a directory on disk.
-func resolveImportDir(baseDir string, importPath string) string {
-	return baseDir + "/std/" + importPath
+func shouldUseEmbeddedStdlib() bool {
+	if !hasEmbeddedStd() {
+		return false
+	}
+	if !stdlibIncludeExplicit {
+		return true
+	}
+	return stdlibIncludeEmbedded
+}
+
+func appendStdlibDirCandidates(candidates []string, root string, importPath string) []string {
+	if root == "" {
+		return candidates
+	}
+	root = trimTrailingSlash(normalizePath(root))
+	if root == "" {
+		return candidates
+	}
+	candidates = appendUnique(candidates, root+"/"+importPath)
+	candidates = appendUnique(candidates, root+"/std/"+importPath)
+	return candidates
+}
+
+// resolveImportDirs maps an import path to possible directories on disk.
+func resolveImportDirs(baseDir string, importPath string) []string {
+	var dirs []string
+	if stdlibIncludeExplicit {
+		for _, include := range stdlibIncludePaths {
+			dirs = appendStdlibDirCandidates(dirs, include, importPath)
+		}
+		return dirs
+	}
+	dirs = appendUnique(dirs, baseDir+"/std/"+importPath)
+	return dirs
+}
+
+func parsePackageFromStdlibSources(baseDir string, importPath string) *Package {
+	if shouldUseEmbeddedStdlib() {
+		pkg := parsePackageFromEmbed(importPath)
+		if pkg != nil {
+			return pkg
+		}
+	}
+	dirs := resolveImportDirs(baseDir, importPath)
+	for _, dir := range dirs {
+		pkg := parsePackageDir(dir, importPath)
+		if pkg != nil {
+			return pkg
+		}
+	}
+	return nil
 }
 
 // stringLess compares two strings lexicographically (byte-by-byte).
