@@ -110,12 +110,8 @@ type machoSymEntry struct {
 // GenerateELF dispatches to the appropriate backend based on selected target.
 func GenerateELF(irmod *IRModule, outputPath string) error {
 	if targetBackend != "native" {
-		return emitRegisteredBackendWithOptions(targetBackend, irmod, BackendOptions{
-			Target:      currentCompilerTarget(),
-			OutputPath:  outputPath,
-			Debug:       compilerDebug,
-			StripBinary: stripBinary,
-		})
+		opts := currentDriverOptions()
+		return emitRegisteredBackendWithOptions(targetBackend, irmod, backendOptionsFromDriver(opts, outputPath))
 	}
 	switch targetGOARCH {
 	case "dos16":
