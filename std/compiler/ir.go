@@ -1918,6 +1918,11 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		c.localConcreteTypes[node.Name] = ct
 	}
 	if node.X != nil {
+		if c.registerFuncValueBinding(node.Name, node.X) {
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
+			return
+		}
 		// Lower function literals to generated package-scope functions.
 		if node.X.Kind == NFuncType && node.X.Body != nil {
 			target := c.compileFuncLiteral(node.X)
@@ -2214,6 +2219,29 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	c.localMethodTargets = savedMethodTargets
 	c.localMethodRecv = savedMethodRecv
 	return c.curPkg.QualName(name)
+}
+
+func (c *Compiler) registerFuncValueBinding(localName string, rhs *Node) bool {
+	if rhs == nil || localName == "" {
+		return false
+	}
+	if rhs.Kind == NIdent {
+		if target, ok := c.localFuncTargets[rhs.Name]; ok {
+			c.localFuncTargets[localName] = target
+			delete(c.localMethodTargets, localName)
+			delete(c.localMethodRecv, localName)
+			return true
+		}
+		if c.curPkg != nil {
+			if sym, ok := c.curPkg.Symbols[rhs.Name]; ok && sym.Kind == SymFunc {
+				c.localFuncTargets[localName] = c.curPkg.QualName(rhs.Name)
+				delete(c.localMethodTargets, localName)
+				delete(c.localMethodRecv, localName)
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *Compiler) lvalueInterfaceType(node *Node) (string, bool) {
