@@ -109,7 +109,11 @@ type machoSymEntry struct {
 
 // GenerateELF dispatches to the appropriate backend based on selected target.
 func GenerateELF(irmod *IRModule, outputPath string) error {
-	opts := currentDriverOptions()
+	return GenerateELFWithOptions(irmod, outputPath, currentDriverOptions())
+}
+
+// GenerateELFWithOptions dispatches to the appropriate backend using explicit driver options.
+func GenerateELFWithOptions(irmod *IRModule, outputPath string, opts DriverOptions) error {
 	target := opts.Target
 	if target.Backend != "native" {
 		return emitRegisteredBackendWithOptions(target.Backend, irmod, backendOptionsFromDriver(opts, outputPath))
