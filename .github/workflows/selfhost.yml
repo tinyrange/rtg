@@ -19,6 +19,10 @@ jobs:
             target: linux/amd64
             cc: cc
             suffix: ""
+          - runner: ubuntu-latest
+            target: linux/386
+            cc: cc
+            suffix: ""
           - runner: ubuntu-24.04-arm
             target: linux/arm64
             cc: cc

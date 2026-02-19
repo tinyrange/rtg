@@ -36,6 +36,10 @@ Primary build/test orchestration is defined in `tools/Buildfile`.
   - Alias for `test-fullcompiler-rtg`.
 - `test-fullcompiler-rtg`
   - Runs top-level fullcompiler suite with RTG backend and validates output.
+- `test-fullcompiler-rtg-i386`
+  - Runs top-level fullcompiler suite with RTG backend targeting `linux/386`.
+- `test-fullcompiler-rtg-win386`
+  - Runs top-level fullcompiler suite with RTG backend targeting `windows/386` (uses `wine` on Linux hosts).
 - `test-fullcompiler-c`
   - Runs top-level fullcompiler suite with `-T c/64` and validates output.
 - `test-fullcompiler-wasm`

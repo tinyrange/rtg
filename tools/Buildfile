@@ -168,6 +168,12 @@ crosscompile-wasm-native: build
 test-fullcompiler-rtg: build
   fullcompiler rtg
 
+test-fullcompiler-rtg-i386: build
+  fullcompiler rtg linux/386
+
+test-fullcompiler-rtg-win386: build
+  fullcompiler rtg windows/386
+
 test-fullcompiler-c: build
   fullcompiler c
 
