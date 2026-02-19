@@ -1757,8 +1757,7 @@ func (p *Parser) parsePrimaryExpr() *Node {
 		node = &Node{Kind: NStringLit, Name: tok.Val, Pos: tok.Line}
 	case TOKEN_RAW_STRING:
 		tok := p.advance()
-		p.errorf("raw string literals are not supported at line %d col %d", tok.Line, tok.Col)
-		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
+		node = &Node{Kind: NStringLit, Name: tok.Val, Pos: tok.Line}
 	case TOKEN_RUNE:
 		tok := p.advance()
 		node = &Node{Kind: NRuneLit, Name: tok.Val, Pos: tok.Line}
