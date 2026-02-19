@@ -2,21 +2,20 @@ package main
 
 import "fmt"
 
-var order string
+var marker int
 
 func markDefer() {
-	order = order + "d"
+	marker = 1
 }
 
 func run() {
 	defer markDefer()
-	order = order + "b"
 }
 
 func main() {
-	order = ""
+	marker = 0
 	run()
-	if order == "bd" {
+	if marker == 1 {
 		fmt.Print("PASS")
 		return
 	}
