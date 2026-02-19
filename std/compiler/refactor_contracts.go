@@ -47,3 +47,14 @@ type Backend interface {
 	Name() string
 	Emit(mod *IRModule, opts BackendOptions) error
 }
+
+func currentCompilerTarget() CompilerTarget {
+	return CompilerTarget{
+		GOOS:     targetGOOS,
+		GOARCH:   targetGOARCH,
+		PtrSize:  targetPtrSize,
+		Backend:  targetBackend,
+		CModel:   targetCModel,
+		WordSize: targetWordSize,
+	}
+}

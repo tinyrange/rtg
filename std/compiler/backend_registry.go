@@ -18,13 +18,22 @@ var backendRegistry = map[string]backendID{
 }
 
 func emitRegisteredBackend(name string, irmod *IRModule, outputPath string) error {
+	return emitRegisteredBackendWithOptions(name, irmod, BackendOptions{
+		Target:      currentCompilerTarget(),
+		OutputPath:  outputPath,
+		Debug:       compilerDebug,
+		StripBinary: stripBinary,
+	})
+}
+
+func emitRegisteredBackendWithOptions(name string, irmod *IRModule, opts BackendOptions) error {
 	switch backendRegistry[name] {
 	case backendIDC:
-		return generateCSource(irmod, outputPath)
+		return generateCSource(irmod, opts.OutputPath)
 	case backendIDIR:
-		return generateIRText(irmod, outputPath)
+		return generateIRText(irmod, opts.OutputPath)
 	case backendIDVM:
-		return generateVM(irmod, outputPath)
+		return generateVM(irmod, opts.OutputPath)
 	default:
 		return fmt.Errorf("unknown backend: %s", name)
 	}
