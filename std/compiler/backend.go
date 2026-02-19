@@ -109,44 +109,45 @@ type machoSymEntry struct {
 
 // GenerateELF dispatches to the appropriate backend based on selected target.
 func GenerateELF(irmod *IRModule, outputPath string) error {
-	if targetBackend != "native" {
-		opts := currentDriverOptions()
-		return emitRegisteredBackendWithOptions(targetBackend, irmod, backendOptionsFromDriver(opts, outputPath))
+	opts := currentDriverOptions()
+	target := opts.Target
+	if target.Backend != "native" {
+		return emitRegisteredBackendWithOptions(target.Backend, irmod, backendOptionsFromDriver(opts, outputPath))
 	}
-	switch targetGOARCH {
+	switch target.GOARCH {
 	case "dos16":
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			return generateDOSCOM386(irmod, outputPath)
 		}
-		return fmt.Errorf("unsupported OS for dos16: %s", targetGOOS)
+		return fmt.Errorf("unsupported OS for dos16: %s", target.GOOS)
 	case "amd64":
-		if targetGOOS == "windows" {
+		if target.GOOS == "windows" {
 			return generateWinAmd64PE(irmod, outputPath)
 		}
 		return generateAmd64ELF(irmod, outputPath)
 	case "386":
-		if targetGOOS == "windows" {
+		if target.GOOS == "windows" {
 			return generateWin386PE(irmod, outputPath)
 		}
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			return generateDOSCOM386(irmod, outputPath)
 		}
 		return generateI386ELF(irmod, outputPath)
 	case "wasm32":
 		return generateWasm32(irmod, outputPath)
 	case "arm64":
-		if targetGOOS == "darwin" {
+		if target.GOOS == "darwin" {
 			return generateDarwinArm64(irmod, outputPath)
 		}
-		if targetGOOS == "linux" {
+		if target.GOOS == "linux" {
 			return generateLinuxArm64ELF(irmod, outputPath)
 		}
-		if targetGOOS == "windows" {
+		if target.GOOS == "windows" {
 			return generateWinArm64PE(irmod, outputPath)
 		}
-		return fmt.Errorf("unsupported OS for arm64: %s", targetGOOS)
+		return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
 	default:
-		return fmt.Errorf("unsupported target architecture: %s", targetGOARCH)
+		return fmt.Errorf("unsupported target architecture: %s", target.GOARCH)
 	}
 }
 
