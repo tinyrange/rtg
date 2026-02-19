@@ -47,6 +47,10 @@ Primary build/test orchestration is defined in `tools/Buildfile`.
 - `clean`
   - Removes generated build, stage, size, and cross-compile artifacts.
 
+## Debugging Tip
+
+- If `selfhost*` or `test-fullcompiler*` appears to hang or behaves inconsistently, run `./build/build clean` first, then rebuild the runner (`go build -o build/build ./tools`) and retry.
+
 ## Feature Workflow
 
 For each feature/change:
