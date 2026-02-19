@@ -1827,103 +1827,115 @@ func (p *Parser) isTypeLikeNode(node *Node) bool {
 }
 
 func (p *Parser) parsePostfixOps(node *Node) *Node {
-	for {
-		switch p.peek().Kind {
-		case TOKEN_DOT:
-			p.advance()
-			if p.at(TOKEN_LPAREN) {
-				// Type assertion: x.(T) or x.(type) (for type switches).
-				p.advance()
-				assertNode := &Node{Kind: NTypeAssertExpr, X: node, Pos: node.Pos}
-				if p.at(TOKEN_TYPE) {
-					p.advance()
-					assertNode.Name = "type"
-				} else {
-					assertNode.Type = p.parseType()
-				}
-				p.expect(TOKEN_RPAREN)
-				node = assertNode
-			} else {
-				name := p.expect(TOKEN_IDENT)
-				node = &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: node.Pos}
-			}
-		case TOKEN_LPAREN:
-			p.advance()
-			call := &Node{Kind: NCallExpr, X: node, Pos: node.Pos}
-			for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
-				arg := p.parseExpr()
-				if p.at(TOKEN_ELLIPSIS) {
-					p.advance()
-					call.Name = "spread"
-				}
-				call.Nodes = append(call.Nodes, arg)
-				if p.at(TOKEN_COMMA) {
-					p.advance()
-				}
-			}
-			p.expect(TOKEN_RPAREN)
-			node = call
-		case TOKEN_LBRACK:
-			p.advance()
-			if p.at(TOKEN_COLON) {
-				// s[:hi] — empty low bound, defaults to 0
-				p.advance()
-				var hi *Node
-				if !p.at(TOKEN_RBRACK) {
-					hi = p.parseExpr()
-				}
-				var max *Node
-				if p.at(TOKEN_COLON) {
-					p.advance()
-					if !p.at(TOKEN_RBRACK) {
-						max = p.parseExpr()
-					}
-				}
-				p.expect(TOKEN_RBRACK)
-				lo := &Node{Kind: NIntLit, Name: "0", Pos: node.Pos}
-				node = &Node{Kind: NSliceExpr, X: node, Y: lo, Body: hi, Type: max, Pos: node.Pos}
-			} else {
-				index := p.parseExpr()
-				if p.at(TOKEN_COLON) {
-					p.advance()
-					var hi *Node
-					if !p.at(TOKEN_RBRACK) {
-						hi = p.parseExpr()
-					}
-					var max *Node
-					if p.at(TOKEN_COLON) {
-						p.advance()
-						if !p.at(TOKEN_RBRACK) {
-							max = p.parseExpr()
-						}
-					}
-					p.expect(TOKEN_RBRACK)
-					node = &Node{Kind: NSliceExpr, X: node, Y: index, Body: hi, Type: max, Pos: node.Pos}
-				} else {
-					p.expect(TOKEN_RBRACK)
-					node = &Node{Kind: NIndexExpr, X: node, Y: index, Pos: node.Pos}
-				}
-			}
-		case TOKEN_LBRACE:
-			allowCompLit := !p.noCompLit
-			if p.noCompLit {
-				// In noCompLit mode (e.g. if/switch headers), only allow
-				// composite literals with unambiguous non-identifier type forms.
-				// Do NOT allow selector expressions here, because values like
-				// `tok.Kind` in `switch tok.Kind { ... }` are ambiguous.
-				if node.Kind == NSliceType || node.Kind == NMapType {
-					allowCompLit = true
-				}
-			}
-			if allowCompLit && p.isTypeLikeNode(node) {
-				node = p.parseCompositeLit(node)
-			} else {
-				return node
-			}
-		default:
-			return node
+	if p.at(TOKEN_DOT) {
+		return p.parsePostfixOps(p.parsePostfixDot(node))
+	}
+	if p.at(TOKEN_LPAREN) {
+		return p.parsePostfixOps(p.parsePostfixCall(node))
+	}
+	if p.at(TOKEN_LBRACK) {
+		return p.parsePostfixOps(p.parsePostfixIndexOrSlice(node))
+	}
+	if p.at(TOKEN_LBRACE) {
+		if p.canParseCompositeLit(node) {
+			return p.parsePostfixOps(p.parseCompositeLit(node))
 		}
 	}
+	return node
+}
+
+func (p *Parser) parsePostfixDot(node *Node) *Node {
+	p.advance()
+	if p.at(TOKEN_LPAREN) {
+		// Type assertion: x.(T) or x.(type) (for type switches).
+		p.advance()
+		assertNode := &Node{Kind: NTypeAssertExpr, X: node, Pos: node.Pos}
+		if p.at(TOKEN_TYPE) {
+			p.advance()
+			assertNode.Name = "type"
+		} else {
+			assertNode.Type = p.parseType()
+		}
+		p.expect(TOKEN_RPAREN)
+		return assertNode
+	}
+	name := p.expect(TOKEN_IDENT)
+	return &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: node.Pos}
+}
+
+func (p *Parser) parsePostfixCall(node *Node) *Node {
+	p.advance()
+	call := &Node{Kind: NCallExpr, X: node, Pos: node.Pos}
+	for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
+		arg := p.parseExpr()
+		if p.at(TOKEN_ELLIPSIS) {
+			p.advance()
+			call.Name = "spread"
+		}
+		call.Nodes = append(call.Nodes, arg)
+		if p.at(TOKEN_COMMA) {
+			p.advance()
+		}
+	}
+	p.expect(TOKEN_RPAREN)
+	return call
+}
+
+func (p *Parser) parsePostfixIndexOrSlice(node *Node) *Node {
+	p.advance()
+	if p.at(TOKEN_COLON) {
+		// s[:hi] — empty low bound, defaults to 0
+		p.advance()
+		var hi *Node
+		if !p.at(TOKEN_RBRACK) {
+			hi = p.parseExpr()
+		}
+		var max *Node
+		if p.at(TOKEN_COLON) {
+			p.advance()
+			if !p.at(TOKEN_RBRACK) {
+				max = p.parseExpr()
+			}
+		}
+		p.expect(TOKEN_RBRACK)
+		lo := &Node{Kind: NIntLit, Name: "0", Pos: node.Pos}
+		return &Node{Kind: NSliceExpr, X: node, Y: lo, Body: hi, Type: max, Pos: node.Pos}
+	}
+
+	index := p.parseExpr()
+	if p.at(TOKEN_COLON) {
+		p.advance()
+		var hi *Node
+		if !p.at(TOKEN_RBRACK) {
+			hi = p.parseExpr()
+		}
+		var max *Node
+		if p.at(TOKEN_COLON) {
+			p.advance()
+			if !p.at(TOKEN_RBRACK) {
+				max = p.parseExpr()
+			}
+		}
+		p.expect(TOKEN_RBRACK)
+		return &Node{Kind: NSliceExpr, X: node, Y: index, Body: hi, Type: max, Pos: node.Pos}
+	}
+
+	p.expect(TOKEN_RBRACK)
+	return &Node{Kind: NIndexExpr, X: node, Y: index, Pos: node.Pos}
+}
+
+func (p *Parser) canParseCompositeLit(node *Node) bool {
+	allowCompLit := !p.noCompLit
+	if p.noCompLit {
+		// In noCompLit mode (e.g. if/switch headers), only allow
+		// composite literals with unambiguous non-identifier type forms.
+		// Do NOT allow selector expressions here, because values like
+		// `tok.Kind` in `switch tok.Kind { ... }` are ambiguous.
+		if node.Kind == NSliceType || node.Kind == NMapType {
+			allowCompLit = true
+		}
+	}
+	return allowCompLit && p.isTypeLikeNode(node)
 }
 
 func (p *Parser) parseCompositeLit(typeNode *Node) *Node {
