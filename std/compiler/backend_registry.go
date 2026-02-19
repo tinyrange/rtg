@@ -25,9 +25,7 @@ func newBackendForTarget(name string) (backendID, error) {
 	return id, nil
 }
 
-type cBackendAdapter struct {
-	_ byte
-}
+type cBackendAdapter struct{}
 
 func (b cBackendAdapter) Name() string {
 	return "c"
@@ -37,9 +35,7 @@ func (b cBackendAdapter) Emit(mod *IRModule, opts BackendOptions) error {
 	return generateCSource(mod, opts.OutputPath)
 }
 
-type irBackendAdapter struct {
-	_ byte
-}
+type irBackendAdapter struct{}
 
 func (b irBackendAdapter) Name() string {
 	return "ir"
@@ -49,9 +45,7 @@ func (b irBackendAdapter) Emit(mod *IRModule, opts BackendOptions) error {
 	return generateIRText(mod, opts.OutputPath)
 }
 
-type vmBackendAdapter struct {
-	_ byte
-}
+type vmBackendAdapter struct{}
 
 func (b vmBackendAdapter) Name() string {
 	return "vm"
