@@ -2101,6 +2101,14 @@ func (c *Compiler) compileAssign(node *Node) {
 		}
 		// Function literals are lowered to private named functions and bound
 		// through localFuncTargets; the local slot stores a placeholder value.
+		if c.registerMethodValueBinding(node.X.Name, node.Y, idx) {
+			return
+		}
+		if c.registerFuncValueBinding(node.X.Name, node.Y) {
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
+			return
+		}
 		if node.Y != nil && node.Y.Kind == NFuncType && node.Y.Body != nil {
 			target := c.compileFuncLiteral(node.Y)
 			c.localFuncTargets[node.X.Name] = target
@@ -2242,6 +2250,38 @@ func (c *Compiler) registerFuncValueBinding(localName string, rhs *Node) bool {
 		}
 	}
 	return false
+}
+
+func (c *Compiler) registerMethodValueBinding(localName string, rhs *Node, localIdx int) bool {
+	if rhs == nil || localName == "" || localIdx < 0 {
+		return false
+	}
+	if rhs.Kind != NSelectorExpr || rhs.X == nil {
+		return false
+	}
+	// pkg.Func selectors are not method values.
+	if rhs.X.Kind == NIdent && c.resolvePackage(rhs.X.Name) != nil {
+		return false
+	}
+
+	methodName := rhs.Name
+	concreteType := c.resolveExprType(rhs.X)
+	if concreteType == "" {
+		return false
+	}
+	target, ok := c.resolveMethodByConcreteType(concreteType, methodName)
+	if !ok {
+		return false
+	}
+
+	// Method values capture the receiver expression at binding time.
+	c.compileExpr(rhs.X)
+	c.emit(Inst{Op: OP_LOCAL_SET, Arg: localIdx})
+
+	delete(c.localFuncTargets, localName)
+	c.localMethodTargets[localName] = target
+	c.localMethodRecv[localName] = localIdx
+	return true
 }
 
 func (c *Compiler) lvalueInterfaceType(node *Node) (string, bool) {
@@ -3955,6 +3995,36 @@ func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool
 	return false
 }
 
+func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
+	if node == nil || node.X == nil || node.X.Kind != NIdent {
+		return false
+	}
+	name := node.X.Name
+	target, ok := c.localMethodTargets[name]
+	if !ok {
+		return false
+	}
+	recvIdx, hasRecv := c.localMethodRecv[name]
+	if !hasRecv {
+		recvIdx, hasRecv = c.lookupLocal(name)
+	}
+	if hasRecv {
+		w := 0
+		if recvIdx < len(c.curFunc.Locals) {
+			w = c.curFunc.Locals[recvIdx].Width
+		}
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: recvIdx, Width: w})
+	} else {
+		c.errorf("%s: missing method receiver for %s", c.curFunc.Name, name)
+		c.emit(Inst{Op: OP_CONST_NIL})
+	}
+	for _, arg := range node.Nodes {
+		c.compileExpr(arg)
+	}
+	c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes) + 1})
+	return true
+}
+
 func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		if target, ok := c.localFuncTargets[node.X.Name]; ok {
@@ -3962,6 +4032,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				c.compileExpr(arg)
 			}
 			c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes)})
+			return
+		}
+		if c.compileBoundMethodValueCall(node) {
 			return
 		}
 	}
