@@ -109,14 +109,8 @@ type machoSymEntry struct {
 
 // GenerateELF dispatches to the appropriate backend based on selected target.
 func GenerateELF(irmod *IRModule, outputPath string) error {
-	if targetBackend == "vm" {
-		return generateVM(irmod, outputPath)
-	}
-	if targetBackend == "c" {
-		return generateCSource(irmod, outputPath)
-	}
-	if targetBackend == "ir" {
-		return generateIRText(irmod, outputPath)
+	if targetBackend != "native" {
+		return emitRegisteredBackend(targetBackend, irmod, outputPath)
 	}
 	switch targetGOARCH {
 	case "dos16":
