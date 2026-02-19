@@ -1,11 +1,9 @@
 package main
 
 func currentDriverOptions() DriverOptions {
-	tags := make([]string, len(buildTags))
-	copy(tags, buildTags)
 	return DriverOptions{
 		Target:      currentCompilerTarget(),
-		BuildTags:   tags,
+		BuildTags:   cloneStrings(buildTags),
 		Debug:       compilerDebug,
 		StripBinary: stripBinary,
 	}

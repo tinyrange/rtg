@@ -48,6 +48,12 @@ type Backend interface {
 	Emit(mod *IRModule, opts BackendOptions) error
 }
 
+func cloneStrings(values []string) []string {
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
+}
+
 func currentCompilerTarget() CompilerTarget {
 	return CompilerTarget{
 		GOOS:     targetGOOS,
@@ -70,8 +76,7 @@ func setCompilerTarget(target CompilerTarget) {
 
 func applyDriverOptions(opts DriverOptions) {
 	setCompilerTarget(opts.Target)
-	buildTags = buildTags[:0]
-	buildTags = append(buildTags, opts.BuildTags...)
+	buildTags = cloneStrings(opts.BuildTags)
 	compilerDebug = opts.Debug
 	stripBinary = opts.StripBinary
 }
