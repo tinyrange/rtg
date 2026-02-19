@@ -45,6 +45,8 @@ const (
 	TOKEN_CHAN
 	TOKEN_GO
 	TOKEN_SELECT
+	TOKEN_GOTO
+	TOKEN_FALLTHROUGH
 
 	// Operators
 	TOKEN_PLUS
@@ -95,6 +97,7 @@ const (
 	TOKEN_ELLIPSIS
 	TOKEN_INC
 	TOKEN_DIRECTIVE
+	TOKEN_DEC
 )
 
 var tokenNames = map[TokenKind]string{
@@ -110,6 +113,7 @@ var tokenNames = map[TokenKind]string{
 	TOKEN_NIL: "nil", TOKEN_TRUE: "true", TOKEN_FALSE: "false",
 	TOKEN_DEFER: "defer", TOKEN_IOTA: "iota",
 	TOKEN_CHAN: "chan", TOKEN_GO: "go", TOKEN_SELECT: "select",
+	TOKEN_GOTO: "goto", TOKEN_FALLTHROUGH: "fallthrough",
 	TOKEN_PLUS: "+", TOKEN_MINUS: "-", TOKEN_STAR: "*", TOKEN_SLASH: "/",
 	TOKEN_PERCENT: "%", TOKEN_EQ: "==", TOKEN_NEQ: "!=",
 	TOKEN_LT: "<", TOKEN_GT: ">", TOKEN_LEQ: "<=", TOKEN_GEQ: ">=",
@@ -125,6 +129,7 @@ var tokenNames = map[TokenKind]string{
 	TOKEN_COLON: ":", TOKEN_SEMICOLON: ";", TOKEN_ELLIPSIS: "...",
 	TOKEN_INC:       "++",
 	TOKEN_DIRECTIVE: "directive",
+	TOKEN_DEC:       "--",
 }
 
 func tokenName(k TokenKind) string {
@@ -145,6 +150,7 @@ var keywords = map[string]TokenKind{
 	"nil": TOKEN_NIL, "true": TOKEN_TRUE, "false": TOKEN_FALSE,
 	"defer": TOKEN_DEFER, "iota": TOKEN_IOTA,
 	"chan": TOKEN_CHAN, "go": TOKEN_GO, "select": TOKEN_SELECT,
+	"goto": TOKEN_GOTO, "fallthrough": TOKEN_FALLTHROUGH,
 }
 
 // Token represents a lexical token.
@@ -212,7 +218,10 @@ func needsSemicolon(kind TokenKind) bool {
 	if kind == TOKEN_RPAREN || kind == TOKEN_RBRACK || kind == TOKEN_RBRACE {
 		return true
 	}
-	if kind == TOKEN_INC || kind == TOKEN_BREAK || kind == TOKEN_CONTINUE || kind == TOKEN_RETURN {
+	if kind == TOKEN_INC || kind == TOKEN_DEC || kind == TOKEN_BREAK || kind == TOKEN_CONTINUE || kind == TOKEN_RETURN {
+		return true
+	}
+	if kind == TOKEN_FALLTHROUGH {
 		return true
 	}
 	if kind == TOKEN_TRUE || kind == TOKEN_FALSE || kind == TOKEN_NIL || kind == TOKEN_IOTA {
@@ -292,20 +301,32 @@ func (l *Lexer) scanNumber() Token {
 	col := l.col
 	start := l.pos
 	isFloat := false
-	if l.peek() == '0' && l.peekAt(1) == 'x' {
+	if l.peek() == '0' && (l.peekAt(1) == 'x' || l.peekAt(1) == 'X') {
 		l.advance()
 		l.advance()
-		for !l.atEnd() && (isDigit(l.peek()) || (l.peek() >= 'a' && l.peek() <= 'f') || (l.peek() >= 'A' && l.peek() <= 'F')) {
+		for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_' || (l.peek() >= 'a' && l.peek() <= 'f') || (l.peek() >= 'A' && l.peek() <= 'F')) {
+			l.advance()
+		}
+	} else if l.peek() == '0' && (l.peekAt(1) == 'b' || l.peekAt(1) == 'B') {
+		l.advance()
+		l.advance()
+		for !l.atEnd() && (l.peek() == '0' || l.peek() == '1' || l.peek() == '_') {
+			l.advance()
+		}
+	} else if l.peek() == '0' && (l.peekAt(1) == 'o' || l.peekAt(1) == 'O') {
+		l.advance()
+		l.advance()
+		for !l.atEnd() && ((l.peek() >= '0' && l.peek() <= '7') || l.peek() == '_') {
 			l.advance()
 		}
 	} else {
-		for !l.atEnd() && isDigit(l.peek()) {
+		for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
 			l.advance()
 		}
 		if l.peek() == '.' && isDigit(l.peekAt(1)) {
 			isFloat = true
 			l.advance()
-			for !l.atEnd() && isDigit(l.peek()) {
+			for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
 				l.advance()
 			}
 		}
@@ -315,7 +336,7 @@ func (l *Lexer) scanNumber() Token {
 			if l.peek() == '+' || l.peek() == '-' {
 				l.advance()
 			}
-			for !l.atEnd() && isDigit(l.peek()) {
+			for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
 				l.advance()
 			}
 		}
@@ -368,12 +389,16 @@ func (l *Lexer) scanRune() Token {
 	col := l.col
 	l.advance() // skip opening '
 	start := l.pos
-	if l.peek() == '\\' {
+	for !l.atEnd() && l.peek() != '\'' && l.peek() != '\n' && l.peek() != '\r' {
+		if l.peek() == '\\' && l.peekAt(1) != 0 {
+			l.advance()
+			l.advance()
+			continue
+		}
 		l.advance()
 	}
-	l.advance()
 	val := l.src[start:l.pos]
-	if !l.atEnd() {
+	if !l.atEnd() && l.peek() == '\'' {
 		l.advance() // skip closing '
 	}
 	return Token{Kind: TOKEN_RUNE, Val: val, Line: line, Col: col}
@@ -437,6 +462,10 @@ func (l *Lexer) scanOperator() Token {
 		}
 		return Token{Kind: TOKEN_PLUS, Line: line, Col: col}
 	case '-':
+		if l.peek() == '-' {
+			l.advance()
+			return Token{Kind: TOKEN_DEC, Line: line, Col: col}
+		}
 		if l.peek() == '=' {
 			l.advance()
 			return Token{Kind: TOKEN_MINUS_ASSIGN, Line: line, Col: col}
@@ -602,6 +631,7 @@ const (
 	NDeferStmt
 	NSliceExpr
 	NDirective
+	NDecStmt
 )
 
 // Node is the universal AST node.
@@ -1084,6 +1114,9 @@ func (p *Parser) parseType() *Node {
 	switch p.peek().Kind {
 	case TOKEN_IDENT:
 		tok := p.advance()
+		if tok.Val == "any" {
+			return &Node{Kind: NIdent, Name: "interface{}", Pos: tok.Line}
+		}
 		if tok.Val == "float32" || tok.Val == "float64" || tok.Val == "complex64" || tok.Val == "complex128" {
 			p.errorf("%s type is not supported at line %d", tok.Val, tok.Line)
 			return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
@@ -1126,6 +1159,17 @@ func (p *Parser) parseType() *Node {
 func (p *Parser) parseSliceOrArrayType() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_LBRACK)
+	if p.at(TOKEN_RBRACK) {
+		p.advance()
+		elem := p.parseType()
+		return &Node{Kind: NSliceType, X: elem, Pos: pos}
+	}
+	// Accept fixed/ellipsis array forms as slice-compatible for now.
+	if p.at(TOKEN_ELLIPSIS) {
+		p.advance()
+	} else {
+		p.parseExpr()
+	}
 	p.expect(TOKEN_RBRACK)
 	elem := p.parseType()
 	return &Node{Kind: NSliceType, X: elem, Pos: pos}
@@ -1251,6 +1295,12 @@ func (p *Parser) parseStmt() *Node {
 		return p.parseConstDecl()
 	case TOKEN_TYPE:
 		return p.parseTypeDecl()
+	case TOKEN_GOTO:
+		pos := p.peek().Line
+		p.advance()
+		name := p.expect(TOKEN_IDENT)
+		p.skipSemicolon()
+		return &Node{Kind: NBranch, Name: "goto", X: &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}, Pos: pos}
 	case TOKEN_BREAK:
 		pos := p.peek().Line
 		p.advance()
@@ -1261,6 +1311,11 @@ func (p *Parser) parseStmt() *Node {
 		p.advance()
 		p.skipSemicolon()
 		return &Node{Kind: NBranch, Name: "continue", Pos: pos}
+	case TOKEN_FALLTHROUGH:
+		pos := p.peek().Line
+		p.advance()
+		p.skipSemicolon()
+		return &Node{Kind: NBranch, Name: "fallthrough", Pos: pos}
 	case TOKEN_DEFER:
 		return p.parseDeferStmt()
 	case TOKEN_GO:
@@ -1295,6 +1350,13 @@ func (p *Parser) parseStmt() *Node {
 	case TOKEN_SEMICOLON:
 		p.advance()
 		return nil
+	}
+	// Label declaration: name:
+	if p.at(TOKEN_IDENT) && p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TOKEN_COLON {
+		name := p.advance()
+		p.expect(TOKEN_COLON)
+		p.skipSemicolon()
+		return &Node{Kind: NBranch, Name: "label", X: &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}, Pos: name.Line}
 	}
 	return p.parseSimpleStmt()
 }
@@ -1476,6 +1538,15 @@ func (p *Parser) parseSwitchStmt() *Node {
 				}
 			}
 		} else {
+			if first != nil && first.Kind == NAssign && first.Y != nil && first.Y.Kind == NTypeAssertExpr && first.Y.Name == "type" {
+				node.Name = "typeswitch"
+				node.Y = first.Y.X
+				if first.X != nil && first.X.Kind == NIdent {
+					node.Type = &Node{Kind: NIdent, Name: first.X.Name, Pos: first.X.Pos}
+				}
+				node.X = nil
+				goto switchBody
+			}
 			if first != nil && first.Kind == NExprStmt {
 				tag := first.X
 				if tag != nil && tag.Kind == NTypeAssertExpr && tag.Name == "type" {
@@ -1490,6 +1561,7 @@ func (p *Parser) parseSwitchStmt() *Node {
 		}
 	}
 
+switchBody:
 	p.expect(TOKEN_LBRACE)
 	for !p.at(TOKEN_RBRACE) && !p.at(TOKEN_EOF) {
 		c := p.parseCaseClause()
@@ -1568,6 +1640,10 @@ func (p *Parser) parseSimpleStmtNoSemicolon() *Node {
 	if p.at(TOKEN_INC) {
 		p.advance()
 		return &Node{Kind: NIncStmt, X: expr, Pos: expr.Pos}
+	}
+	if p.at(TOKEN_DEC) {
+		p.advance()
+		return &Node{Kind: NDecStmt, X: expr, Pos: expr.Pos}
 	}
 
 	// Check for assignment / short var decl
@@ -1693,8 +1769,7 @@ func (p *Parser) parsePrimaryExpr() *Node {
 		node = &Node{Kind: NStringLit, Name: tok.Val, Pos: tok.Line}
 	case TOKEN_RAW_STRING:
 		tok := p.advance()
-		p.errorf("raw string literals are not supported at line %d col %d", tok.Line, tok.Col)
-		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
+		node = &Node{Kind: NStringLit, Name: tok.Val, Pos: tok.Line}
 	case TOKEN_RUNE:
 		tok := p.advance()
 		node = &Node{Kind: NRuneLit, Name: tok.Val, Pos: tok.Line}
@@ -1752,89 +1827,115 @@ func (p *Parser) isTypeLikeNode(node *Node) bool {
 }
 
 func (p *Parser) parsePostfixOps(node *Node) *Node {
-	for {
-		switch p.peek().Kind {
-		case TOKEN_DOT:
-			p.advance()
-			if p.at(TOKEN_LPAREN) {
-				// Type assertion: x.(T) or x.(type) (for type switches).
-				p.advance()
-				assertNode := &Node{Kind: NTypeAssertExpr, X: node, Pos: node.Pos}
-				if p.at(TOKEN_TYPE) {
-					p.advance()
-					assertNode.Name = "type"
-				} else {
-					assertNode.Type = p.parseType()
-				}
-				p.expect(TOKEN_RPAREN)
-				node = assertNode
-			} else {
-				name := p.expect(TOKEN_IDENT)
-				node = &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: node.Pos}
-			}
-		case TOKEN_LPAREN:
-			p.advance()
-			call := &Node{Kind: NCallExpr, X: node, Pos: node.Pos}
-			for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
-				arg := p.parseExpr()
-				if p.at(TOKEN_ELLIPSIS) {
-					p.advance()
-					call.Name = "spread"
-				}
-				call.Nodes = append(call.Nodes, arg)
-				if p.at(TOKEN_COMMA) {
-					p.advance()
-				}
-			}
-			p.expect(TOKEN_RPAREN)
-			node = call
-		case TOKEN_LBRACK:
-			p.advance()
-			if p.at(TOKEN_COLON) {
-				// s[:hi] — empty low bound, defaults to 0
-				p.advance()
-				var hi *Node
-				if !p.at(TOKEN_RBRACK) {
-					hi = p.parseExpr()
-				}
-				p.expect(TOKEN_RBRACK)
-				lo := &Node{Kind: NIntLit, Name: "0", Pos: node.Pos}
-				node = &Node{Kind: NSliceExpr, X: node, Y: lo, Body: hi, Pos: node.Pos}
-			} else {
-				index := p.parseExpr()
-				if p.at(TOKEN_COLON) {
-					p.advance()
-					var hi *Node
-					if !p.at(TOKEN_RBRACK) {
-						hi = p.parseExpr()
-					}
-					p.expect(TOKEN_RBRACK)
-					node = &Node{Kind: NSliceExpr, X: node, Y: index, Body: hi, Pos: node.Pos}
-				} else {
-					p.expect(TOKEN_RBRACK)
-					node = &Node{Kind: NIndexExpr, X: node, Y: index, Pos: node.Pos}
-				}
-			}
-		case TOKEN_LBRACE:
-			allowCompLit := !p.noCompLit
-			if p.noCompLit {
-				// In noCompLit mode (e.g. if/switch headers), only allow
-				// composite literals with unambiguous non-identifier type forms.
-				// Do NOT allow selector expressions here, because values like
-				// `tok.Kind` in `switch tok.Kind { ... }` are ambiguous.
-				if node.Kind == NSliceType || node.Kind == NMapType {
-					allowCompLit = true
-				}
-			}
-			if allowCompLit && p.isTypeLikeNode(node) {
-				node = p.parseCompositeLit(node)
-			} else {
-				return node
-			}
-		default:
-			return node
+	if p.at(TOKEN_DOT) {
+		return p.parsePostfixOps(p.parsePostfixDot(node))
+	}
+	if p.at(TOKEN_LPAREN) {
+		return p.parsePostfixOps(p.parsePostfixCall(node))
+	}
+	if p.at(TOKEN_LBRACK) {
+		return p.parsePostfixOps(p.parsePostfixIndexOrSlice(node))
+	}
+	if p.at(TOKEN_LBRACE) {
+		if p.canParseCompositeLit(node) {
+			return p.parsePostfixOps(p.parseCompositeLit(node))
 		}
 	}
+	return node
+}
+
+func (p *Parser) parsePostfixDot(node *Node) *Node {
+	p.advance()
+	if p.at(TOKEN_LPAREN) {
+		// Type assertion: x.(T) or x.(type) (for type switches).
+		p.advance()
+		assertNode := &Node{Kind: NTypeAssertExpr, X: node, Pos: node.Pos}
+		if p.at(TOKEN_TYPE) {
+			p.advance()
+			assertNode.Name = "type"
+		} else {
+			assertNode.Type = p.parseType()
+		}
+		p.expect(TOKEN_RPAREN)
+		return assertNode
+	}
+	name := p.expect(TOKEN_IDENT)
+	return &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: node.Pos}
+}
+
+func (p *Parser) parsePostfixCall(node *Node) *Node {
+	p.advance()
+	call := &Node{Kind: NCallExpr, X: node, Pos: node.Pos}
+	for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
+		arg := p.parseExpr()
+		if p.at(TOKEN_ELLIPSIS) {
+			p.advance()
+			call.Name = "spread"
+		}
+		call.Nodes = append(call.Nodes, arg)
+		if p.at(TOKEN_COMMA) {
+			p.advance()
+		}
+	}
+	p.expect(TOKEN_RPAREN)
+	return call
+}
+
+func (p *Parser) parsePostfixIndexOrSlice(node *Node) *Node {
+	p.advance()
+	if p.at(TOKEN_COLON) {
+		// s[:hi] — empty low bound, defaults to 0
+		p.advance()
+		var hi *Node
+		if !p.at(TOKEN_RBRACK) {
+			hi = p.parseExpr()
+		}
+		var max *Node
+		if p.at(TOKEN_COLON) {
+			p.advance()
+			if !p.at(TOKEN_RBRACK) {
+				max = p.parseExpr()
+			}
+		}
+		p.expect(TOKEN_RBRACK)
+		lo := &Node{Kind: NIntLit, Name: "0", Pos: node.Pos}
+		return &Node{Kind: NSliceExpr, X: node, Y: lo, Body: hi, Type: max, Pos: node.Pos}
+	}
+
+	index := p.parseExpr()
+	if p.at(TOKEN_COLON) {
+		p.advance()
+		var hi *Node
+		if !p.at(TOKEN_RBRACK) {
+			hi = p.parseExpr()
+		}
+		var max *Node
+		if p.at(TOKEN_COLON) {
+			p.advance()
+			if !p.at(TOKEN_RBRACK) {
+				max = p.parseExpr()
+			}
+		}
+		p.expect(TOKEN_RBRACK)
+		return &Node{Kind: NSliceExpr, X: node, Y: index, Body: hi, Type: max, Pos: node.Pos}
+	}
+
+	p.expect(TOKEN_RBRACK)
+	return &Node{Kind: NIndexExpr, X: node, Y: index, Pos: node.Pos}
+}
+
+func (p *Parser) canParseCompositeLit(node *Node) bool {
+	allowCompLit := !p.noCompLit
+	if p.noCompLit {
+		// In noCompLit mode (e.g. if/switch headers), only allow
+		// composite literals with unambiguous non-identifier type forms.
+		// Do NOT allow selector expressions here, because values like
+		// `tok.Kind` in `switch tok.Kind { ... }` are ambiguous.
+		if node.Kind == NSliceType || node.Kind == NMapType {
+			allowCompLit = true
+		}
+	}
+	return allowCompLit && p.isTypeLikeNode(node)
 }
 
 func (p *Parser) parseCompositeLit(typeNode *Node) *Node {

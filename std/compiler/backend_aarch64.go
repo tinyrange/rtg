@@ -641,8 +641,10 @@ func (g *CodeGen) compileMakestringIntrinsicArm64() {
 }
 
 func (g *CodeGen) compileTostringIntrinsicArm64() {
-	g.needTostringHelper = true
-	g.emitCallPlaceholderArm64(outlinedTostringHelper)
+	// OP_CALL_INTRINSIC executes inside intrinsic wrapper functions where
+	// params are read from frame locals. Inline directly to avoid helper
+	// call/prologue interactions in native arm64 codegen.
+	g.compileTostringIntrinsicBodyArm64()
 }
 
 func (g *CodeGen) emitTostringHelperArm64() {

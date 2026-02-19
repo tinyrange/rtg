@@ -9,5 +9,9 @@ func (p Person) Greet() string { return "hi " + p.Name }
 func main() {
 	p := Person{Name: "A"}
 	f := p.Greet
-	fmt.Println(f())
+	if f() == "hi A" {
+		fmt.Print("PASS")
+		return
+	}
+	panic("method value call failed")
 }

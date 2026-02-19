@@ -36,6 +36,10 @@ Primary build/test orchestration is defined in `tools/Buildfile`.
   - Alias for `test-fullcompiler-rtg`.
 - `test-fullcompiler-rtg`
   - Runs top-level fullcompiler suite with RTG backend and validates output.
+- `test-fullcompiler-rtg-i386`
+  - Runs top-level fullcompiler suite with RTG backend targeting `linux/386`.
+- `test-fullcompiler-rtg-win386`
+  - Runs top-level fullcompiler suite with RTG backend targeting `windows/386` (uses `wine` on Linux hosts).
 - `test-fullcompiler-c`
   - Runs top-level fullcompiler suite with `-T c/64` and validates output.
 - `test-fullcompiler-wasm`
@@ -46,6 +50,10 @@ Primary build/test orchestration is defined in `tools/Buildfile`.
   - Builds `web/compiler.wasm` with `-tags no_embed_std`, then runs `web/build.sh`.
 - `clean`
   - Removes generated build, stage, size, and cross-compile artifacts.
+
+## Debugging Tip
+
+- If `selfhost*` or `test-fullcompiler*` appears to hang or behaves inconsistently, run `./build/build clean` first, then rebuild the runner (`go build -o build/build ./tools`) and retry.
 
 ## Feature Workflow
 
