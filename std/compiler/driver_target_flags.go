@@ -98,25 +98,30 @@ func applyTargetFlag(target string) string {
 	return ""
 }
 
-func rebuildActiveBuildTags(extraTags string) {
-	buildTags = buildTags[:0]
-	if targetBackend == "c" {
-		buildTags = append(buildTags, "c")
-		buildTags = append(buildTags, fmt.Sprintf("c%d", targetCModel))
-	} else if targetGOOS == "wasi" && targetGOARCH == "wasm32" {
-		buildTags = append(buildTags, "wasi")
-		buildTags = append(buildTags, "wasm32")
+func buildActiveBuildTagsForTarget(target CompilerTarget, extraTags string) []string {
+	var tags []string
+	if target.Backend == "c" {
+		tags = append(tags, "c")
+		tags = append(tags, fmt.Sprintf("c%d", target.CModel))
+	} else if target.GOOS == "wasi" && target.GOARCH == "wasm32" {
+		tags = append(tags, "wasi")
+		tags = append(tags, "wasm32")
 	} else {
-		buildTags = append(buildTags, targetGOOS)
-		buildTags = append(buildTags, targetGOARCH)
+		tags = append(tags, target.GOOS)
+		tags = append(tags, target.GOARCH)
 	}
 	if extraTags != "" {
 		parts := strings.Split(extraTags, ",")
 		for _, t := range parts {
 			if t != "" {
-				buildTags = append(buildTags, t)
+				tags = append(tags, t)
 			}
 		}
 	}
-	buildTags = append(buildTags, "rtg")
+	tags = append(tags, "rtg")
+	return tags
+}
+
+func rebuildActiveBuildTags(extraTags string) {
+	buildTags = buildActiveBuildTagsForTarget(currentCompilerTarget(), extraTags)
 }

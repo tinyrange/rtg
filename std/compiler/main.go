@@ -215,11 +215,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build active tag set from target + explicit tags
-	rebuildActiveBuildTags(extraTags)
+	// Build and apply driver options explicitly.
+	opts := currentDriverOptions()
+	opts.BuildTags = buildActiveBuildTagsForTarget(opts.Target, extraTags)
 	if sizeAnalysisPath != "" {
-		stripBinary = true
+		opts.StripBinary = true
 	}
+	applyDriverOptions(opts)
 
 	// Initialize embedded std if available
 	initEmbeddedStd()

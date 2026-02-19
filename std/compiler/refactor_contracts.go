@@ -67,3 +67,11 @@ func setCompilerTarget(target CompilerTarget) {
 	targetCModel = target.CModel
 	targetWordSize = target.WordSize
 }
+
+func applyDriverOptions(opts DriverOptions) {
+	setCompilerTarget(opts.Target)
+	buildTags = buildTags[:0]
+	buildTags = append(buildTags, opts.BuildTags...)
+	compilerDebug = opts.Debug
+	stripBinary = opts.StripBinary
+}
