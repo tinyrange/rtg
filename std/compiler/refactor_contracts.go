@@ -58,3 +58,12 @@ func currentCompilerTarget() CompilerTarget {
 		WordSize: targetWordSize,
 	}
 }
+
+func setCompilerTarget(target CompilerTarget) {
+	targetGOOS = target.GOOS
+	targetGOARCH = target.GOARCH
+	targetPtrSize = target.PtrSize
+	targetBackend = target.Backend
+	targetCModel = target.CModel
+	targetWordSize = target.WordSize
+}

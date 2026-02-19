@@ -13,78 +13,88 @@ func defaultPtrSize() int {
 	return 8
 }
 
-func applyTargetFlag(target string) string {
+func parseTargetFlag(base CompilerTarget, target string) (CompilerTarget, string) {
+	next := base
 	if target == "c" || strings.HasPrefix(target, "c/") {
-		targetBackend = "c"
-		targetCModel = 64
+		next.Backend = "c"
+		next.CModel = 64
 		if strings.HasPrefix(target, "c/") {
 			model := target[2:]
 			if model == "16" {
-				targetCModel = 16
+				next.CModel = 16
 			} else if model == "32" {
-				targetCModel = 32
+				next.CModel = 32
 			} else if model == "64" {
-				targetCModel = 64
+				next.CModel = 64
 			} else {
-				return fmt.Sprintf("invalid target %q: expected c, c/16, c/32, or c/64", target)
+				return next, fmt.Sprintf("invalid target %q: expected c, c/16, c/32, or c/64", target)
 			}
 		}
-		if targetCModel == 16 {
-			targetPtrSize = 2
-		} else if targetCModel == 32 {
-			targetPtrSize = 4
+		if next.CModel == 16 {
+			next.PtrSize = 2
+		} else if next.CModel == 32 {
+			next.PtrSize = 4
 		} else {
-			targetPtrSize = 8
+			next.PtrSize = 8
 		}
-		targetGOOS = "c"
-		targetGOARCH = fmt.Sprintf("c%d", targetCModel)
-		return ""
+		next.GOOS = "c"
+		next.GOARCH = fmt.Sprintf("c%d", next.CModel)
+		return next, ""
 	}
 	if target == "ir" {
-		targetBackend = "ir"
-		return ""
+		next.Backend = "ir"
+		return next, ""
 	}
 	if strings.HasPrefix(target, "vm/") {
-		targetBackend = "vm"
+		next.Backend = "vm"
 		model := target[3:]
 		if model == "8" {
-			targetWordSize = 1
-			targetPtrSize = 2
+			next.WordSize = 1
+			next.PtrSize = 2
 		} else if model == "16" {
-			targetWordSize = 2
-			targetPtrSize = 2
+			next.WordSize = 2
+			next.PtrSize = 2
 		} else if model == "32" {
-			targetWordSize = 4
-			targetPtrSize = 4
+			next.WordSize = 4
+			next.PtrSize = 4
 		} else if model == "64" {
-			targetWordSize = 8
-			targetPtrSize = 8
+			next.WordSize = 8
+			next.PtrSize = 8
 		} else {
-			return fmt.Sprintf("invalid target %q: expected vm/8, vm/16, vm/32, or vm/64", target)
+			return next, fmt.Sprintf("invalid target %q: expected vm/8, vm/16, vm/32, or vm/64", target)
 		}
-		targetGOOS = "c"
-		bits := targetWordSize * 8
-		targetGOARCH = fmt.Sprintf("c%d", bits)
-		return ""
+		next.GOOS = "c"
+		bits := next.WordSize * 8
+		next.GOARCH = fmt.Sprintf("c%d", bits)
+		return next, ""
 	}
 	if target == "dos/8086" {
-		targetGOOS = "dos"
-		targetGOARCH = "dos16"
-		targetPtrSize = 2
-		return ""
+		next.GOOS = "dos"
+		next.GOARCH = "dos16"
+		next.PtrSize = 2
+		return next, ""
 	}
 
 	slashIdx := strings.Index(target, "/")
 	if slashIdx < 0 {
-		return fmt.Sprintf("invalid target %q: expected os/arch, dos/8086, c[/16|32|64], ir, or vm/<8|16|32|64>", target)
+		return next, fmt.Sprintf("invalid target %q: expected os/arch, dos/8086, c[/16|32|64], ir, or vm/<8|16|32|64>", target)
 	}
-	targetGOOS = target[0:slashIdx]
-	targetGOARCH = target[slashIdx+1:]
-	if targetGOARCH == "386" || targetGOARCH == "wasm32" {
-		targetPtrSize = 4
+	next.GOOS = target[0:slashIdx]
+	next.GOARCH = target[slashIdx+1:]
+	if next.GOARCH == "386" || next.GOARCH == "wasm32" {
+		next.PtrSize = 4
 	} else {
-		targetPtrSize = 8
+		next.PtrSize = 8
 	}
+	return next, ""
+}
+
+func applyTargetFlag(target string) string {
+	next, errMsg := parseTargetFlag(currentCompilerTarget(), target)
+	if errMsg != "" {
+		return errMsg
+	}
+	setCompilerTarget(next)
 	return ""
 }
 
