@@ -3,5 +3,5 @@ package main
 import "fmt"
 
 func main() {
-	fmt.Println('é')
+	defer fmt.Print("PASS")
 }
