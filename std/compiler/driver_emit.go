@@ -12,7 +12,11 @@ func currentDriverOptions() DriverOptions {
 }
 
 func buildAndApplyDriverOptions(extraTags string, forceStrip bool) DriverOptions {
-	opts := currentDriverOptions()
+	return buildAndApplyDriverOptionsFrom(currentDriverOptions(), extraTags, forceStrip)
+}
+
+func buildAndApplyDriverOptionsFrom(base DriverOptions, extraTags string, forceStrip bool) DriverOptions {
+	opts := base
 	opts.BuildTags = buildActiveBuildTagsForTarget(opts.Target, extraTags)
 	if forceStrip {
 		opts.StripBinary = true

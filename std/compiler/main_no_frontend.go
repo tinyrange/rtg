@@ -17,7 +17,7 @@ func main() {
 	outputPath := "output"
 	var fromIRBinaryPath string
 	var extraTags string
-	parsedTarget := currentCompilerTarget()
+	parsedOpts := currentDriverOptions()
 	i := 1
 	for i < len(os.Args) {
 		if os.Args[i] == "-h" || os.Args[i] == "--help" {
@@ -28,7 +28,7 @@ func main() {
 			i = i + 2
 		} else if os.Args[i] == "-T" && i+1 < len(os.Args) {
 			var errMsg string
-			parsedTarget, errMsg = parseTargetFlag(parsedTarget, os.Args[i+1])
+			parsedOpts.Target, errMsg = parseTargetFlag(parsedOpts.Target, os.Args[i+1])
 			if errMsg != "" {
 				fmt.Fprintf(os.Stderr, "%s\n", errMsg)
 				os.Exit(1)
@@ -44,25 +44,23 @@ func main() {
 			extraTags = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-debug" {
-			compilerDebug = true
+			parsedOpts.Debug = true
 			i = i + 1
 		} else if os.Args[i] == "-strip" || os.Args[i] == "-s" {
-			stripBinary = true
+			parsedOpts.StripBinary = true
 			i = i + 1
 		} else {
 			fmt.Fprintf(os.Stderr, "no_frontend build only supports -from-ir-binary input\n")
 			os.Exit(1)
 		}
 	}
-	setCompilerTarget(parsedTarget)
-
 	if fromIRBinaryPath == "" {
 		fmt.Fprintf(os.Stderr, "no_frontend build requires -from-ir-binary <path>\n")
 		os.Exit(1)
 	}
 
 	// Build and apply driver options explicitly.
-	opts := buildAndApplyDriverOptions(extraTags, sizeAnalysisPath != "")
+	opts := buildAndApplyDriverOptionsFrom(parsedOpts, extraTags, sizeAnalysisPath != "")
 
 	initEmbeddedStd()
 
