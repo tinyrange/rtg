@@ -6,20 +6,12 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
 )
 
 // Target and build tag globals — defaults to host platform
 var targetGOOS string = runtime.GOOS
 var targetGOARCH string = runtime.GOARCH
 var targetPtrSize int = defaultPtrSize()
-
-func defaultPtrSize() int {
-	if runtime.GOARCH == "386" || runtime.GOARCH == "wasm32" {
-		return 4
-	}
-	return 8
-}
 
 var targetBackend string = "native"       // native, c, ir, or vm
 var targetCModel int = 0                  // 16/32/64 when targetBackend==c
@@ -46,76 +38,10 @@ func main() {
 			outputPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-T" && i+1 < len(os.Args) {
-			target := os.Args[i+1]
-			if target == "c" || strings.HasPrefix(target, "c/") {
-				targetBackend = "c"
-				targetCModel = 64
-				if strings.HasPrefix(target, "c/") {
-					model := target[2:]
-					if model == "16" {
-						targetCModel = 16
-					} else if model == "32" {
-						targetCModel = 32
-					} else if model == "64" {
-						targetCModel = 64
-					} else {
-						fmt.Fprintf(os.Stderr, "invalid target %q: expected c, c/16, c/32, or c/64\n", target)
-						os.Exit(1)
-					}
-				}
-				if targetCModel == 16 {
-					targetPtrSize = 2
-				} else if targetCModel == 32 {
-					targetPtrSize = 4
-				} else {
-					targetPtrSize = 8
-				}
-				targetGOOS = "c"
-				targetGOARCH = fmt.Sprintf("c%d", targetCModel)
-			} else if target == "ir" {
-				targetBackend = "ir"
-			} else if strings.HasPrefix(target, "vm/") {
-				targetBackend = "vm"
-				model := target[3:]
-				if model == "8" {
-					targetWordSize = 1
-					targetPtrSize = 2
-				} else if model == "16" {
-					targetWordSize = 2
-					targetPtrSize = 2
-				} else if model == "32" {
-					targetWordSize = 4
-					targetPtrSize = 4
-				} else if model == "64" {
-					targetWordSize = 8
-					targetPtrSize = 8
-				} else {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected vm/8, vm/16, vm/32, or vm/64\n", target)
-					os.Exit(1)
-				}
-				targetGOOS = "c"
-				bits := targetWordSize * 8
-				targetGOARCH = fmt.Sprintf("c%d", bits)
-			} else {
-				if target == "dos/8086" {
-					targetGOOS = "dos"
-					targetGOARCH = "dos16"
-					targetPtrSize = 2
-					i = i + 2
-					continue
-				}
-				slashIdx := strings.Index(target, "/")
-				if slashIdx < 0 {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], ir, or vm/<8|16|32|64>\n", target)
-					os.Exit(1)
-				}
-				targetGOOS = target[0:slashIdx]
-				targetGOARCH = target[slashIdx+1:]
-				if targetGOARCH == "386" || targetGOARCH == "wasm32" {
-					targetPtrSize = 4
-				} else {
-					targetPtrSize = 8
-				}
+			errMsg := applyTargetFlag(os.Args[i+1])
+			if errMsg != "" {
+				fmt.Fprintf(os.Stderr, "%s\n", errMsg)
+				os.Exit(1)
 			}
 			i = i + 2
 		} else if os.Args[i] == "-from-ir-binary" && i+1 < len(os.Args) {
@@ -145,25 +71,7 @@ func main() {
 	}
 
 	// Build active tag set from target + explicit tags.
-	if targetBackend == "c" {
-		buildTags = append(buildTags, "c")
-		buildTags = append(buildTags, fmt.Sprintf("c%d", targetCModel))
-	} else if targetGOOS == "wasi" && targetGOARCH == "wasm32" {
-		buildTags = append(buildTags, "wasi")
-		buildTags = append(buildTags, "wasm32")
-	} else {
-		buildTags = append(buildTags, targetGOOS)
-		buildTags = append(buildTags, targetGOARCH)
-	}
-	if extraTags != "" {
-		parts := strings.Split(extraTags, ",")
-		for _, t := range parts {
-			if t != "" {
-				buildTags = append(buildTags, t)
-			}
-		}
-	}
-	buildTags = append(buildTags, "rtg")
+	rebuildActiveBuildTags(extraTags)
 	if sizeAnalysisPath != "" {
 		stripBinary = true
 	}
