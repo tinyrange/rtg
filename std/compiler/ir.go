@@ -3995,6 +3995,69 @@ func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool
 	return false
 }
 
+func (c *Compiler) compileNewBuiltin(node *Node) bool {
+	if node == nil || len(node.Nodes) != 1 {
+		return false
+	}
+	typeArg := node.Nodes[0]
+	typeName := nodeTypeName(typeArg)
+	qualified := c.qualifyTypeName(typeName, "")
+	size := targetPtrSize
+	if typeNode, _ := c.lookupStructTypeNode(qualified); typeNode != nil {
+		slots := c.resolveStructSlotCount(qualified)
+		if slots > 0 {
+			size = slots * targetPtrSize
+		}
+	} else if typeArg.Kind == NIdent {
+		if w := typeWidth(typeArg.Name); w > 0 {
+			size = w
+		}
+	}
+	if size <= 0 {
+		size = targetPtrSize
+	}
+	c.emit(Inst{Op: OP_CONST_I64, Val: int64(size)})
+	c.emit(Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
+	c.emit(Inst{Op: OP_DUP})
+	c.emit(Inst{Op: OP_CONST_I64, Val: int64(size)})
+	c.emit(Inst{Op: OP_CALL, Name: "runtime.Memzero", Arg: 2})
+	return true
+}
+
+func (c *Compiler) emitSysWriteStringLocal(localIdx int) {
+	c.emit(Inst{Op: OP_CONST_I64, Val: 1})
+	c.emit(Inst{Op: OP_LOCAL_GET, Arg: localIdx})
+	c.emit(Inst{Op: OP_CALL, Name: "runtime.Stringptr", Arg: 1})
+	c.emit(Inst{Op: OP_LOCAL_GET, Arg: localIdx})
+	c.emit(Inst{Op: OP_LEN})
+	c.emit(Inst{Op: OP_CONVERT, Name: "uintptr"})
+	c.emit(Inst{Op: OP_CALL, Name: "runtime.SysWrite", Arg: 3})
+	c.emit(Inst{Op: OP_DROP})
+	c.emit(Inst{Op: OP_DROP})
+	c.emit(Inst{Op: OP_DROP})
+}
+
+func (c *Compiler) compilePrintBuiltin(node *Node, withNewline bool) {
+	tmpIdx := c.addLocal(fmt.Sprintf("$print_%d", len(c.curFunc.Locals)))
+	for i, arg := range node.Nodes {
+		c.compileExpr(arg)
+		c.maybeBoxValueForInterface(arg)
+		c.emit(Inst{Op: OP_CALL, Name: "runtime.Tostring", Arg: 1})
+		c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
+		c.emitSysWriteStringLocal(tmpIdx)
+		if withNewline && i < len(node.Nodes)-1 {
+			c.emit(Inst{Op: OP_CONST_STR, Name: " "})
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
+			c.emitSysWriteStringLocal(tmpIdx)
+		}
+	}
+	if withNewline {
+		c.emit(Inst{Op: OP_CONST_STR, Name: "\n"})
+		c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
+		c.emitSysWriteStringLocal(tmpIdx)
+	}
+}
+
 func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 	if node == nil || node.X == nil || node.X.Kind != NIdent {
 		return false
@@ -4099,6 +4162,19 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				c.emit(Inst{Op: OP_CONST_STR, Name: "panic"})
 			}
 			c.emit(Inst{Op: OP_PANIC})
+			return
+		}
+		if name == "new" {
+			if c.compileNewBuiltin(node) {
+				return
+			}
+		}
+		if name == "print" {
+			c.compilePrintBuiltin(node, false)
+			return
+		}
+		if name == "println" {
+			c.compilePrintBuiltin(node, true)
 			return
 		}
 		// Type conversions: int(), uintptr(), byte(), string(), int16(), int32()
