@@ -189,7 +189,7 @@ func main() {
 			runTmpSrc = tmpDir + sep + "rtg-run-" + pid + ".go"
 		}
 		runTmpBin = tmpDir + sep + "rtg-run-" + pid
-		if targetGOOS == "windows" {
+		if parsedTarget.GOOS == "windows" {
 			runTmpBin = runTmpBin + ".exe"
 		}
 
@@ -259,7 +259,7 @@ func main() {
 			runCleanup()
 			os.Exit(1)
 		}
-		if compilerDebug {
+		if opts.Debug {
 			fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 	} else {
@@ -292,12 +292,12 @@ func main() {
 			}
 		}
 
-		if compilerDebug {
+		if opts.Debug {
 			fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
 		}
 		resetDiscoveredBuildTags()
 		mod := ResolveModule(baseDir, entryFiles)
-		if compilerDebug {
+		if opts.Debug {
 			fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
 		}
 
@@ -332,7 +332,7 @@ func main() {
 		}
 
 		// Compile to IR
-		if compilerDebug {
+		if opts.Debug {
 			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
 		}
 		var errs []string
@@ -347,11 +347,11 @@ func main() {
 			os.Exit(1)
 		}
 
-		if compilerDebug {
+		if opts.Debug {
 			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 		eliminateDeadFunctions(irmod)
-		if compilerDebug {
+		if opts.Debug {
 			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
 		}
 		if emitIRBinaryPath != "" {
@@ -381,7 +381,7 @@ func main() {
 		}
 	}
 
-	if compilerDebug {
+	if opts.Debug {
 		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", opts.Target.Backend, opts.Target.GOOS, opts.Target.GOARCH)
 	}
 	err := emitModuleWithOptions(irmod, outputPath, opts)
@@ -391,7 +391,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if compilerDebug {
+	if opts.Debug {
 		fmt.Fprintf(os.Stderr, "debug: output generated successfully\n")
 	}
 

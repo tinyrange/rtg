@@ -71,7 +71,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error reading IR binary: %v\n", err)
 		os.Exit(1)
 	}
-	if compilerDebug {
+	if opts.Debug {
 		fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", opts.Target.Backend, opts.Target.GOOS, opts.Target.GOARCH)
 	}
