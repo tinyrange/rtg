@@ -24,6 +24,7 @@ func buildAndApplyDriverOptions(extraTags string, forceStrip bool) DriverOptions
 func emitModuleWithOptions(irmod *IRModule, outputPath string, opts DriverOptions) error {
 	prev := currentDriverOptions()
 	applyDriverOptions(opts)
+	defer applyDriverOptions(prev)
 
 	var err error
 	if opts.Target.Backend != "native" {
@@ -37,6 +38,5 @@ func emitModuleWithOptions(irmod *IRModule, outputPath string, opts DriverOption
 		err = GenerateELF(irmod, outputPath)
 	}
 
-	applyDriverOptions(prev)
 	return err
 }
