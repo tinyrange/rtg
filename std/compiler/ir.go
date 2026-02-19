@@ -171,6 +171,17 @@ type IRModule struct {
 	IfaceMethodRets map[string]int      // iface+"\x00"+method → return count
 }
 
+type closureCaptureSpec struct {
+	Name  string
+	Width int
+}
+
+type closureCaptureBinding struct {
+	LocalIdx int
+	Width    int
+	IsPtr    bool
+}
+
 // === Compiler ===
 
 // Compiler lowers AST from a Module into stack machine IR.
@@ -222,6 +233,9 @@ type Compiler struct {
 	localFuncTargets    map[string]string
 	localMethodTargets  map[string]string
 	localMethodRecv     map[string]int
+	funcLiteralCaptures map[string][]closureCaptureSpec
+	localFuncCaptures   map[string][]closureCaptureBinding
+	activeCaptures      map[string]closureCaptureBinding
 	dotJoinCache        map[string]map[string]string // a → b → "a.b"
 	qualifyTypeCache    map[string]string            // "typeName\x00pkgPath" → qualified result
 }
@@ -265,6 +279,8 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 		globalConcreteTypes: make(map[string]string),
 		constValues:         make(map[string]int64),
 		constStringValues:   make(map[string]string),
+		funcLiteralCaptures: make(map[string][]closureCaptureSpec),
+		localFuncCaptures:   make(map[string][]closureCaptureBinding),
 		dotJoinCache:        make(map[string]map[string]string),
 		qualifyTypeCache:    make(map[string]string),
 	}
@@ -1419,6 +1435,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localFuncTargets = make(map[string]string)
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
+	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
 	c.pushScope()
 
 	// Extract return type names for interface boxing
@@ -1936,6 +1953,7 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		if node.X.Kind == NFuncType && node.X.Body != nil {
 			target := c.compileFuncLiteral(node.X)
 			c.localFuncTargets[node.Name] = target
+			c.bindFuncCaptures(node.Name, target)
 			delete(c.localMethodTargets, node.Name)
 			delete(c.localMethodRecv, node.Name)
 			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
@@ -2134,6 +2152,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		if node.Y != nil && node.Y.Kind == NFuncType && node.Y.Body != nil {
 			target := c.compileFuncLiteral(node.Y)
 			c.localFuncTargets[node.X.Name] = target
+			c.bindFuncCaptures(node.X.Name, target)
 			delete(c.localMethodTargets, node.X.Name)
 			delete(c.localMethodRecv, node.X.Name)
 			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
@@ -2196,12 +2215,80 @@ func (c *Compiler) compileAssign(node *Node) {
 	c.compileLValueSet(node.X)
 }
 
+func trimVariadicName(name string) string {
+	if len(name) > 3 && name[0:3] == "..." {
+		return name[3:]
+	}
+	return name
+}
+
+func localWidth(locals []IRLocal, idx int) int {
+	if idx >= 0 && idx < len(locals) {
+		return locals[idx].Width
+	}
+	return 0
+}
+
+func (c *Compiler) bindFuncCaptures(localName string, target string) {
+	captures, ok := c.funcLiteralCaptures[target]
+	if !ok || len(captures) == 0 {
+		delete(c.localFuncCaptures, localName)
+		return
+	}
+	bindings := make([]closureCaptureBinding, 0, len(captures))
+	for _, capture := range captures {
+		if idx, found := c.lookupLocal(capture.Name); found {
+			bindings = append(bindings, closureCaptureBinding{LocalIdx: idx, Width: capture.Width})
+			continue
+		}
+		if parentCapture, found := c.activeCaptures[capture.Name]; found {
+			bindings = append(bindings, closureCaptureBinding{LocalIdx: parentCapture.LocalIdx, Width: capture.Width, IsPtr: true})
+		}
+	}
+	c.localFuncCaptures[localName] = bindings
+}
+
+func (c *Compiler) collectFuncLiteralCaptures(lit *Node) []closureCaptureSpec {
+	_ = lit
+	var captures []closureCaptureSpec
+	seen := make(map[string]bool)
+	for i := len(c.scopes) - 1; i >= 0; i-- {
+		var names []string
+		for name := range c.scopes[i] {
+			if name != "_" && !seen[name] {
+				names = append(names, name)
+			}
+		}
+		sortStrings(names)
+		for _, name := range names {
+			idx, ok := c.lookupLocal(name)
+			if !ok {
+				continue
+			}
+			captures = append(captures, closureCaptureSpec{Name: name, Width: localWidth(c.curFunc.Locals, idx)})
+			seen[name] = true
+		}
+	}
+	return captures
+}
+
 func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	name := fmt.Sprintf("$lit_%d", c.funcLitSeq)
 	c.funcLitSeq++
+
+	captures := c.collectFuncLiteralCaptures(lit)
+	params := make([]*Node, 0, len(captures)+len(lit.Nodes))
+	activeCaptures := make(map[string]closureCaptureBinding)
+	for i, capture := range captures {
+		pname := "$cap_" + capture.Name
+		params = append(params, &Node{Kind: NVarDecl, Name: pname})
+		activeCaptures[capture.Name] = closureCaptureBinding{LocalIdx: i, Width: capture.Width, IsPtr: true}
+	}
+	params = append(params, lit.Nodes...)
+
 	fn := &Node{
 		Kind: NFunc, Name: name, Pos: lit.Pos,
-		Nodes: lit.Nodes, Type: lit.Type, Body: lit.Body,
+		Nodes: params, Type: lit.Type, Body: lit.Body,
 	}
 	// Save current function compilation state.
 	savedCurFunc := c.curFunc
@@ -2224,7 +2311,10 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	savedFuncTargets := c.localFuncTargets
 	savedMethodTargets := c.localMethodTargets
 	savedMethodRecv := c.localMethodRecv
+	savedLocalFuncCaptures := c.localFuncCaptures
+	savedActiveCaptures := c.activeCaptures
 
+	c.activeCaptures = activeCaptures
 	c.compileFunc(fn)
 
 	// Restore caller function state.
@@ -2248,7 +2338,11 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	c.localFuncTargets = savedFuncTargets
 	c.localMethodTargets = savedMethodTargets
 	c.localMethodRecv = savedMethodRecv
-	return c.curPkg.QualName(name)
+	c.localFuncCaptures = savedLocalFuncCaptures
+	c.activeCaptures = savedActiveCaptures
+	target := c.curPkg.QualName(name)
+	c.funcLiteralCaptures[target] = captures
+	return target
 }
 
 func (c *Compiler) registerFuncValueBinding(localName string, rhs *Node) bool {
@@ -2258,6 +2352,11 @@ func (c *Compiler) registerFuncValueBinding(localName string, rhs *Node) bool {
 	if rhs.Kind == NIdent {
 		if target, ok := c.localFuncTargets[rhs.Name]; ok {
 			c.localFuncTargets[localName] = target
+			if captures, ok := c.localFuncCaptures[rhs.Name]; ok {
+				c.localFuncCaptures[localName] = captures
+			} else {
+				delete(c.localFuncCaptures, localName)
+			}
 			delete(c.localMethodTargets, localName)
 			delete(c.localMethodRecv, localName)
 			return true
@@ -2265,6 +2364,7 @@ func (c *Compiler) registerFuncValueBinding(localName string, rhs *Node) bool {
 		if c.curPkg != nil {
 			if sym, ok := c.curPkg.Symbols[rhs.Name]; ok && sym.Kind == SymFunc {
 				c.localFuncTargets[localName] = c.curPkg.QualName(rhs.Name)
+				delete(c.localFuncCaptures, localName)
 				delete(c.localMethodTargets, localName)
 				delete(c.localMethodRecv, localName)
 				return true
@@ -2301,6 +2401,7 @@ func (c *Compiler) registerMethodValueBinding(localName string, rhs *Node, local
 	c.emit(Inst{Op: OP_LOCAL_SET, Arg: localIdx})
 
 	delete(c.localFuncTargets, localName)
+	delete(c.localFuncCaptures, localName)
 	c.localMethodTargets[localName] = target
 	c.localMethodRecv[localName] = localIdx
 	return true
@@ -2344,6 +2445,11 @@ func (c *Compiler) compileLValueSet(node *Node) {
 			}
 			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
 		} else {
+			if capture, ok := c.activeCaptures[node.Name]; ok {
+				c.emit(Inst{Op: OP_LOCAL_GET, Arg: capture.LocalIdx})
+				c.emit(Inst{Op: OP_STORE, Arg: capture.Width})
+				return
+			}
 			gidx, gok := c.lookupGlobal(node.Name)
 			if gok {
 				c.emit(Inst{Op: OP_GLOBAL_SET, Arg: gidx})
@@ -3432,6 +3538,11 @@ func (c *Compiler) compileIdent(node *Node) {
 		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idx, Width: w})
 		return
 	}
+	if capture, ok := c.activeCaptures[node.Name]; ok {
+		c.emit(Inst{Op: OP_LOCAL_GET, Arg: capture.LocalIdx})
+		c.emit(Inst{Op: OP_LOAD, Arg: capture.Width})
+		return
+	}
 	gidx, gok := c.lookupGlobal(node.Name)
 	if gok {
 		c.emit(Inst{Op: OP_GLOBAL_GET, Arg: gidx})
@@ -3949,6 +4060,10 @@ func (c *Compiler) compileAddrOf(node *Node) {
 	}
 	switch node.Kind {
 	case NIdent:
+		if capture, ok := c.activeCaptures[node.Name]; ok {
+			c.emit(Inst{Op: OP_LOCAL_GET, Arg: capture.LocalIdx})
+			return
+		}
 		idx, ok := c.lookupLocal(node.Name)
 		if ok {
 			c.emit(Inst{Op: OP_LOCAL_ADDR, Arg: idx})
@@ -4162,10 +4277,18 @@ func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		if target, ok := c.localFuncTargets[node.X.Name]; ok {
+			captureArgs := c.localFuncCaptures[node.X.Name]
+			for _, capture := range captureArgs {
+				if capture.IsPtr {
+					c.emit(Inst{Op: OP_LOCAL_GET, Arg: capture.LocalIdx})
+				} else {
+					c.emit(Inst{Op: OP_LOCAL_ADDR, Arg: capture.LocalIdx})
+				}
+			}
 			for _, arg := range node.Nodes {
 				c.compileExpr(arg)
 			}
-			c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes)})
+			c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes) + len(captureArgs)})
 			return
 		}
 		if c.compileBoundMethodValueCall(node) {
@@ -4885,6 +5008,13 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 		}
 		// Look up the callee's return count (node.X is the callee)
 		name := c.resolveCallName(node.X)
+		if node.X != nil && node.X.Kind == NIdent {
+			if target, ok := c.localFuncTargets[node.X.Name]; ok {
+				name = target
+			} else if target, ok := c.localMethodTargets[node.X.Name]; ok {
+				name = target
+			}
+		}
 		if ret, ok := runtimeMemBuiltinReturnCount(name); ok {
 			return ret
 		}
