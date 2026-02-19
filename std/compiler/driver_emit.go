@@ -22,13 +22,21 @@ func buildAndApplyDriverOptions(extraTags string, forceStrip bool) DriverOptions
 }
 
 func emitModuleWithOptions(irmod *IRModule, outputPath string, opts DriverOptions) error {
+	prev := currentDriverOptions()
+	applyDriverOptions(opts)
+
+	var err error
 	if opts.Target.Backend != "native" {
-		return emitRegisteredBackendWithOptions(opts.Target.Backend, irmod, BackendOptions{
+		err = emitRegisteredBackendWithOptions(opts.Target.Backend, irmod, BackendOptions{
 			Target:      opts.Target,
 			OutputPath:  outputPath,
 			Debug:       opts.Debug,
 			StripBinary: opts.StripBinary,
 		})
+	} else {
+		err = GenerateELF(irmod, outputPath)
 	}
-	return GenerateELF(irmod, outputPath)
+
+	applyDriverOptions(prev)
+	return err
 }
