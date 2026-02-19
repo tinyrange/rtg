@@ -4151,6 +4151,28 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			}
 			return
 		}
+		if name == "clear" {
+			if len(node.Nodes) >= 1 {
+				target := node.Nodes[0]
+				if c.isMapExpr(target) && target.Kind == NIdent {
+					keyKind := 0
+					if k, ok := c.localMapVars[target.Name]; ok {
+						keyKind = k
+					} else {
+						gq := c.curPkg.QualName(target.Name)
+						if k, ok := c.globalMapVars[gq]; ok {
+							keyKind = k
+						}
+					}
+					c.emit(Inst{Op: OP_CONST_I64, Val: int64(keyKind)})
+					c.emit(Inst{Op: OP_CALL, Name: "runtime.MapMake", Arg: 1})
+					c.compileLValueSet(target)
+					return
+				}
+			}
+			c.errorf("%s: clear is currently only supported for local/global map variables", c.curFunc.Name)
+			return
+		}
 		if name == "make" {
 			c.compileMake(node)
 			return
