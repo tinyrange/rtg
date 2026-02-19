@@ -123,19 +123,20 @@ func SplitN(s string, sep string, n int) []string {
 	}
 	var result []string
 	start := 0
-	for {
+	for start <= len(s) {
 		if n > 0 && len(result) >= n-1 {
 			result = append(result, s[start:len(s)])
-			return result
+			break
 		}
 		idx := Index(s[start:len(s)], sep)
 		if idx < 0 {
 			result = append(result, s[start:len(s)])
-			return result
+			break
 		}
 		result = append(result, s[start:start+idx])
 		start = start + idx + len(sep)
 	}
+	return result
 }
 
 func Split(s string, sep string) []string {

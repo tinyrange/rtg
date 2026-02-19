@@ -635,16 +635,23 @@ func equalFoldASCII(a, b string) bool {
 }
 
 // handleFullCompiler runs the top-level fullcompiler suite for a backend.
-// Usage: fullcompiler <rtg|c|wasm>
+// Usage: fullcompiler <rtg|c|wasm> [rtg-target]
 func (e *Executor) handleFullCompiler(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("fullcompiler requires exactly 1 argument: <rtg|c|wasm>")
+	if len(args) < 1 || len(args) > 2 {
+		return fmt.Errorf("fullcompiler requires 1 or 2 arguments: <rtg|c|wasm> [rtg-target]")
 	}
 	backend := args[0]
 	switch backend {
 	case "rtg", "c", "wasm":
 	default:
 		return fmt.Errorf("unsupported fullcompiler backend: %s", backend)
+	}
+	explicitTarget := ""
+	if len(args) == 2 {
+		explicitTarget = args[1]
+		if backend != "rtg" {
+			return fmt.Errorf("fullcompiler target override is only supported for rtg backend")
+		}
 	}
 
 	tests, err := listGoFilesInDir("tests")
@@ -661,7 +668,10 @@ func (e *Executor) handleFullCompiler(args []string) error {
 		return err
 	}
 
-	rtgTarget := os.Getenv("RTG_TARGET")
+	rtgTarget := explicitTarget
+	if rtgTarget == "" {
+		rtgTarget = os.Getenv("RTG_TARGET")
+	}
 	targetOS := runtime.GOOS
 	targetArch := runtime.GOARCH
 	if rtgTarget != "" {
@@ -695,16 +705,24 @@ func (e *Executor) handleFullCompiler(args []string) error {
 				return err
 			}
 
-			if targetOS != runtime.GOOS {
-				return fmt.Errorf("cannot execute %s binary on %s host: %s", targetOS, runtime.GOOS, out)
-			}
-			if targetArch != runtime.GOARCH {
-				allowWinWOW64 := runtime.GOOS == "windows" && runtime.GOARCH == "amd64" && targetArch == "386"
-				if !allowWinWOW64 {
-					return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
+			runBin := out
+			runArgs := []string{}
+			switch {
+			case targetOS == runtime.GOOS:
+				if targetArch != runtime.GOARCH {
+					allow32On64 := runtime.GOARCH == "amd64" && targetArch == "386" &&
+						(runtime.GOOS == "linux" || runtime.GOOS == "windows")
+					if !allow32On64 {
+						return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
+					}
 				}
+			case runtime.GOOS == "linux" && targetOS == "windows" && targetArch == "386":
+				runBin = "wine"
+				runArgs = append(runArgs, out)
+			default:
+				return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
 			}
-			got, err = e.runAndCapture(out)
+			got, err = e.runAndCapture(runBin, runArgs...)
 			if err != nil {
 				return err
 			}

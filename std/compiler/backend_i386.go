@@ -640,8 +640,10 @@ func (g *CodeGen) compileMakestringIntrinsic_i386() {
 }
 
 func (g *CodeGen) compileTostringIntrinsic_i386() {
-	g.needTostringHelper = true
-	g.emitCallPlaceholder(outlinedTostringHelper)
+	// OP_CALL_INTRINSIC is emitted inside intrinsic wrapper functions where
+	// parameters are in frame locals, not on the operand stack. Inline the
+	// body directly so it reads Param 0 via emitLoadLocal32.
+	g.compileTostringIntrinsicBody_i386()
 }
 
 func (g *CodeGen) emitTostringHelperI386() {
