@@ -54,6 +54,15 @@ func cloneStrings(values []string) []string {
 	return out
 }
 
+func backendOptionsFromDriver(opts DriverOptions, outputPath string) BackendOptions {
+	return BackendOptions{
+		Target:      opts.Target,
+		OutputPath:  outputPath,
+		Debug:       opts.Debug,
+		StripBinary: opts.StripBinary,
+	}
+}
+
 func currentCompilerTarget() CompilerTarget {
 	return CompilerTarget{
 		GOOS:     targetGOOS,
