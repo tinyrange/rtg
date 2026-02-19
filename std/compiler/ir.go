@@ -756,6 +756,12 @@ func (c *Compiler) resolveExprType(node *Node) string {
 	}
 	// Call expression: check return type
 	if node.Kind == NCallExpr {
+		if node.X != nil && node.X.Kind == NSliceType && node.X.X != nil {
+			return "[]" + c.qualifyTypeName(nodeTypeName(node.X.X), "")
+		}
+		if node.X != nil && node.X.Kind == NIdent && node.X.Name == "string" {
+			return "string"
+		}
 		calleeName := c.resolveCallName(node.X)
 		if node.X != nil && node.X.Kind == NIdent {
 			if target, ok := c.localFuncTargets[node.X.Name]; ok {
@@ -2671,6 +2677,12 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 	}
 	// Function call: check return type
 	if expr.Kind == NCallExpr {
+		if expr.X != nil && expr.X.Kind == NSliceType && expr.X.X != nil {
+			return "[]" + c.qualifyTypeName(nodeTypeName(expr.X.X), "")
+		}
+		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "string" {
+			return "string"
+		}
 		// append returns the same slice type as its first argument
 		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "append" && len(expr.Nodes) > 0 {
 			return c.exprConcreteType(expr.Nodes[0])
@@ -3567,6 +3579,20 @@ func (c *Compiler) isExprByte(node *Node) bool {
 	return false
 }
 
+// isExprByteSlice returns true if the expression is known to produce []byte.
+func (c *Compiler) isExprByteSlice(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == NCallExpr && node.X != nil && node.X.Kind == NSliceType && node.X.X != nil {
+		return nodeTypeName(node.X.X) == "byte"
+	}
+	if c.resolveExprType(node) == "[]byte" {
+		return true
+	}
+	return c.exprConcreteType(node) == "[]byte"
+}
+
 func (c *Compiler) constIntArg(node *Node) (int, bool) {
 	if node == nil {
 		return 0, false
@@ -4178,6 +4204,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			return
 		}
 		if name == "panic" {
+			if len(c.deferNames) > 0 {
+				c.emitDeferredCalls()
+			}
 			if len(node.Nodes) > 0 {
 				c.compileExpr(node.Nodes[0])
 			} else {
@@ -4201,9 +4230,19 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		}
 		// Type conversions: int(), uintptr(), byte(), string(), int16(), int32()
 		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "string" || name == "int16" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" {
-			c.compileExpr(node.Nodes[0])
-			if name == "string" && c.isExprByte(node.Nodes[0]) {
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.ByteToString", Arg: 1})
+			arg := node.Nodes[0]
+			c.compileExpr(arg)
+			if name == "string" {
+				if c.isExprByte(arg) {
+					c.emit(Inst{Op: OP_CALL, Name: "runtime.ByteToString", Arg: 1})
+				} else if c.isExprByteSlice(arg) {
+					c.emit(Inst{Op: OP_CONVERT, Name: name})
+				} else if c.isStringTypedExpr(arg) {
+					// string(string) is a no-op.
+				} else {
+					// string(int/rune) conversion.
+					c.emit(Inst{Op: OP_CALL, Name: "runtime.RuneToString", Arg: 1})
+				}
 			} else {
 				c.emit(Inst{Op: OP_CONVERT, Name: name})
 			}

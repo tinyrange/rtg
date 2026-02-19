@@ -53,6 +53,13 @@ func main() {
 		passed = false
 	}
 
+	// int/rune to string
+	s3 := string(65)
+	if s3 != "A" {
+		fmt.Printf("FAIL: int to string\n")
+		passed = false
+	}
+
 	// Byte truncation
 	big := 256
 	small := byte(big)
