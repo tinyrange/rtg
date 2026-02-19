@@ -17,6 +17,14 @@ var backendRegistry = map[string]backendID{
 	"vm": backendIDVM,
 }
 
+func newBackendForTarget(name string) (backendID, error) {
+	id := backendRegistry[name]
+	if id == backendIDUnknown {
+		return backendIDUnknown, fmt.Errorf("unknown backend: %s", name)
+	}
+	return id, nil
+}
+
 type cBackendAdapter struct{}
 
 func (b cBackendAdapter) Name() string {
@@ -57,7 +65,11 @@ func emitRegisteredBackend(name string, irmod *IRModule, outputPath string) erro
 }
 
 func emitRegisteredBackendWithOptions(name string, irmod *IRModule, opts BackendOptions) error {
-	switch backendRegistry[name] {
+	backend, err := newBackendForTarget(name)
+	if err != nil {
+		return err
+	}
+	switch backend {
 	case backendIDC:
 		var b cBackendAdapter
 		return b.Emit(irmod, opts)
@@ -68,6 +80,6 @@ func emitRegisteredBackendWithOptions(name string, irmod *IRModule, opts Backend
 		var b vmBackendAdapter
 		return b.Emit(irmod, opts)
 	default:
-		return fmt.Errorf("unknown backend: %s", name)
+		return fmt.Errorf("unknown backend id: %d", int(backend))
 	}
 }
