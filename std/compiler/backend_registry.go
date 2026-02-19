@@ -61,15 +61,6 @@ func (b vmBackendAdapter) Emit(mod *IRModule, opts BackendOptions) error {
 	return generateVM(mod, opts.OutputPath)
 }
 
-func emitRegisteredBackend(name string, irmod *IRModule, outputPath string) error {
-	return emitRegisteredBackendWithOptions(name, irmod, BackendOptions{
-		Target:      currentCompilerTarget(),
-		OutputPath:  outputPath,
-		Debug:       compilerDebug,
-		StripBinary: stripBinary,
-	})
-}
-
 func emitRegisteredBackendWithOptions(name string, irmod *IRModule, opts BackendOptions) error {
 	backendID, err := newBackendForTarget(name)
 	if err != nil {
