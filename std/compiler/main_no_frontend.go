@@ -62,7 +62,7 @@ func main() {
 	}
 
 	// Build and apply driver options explicitly.
-	buildAndApplyDriverOptions(extraTags, sizeAnalysisPath != "")
+	opts := buildAndApplyDriverOptions(extraTags, sizeAnalysisPath != "")
 
 	initEmbeddedStd()
 
@@ -73,15 +73,15 @@ func main() {
 	}
 	if compilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
-		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, targetGOOS, targetGOARCH)
+		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", opts.Target.Backend, opts.Target.GOOS, opts.Target.GOARCH)
 	}
-	err = emitModuleWithOptions(irmod, outputPath, currentDriverOptions())
+	err = emitModuleWithOptions(irmod, outputPath, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		os.Exit(1)
 	}
 	writeSizeAnalysis()
-	if targetBackend == "vm" {
+	if opts.Target.Backend == "vm" {
 		os.Exit(vmExitCode)
 	}
 }
