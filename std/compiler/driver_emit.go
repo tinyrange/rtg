@@ -11,6 +11,16 @@ func currentDriverOptions() DriverOptions {
 	}
 }
 
+func buildAndApplyDriverOptions(extraTags string, forceStrip bool) DriverOptions {
+	opts := currentDriverOptions()
+	opts.BuildTags = buildActiveBuildTagsForTarget(opts.Target, extraTags)
+	if forceStrip {
+		opts.StripBinary = true
+	}
+	applyDriverOptions(opts)
+	return opts
+}
+
 func emitModuleWithOptions(irmod *IRModule, outputPath string, opts DriverOptions) error {
 	if opts.Target.Backend != "native" {
 		return emitRegisteredBackendWithOptions(opts.Target.Backend, irmod, BackendOptions{

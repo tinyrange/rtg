@@ -62,12 +62,7 @@ func main() {
 	}
 
 	// Build and apply driver options explicitly.
-	opts := currentDriverOptions()
-	opts.BuildTags = buildActiveBuildTagsForTarget(opts.Target, extraTags)
-	if sizeAnalysisPath != "" {
-		opts.StripBinary = true
-	}
-	applyDriverOptions(opts)
+	buildAndApplyDriverOptions(extraTags, sizeAnalysisPath != "")
 
 	initEmbeddedStd()
 
