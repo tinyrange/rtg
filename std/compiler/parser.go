@@ -301,20 +301,32 @@ func (l *Lexer) scanNumber() Token {
 	col := l.col
 	start := l.pos
 	isFloat := false
-	if l.peek() == '0' && l.peekAt(1) == 'x' {
+	if l.peek() == '0' && (l.peekAt(1) == 'x' || l.peekAt(1) == 'X') {
 		l.advance()
 		l.advance()
-		for !l.atEnd() && (isDigit(l.peek()) || (l.peek() >= 'a' && l.peek() <= 'f') || (l.peek() >= 'A' && l.peek() <= 'F')) {
+		for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_' || (l.peek() >= 'a' && l.peek() <= 'f') || (l.peek() >= 'A' && l.peek() <= 'F')) {
+			l.advance()
+		}
+	} else if l.peek() == '0' && (l.peekAt(1) == 'b' || l.peekAt(1) == 'B') {
+		l.advance()
+		l.advance()
+		for !l.atEnd() && (l.peek() == '0' || l.peek() == '1' || l.peek() == '_') {
+			l.advance()
+		}
+	} else if l.peek() == '0' && (l.peekAt(1) == 'o' || l.peekAt(1) == 'O') {
+		l.advance()
+		l.advance()
+		for !l.atEnd() && ((l.peek() >= '0' && l.peek() <= '7') || l.peek() == '_') {
 			l.advance()
 		}
 	} else {
-		for !l.atEnd() && isDigit(l.peek()) {
+		for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
 			l.advance()
 		}
 		if l.peek() == '.' && isDigit(l.peekAt(1)) {
 			isFloat = true
 			l.advance()
-			for !l.atEnd() && isDigit(l.peek()) {
+			for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
 				l.advance()
 			}
 		}
@@ -324,7 +336,7 @@ func (l *Lexer) scanNumber() Token {
 			if l.peek() == '+' || l.peek() == '-' {
 				l.advance()
 			}
-			for !l.atEnd() && isDigit(l.peek()) {
+			for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
 				l.advance()
 			}
 		}

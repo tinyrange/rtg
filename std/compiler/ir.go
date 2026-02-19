@@ -5275,8 +5275,14 @@ func nodeTypeName(node *Node) string {
 }
 
 func parseIntLiteral(s string) int64 {
-	if len(s) >= 2 && s[0] == '0' && s[1] == 'x' {
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
 		return parseHexLiteral(s[2:len(s)])
+	}
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B') {
+		return parseBaseLiteral(s[2:len(s)], 2)
+	}
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'o' || s[1] == 'O') {
+		return parseBaseLiteral(s[2:len(s)], 8)
 	}
 	var result int64
 	i := 0
@@ -5289,11 +5295,19 @@ func parseIntLiteral(s string) int64 {
 	if i < len(s) && s[i] == '0' && i+1 < len(s) {
 		i++
 		for i < len(s) {
+			if s[i] == '_' {
+				i++
+				continue
+			}
 			result = result*8 + int64(s[i]-'0')
 			i++
 		}
 	} else {
 		for i < len(s) {
+			if s[i] == '_' {
+				i++
+				continue
+			}
 			result = result*10 + int64(s[i]-'0')
 			i++
 		}
@@ -5304,11 +5318,38 @@ func parseIntLiteral(s string) int64 {
 	return result
 }
 
+func parseBaseLiteral(s string, base int64) int64 {
+	var result int64
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == '_' {
+			i++
+			continue
+		}
+		d := int64(0)
+		if ch >= '0' && ch <= '9' {
+			d = int64(ch - '0')
+		} else if ch >= 'a' && ch <= 'f' {
+			d = int64(ch-'a') + 10
+		} else if ch >= 'A' && ch <= 'F' {
+			d = int64(ch-'A') + 10
+		}
+		result = result*base + d
+		i++
+	}
+	return result
+}
+
 func parseHexLiteral(s string) int64 {
 	var result int64
 	i := 0
 	for i < len(s) {
 		ch := s[i]
+		if ch == '_' {
+			i++
+			continue
+		}
 		if ch >= '0' && ch <= '9' {
 			result = result*16 + int64(ch-'0')
 		} else if ch >= 'a' && ch <= 'f' {
