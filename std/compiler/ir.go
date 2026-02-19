@@ -1918,6 +1918,16 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		c.localConcreteTypes[node.Name] = ct
 	}
 	if node.X != nil {
+		// Lower function literals to generated package-scope functions.
+		if node.X.Kind == NFuncType && node.X.Body != nil {
+			target := c.compileFuncLiteral(node.X)
+			c.localFuncTargets[node.Name] = target
+			delete(c.localMethodTargets, node.Name)
+			delete(c.localMethodRecv, node.Name)
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
+			return
+		}
 		c.compileExpr(node.X)
 		if node.Type != nil {
 			if c.isInterfaceTypeName(nodeTypeName(node.Type)) {
@@ -2084,6 +2094,17 @@ func (c *Compiler) compileAssign(node *Node) {
 				}
 			}
 		}
+		// Function literals are lowered to private named functions and bound
+		// through localFuncTargets; the local slot stores a placeholder value.
+		if node.Y != nil && node.Y.Kind == NFuncType && node.Y.Body != nil {
+			target := c.compileFuncLiteral(node.Y)
+			c.localFuncTargets[node.X.Name] = target
+			delete(c.localMethodTargets, node.X.Name)
+			delete(c.localMethodRecv, node.X.Name)
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
+			return
+		}
 		c.compileExpr(node.Y)
 		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
 		return
@@ -2138,6 +2159,61 @@ func (c *Compiler) compileAssign(node *Node) {
 		c.maybeBoxValueForInterface(node.Y)
 	}
 	c.compileLValueSet(node.X)
+}
+
+func (c *Compiler) compileFuncLiteral(lit *Node) string {
+	name := fmt.Sprintf("$lit_%d", c.funcLitSeq)
+	c.funcLitSeq++
+	fn := &Node{
+		Kind: NFunc, Name: name, Pos: lit.Pos,
+		Nodes: lit.Nodes, Type: lit.Type, Body: lit.Body,
+	}
+	// Save current function compilation state.
+	savedCurFunc := c.curFunc
+	savedScopes := c.scopes
+	savedLocalElem := c.localElemSizes
+	savedLocalTypes := c.localTypes
+	savedLocalTypeDecls := c.localTypeDecls
+	savedLocalStrings := c.localStringVars
+	savedLocalAddr := c.localAddrOf
+	savedLocalConcrete := c.localConcreteTypes
+	savedLocalMapVars := c.localMapVars
+	savedLocalMapVals := c.localMapValueTypes
+	savedDefNames := c.deferNames
+	savedDefStarts := c.deferArgStarts
+	savedDefCounts := c.deferArgCounts
+	savedDefRetCounts := c.deferRetCounts
+	savedNamed := c.namedResultNames
+	savedLabelIDs := c.labelIDs
+	savedStackDepth := c.stackDepth
+	savedFuncTargets := c.localFuncTargets
+	savedMethodTargets := c.localMethodTargets
+	savedMethodRecv := c.localMethodRecv
+
+	c.compileFunc(fn)
+
+	// Restore caller function state.
+	c.curFunc = savedCurFunc
+	c.scopes = savedScopes
+	c.localElemSizes = savedLocalElem
+	c.localTypes = savedLocalTypes
+	c.localTypeDecls = savedLocalTypeDecls
+	c.localStringVars = savedLocalStrings
+	c.localAddrOf = savedLocalAddr
+	c.localConcreteTypes = savedLocalConcrete
+	c.localMapVars = savedLocalMapVars
+	c.localMapValueTypes = savedLocalMapVals
+	c.deferNames = savedDefNames
+	c.deferArgStarts = savedDefStarts
+	c.deferArgCounts = savedDefCounts
+	c.deferRetCounts = savedDefRetCounts
+	c.namedResultNames = savedNamed
+	c.labelIDs = savedLabelIDs
+	c.stackDepth = savedStackDepth
+	c.localFuncTargets = savedFuncTargets
+	c.localMethodTargets = savedMethodTargets
+	c.localMethodRecv = savedMethodRecv
+	return c.curPkg.QualName(name)
 }
 
 func (c *Compiler) lvalueInterfaceType(node *Node) (string, bool) {
@@ -2532,6 +2608,13 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 			return c.exprConcreteType(expr.Nodes[0])
 		}
 		calleeName := c.resolveCallName(expr.X)
+		if expr.X != nil && expr.X.Kind == NIdent {
+			if target, ok := c.localFuncTargets[expr.X.Name]; ok {
+				calleeName = target
+			} else if target, ok := c.localMethodTargets[expr.X.Name]; ok {
+				calleeName = target
+			}
+		}
 		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
 			// Extract package path from callee name for proper qualification
 			// For pkg.Func calls, find the package containing this function
@@ -3205,6 +3288,13 @@ func (c *Compiler) compileExpr(node *Node) {
 		c.compileSliceExpr(node)
 	case NCompositeLit:
 		c.compileCompositeLit(node)
+	case NFuncType:
+		if node.Body != nil {
+			c.compileFuncLiteral(node)
+			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		} else {
+			panic("ICE: bare function type in compileExpr")
+		}
 	default:
 		panic("ICE: unhandled expression kind in compileExpr")
 	}
@@ -3838,6 +3928,16 @@ func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool
 }
 
 func (c *Compiler) compileCallExpr(node *Node) {
+	if node.X != nil && node.X.Kind == NIdent {
+		if target, ok := c.localFuncTargets[node.X.Name]; ok {
+			for _, arg := range node.Nodes {
+				c.compileExpr(arg)
+			}
+			c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes)})
+			return
+		}
+	}
+
 	// Check for builtins
 	if node.X != nil && node.X.Kind == NIdent {
 		name := node.X.Name
