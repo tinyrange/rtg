@@ -756,6 +756,9 @@ func (c *Compiler) resolveExprType(node *Node) string {
 	}
 	// Call expression: check return type
 	if node.Kind == NCallExpr {
+		if node.X != nil && node.X.Kind == NIdent && node.X.Name == "recover" {
+			return "interface{}"
+		}
 		if node.X != nil && node.X.Kind == NSliceType && node.X.X != nil {
 			return "[]" + c.qualifyTypeName(nodeTypeName(node.X.X), "")
 		}
@@ -2083,6 +2086,15 @@ func (c *Compiler) compileAssign(node *Node) {
 			// Track map variables from concrete return type
 			c.setLocalMapMetadataFromQualified(node.X.Name, ct)
 		}
+		if node.Y != nil {
+			if node.Y.Kind == NIntLit || node.Y.Kind == NRuneLit {
+				c.localConcreteTypes[node.X.Name] = "int"
+			} else if node.Y.Kind == NStringLit {
+				c.localConcreteTypes[node.X.Name] = "string"
+			} else if node.Y.Kind == NBasicLit && (node.Y.Name == "true" || node.Y.Name == "false") {
+				c.localConcreteTypes[node.X.Name] = "bool"
+			}
+		}
 		// Track map variables from composite literals: m := map[K]V{...}
 		if node.Y != nil && node.Y.Kind == NCompositeLit && node.Y.Type != nil && node.Y.Type.Kind == NMapType {
 			c.localMapVars[node.X.Name] = c.mapKeyKind(node.Y.Type.X)
@@ -2094,6 +2106,10 @@ func (c *Compiler) compileAssign(node *Node) {
 		if node.Y != nil && node.Y.Kind == NCallExpr && node.Y.X != nil && node.Y.X.Kind == NIdent && node.Y.X.Name == "make" {
 			if len(node.Y.Nodes) > 0 && node.Y.Nodes[0].Kind == NSliceType {
 				c.localElemSizes[node.X.Name] = c.sliceElemSize(node.Y.Nodes[0])
+				if node.Y.Nodes[0].X != nil {
+					elemType := c.qualifyTypeName(nodeTypeName(node.Y.Nodes[0].X), "")
+					c.localConcreteTypes[node.X.Name] = "[]" + elemType
+				}
 			}
 			if len(node.Y.Nodes) > 0 && node.Y.Nodes[0].Kind == NMapType {
 				keyType := nodeTypeName(node.Y.Nodes[0].X)
@@ -2677,6 +2693,9 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 	}
 	// Function call: check return type
 	if expr.Kind == NCallExpr {
+		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "recover" {
+			return "interface{}"
+		}
 		if expr.X != nil && expr.X.Kind == NSliceType && expr.X.X != nil {
 			return "[]" + c.qualifyTypeName(nodeTypeName(expr.X.X), "")
 		}
@@ -3593,6 +3612,32 @@ func (c *Compiler) isExprByteSlice(node *Node) bool {
 	return c.exprConcreteType(node) == "[]byte"
 }
 
+func isIntegerTypeName(t string) bool {
+	return t == "int" || t == "uintptr" || t == "uint" || t == "byte" ||
+		t == "int16" || t == "int32" || t == "int64" ||
+		t == "uint16" || t == "uint32" || t == "uint64" || t == "rune"
+}
+
+// isExprIntegerLike reports whether expression is known to be integer-like.
+func (c *Compiler) isExprIntegerLike(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case NIntLit, NRuneLit:
+		return true
+	case NCallExpr:
+		if node.X != nil && node.X.Kind == NIdent {
+			return isIntegerTypeName(node.X.Name)
+		}
+	}
+	t := c.resolveExprType(node)
+	if isIntegerTypeName(t) {
+		return true
+	}
+	return isIntegerTypeName(c.exprConcreteType(node))
+}
+
 func (c *Compiler) constIntArg(node *Node) (int, bool) {
 	if node == nil {
 		return 0, false
@@ -4132,7 +4177,8 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		name := node.X.Name
 		if name == "recover" {
-			c.errorf("%s: recover is not supported (panic/recover runtime is not implemented)", c.curFunc.Name)
+			// Minimal recover stub: outside panic unwinding this returns nil.
+			// Full panic/recover semantics remain unimplemented.
 			c.emit(Inst{Op: OP_CONST_NIL})
 			return
 		}
@@ -4239,9 +4285,12 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					c.emit(Inst{Op: OP_CONVERT, Name: name})
 				} else if c.isStringTypedExpr(arg) {
 					// string(string) is a no-op.
-				} else {
+				} else if c.isExprIntegerLike(arg) {
 					// string(int/rune) conversion.
 					c.emit(Inst{Op: OP_CALL, Name: "runtime.RuneToString", Arg: 1})
+				} else {
+					// Prefer slice->string semantics unless we know this is integer-like.
+					c.emit(Inst{Op: OP_CONVERT, Name: name})
 				}
 			} else {
 				c.emit(Inst{Op: OP_CONVERT, Name: name})
