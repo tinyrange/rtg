@@ -179,7 +179,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, targetGOOS, targetGOARCH)
 	}
-	err = GenerateELF(irmod, outputPath)
+	err = emitModuleWithOptions(irmod, outputPath, currentDriverOptions())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		os.Exit(1)

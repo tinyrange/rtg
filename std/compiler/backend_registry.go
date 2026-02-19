@@ -25,7 +25,9 @@ func newBackendForTarget(name string) (backendID, error) {
 	return id, nil
 }
 
-type cBackendAdapter struct{}
+type cBackendAdapter struct {
+	_ byte
+}
 
 func (b cBackendAdapter) Name() string {
 	return "c"
@@ -35,7 +37,9 @@ func (b cBackendAdapter) Emit(mod *IRModule, opts BackendOptions) error {
 	return generateCSource(mod, opts.OutputPath)
 }
 
-type irBackendAdapter struct{}
+type irBackendAdapter struct {
+	_ byte
+}
 
 func (b irBackendAdapter) Name() string {
 	return "ir"
@@ -45,7 +49,9 @@ func (b irBackendAdapter) Emit(mod *IRModule, opts BackendOptions) error {
 	return generateIRText(mod, opts.OutputPath)
 }
 
-type vmBackendAdapter struct{}
+type vmBackendAdapter struct {
+	_ byte
+}
 
 func (b vmBackendAdapter) Name() string {
 	return "vm"
@@ -65,21 +71,20 @@ func emitRegisteredBackend(name string, irmod *IRModule, outputPath string) erro
 }
 
 func emitRegisteredBackendWithOptions(name string, irmod *IRModule, opts BackendOptions) error {
-	backend, err := newBackendForTarget(name)
+	backendID, err := newBackendForTarget(name)
 	if err != nil {
 		return err
 	}
-	switch backend {
+	var backend Backend
+	switch backendID {
 	case backendIDC:
-		var b cBackendAdapter
-		return b.Emit(irmod, opts)
+		backend = cBackendAdapter{}
 	case backendIDIR:
-		var b irBackendAdapter
-		return b.Emit(irmod, opts)
+		backend = irBackendAdapter{}
 	case backendIDVM:
-		var b vmBackendAdapter
-		return b.Emit(irmod, opts)
+		backend = vmBackendAdapter{}
 	default:
-		return fmt.Errorf("unknown backend id: %d", int(backend))
+		return fmt.Errorf("unknown backend id: %d", int(backendID))
 	}
+	return backend.Emit(irmod, opts)
 }

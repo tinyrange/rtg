@@ -488,7 +488,7 @@ func main() {
 	if compilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, targetGOOS, targetGOARCH)
 	}
-	err := GenerateELF(irmod, outputPath)
+	err := emitModuleWithOptions(irmod, outputPath, currentDriverOptions())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		runCleanup()
