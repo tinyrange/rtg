@@ -89,15 +89,6 @@ func parseTargetFlag(base CompilerTarget, target string) (CompilerTarget, string
 	return next, ""
 }
 
-func applyTargetFlag(target string) string {
-	next, errMsg := parseTargetFlag(currentCompilerTarget(), target)
-	if errMsg != "" {
-		return errMsg
-	}
-	setCompilerTarget(next)
-	return ""
-}
-
 func buildActiveBuildTagsForTarget(target CompilerTarget, extraTags string) []string {
 	var tags []string
 	if target.Backend == "c" {
@@ -120,8 +111,4 @@ func buildActiveBuildTagsForTarget(target CompilerTarget, extraTags string) []st
 	}
 	tags = append(tags, "rtg")
 	return tags
-}
-
-func rebuildActiveBuildTags(extraTags string) {
-	buildTags = buildActiveBuildTagsForTarget(currentCompilerTarget(), extraTags)
 }

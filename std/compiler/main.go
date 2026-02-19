@@ -87,6 +87,7 @@ func main() {
 	var runMode bool
 	var stdinInput bool
 	var programArgs []string
+	parsedTarget := currentCompilerTarget()
 	i := 1
 	for i < len(os.Args) {
 		if os.Args[i] == "-h" || os.Args[i] == "--help" {
@@ -99,7 +100,8 @@ func main() {
 			outputPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-T" && i+1 < len(os.Args) {
-			errMsg := applyTargetFlag(os.Args[i+1])
+			var errMsg string
+			parsedTarget, errMsg = parseTargetFlag(parsedTarget, os.Args[i+1])
 			if errMsg != "" {
 				fmt.Fprintf(os.Stderr, "%s\n", errMsg)
 				os.Exit(1)
@@ -164,6 +166,7 @@ func main() {
 			i = i + 1
 		}
 	}
+	setCompilerTarget(parsedTarget)
 	if stdinInput {
 		if fromIRBinaryPath != "" {
 			fmt.Fprintf(os.Stderr, "cannot use - with -from-ir-binary\n")
