@@ -97,6 +97,7 @@ const (
 	TOKEN_ELLIPSIS
 	TOKEN_INC
 	TOKEN_DIRECTIVE
+	TOKEN_DEC
 )
 
 var tokenNames = map[TokenKind]string{
@@ -128,6 +129,7 @@ var tokenNames = map[TokenKind]string{
 	TOKEN_COLON: ":", TOKEN_SEMICOLON: ";", TOKEN_ELLIPSIS: "...",
 	TOKEN_INC:       "++",
 	TOKEN_DIRECTIVE: "directive",
+	TOKEN_DEC:       "--",
 }
 
 func tokenName(k TokenKind) string {
@@ -216,7 +218,7 @@ func needsSemicolon(kind TokenKind) bool {
 	if kind == TOKEN_RPAREN || kind == TOKEN_RBRACK || kind == TOKEN_RBRACE {
 		return true
 	}
-	if kind == TOKEN_INC || kind == TOKEN_BREAK || kind == TOKEN_CONTINUE || kind == TOKEN_RETURN {
+	if kind == TOKEN_INC || kind == TOKEN_DEC || kind == TOKEN_BREAK || kind == TOKEN_CONTINUE || kind == TOKEN_RETURN {
 		return true
 	}
 	if kind == TOKEN_FALLTHROUGH {
@@ -448,6 +450,10 @@ func (l *Lexer) scanOperator() Token {
 		}
 		return Token{Kind: TOKEN_PLUS, Line: line, Col: col}
 	case '-':
+		if l.peek() == '-' {
+			l.advance()
+			return Token{Kind: TOKEN_DEC, Line: line, Col: col}
+		}
 		if l.peek() == '=' {
 			l.advance()
 			return Token{Kind: TOKEN_MINUS_ASSIGN, Line: line, Col: col}
@@ -613,6 +619,7 @@ const (
 	NDeferStmt
 	NSliceExpr
 	NDirective
+	NDecStmt
 )
 
 // Node is the universal AST node.
@@ -1621,6 +1628,10 @@ func (p *Parser) parseSimpleStmtNoSemicolon() *Node {
 	if p.at(TOKEN_INC) {
 		p.advance()
 		return &Node{Kind: NIncStmt, X: expr, Pos: expr.Pos}
+	}
+	if p.at(TOKEN_DEC) {
+		p.advance()
+		return &Node{Kind: NDecStmt, X: expr, Pos: expr.Pos}
 	}
 
 	// Check for assignment / short var decl
