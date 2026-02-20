@@ -18,3 +18,4 @@
 - Routing the native backend through `Backend` interface method dispatch in the backend registry can crash native selfhost stage1 (`./build/stage1 ...` exits 139), indicating this interface-dispatch shape is still unstable in compiler driver codepaths.
 - Calling `err.Error()` in run-mode error reporting helper paths can still fail selfhost with unresolved calls (`unresolved calls: err.Error`), so those codepaths should prefer `%v` formatting without direct method calls.
 - Using `*exec.ExitError` type-assertion based run-mode exit handling in helperized compiler-driver code can fail selfhost with `unresolved calls: unknown`, indicating this assertion path is currently codegen-unstable.
+- Moving `possibleTargets`/`appendUnique` out of `main.go` into driver helper files can trigger deterministic native selfhost drift (`cmp build/stage2 build/stage3` mismatch around byte 47649), indicating function relocation in CLI helper paths is currently codegen-sensitive.

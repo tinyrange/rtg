@@ -49,22 +49,16 @@ func writeDiscoveredBuildTags(path string) error {
 	return os.WriteFile(path, []byte(out), 0644)
 }
 
-type sourceCompileResult struct {
+type compileResult struct {
 	IRModule      *IRModule
 	FrontendErrs  []string
 	ShouldExitNow bool
 }
 
-type irAcquisitionResult struct {
-	IRModule      *IRModule
-	FrontendErrs  []string
-	ShouldExitNow bool
-}
-
-func compileFromSourceInputs(entryFiles []string, buildTagsPath string, parseOnly bool, emitIRBinaryPath string, opts DriverOptions) (sourceCompileResult, error) {
+func compileFromSourceInputs(entryFiles []string, buildTagsPath string, parseOnly bool, emitIRBinaryPath string, opts DriverOptions) (compileResult, error) {
 	baseDir, err := resolveCompilerBaseDir()
 	if err != nil {
-		return sourceCompileResult{}, fmt.Errorf("error getting working directory: %v", err)
+		return compileResult{}, fmt.Errorf("error getting working directory: %v", err)
 	}
 
 	if opts.Debug {
@@ -79,12 +73,12 @@ func compileFromSourceInputs(entryFiles []string, buildTagsPath string, parseOnl
 	if buildTagsPath != "" {
 		err := writeDiscoveredBuildTags(buildTagsPath)
 		if err != nil {
-			return sourceCompileResult{}, fmt.Errorf("error writing build tag list: %v", err)
+			return compileResult{}, fmt.Errorf("error writing build tag list: %v", err)
 		}
 	}
 
 	if parseOnly {
-		return sourceCompileResult{ShouldExitNow: true}, nil
+		return compileResult{ShouldExitNow: true}, nil
 	}
 
 	// Compile to IR via Go frontend adapter (concrete dispatch).
@@ -93,7 +87,7 @@ func compileFromSourceInputs(entryFiles []string, buildTagsPath string, parseOnl
 	}
 	irmod, errs := compileResolvedGoModule(mod, opts)
 	if len(errs) > 0 {
-		return sourceCompileResult{FrontendErrs: errs}, nil
+		return compileResult{FrontendErrs: errs}, nil
 	}
 
 	if opts.Debug {
@@ -106,31 +100,31 @@ func compileFromSourceInputs(entryFiles []string, buildTagsPath string, parseOnl
 	if emitIRBinaryPath != "" {
 		err := writeIRBinary(irmod, emitIRBinaryPath)
 		if err != nil {
-			return sourceCompileResult{}, fmt.Errorf("error writing IR binary: %v", err)
+			return compileResult{}, fmt.Errorf("error writing IR binary: %v", err)
 		}
-		return sourceCompileResult{ShouldExitNow: true}, nil
+		return compileResult{ShouldExitNow: true}, nil
 	}
-	return sourceCompileResult{IRModule: irmod}, nil
+	return compileResult{IRModule: irmod}, nil
 }
 
-func acquireIRModule(entryFiles []string, fromIRBinaryPath string, buildTagsPath string, parseOnly bool, emitIRBinaryPath string, opts DriverOptions) (irAcquisitionResult, error) {
+func acquireIRModule(entryFiles []string, fromIRBinaryPath string, buildTagsPath string, parseOnly bool, emitIRBinaryPath string, opts DriverOptions) (compileResult, error) {
 	if fromIRBinaryPath != "" {
 		err := validateFromIRBinaryFlags(parseOnly, buildTagsPath)
 		if err != nil {
-			return irAcquisitionResult{}, err
+			return compileResult{}, err
 		}
 		irmod, err := loadIRBinaryModule(fromIRBinaryPath, opts)
 		if err != nil {
-			return irAcquisitionResult{}, err
+			return compileResult{}, err
 		}
-		return irAcquisitionResult{IRModule: irmod}, nil
+		return compileResult{IRModule: irmod}, nil
 	}
 
 	res, err := compileFromSourceInputs(entryFiles, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
 	if err != nil {
-		return irAcquisitionResult{}, err
+		return compileResult{}, err
 	}
-	return irAcquisitionResult{
+	return compileResult{
 		IRModule:      res.IRModule,
 		FrontendErrs:  res.FrontendErrs,
 		ShouldExitNow: res.ShouldExitNow,
@@ -161,7 +155,7 @@ func validateMainInputs(extractStdlibDest string, fromIRBinaryPath string, entry
 	return false, nil
 }
 
-func evaluateIRAcquisition(acquired irAcquisitionResult) (string, bool) {
+func evaluateIRAcquisition(acquired compileResult) (string, bool) {
 	if len(acquired.FrontendErrs) > 0 {
 		return frontendErrorsMessage(acquired.FrontendErrs), false
 	}
