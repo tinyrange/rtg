@@ -453,7 +453,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
 	fmt.Fprintf(out, "  -strip, -s             Strip symbol/debug metadata from native binaries\n")
 	fmt.Fprintf(out, "  -h, --help             Show this help\n")
-	fmt.Fprintf(out, "\nDefault target: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(out, "\nDefault target: %s\n", compilerTargetString(hostCompilerTarget()))
 	fmt.Fprintf(out, "\nPossible -T values:\n")
 	for _, target := range possibleTargets() {
 		fmt.Fprintf(out, "  %s\n", target)
@@ -462,7 +462,7 @@ func printHelp(program string, out *os.File) {
 
 func possibleTargets() []string {
 	var targets []string
-	targets = appendUnique(targets, runtime.GOOS+"/"+runtime.GOARCH)
+	targets = appendUnique(targets, compilerTargetString(hostCompilerTarget()))
 	targets = appendUnique(targets, "linux/amd64")
 	targets = appendUnique(targets, "linux/386")
 	targets = appendUnique(targets, "linux/arm64")

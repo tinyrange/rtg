@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"runtime"
 )
 
 func main() {
@@ -96,5 +95,5 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
 	fmt.Fprintf(out, "  -strip, -s             Strip symbol/debug metadata from native binaries\n")
 	fmt.Fprintf(out, "  -h, --help             Show this help\n")
-	fmt.Fprintf(out, "\nDefault target: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(out, "\nDefault target: %s\n", compilerTargetString(hostCompilerTarget()))
 }
