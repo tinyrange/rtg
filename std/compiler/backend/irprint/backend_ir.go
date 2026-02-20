@@ -7,180 +7,182 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"j5.nz/rtg/std/compiler/ir"
 )
 
-func opcodeName(op Opcode) string {
+func opcodeName(op ir.Opcode) string {
 	switch op {
-	case OP_CONST_I64:
+	case ir.OP_CONST_I64:
 		return "const_i64"
-	case OP_CONST_STR:
+	case ir.OP_CONST_STR:
 		return "const_str"
-	case OP_CONST_BOOL:
+	case ir.OP_CONST_BOOL:
 		return "const_bool"
-	case OP_CONST_NIL:
+	case ir.OP_CONST_NIL:
 		return "const_nil"
-	case OP_LOCAL_GET:
+	case ir.OP_LOCAL_GET:
 		return "local_get"
-	case OP_LOCAL_SET:
+	case ir.OP_LOCAL_SET:
 		return "local_set"
-	case OP_LOCAL_ADD_IMM:
+	case ir.OP_LOCAL_ADD_IMM:
 		return "local_add_imm"
-	case OP_LOCAL_ADDR:
+	case ir.OP_LOCAL_ADDR:
 		return "local_addr"
-	case OP_GLOBAL_GET:
+	case ir.OP_GLOBAL_GET:
 		return "global_get"
-	case OP_GLOBAL_SET:
+	case ir.OP_GLOBAL_SET:
 		return "global_set"
-	case OP_GLOBAL_ADDR:
+	case ir.OP_GLOBAL_ADDR:
 		return "global_addr"
-	case OP_DROP:
+	case ir.OP_DROP:
 		return "drop"
-	case OP_DUP:
+	case ir.OP_DUP:
 		return "dup"
-	case OP_ADD:
+	case ir.OP_ADD:
 		return "add"
-	case OP_SUB:
+	case ir.OP_SUB:
 		return "sub"
-	case OP_MUL:
+	case ir.OP_MUL:
 		return "mul"
-	case OP_DIV:
+	case ir.OP_DIV:
 		return "div"
-	case OP_MOD:
+	case ir.OP_MOD:
 		return "mod"
-	case OP_NEG:
+	case ir.OP_NEG:
 		return "neg"
-	case OP_AND:
+	case ir.OP_AND:
 		return "and"
-	case OP_OR:
+	case ir.OP_OR:
 		return "or"
-	case OP_XOR:
+	case ir.OP_XOR:
 		return "xor"
-	case OP_SHL:
+	case ir.OP_SHL:
 		return "shl"
-	case OP_SHR:
+	case ir.OP_SHR:
 		return "shr"
-	case OP_EQ:
+	case ir.OP_EQ:
 		return "eq"
-	case OP_NEQ:
+	case ir.OP_NEQ:
 		return "neq"
-	case OP_LT:
+	case ir.OP_LT:
 		return "lt"
-	case OP_GT:
+	case ir.OP_GT:
 		return "gt"
-	case OP_LEQ:
+	case ir.OP_LEQ:
 		return "leq"
-	case OP_GEQ:
+	case ir.OP_GEQ:
 		return "geq"
-	case OP_JMP_EQ:
+	case ir.OP_JMP_EQ:
 		return "jmp_eq"
-	case OP_JMP_NEQ:
+	case ir.OP_JMP_NEQ:
 		return "jmp_neq"
-	case OP_JMP_LT:
+	case ir.OP_JMP_LT:
 		return "jmp_lt"
-	case OP_JMP_GT:
+	case ir.OP_JMP_GT:
 		return "jmp_gt"
-	case OP_JMP_LEQ:
+	case ir.OP_JMP_LEQ:
 		return "jmp_leq"
-	case OP_JMP_GEQ:
+	case ir.OP_JMP_GEQ:
 		return "jmp_geq"
-	case OP_NOT:
+	case ir.OP_NOT:
 		return "not"
-	case OP_LOAD:
+	case ir.OP_LOAD:
 		return "load"
-	case OP_STORE:
+	case ir.OP_STORE:
 		return "store"
-	case OP_OFFSET:
+	case ir.OP_OFFSET:
 		return "offset"
-	case OP_LABEL:
+	case ir.OP_LABEL:
 		return "label"
-	case OP_JMP:
+	case ir.OP_JMP:
 		return "jmp"
-	case OP_JMP_IF:
+	case ir.OP_JMP_IF:
 		return "jmp_if"
-	case OP_JMP_IF_NOT:
+	case ir.OP_JMP_IF_NOT:
 		return "jmp_if_not"
-	case OP_CALL:
+	case ir.OP_CALL:
 		return "call"
-	case OP_CALL_INTRINSIC:
+	case ir.OP_CALL_INTRINSIC:
 		return "call_intrinsic"
-	case OP_RETURN:
+	case ir.OP_RETURN:
 		return "return"
-	case OP_SLICE_GET:
+	case ir.OP_SLICE_GET:
 		return "slice_get"
-	case OP_SLICE_MAKE:
+	case ir.OP_SLICE_MAKE:
 		return "slice_make"
-	case OP_STRING_GET:
+	case ir.OP_STRING_GET:
 		return "string_get"
-	case OP_STRING_MAKE:
+	case ir.OP_STRING_MAKE:
 		return "string_make"
-	case OP_INDEX_ADDR:
+	case ir.OP_INDEX_ADDR:
 		return "index_addr"
-	case OP_LEN:
+	case ir.OP_LEN:
 		return "len"
-	case OP_CAP:
+	case ir.OP_CAP:
 		return "cap"
-	case OP_CONVERT:
+	case ir.OP_CONVERT:
 		return "convert"
-	case OP_IFACE_BOX:
+	case ir.OP_IFACE_BOX:
 		return "iface_box"
-	case OP_IFACE_CALL:
+	case ir.OP_IFACE_CALL:
 		return "iface_call"
-	case OP_PANIC:
+	case ir.OP_PANIC:
 		return "panic"
 	default:
-		return fmt.Sprintf("op_%d", int(op))
+		return fmt.Sprintf("ir.OP_%d", int(op))
 	}
 }
 
-func typeKindName(k TypeKind) string {
+func typeKindName(k ir.TypeKind) string {
 	switch k {
-	case TY_VOID:
+	case ir.TY_VOID:
 		return "void"
-	case TY_BOOL:
+	case ir.TY_BOOL:
 		return "bool"
-	case TY_BYTE:
+	case ir.TY_BYTE:
 		return "byte"
-	case TY_INT32:
+	case ir.TY_INT32:
 		return "int32"
-	case TY_INT:
+	case ir.TY_INT:
 		return "int"
-	case TY_UINTPTR:
+	case ir.TY_UINTPTR:
 		return "uintptr"
-	case TY_STRING:
+	case ir.TY_STRING:
 		return "string"
-	case TY_POINTER:
+	case ir.TY_POINTER:
 		return "pointer"
-	case TY_SLICE:
+	case ir.TY_SLICE:
 		return "slice"
-	case TY_STRUCT:
+	case ir.TY_STRUCT:
 		return "struct"
-	case TY_INTERFACE:
+	case ir.TY_INTERFACE:
 		return "interface"
-	case TY_FUNC:
+	case ir.TY_FUNC:
 		return "func"
-	case TY_MAP:
+	case ir.TY_MAP:
 		return "map"
 	default:
 		return fmt.Sprintf("type_%d", int(k))
 	}
 }
 
-func formatType(t *TypeInfo) string {
+func formatType(t *ir.TypeInfo) string {
 	if t == nil {
 		return "void"
 	}
 	switch t.Kind {
-	case TY_POINTER:
+	case ir.TY_POINTER:
 		if t.Elem != nil {
 			return "*" + formatType(t.Elem)
 		}
 		return "*void"
-	case TY_SLICE:
+	case ir.TY_SLICE:
 		if t.Elem != nil {
 			return "[]" + formatType(t.Elem)
 		}
 		return "[]void"
-	case TY_MAP:
+	case ir.TY_MAP:
 		k := "void"
 		v := "void"
 		if t.Key != nil {
@@ -190,7 +192,7 @@ func formatType(t *TypeInfo) string {
 			v = formatType(t.Elem)
 		}
 		return "map[" + k + "]" + v
-	case TY_STRUCT:
+	case ir.TY_STRUCT:
 		name := t.Name
 		if t.Pkg != "" {
 			name = t.Pkg + "." + t.Name
@@ -210,7 +212,7 @@ func formatType(t *TypeInfo) string {
 		}
 		sb.WriteString(" }")
 		return sb.String()
-	case TY_FUNC:
+	case ir.TY_FUNC:
 		var sb strings.Builder
 		sb.WriteString("func(")
 		for i, p := range t.Params {
@@ -231,7 +233,7 @@ func formatType(t *TypeInfo) string {
 			sb.WriteString(")")
 		}
 		return sb.String()
-	case TY_INTERFACE:
+	case ir.TY_INTERFACE:
 		name := t.Name
 		if t.Pkg != "" {
 			name = t.Pkg + "." + t.Name
@@ -297,7 +299,7 @@ func irQuote(s string) string {
 	return sb.String()
 }
 
-func generateIRText(irmod *IRModule, outputPath string) error {
+func Generate(irmod *ir.IRModule, outputPath string) error {
 	var sb strings.Builder
 
 	sb.WriteString("; RTG IR Module\n")
@@ -320,7 +322,7 @@ func generateIRText(irmod *IRModule, outputPath string) error {
 		for i, t := range irmod.Types {
 			sb.WriteString(fmt.Sprintf("type %d %s %s",
 				i, irQuote(formatType(t)), typeKindName(t.Kind)))
-			if t.Kind == TY_STRUCT && len(t.Fields) > 0 {
+			if t.Kind == ir.TY_STRUCT && len(t.Fields) > 0 {
 				sb.WriteString(" { ")
 				for j, f := range t.Fields {
 					if j > 0 {
@@ -415,7 +417,7 @@ func generateIRText(irmod *IRModule, outputPath string) error {
 	return os.WriteFile(outputPath, []byte(sb.String()), 0644)
 }
 
-func instArgs(inst Inst, f *IRFunc, irmod *IRModule) string {
+func instArgs(inst ir.Inst, f *ir.IRFunc, irmod *ir.IRModule) string {
 	op := inst.Op
 	arg := inst.Arg
 	val := inst.Val
@@ -425,75 +427,75 @@ func instArgs(inst Inst, f *IRFunc, irmod *IRModule) string {
 		w = " w=" + fmt.Sprintf("%d", inst.Width)
 	}
 	switch op {
-	case OP_CONST_I64:
+	case ir.OP_CONST_I64:
 		return " " + fmt.Sprintf("%d", val) + w
-	case OP_CONST_STR:
+	case ir.OP_CONST_STR:
 		return " " + irQuote(name)
-	case OP_CONST_BOOL:
+	case ir.OP_CONST_BOOL:
 		if arg != 0 {
 			return " true"
 		}
 		return " false"
 
-	case OP_LOCAL_GET, OP_LOCAL_SET, OP_LOCAL_ADDR:
+	case ir.OP_LOCAL_GET, ir.OP_LOCAL_SET, ir.OP_LOCAL_ADDR:
 		s := " " + fmt.Sprintf("%d", arg)
 		if arg < len(f.Locals) {
 			s = s + "                     ; " + irQuote(f.Locals[arg].Name)
 		}
 		return s + w
-	case OP_LOCAL_ADD_IMM:
+	case ir.OP_LOCAL_ADD_IMM:
 		s := " " + fmt.Sprintf("%d", arg) + ", " + fmt.Sprintf("%d", val)
 		if arg < len(f.Locals) {
 			s = s + "                     ; " + irQuote(f.Locals[arg].Name)
 		}
 		return s + w
 
-	case OP_GLOBAL_GET, OP_GLOBAL_SET, OP_GLOBAL_ADDR:
+	case ir.OP_GLOBAL_GET, ir.OP_GLOBAL_SET, ir.OP_GLOBAL_ADDR:
 		s := " " + fmt.Sprintf("%d", arg)
 		if arg >= 0 && arg < len(irmod.Globals) {
 			s = s + "                     ; " + irQuote(irmod.Globals[arg].Name)
 		}
 		return s
 
-	case OP_LABEL, OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+	case ir.OP_LABEL, ir.OP_JMP, ir.OP_JMP_IF, ir.OP_JMP_IF_NOT, ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
 		return " " + fmt.Sprintf("%d", arg)
 
-	case OP_CALL, OP_CALL_INTRINSIC:
+	case ir.OP_CALL, ir.OP_CALL_INTRINSIC:
 		return " " + irQuote(name) + " args=" + fmt.Sprintf("%d", arg)
 
-	case OP_RETURN:
+	case ir.OP_RETURN:
 		return " " + fmt.Sprintf("%d", arg)
 
-	case OP_LOAD:
+	case ir.OP_LOAD:
 		return " size=" + fmt.Sprintf("%d", arg)
-	case OP_STORE:
+	case ir.OP_STORE:
 		return " size=" + fmt.Sprintf("%d", arg)
-	case OP_OFFSET:
+	case ir.OP_OFFSET:
 		return " " + fmt.Sprintf("%d", arg)
 
-	case OP_SLICE_GET:
+	case ir.OP_SLICE_GET:
 		return " elem_size=" + fmt.Sprintf("%d", arg)
-	case OP_INDEX_ADDR:
+	case ir.OP_INDEX_ADDR:
 		return " elem_size=" + fmt.Sprintf("%d", arg)
 
-	case OP_CONVERT:
+	case ir.OP_CONVERT:
 		if name != "" {
 			return " " + irQuote(name)
 		}
-	case OP_IFACE_BOX:
+	case ir.OP_IFACE_BOX:
 		if name != "" {
 			return " " + irQuote(name)
 		}
-	case OP_IFACE_CALL:
+	case ir.OP_IFACE_CALL:
 		s := ""
 		if name != "" {
 			s = " " + irQuote(name)
 		}
 		return s + " args=" + fmt.Sprintf("%d", arg)
 
-	case OP_LEN:
+	case ir.OP_LEN:
 		return " kind=" + fmt.Sprintf("%d", arg)
-	case OP_CAP:
+	case ir.OP_CAP:
 		return ""
 	}
 	if w != "" {

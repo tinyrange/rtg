@@ -2,8 +2,12 @@
 
 package irprint
 
-import "fmt"
+import (
+	"fmt"
 
-func generateIRText(irmod *IRModule, outputPath string) error {
+	"j5.nz/rtg/std/compiler/ir"
+)
+
+func Generate(irmod *ir.IRModule, outputPath string) error {
 	return fmt.Errorf("ir backend disabled (built with no_backend_ir tag)")
 }
