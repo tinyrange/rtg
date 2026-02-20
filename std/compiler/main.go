@@ -84,94 +84,23 @@ func main() {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
-
-	invocation := parsed.Invocation
-	entryFiles, outputPath, err := prepareRuntimeInputs(invocation.EntryFiles, invocation.FromIRBinaryPath, invocation.StdinInput, invocation.RunMode, invocation.OutputPath, invocation.ParsedOpts.Target)
+	exitCode, stderrMessage, err := executeMainInvocation(parsed.Invocation)
+	runCleanup()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		runCleanup()
 		os.Exit(1)
 	}
-
-	showHelp, err := validateMainInputs(invocation.ExtractStdlibDst, invocation.FromIRBinaryPath, entryFiles)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		runCleanup()
-		os.Exit(1)
-	}
-	if showHelp {
+	if exitCode == 2 {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
-
-	// Build and apply driver options explicitly.
-	opts := buildAndApplyDriverOptionsFrom(invocation.ParsedOpts, invocation.ExtraTags, sizeAnalysisPath != "")
-
-	// Initialize embedded std if available
-	initEmbeddedStd()
-
-	didExtractStdlib, err := handleExtractStdlibMode(invocation.ExtractStdlibDst, invocation.FromIRBinaryPath, entryFiles, invocation.RunMode, invocation.StdinInput, invocation.ParseOnly, invocation.EmitIRBinaryPath, invocation.BuildTagsPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		runCleanup()
-		os.Exit(1)
-	}
-	if didExtractStdlib {
-		runCleanup()
-		os.Exit(0)
-	}
-
-	irmod, frontendErrMsg, shouldExitNow, err := resolveIRModuleForMain(entryFiles, invocation.FromIRBinaryPath, invocation.BuildTagsPath, invocation.ParseOnly, invocation.EmitIRBinaryPath, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		runCleanup()
-		os.Exit(1)
-	}
-	if frontendErrMsg != "" {
-		fmt.Fprintf(os.Stderr, "%s", frontendErrMsg)
-		runCleanup()
-		os.Exit(1)
-	}
-	if shouldExitNow {
-		runCleanup()
-		os.Exit(0)
-	}
-
-	// Set VM program arguments if using VM backend
-	if opts.Target.Backend == "vm" {
-		configureVMProgramArgs(entryFiles, invocation.ProgramArgs)
-	}
-
-	exitCode, err := emitAndFinalizeWithOptions(irmod, outputPath, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		runCleanup()
-		os.Exit(1)
-	}
-
-	// VM backend executes directly — no binary to run.
-	if exitCode != 0 {
-		runCleanup()
-		os.Exit(exitCode)
-	}
-
-	if invocation.RunMode {
-		err = runCompiledBinary(outputPath)
-
-		runCleanup()
-
-		if err != nil {
-			errStr := err.Error()
-			code, msg := classifyRunModeError(errStr)
-			if msg != "" {
-				fmt.Fprintf(os.Stderr, "%s\n", msg)
-			}
-			os.Exit(code)
+	if stderrMessage != "" {
+		fmt.Fprintf(os.Stderr, "%s", stderrMessage)
+		if exitCode == 0 {
+			exitCode = 1
 		}
-		os.Exit(0)
 	}
-
-	runCleanup()
+	os.Exit(exitCode)
 }
 
 func printHelp(program string, out *os.File) {
