@@ -1,10 +1,13 @@
 //go:build !no_backend_arm64
 
-package main
+package aarch64
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 // winArm64Imports lists all kernel32.dll functions needed by the Windows ARM64 backend.
@@ -37,9 +40,10 @@ var winArm64Imports = []string{
 	"GetCurrentProcessId",
 }
 
-// generateWinArm64PE compiles an IRModule to a Windows ARM64 PE32+ executable.
-func generateWinArm64PE(irmod *IRModule, outputPath string) error {
+// GenerateWinPE compiles an IRModule to a Windows ARM64 PE32+ executable.
+func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
+		target:        target,
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),
 		stringMap:     make(map[string]int),
@@ -65,7 +69,7 @@ func generateWinArm64PE(irmod *IRModule, outputPath string) error {
 		g.compileFuncArm64(f)
 	}
 
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
 	if g.needTostringHelper {
 		g.emitTostringHelperArm64()
 	}
@@ -109,7 +113,7 @@ func generateWinArm64PE(irmod *IRModule, outputPath string) error {
 }
 
 // emitStartArm64Windows generates the Windows ARM64 entry point.
-func (g *CodeGen) emitStartArm64Windows(irmod *IRModule) {
+func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 	// Save LR (entry is called by Windows loader)
 	g.emitStp(REG_FP, REG_LR, REG_SP, -16)
 	g.emitMovRRArm64(REG_FP, REG_SP)
@@ -128,7 +132,7 @@ func (g *CodeGen) emitStartArm64Windows(irmod *IRModule) {
 
 	// Call init functions
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			g.emitCallPlaceholderArm64(f.Name)
 		}
 	}
@@ -230,7 +234,7 @@ func (g *CodeGen) emitWinApiReturnArm64(successReg int) {
 
 // === Intrinsic dispatcher ===
 
-func (g *CodeGen) compileCallIntrinsicArm64Windows(inst Inst) {
+func (g *CodeGen) compileCallIntrinsicArm64Windows(inst ir.Inst) {
 	g.flush()
 	switch inst.Name {
 	case "SysRead":

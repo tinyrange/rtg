@@ -147,7 +147,7 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	shdrTableSize := shdrCount * shdrEntrySize
 
 	totalSize := shdrOffset + shdrTableSize
-	if stripBinary {
+	if g.target.StripBinary {
 		totalSize = loadedSize
 	}
 
@@ -176,7 +176,7 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	putU32(elf[20:], 1)                     // e_version: EV_CURRENT
 	putU64(elf[24:], entryAddr)             // e_entry
 	putU64(elf[32:], uint64(elfHeaderSize)) // e_phoff
-	if stripBinary {
+	if g.target.StripBinary {
 		putU64(elf[40:], 0) // e_shoff
 	} else {
 		putU64(elf[40:], uint64(shdrOffset)) // e_shoff
@@ -186,7 +186,7 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	putU16(elf[54:], uint16(phdrSize))      // e_phentsize
 	putU16(elf[56:], 1)                     // e_phnum
 	putU16(elf[58:], uint16(shdrEntrySize)) // e_shentsize
-	if stripBinary {
+	if g.target.StripBinary {
 		putU16(elf[60:], 0) // e_shnum
 		putU16(elf[62:], 0) // e_shstrndx
 	} else {
@@ -210,7 +210,7 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	copy(elf[rodataOffset:], g.rodata)
 	copy(elf[dataOffset:], g.data)
 
-	if !stripBinary {
+	if !g.target.StripBinary {
 		// Copy debug sections (not part of PT_LOAD)
 		copy(elf[symtabOffset:], symtab)
 		copy(elf[strtabOffset:], strtab)

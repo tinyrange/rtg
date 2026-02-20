@@ -1,6 +1,6 @@
 //go:build no_backend_arm64
 
-package main
+package aarch64
 
 import "fmt"
 

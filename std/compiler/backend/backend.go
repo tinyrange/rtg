@@ -3,6 +3,7 @@ package backend
 import (
 	"fmt"
 
+	"j5.nz/rtg/std/compiler/backend/aarch64"
 	"j5.nz/rtg/std/compiler/backend/c"
 	"j5.nz/rtg/std/compiler/backend/i386"
 	"j5.nz/rtg/std/compiler/backend/irprint"
@@ -46,15 +47,15 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		return fmt.Errorf("unsupported OS for i386: %s", target.GOOS)
 	case "wasm32":
 		return wasm32.Generate(target, irmod, outputPath)
-	// case "arm64":
-	// 	if target.GOOS == "darwin" {
-	// 		return arm64.GenerateDarwin(irmod, outputPath)
-	// 	} else if target.GOOS == "linux" {
-	// 		return arm64.GenerateLinuxELF(irmod, outputPath)
-	// 	} else if target.GOOS == "windows" {
-	// 		return arm64.GenerateWinPE(irmod, outputPath)
-	// 	}
-	// 	return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
+	case "arm64":
+		if target.GOOS == "darwin" {
+			return aarch64.GenerateDarwin(target, irmod, outputPath)
+		} else if target.GOOS == "linux" {
+			return aarch64.GenerateLinuxELF(target, irmod, outputPath)
+		} else if target.GOOS == "windows" {
+			return aarch64.GenerateWinPE(target, irmod, outputPath)
+		}
+		return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
 	default:
 		return fmt.Errorf("unsupported target architecture: %s", target.GOARCH)
 	}

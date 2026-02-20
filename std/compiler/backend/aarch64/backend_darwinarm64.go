@@ -1,15 +1,19 @@
 //go:build !no_backend_arm64
 
-package main
+package aarch64
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
-// generateDarwinArm64 compiles an IRModule to a macOS ARM64 Mach-O binary.
-func generateDarwinArm64(irmod *IRModule, outputPath string) error {
+// GenerateDarwin compiles an IRModule to a macOS ARM64 Mach-O binary.
+func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
+		target:        target,
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),
 		stringMap:     make(map[string]int),
@@ -38,7 +42,7 @@ func generateDarwinArm64(irmod *IRModule, outputPath string) error {
 		g.compileFuncArm64(f)
 	}
 
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
 	if g.needTostringHelper {
 		g.emitTostringHelperArm64()
 	}
@@ -98,7 +102,7 @@ func generateDarwinArm64(irmod *IRModule, outputPath string) error {
 
 // emitStartArm64 generates the entry point for macOS ARM64.
 // LC_MAIN receives: X0=argc, X1=argv, X2=envp (as a C function call)
-func (g *CodeGen) emitStartArm64(irmod *IRModule) {
+func (g *CodeGen) emitStartArm64(irmod *ir.IRModule) {
 	// Save LR (we're called as a function by dyld)
 	g.emitStp(REG_FP, REG_LR, REG_SP, -16)
 	g.emitMovRRArm64(REG_FP, REG_SP)
@@ -136,7 +140,7 @@ func (g *CodeGen) emitStartArm64(irmod *IRModule) {
 
 	// Call init functions in topological order
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			g.emitCallPlaceholderArm64(f.Name)
 		}
 	}

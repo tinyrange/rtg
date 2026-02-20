@@ -1,6 +1,11 @@
 //go:build !no_backend_darwin_arm64
 
-package main
+package aarch64
+
+import (
+	"j5.nz/rtg/std/compiler/backend/aarch64/codesign"
+	"j5.nz/rtg/std/compiler/ir"
+)
 
 // === Mach-O 64-bit Builder for ARM64 ===
 
@@ -9,7 +14,7 @@ const (
 )
 
 // buildMachO64 builds a Mach-O 64-bit executable for macOS ARM64.
-func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
+func (g *CodeGen) buildMachO64(irmod *ir.IRModule, outputName string) []byte {
 	// In Mach-O, the __TEXT segment starts at file offset 0 and includes
 	// the Mach-O header and load commands. This is different from ELF.
 	//
@@ -39,7 +44,7 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	// === Build string table and symbol entries ===
 	strtab := []byte{}
 	var syms []machoSymEntry
-	if !stripBinary {
+	if !g.target.StripBinary {
 		strtab = append(strtab, 0) // index 0 = empty string
 
 		// _main entry point (the code before the first compiled function)
@@ -88,7 +93,7 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	lcMainSize := 24
 	lcSymtabSize := 0
 	lcDysymtabSize := 0
-	if !stripBinary {
+	if !g.target.StripBinary {
 		lcSymtabSize = 24
 		lcDysymtabSize = 80
 	}
@@ -96,7 +101,7 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	lcCodeSigSize := 16
 
 	ncmds := 11
-	if stripBinary {
+	if g.target.StripBinary {
 		ncmds = ncmds - 2
 	}
 	lcTotal := lcSegSize + // PAGEZERO
@@ -155,7 +160,7 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	if codeSignID == "" {
 		codeSignID = "a.out"
 	}
-	sigSize := int(CodeSignSize(int64(codeSignOff), codeSignID))
+	sigSize := int(codesign.CodeSignSize(int64(codeSignOff), codeSignID))
 
 	linkeditEnd := alignUp(codeSignOff+sigSize, machoPageSize)
 	if linkeditEnd == linkeditStart {
@@ -336,7 +341,7 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	putU64(bin[off+16:], 0) // stacksize
 	off += lcMainSize
 
-	if !stripBinary {
+	if !g.target.StripBinary {
 		// LC_SYMTAB
 		putU32(bin[off:], 0x02)
 		putU32(bin[off+4:], uint32(lcSymtabSize))
@@ -397,7 +402,7 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 	copy(bin[bindOff:], bindOpcodes)
 	copy(bin[exportOff:], exportTrie)
 
-	if !stripBinary {
+	if !g.target.StripBinary {
 		// Symbol table: nlist_64 entries sorted with locals first, then externals
 		// Sort: locals first, then externals (required by LC_DYSYMTAB)
 		symOff := symtabOff
@@ -432,7 +437,7 @@ func (g *CodeGen) buildMachO64(irmod *IRModule, outputName string) []byte {
 
 	// Compute and embed ad-hoc code signature
 	codeSignEnd := codeSignOff + sigSize
-	CodeSign(bin[codeSignOff:codeSignEnd], bin[0:codeSignOff], int64(codeSignOff), 0, int64(textSegEnd), true, codeSignID)
+	codesign.CodeSign(bin[codeSignOff:codeSignEnd], bin[0:codeSignOff], int64(codeSignOff), 0, int64(textSegEnd), true, codeSignID)
 
 	return bin
 }

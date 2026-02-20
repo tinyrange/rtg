@@ -1,6 +1,6 @@
 //go:build !no_backend_arm64
 
-package main
+package aarch64
 
 // === ARM64 Assembler: instruction encoding for AArch64 ===
 // ARM64 uses fixed-width 32-bit instructions, little-endian.

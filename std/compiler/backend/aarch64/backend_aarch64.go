@@ -1,6 +1,11 @@
 //go:build !no_backend_arm64
 
-package main
+package aarch64
+
+import (
+	"j5.nz/rtg/std/compiler/backend/becommon"
+	"j5.nz/rtg/std/compiler/ir"
+)
 
 // === ARM64 Code Generation ===
 // Mirrors backend_x64.go but emits ARM64 instructions.
@@ -8,7 +13,7 @@ package main
 // X29 (FP) as frame pointer, X30 (LR) as link register.
 
 // compileFuncArm64 generates ARM64 code for a single IR function.
-func (g *CodeGen) compileFuncArm64(f *IRFunc) {
+func (g *CodeGen) compileFuncArm64(f *ir.IRFunc) {
 	g.curFunc = f
 	g.clearOperandCache()
 	g.curFrameSize = len(f.Locals)
@@ -73,82 +78,82 @@ func (g *CodeGen) compileFuncArm64(f *IRFunc) {
 }
 
 // compileInstArm64 generates ARM64 code for a single IR instruction.
-func (g *CodeGen) compileInstArm64(inst Inst) {
+func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 	switch inst.Op {
-	case OP_CONST_I64:
+	case ir.OP_CONST_I64:
 		g.compileConstI64Arm64(inst.Val)
-	case OP_CONST_BOOL:
+	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.compileConstI64Arm64(1)
 		} else {
 			g.compileConstI64Arm64(0)
 		}
-	case OP_CONST_NIL:
+	case ir.OP_CONST_NIL:
 		g.compileConstI64Arm64(0)
-	case OP_CONST_STR:
+	case ir.OP_CONST_STR:
 		g.compileConstStrArm64(inst.Name)
 
-	case OP_LOCAL_GET:
+	case ir.OP_LOCAL_GET:
 		g.compileLocalGetArm64(inst.Arg)
-	case OP_LOCAL_SET:
+	case ir.OP_LOCAL_SET:
 		g.compileLocalSetArm64(inst.Arg)
-	case OP_LOCAL_ADD_IMM:
+	case ir.OP_LOCAL_ADD_IMM:
 		g.compileLocalAddImmArm64(inst.Arg, int32(inst.Val))
-	case OP_LOCAL_ADDR:
+	case ir.OP_LOCAL_ADDR:
 		g.compileLocalAddrArm64(inst.Arg)
 
-	case OP_GLOBAL_GET:
+	case ir.OP_GLOBAL_GET:
 		g.compileGlobalGetArm64(inst)
-	case OP_GLOBAL_SET:
+	case ir.OP_GLOBAL_SET:
 		g.compileGlobalSetArm64(inst)
-	case OP_GLOBAL_ADDR:
+	case ir.OP_GLOBAL_ADDR:
 		g.compileGlobalAddrArm64(inst)
 
-	case OP_DROP:
+	case ir.OP_DROP:
 		g.opDrop()
-	case OP_DUP:
+	case ir.OP_DUP:
 		g.opLoad(REG_X0)
 		g.opPush(REG_X0)
 
-	case OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD:
+	case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD:
 		g.compileBinOpArm64(inst.Op)
-	case OP_NEG:
+	case ir.OP_NEG:
 		g.opPop(REG_X0)
 		g.emitNeg(REG_X0, REG_X0)
 		g.opPush(REG_X0)
 
-	case OP_AND, OP_OR, OP_XOR, OP_SHL, OP_SHR:
+	case ir.OP_AND, ir.OP_OR, ir.OP_XOR, ir.OP_SHL, ir.OP_SHR:
 		g.compileBinOpArm64(inst.Op)
 
-	case OP_EQ:
+	case ir.OP_EQ:
 		g.compileCompareArm64(COND_EQ)
-	case OP_NEQ:
+	case ir.OP_NEQ:
 		g.compileCompareArm64(COND_NE)
-	case OP_LT:
+	case ir.OP_LT:
 		g.compileCompareArm64(COND_LT)
-	case OP_GT:
+	case ir.OP_GT:
 		g.compileCompareArm64(COND_GT)
-	case OP_LEQ:
+	case ir.OP_LEQ:
 		g.compileCompareArm64(COND_LE)
-	case OP_GEQ:
+	case ir.OP_GEQ:
 		g.compileCompareArm64(COND_GE)
 
-	case OP_NOT:
+	case ir.OP_NOT:
 		g.opPop(REG_X0)
 		g.emitEorImm1(REG_X0, REG_X0) // XOR with 1
 		g.opPush(REG_X0)
 
-	case OP_LABEL:
+	case ir.OP_LABEL:
 		g.flush()
 		g.labelOffsets[inst.Arg] = len(g.code)
-	case OP_JMP:
+	case ir.OP_JMP:
 		g.flush()
 		fixup := g.emitB()
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 		})
-	case OP_JMP_IF:
+	case ir.OP_JMP_IF:
 		g.opPop(REG_X0)
 		g.emitCmpImm(REG_X0, 0)
 		fixup := g.emitBCond(COND_NE)
@@ -156,7 +161,7 @@ func (g *CodeGen) compileInstArm64(inst Inst) {
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 		})
-	case OP_JMP_IF_NOT:
+	case ir.OP_JMP_IF_NOT:
 		g.opPop(REG_X0)
 		g.emitCmpImm(REG_X0, 0)
 		fixup := g.emitBCond(COND_EQ)
@@ -164,56 +169,56 @@ func (g *CodeGen) compileInstArm64(inst Inst) {
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 		})
-	case OP_JMP_EQ:
+	case ir.OP_JMP_EQ:
 		g.compileCompareJumpArm64(COND_EQ, inst.Arg)
-	case OP_JMP_NEQ:
+	case ir.OP_JMP_NEQ:
 		g.compileCompareJumpArm64(COND_NE, inst.Arg)
-	case OP_JMP_LT:
+	case ir.OP_JMP_LT:
 		g.compileCompareJumpArm64(COND_LT, inst.Arg)
-	case OP_JMP_GT:
+	case ir.OP_JMP_GT:
 		g.compileCompareJumpArm64(COND_GT, inst.Arg)
-	case OP_JMP_LEQ:
+	case ir.OP_JMP_LEQ:
 		g.compileCompareJumpArm64(COND_LE, inst.Arg)
-	case OP_JMP_GEQ:
+	case ir.OP_JMP_GEQ:
 		g.compileCompareJumpArm64(COND_GE, inst.Arg)
 
-	case OP_CALL:
+	case ir.OP_CALL:
 		g.compileCallArm64(inst)
-	case OP_CALL_INTRINSIC:
+	case ir.OP_CALL_INTRINSIC:
 		g.compileCallIntrinsicArm64(inst)
-	case OP_RETURN:
+	case ir.OP_RETURN:
 		g.compileReturnArm64(inst)
 
-	case OP_LOAD:
+	case ir.OP_LOAD:
 		g.compileLoadArm64(inst.Arg)
-	case OP_STORE:
+	case ir.OP_STORE:
 		g.compileStoreArm64(inst.Arg)
-	case OP_OFFSET:
+	case ir.OP_OFFSET:
 		g.compileOffsetArm64(inst)
-	case OP_INDEX_ADDR:
+	case ir.OP_INDEX_ADDR:
 		g.compileIndexAddrArm64(inst.Arg)
-	case OP_LEN:
+	case ir.OP_LEN:
 		g.compileLenArm64()
-	case OP_CAP:
+	case ir.OP_CAP:
 		g.compileCapArm64()
 
-	case OP_CONVERT:
+	case ir.OP_CONVERT:
 		g.compileConvertArm64(inst.Name)
 
-	case OP_IFACE_BOX:
+	case ir.OP_IFACE_BOX:
 		g.compileIfaceBoxArm64(inst)
-	case OP_IFACE_CALL:
+	case ir.OP_IFACE_CALL:
 		g.compileIfaceCallArm64(inst)
-	case OP_PANIC:
-		if target.GOOS == "linux" {
+	case ir.OP_PANIC:
+		if g.target.GOOS == "linux" {
 			g.compilePanicArm64Linux()
-		} else if target.GOOS == "windows" {
+		} else if g.target.GOOS == "windows" {
 			g.compilePanicArm64Windows()
 		} else {
 			g.compilePanicArm64()
 		}
 
-	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// Handled by intrinsics
 
 	default:
@@ -231,7 +236,7 @@ func (g *CodeGen) compileConstI64Arm64(val int64) {
 
 func (g *CodeGen) compileConstStrArm64(s string) {
 	g.prepareForClobber(REG_X0, REG_X1)
-	decoded := decodeStringLiteral(s)
+	decoded := becommon.DecodeStringLiteral(s)
 
 	headerOff, ok := g.stringMap[decoded]
 	var rodataOff int
@@ -306,19 +311,19 @@ func (g *CodeGen) compileLocalAddrArm64(idx int) {
 
 // === Global variable access ===
 
-func (g *CodeGen) compileGlobalGetArm64(inst Inst) {
+func (g *CodeGen) compileGlobalGetArm64(inst ir.Inst) {
 	g.prepareForClobber(REG_X0)
 	g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(inst.Arg*8))
 	g.opPush(REG_X0)
 }
 
-func (g *CodeGen) compileGlobalSetArm64(inst Inst) {
+func (g *CodeGen) compileGlobalSetArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
 	g.emitAdrpAdd(REG_X1, "$data_addr$", uint64(inst.Arg*8))
 	g.emitStr(REG_X0, REG_X1, 0)
 }
 
-func (g *CodeGen) compileGlobalAddrArm64(inst Inst) {
+func (g *CodeGen) compileGlobalAddrArm64(inst ir.Inst) {
 	g.prepareForClobber(REG_X0)
 	g.emitAdrpAdd(REG_X0, "$data_addr$", uint64(inst.Arg*8))
 	g.opPush(REG_X0)
@@ -326,32 +331,32 @@ func (g *CodeGen) compileGlobalAddrArm64(inst Inst) {
 
 // === Binary operations ===
 
-func (g *CodeGen) compileBinOpArm64(op Opcode) {
+func (g *CodeGen) compileBinOpArm64(op ir.Opcode) {
 	g.opPop(REG_X0) // second (top)
 	g.opPop(REG_X1) // first (below)
 
 	switch op {
-	case OP_ADD:
+	case ir.OP_ADD:
 		g.emitAddRR(REG_X1, REG_X1, REG_X0)
-	case OP_SUB:
+	case ir.OP_SUB:
 		g.emitSubRR(REG_X1, REG_X1, REG_X0)
-	case OP_MUL:
+	case ir.OP_MUL:
 		g.emitMul(REG_X1, REG_X1, REG_X0)
-	case OP_DIV:
+	case ir.OP_DIV:
 		g.emitSdiv(REG_X1, REG_X1, REG_X0)
-	case OP_MOD:
+	case ir.OP_MOD:
 		// mod = a - (a/b)*b → SDIV + MSUB
 		g.emitSdiv(REG_X2, REG_X1, REG_X0)         // X2 = X1 / X0
 		g.emitMsub(REG_X1, REG_X2, REG_X0, REG_X1) // X1 = X1 - X2*X0
-	case OP_AND:
+	case ir.OP_AND:
 		g.emitAndRR(REG_X1, REG_X1, REG_X0)
-	case OP_OR:
+	case ir.OP_OR:
 		g.emitOrrRR(REG_X1, REG_X1, REG_X0)
-	case OP_XOR:
+	case ir.OP_XOR:
 		g.emitEorRR(REG_X1, REG_X1, REG_X0)
-	case OP_SHL:
+	case ir.OP_SHL:
 		g.emitLslRR(REG_X1, REG_X1, REG_X0)
-	case OP_SHR:
+	case ir.OP_SHR:
 		g.emitAsrRR(REG_X1, REG_X1, REG_X0)
 	}
 
@@ -381,7 +386,7 @@ func (g *CodeGen) compileCompareJumpArm64(cond int, label int) {
 
 // === Function calls ===
 
-func (g *CodeGen) compileCallArm64(inst Inst) {
+func (g *CodeGen) compileCallArm64(inst ir.Inst) {
 	if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
 		g.compileCompositeLitCallArm64(inst)
 		return
@@ -389,7 +394,7 @@ func (g *CodeGen) compileCallArm64(inst Inst) {
 	g.emitCallPlaceholderArm64(inst.Name)
 }
 
-func (g *CodeGen) compileCompositeLitCallArm64(inst Inst) {
+func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * 8
 
@@ -426,7 +431,7 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst Inst) {
 	g.opPush(REG_X1)
 }
 
-func (g *CodeGen) compileReturnArm64(inst Inst) {
+func (g *CodeGen) compileReturnArm64(inst ir.Inst) {
 	g.flush()
 	// Epilogue: MOV SP, FP; LDP FP, LR, [SP], #16; RET
 	g.emitMovRRArm64(REG_SP, REG_FP)
@@ -436,9 +441,9 @@ func (g *CodeGen) compileReturnArm64(inst Inst) {
 
 // === Intrinsics ===
 
-func (g *CodeGen) compileCallIntrinsicArm64(inst Inst) {
+func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 	g.flush()
-	if target.GOOS == "windows" {
+	if g.target.GOOS == "windows" {
 		g.compileCallIntrinsicArm64Windows(inst)
 		return
 	}
@@ -641,7 +646,7 @@ func (g *CodeGen) compileMakestringIntrinsicArm64() {
 }
 
 func (g *CodeGen) compileTostringIntrinsicArm64() {
-	// OP_CALL_INTRINSIC executes inside intrinsic wrapper functions where
+	// ir.OP_CALL_INTRINSIC executes inside intrinsic wrapper functions where
 	// params are read from frame locals. Inline directly to avoid helper
 	// call/prologue interactions in native arm64 codegen.
 	g.compileTostringIntrinsicBodyArm64()
@@ -665,7 +670,7 @@ func (g *CodeGen) emitTostringHelperArm64() {
 	g.emitStoreLocalArm64(1*8, REG_X0)
 
 	g.compileTostringIntrinsicBodyArm64()
-	g.compileReturnArm64(Inst{})
+	g.compileReturnArm64(ir.Inst{})
 }
 
 func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
@@ -688,17 +693,17 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	g.emitStr(REG_X1, REG_SP, 0)
 
 	// Dispatch chain for Error/String
-	var entries []dispatchEntry
+	var entries []becommon.DispatchEntry
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + ".Error"
 			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 				continue
 			}
 			candidate = typeName + ".String"
 			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 			}
 		}
 	}
@@ -724,9 +729,9 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 
 	// User types
 	for _, entry := range entries {
-		g.emitCmpImm(REG_X1, uint32(entry.typeID))
+		g.emitCmpImm(REG_X1, uint32(entry.TypeID))
 		nextFixup = g.emitBCond(COND_NE)
-		g.emitCallPlaceholderArm64(entry.funcName)
+		g.emitCallPlaceholderArm64(entry.FuncName)
 		endFixups = append(endFixups, g.emitB())
 		g.patchArm64BCondAt(nextFixup, len(g.code))
 	}
@@ -772,7 +777,7 @@ func (g *CodeGen) compileWriteByteIntrinsicArm64() {
 
 // === Interface dispatch ===
 
-func (g *CodeGen) compileIfaceBoxArm64(inst Inst) {
+func (g *CodeGen) compileIfaceBoxArm64(inst ir.Inst) {
 	typeID := inst.Arg
 
 	g.opPop(REG_X0) // concrete value
@@ -797,7 +802,7 @@ func (g *CodeGen) compileIfaceBoxArm64(inst Inst) {
 	g.opPush(REG_X1)
 }
 
-func (g *CodeGen) compileIfaceCallArm64(inst Inst) {
+func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 	argCount := inst.Arg
 	methodName := inst.Name
 
@@ -849,12 +854,12 @@ func (g *CodeGen) compileIfaceCallArm64(inst Inst) {
 	}
 
 	// Collect dispatch entries
-	var entries []dispatchEntry
+	var entries []becommon.DispatchEntry
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + "." + bareMethod
 			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 			}
 		}
 	}
@@ -868,9 +873,9 @@ func (g *CodeGen) compileIfaceCallArm64(inst Inst) {
 	} else {
 		endFixups := make([]int, 0)
 		for _, entry := range entries {
-			g.emitCmpImm(REG_X1, uint32(entry.typeID))
+			g.emitCmpImm(REG_X1, uint32(entry.TypeID))
 			nextFixup := g.emitBCond(COND_NE)
-			g.emitCallPlaceholderArm64(entry.funcName)
+			g.emitCallPlaceholderArm64(entry.FuncName)
 			endFixups = append(endFixups, g.emitB())
 			g.patchArm64BCondAt(nextFixup, len(g.code))
 		}
@@ -913,7 +918,7 @@ func (g *CodeGen) compileStoreArm64(size int) {
 	}
 }
 
-func (g *CodeGen) compileOffsetArm64(inst Inst) {
+func (g *CodeGen) compileOffsetArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
 	if inst.Arg != 0 {
 		if inst.Arg > 0 && inst.Arg < 4096 {
