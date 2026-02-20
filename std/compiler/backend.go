@@ -107,11 +107,7 @@ type machoSymEntry struct {
 
 // GenerateELF dispatches to the appropriate backend using explicit driver options.
 func GenerateELF(irmod *IRModule, outputPath string, opts DriverOptions) error {
-	target := opts.Target
-	if target.Backend != "native" {
-		return emitRegisteredBackendWithOptions(target.Backend, irmod, backendOptionsFromDriver(opts, outputPath))
-	}
-	return emitNativeModule(irmod, outputPath, target)
+	return emitBackendWithOptions(opts.Target.Backend, irmod, backendOptionsFromDriver(opts, outputPath))
 }
 
 // isInitFunc checks if a function name is a package init function.
