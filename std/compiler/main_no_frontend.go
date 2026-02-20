@@ -63,13 +63,12 @@ func main() {
 
 	initEmbeddedStd()
 
-	irmod, err := readIRBinary(fromIRBinaryPath)
+	irmod, err := loadIRBinaryModule(fromIRBinaryPath, opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading IR binary: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 	if opts.Debug {
-		fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s)\n", opts.Target.Backend, compilerTargetString(opts.Target))
 	}
 	err = emitModuleWithOptions(irmod, outputPath, opts)

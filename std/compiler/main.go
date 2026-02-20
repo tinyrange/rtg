@@ -241,25 +241,18 @@ func main() {
 
 	var irmod *IRModule
 	if fromIRBinaryPath != "" {
-		if parseOnly {
-			fmt.Fprintf(os.Stderr, "-parse-only is not valid with -from-ir-binary\n")
+		flagErr := validateFromIRBinaryFlags(parseOnly, buildTagsPath)
+		if flagErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", flagErr)
 			runCleanup()
 			os.Exit(1)
 		}
-		if buildTagsPath != "" {
-			fmt.Fprintf(os.Stderr, "-list-build-tags is not valid with -from-ir-binary\n")
+		var loadErr error
+		irmod, loadErr = loadIRBinaryModule(fromIRBinaryPath, opts)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", loadErr)
 			runCleanup()
 			os.Exit(1)
-		}
-		var err error
-		irmod, err = readIRBinary(fromIRBinaryPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error reading IR binary: %v\n", err)
-			runCleanup()
-			os.Exit(1)
-		}
-		if opts.Debug {
-			fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 	} else {
 		res, err := compileFromSourceInputs(entryFiles, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
