@@ -112,11 +112,11 @@ jobs:
       - name: Fullcompiler suite (WASM backend)
         run: ./build/build test-fullcompiler-wasm
 
-  compiler-size-report:
-    name: Compiler Size Report (stage2 linux/amd64)
+  compiler-size-report-pr:
+    name: Compiler Size Report (PR)
     runs-on: ubuntu-latest
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request'
+    continue-on-error: true
+    if: github.event_name == 'pull_request'
     env:
       SIZE_REPORT_ISSUE_NUMBER: ${{ vars.COMPILER_SIZE_ISSUE_NUMBER }}
     steps:
@@ -343,4 +343,226 @@ jobs:
               }
             } catch (err) {
               core.warning(`Could not post size report comment: ${err.message}`);
+            }
+
+  compiler-size-report-main:
+    name: Compiler Size Report (main)
+    runs-on: ubuntu-latest
+    needs:
+      - selfhost
+      - selfhost-wasm
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      SIZE_REPORT_ISSUE_NUMBER: ${{ vars.COMPILER_SIZE_ISSUE_NUMBER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate issue configuration
+        run: |
+          if [ -z "${SIZE_REPORT_ISSUE_NUMBER}" ]; then
+            echo "Repository variable COMPILER_SIZE_ISSUE_NUMBER is not set."
+            echo "Set it to the issue number used for persistent compiler size reports."
+            exit 1
+          fi
+
+      - name: Build stage2 compiler (linux/amd64)
+        run: |
+          go build -o build/rtg ./std/compiler/
+          ./build/rtg -T linux/amd64 -o build/stage1 ./std/compiler/
+          ./build/stage1 -T linux/amd64 -o build/stage2 compiler
+
+      - name: Generate compiler size matrix data
+        run: |
+          set -euo pipefail
+          mkdir -p build
+
+          targets=(
+            "windows/386"
+            "windows/amd64"
+            "windows/arm64"
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/arm64"
+            "wasi/wasm32"
+          )
+
+          config_ids=(
+            "full"
+            "no_embed_std"
+            "backend_linux_amd64_only"
+            "backend_windows_i386_only"
+            "backend_windows_amd64_only"
+            "backend_arm64_only"
+            "backend_wasi_wasm32_only"
+          )
+
+          config_names=(
+            "full"
+            "no-embed-std"
+            "backend linux/amd64 only"
+            "backend windows/386 only"
+            "backend windows/amd64 only"
+            "backend arm64 only"
+            "backend wasi/wasm32 only"
+          )
+
+          config_tags=(
+            ""
+            "no_embed_std,no_backend_vm"
+            "no_embed_std,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_darwin_arm64,no_backend_wasi_wasm32,no_backend_linux_i386,no_backend_c,no_backend_dos_i386,no_backend_ir,no_backend_vm"
+            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_darwin_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir,no_backend_vm"
+            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_i386,no_backend_arm64,no_backend_darwin_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir,no_backend_vm"
+            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_i386,no_backend_windows_amd64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir,no_backend_vm"
+            "no_embed_std,no_backend_linux_amd64,no_backend_linux_i386,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_darwin_arm64,no_backend_c,no_backend_dos_i386,no_backend_ir,no_backend_vm"
+          )
+
+          json_escape() {
+            local s="$1"
+            s=${s//\\/\\\\}
+            s=${s//\"/\\\"}
+            s=${s//$'\n'/\\n}
+            printf '%s' "$s"
+          }
+
+          matrix_json='{"targets":['
+          for i in "${!targets[@]}"; do
+            if [ "$i" -gt 0 ]; then matrix_json+=','; fi
+            matrix_json+="\"$(json_escape "${targets[$i]}")\""
+          done
+          matrix_json+='],"configs":['
+          for i in "${!config_ids[@]}"; do
+            if [ "$i" -gt 0 ]; then matrix_json+=','; fi
+            matrix_json+="{\"id\":\"$(json_escape "${config_ids[$i]}")\",\"name\":\"$(json_escape "${config_names[$i]}")\"}"
+          done
+          matrix_json+='],"sizes":{'
+
+          for ti in "${!targets[@]}"; do
+            target="${targets[$ti]}"
+            target_key="$(echo "$target" | sed 's#[^a-zA-Z0-9]#_#g')"
+            if [ "$ti" -gt 0 ]; then matrix_json+=','; fi
+            matrix_json+="\"$(json_escape "$target")\":{"
+            for ci in "${!config_ids[@]}"; do
+              cfg_id="${config_ids[$ci]}"
+              tags="${config_tags[$ci]}"
+              if [ "$ci" -gt 0 ]; then matrix_json+=','; fi
+
+              out="build/size_${target_key}_${cfg_id}"
+              cmd=(./build/stage2 -T "$target" -s)
+              if [ -n "$tags" ]; then
+                cmd+=(-tags "$tags")
+              fi
+              cmd+=(-o "$out" ./std/compiler/)
+
+              if "${cmd[@]}" >/tmp/size_cmd.log 2>&1; then
+                size_bytes="$(stat -c%s "$out")"
+                matrix_json+="\"$(json_escape "$cfg_id")\":${size_bytes}"
+              else
+                matrix_json+="\"$(json_escape "$cfg_id")\":null"
+              fi
+            done
+            matrix_json+='}'
+          done
+
+          matrix_json+='},"generated_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","commit":"'"${GITHUB_SHA}"'"}'
+          printf '%s\n' "$matrix_json" > build/compiler-size-data.json
+
+      - name: Post size report issue comment
+        uses: actions/github-script@v7
+        env:
+          SIZE_DATA_PATH: build/compiler-size-data.json
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require("fs");
+            const issueNumber = Number(process.env.SIZE_REPORT_ISSUE_NUMBER);
+            const data = JSON.parse(fs.readFileSync(process.env.SIZE_DATA_PATH, "utf8"));
+            const marker = "<!-- compiler-size-report -->";
+            const dataPrefix = "<!-- compiler-size-data:";
+            const topTargets = ["windows/386", "linux/amd64", "darwin/arm64", "wasi/wasm32"];
+
+            const fmtBytes = (n) => {
+              if (n === null || n === undefined) return "n/a";
+              return `${n.toLocaleString("en-US")} B`;
+            };
+
+            const deltaText = (curr, prev) => {
+              if (curr === null || curr === undefined) return "n/a";
+              if (prev === null || prev === undefined) return "new";
+              const d = curr - prev;
+              if (d === 0) return "0 B";
+              return `${d > 0 ? "+" : ""}${d.toLocaleString("en-US")} B`;
+            };
+
+            const listResp = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+
+            let existing = null;
+            for (const c of listResp.data) {
+              if (typeof c.body === "string" && c.body.includes(marker)) {
+                existing = c;
+              }
+            }
+
+            let prevData = null;
+            if (existing) {
+              const m = existing.body.match(/<!-- compiler-size-data:(.*?)-->/s);
+              if (m && m[1]) {
+                try {
+                  prevData = JSON.parse(m[1]);
+                } catch (e) {
+                  prevData = null;
+                }
+              }
+            }
+
+            const header = ["Target", ...data.configs.map((c) => c.name)];
+            const lines = [];
+            lines.push("## Compiler Size Matrix");
+            lines.push("");
+            lines.push(`Generated from stage2 compiler built for \`linux/amd64\`.`);
+            lines.push("Source: main branch");
+            lines.push(`Commit: \`${data.commit.slice(0, 12)}\``);
+            lines.push("");
+            lines.push(`| ${header.join(" | ")} |`);
+            lines.push(`| ${header.map(() => "---").join(" | ")} |`);
+
+            for (const target of data.targets) {
+              const row = [target];
+              for (const cfg of data.configs) {
+                row.push(fmtBytes(data.sizes[target][cfg.id]));
+              }
+              lines.push(`| ${row.join(" | ")} |`);
+            }
+
+            lines.push("");
+            lines.push("### Summary (Top Targets Change)");
+            lines.push("");
+
+            const fullCfg = "full";
+            const noStdCfg = "no_embed_std";
+            for (const target of topTargets) {
+              const currFull = data.sizes[target]?.[fullCfg] ?? null;
+              const currNoStd = data.sizes[target]?.[noStdCfg] ?? null;
+              const prevFull = prevData?.sizes?.[target]?.[fullCfg] ?? null;
+              const prevNoStd = prevData?.sizes?.[target]?.[noStdCfg] ?? null;
+              lines.push(`- ${target}: full ${fmtBytes(currFull)} (${deltaText(currFull, prevFull)}), no-embed-std ${fmtBytes(currNoStd)} (${deltaText(currNoStd, prevNoStd)})`);
+            }
+
+            const payload = `${marker}\n${lines.join("\n")}\n\n${dataPrefix}${JSON.stringify(data)}-->`;
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: payload,
+              });
+            } catch (err) {
+              core.warning(`Could not post size report issue comment: ${err.message}`);
             }
