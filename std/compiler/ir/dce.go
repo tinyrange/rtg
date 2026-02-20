@@ -2,8 +2,8 @@ package ir
 
 import "strings"
 
-// isInitFunc checks if a function name is a package init function.
-func isInitFunc(name string) bool {
+// IsInitFunc checks if a function name is a package init function.
+func IsInitFunc(name string) bool {
 	n := len(name)
 	if n < 5 {
 		return false
@@ -64,7 +64,7 @@ func EliminateDeadFunctions(irmod *IRModule) {
 
 	// Root set: init functions
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if IsInitFunc(f.Name) {
 			worklist = dceAddRoot(f.Name, funcIndex, reachable, worklist)
 		}
 	}

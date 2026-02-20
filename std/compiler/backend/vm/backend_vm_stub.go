@@ -2,10 +2,15 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
 
-var vmExitCode int
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
+)
 
-func generateVM(irmod *IRModule, outputPath string) error {
+var ExitCode int
+
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	return fmt.Errorf("vm backend disabled (built with no_backend_vm tag)")
 }

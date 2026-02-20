@@ -218,14 +218,14 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 	return mod
 }
 
-func (c *Preprocessor) shouldUseEmbeddedStdlib() bool {
+func ShouldUseEmbeddedStdlib(target *common.Target) bool {
 	if !stdlib.HasEmbeddedStd() {
 		return false
 	}
-	if !c.target.StdlibIncludeExplicit {
+	if !target.StdlibIncludeExplicit {
 		return true
 	}
-	return c.target.StdlibIncludeEmbedded
+	return target.StdlibIncludeEmbedded
 }
 
 func appendStdlibDirCandidates(candidates []string, root string, importPath string) []string {
@@ -255,7 +255,7 @@ func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []st
 }
 
 func (c *Preprocessor) parsePackageFromStdlibSources(baseDir string, importPath string) *Package {
-	if c.shouldUseEmbeddedStdlib() {
+	if ShouldUseEmbeddedStdlib(c.target) {
 		pkg := ParsePackageFromEmbed(importPath)
 		if pkg != nil {
 			return pkg

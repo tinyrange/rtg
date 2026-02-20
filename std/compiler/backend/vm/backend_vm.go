@@ -1,17 +1,21 @@
 //go:build !no_backend_vm
 
-package main
+package vm
 
 import (
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+
+	"j5.nz/rtg/std/compiler/backend/becommon"
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 // === VM Backend: IR interpreter ===
 
-var vmExitCode int
+var ExitCode int
 
 // VMConfig holds word/pointer size configuration.
 type VMConfig struct {
@@ -60,7 +64,7 @@ type VM struct {
 	numGlobals  int
 
 	// Function lookup
-	funcs map[string]*IRFunc
+	funcs map[string]*ir.IRFunc
 
 	// String literal interning
 	stringAddrs map[string]uint64
@@ -72,9 +76,9 @@ type VM struct {
 	stringMethodID int
 
 	// Special functions
-	intToStringFunc   *IRFunc
-	bytesToStringFunc *IRFunc
-	stringToBytesFunc *IRFunc
+	intToStringFunc   *ir.IRFunc
+	bytesToStringFunc *ir.IRFunc
+	stringToBytesFunc *ir.IRFunc
 
 	// Host I/O: fd table uses parallel slices
 	fdFiles   []*os.File
@@ -138,8 +142,8 @@ type vmDispatchEntry struct {
 }
 
 // generateVM interprets the IR module directly.
-func generateVM(irmod *IRModule, outputPath string) error {
-	cfg := newVMConfig(targetWordSize)
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	cfg := newVMConfig(target.WordSize)
 	// Null guard region: small for small address spaces
 	guard := 0x10000
 	if cfg.PtrSize <= 2 {
@@ -150,7 +154,7 @@ func generateVM(irmod *IRModule, outputPath string) error {
 		stack:       make([]uint64, 0, 4096),
 		memory:      make([]byte, 256*1024),
 		memNext:     guard,
-		funcs:       make(map[string]*IRFunc),
+		funcs:       make(map[string]*ir.IRFunc),
 		stringAddrs: make(map[string]uint64),
 		methodIDs:   make(map[string]int),
 		fdFiles:     make([]*os.File, 256),
@@ -214,8 +218,8 @@ func generateVM(irmod *IRModule, outputPath string) error {
 	// Intern string literals
 	for _, f := range irmod.Funcs {
 		for _, inst := range f.Code {
-			if inst.Op == OP_CONST_STR {
-				s := decodeStringLiteral(inst.Name)
+			if inst.Op == ir.OP_CONST_STR {
+				s := becommon.DecodeStringLiteral(inst.Name)
 				if _, ok := vm.stringAddrs[s]; !ok {
 					vm.internString(s)
 				}
@@ -257,7 +261,7 @@ func generateVM(irmod *IRModule, outputPath string) error {
 
 	// Run init functions
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			vm.execFunc(f)
 			if vm.exited {
 				return nil
@@ -713,11 +717,11 @@ func (vm *VM) copyStringToVM(dst int, s string, n int) {
 
 // === Dispatch table ===
 
-func (vm *VM) buildDispatchTable(irmod *IRModule) {
+func (vm *VM) buildDispatchTable(irmod *ir.IRModule) {
 	var methods []string
 	for _, f := range irmod.Funcs {
 		for _, inst := range f.Code {
-			if inst.Op == OP_IFACE_CALL {
+			if inst.Op == ir.OP_IFACE_CALL {
 				name := vmBareMethod(inst.Name)
 				if _, ok := vm.methodIDs[name]; !ok {
 					vm.methodIDs[name] = len(methods)
@@ -866,7 +870,7 @@ func (vm *VM) localGet(localsAddr uint64, ws uint64, idx int) uint64 {
 
 // === Execution ===
 
-func (vm *VM) execFunc(f *IRFunc) {
+func (vm *VM) execFunc(f *ir.IRFunc) {
 	if vm.exited {
 		return
 	}
@@ -931,7 +935,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 	labels := make(map[int]int)
 	i = 0
 	for i < len(f.Code) {
-		if f.Code[i].Op == OP_LABEL {
+		if f.Code[i].Op == ir.OP_LABEL {
 			labels[f.Code[i].Arg] = i
 		}
 		i = i + 1
@@ -961,81 +965,81 @@ func (vm *VM) execFunc(f *IRFunc) {
 		}
 
 		switch inst.Op {
-		case OP_LABEL:
+		case ir.OP_LABEL:
 			// no-op
 
-		case OP_CONST_I64:
+		case ir.OP_CONST_I64:
 			// Push full 64-bit constant; consuming ops (arithmetic, LOCAL_SET) handle masking.
 			vm.push(uint64(inst.Val))
 
-		case OP_CONST_STR:
-			s := decodeStringLiteral(inst.Name)
+		case ir.OP_CONST_STR:
+			s := becommon.DecodeStringLiteral(inst.Name)
 			addr, ok := vm.stringAddrs[s]
 			if !ok {
 				addr = vm.internString(s)
 			}
 			vm.push(addr)
 
-		case OP_CONST_BOOL:
+		case ir.OP_CONST_BOOL:
 			if inst.Arg != 0 {
 				vm.push(1)
 			} else {
 				vm.push(0)
 			}
 
-		case OP_CONST_NIL:
+		case ir.OP_CONST_NIL:
 			vm.push(0)
 
-		case OP_LOCAL_GET:
+		case ir.OP_LOCAL_GET:
 			w := vm.effectiveWidth(inst.Width)
 			vm.push(vm.loadN(localsAddr+uint64(inst.Arg)*slotPitch, w))
 
-		case OP_LOCAL_SET:
+		case ir.OP_LOCAL_SET:
 			w := vm.effectiveWidth(inst.Width)
 			vm.storeN(localsAddr+uint64(inst.Arg)*slotPitch, vm.pop(), w)
 
-		case OP_LOCAL_ADD_IMM:
+		case ir.OP_LOCAL_ADD_IMM:
 			w := vm.effectiveWidth(inst.Width)
 			addr := localsAddr + uint64(inst.Arg)*slotPitch
 			v := vm.loadN(addr, w)
 			vm.storeN(addr, v+uint64(inst.Val), w)
 
-		case OP_LOCAL_ADDR:
+		case ir.OP_LOCAL_ADDR:
 			vm.push(localsAddr + uint64(inst.Arg)*slotPitch)
 
-		case OP_GLOBAL_GET:
+		case ir.OP_GLOBAL_GET:
 			vm.push(vm.loadWord(vm.globalsAddr + uint64(inst.Arg)*ws))
 
-		case OP_GLOBAL_SET:
+		case ir.OP_GLOBAL_SET:
 			vm.storeWord(vm.globalsAddr+uint64(inst.Arg)*ws, vm.pop())
 
-		case OP_GLOBAL_ADDR:
+		case ir.OP_GLOBAL_ADDR:
 			vm.push(vm.globalsAddr + uint64(inst.Arg)*ws)
 
-		case OP_DROP:
+		case ir.OP_DROP:
 			vm.pop()
 
-		case OP_DUP:
+		case ir.OP_DUP:
 			v := vm.pop()
 			vm.push(v)
 			vm.push(v)
 
-		case OP_ADD:
+		case ir.OP_ADD:
 			a := vm.pop()
 			c := vm.pop()
 			vm.push(vm.maskResult(uint64(int64(c)+int64(a)), inst.Width))
 
-		case OP_SUB:
+		case ir.OP_SUB:
 			a := vm.pop()
 			c := vm.pop()
 			vm.push(vm.maskResult(uint64(int64(c)-int64(a)), inst.Width))
 
-		case OP_MUL:
+		case ir.OP_MUL:
 			a := vm.pop()
 			c := vm.pop()
 			vm.push(vm.maskResult(uint64(vm.signExtendW(c, inst.Width)*vm.signExtendW(a, inst.Width)), inst.Width))
 
-		case OP_DIV:
+		case ir.OP_DIV:
 			a := vm.pop()
 			c := vm.pop()
 			if a == 0 {
@@ -1044,7 +1048,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(vm.maskResult(uint64(vm.signExtendW(c, inst.Width)/vm.signExtendW(a, inst.Width)), inst.Width))
 			}
 
-		case OP_MOD:
+		case ir.OP_MOD:
 			a := vm.pop()
 			c := vm.pop()
 			if a == 0 {
@@ -1053,40 +1057,40 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(vm.maskResult(uint64(vm.signExtendW(c, inst.Width)%vm.signExtendW(a, inst.Width)), inst.Width))
 			}
 
-		case OP_NEG:
+		case ir.OP_NEG:
 			a := vm.pop()
 			vm.push(vm.maskResult(uint64(-vm.signExtendW(a, inst.Width)), inst.Width))
 
-		case OP_AND:
+		case ir.OP_AND:
 			a := vm.pop()
 			c := vm.pop()
 			vm.push(c & a)
 
-		case OP_OR:
+		case ir.OP_OR:
 			a := vm.pop()
 			c := vm.pop()
 			vm.push(c | a)
 
-		case OP_XOR:
+		case ir.OP_XOR:
 			a := vm.pop()
 			c := vm.pop()
 			vm.push((c ^ a) & widthMask(vm.effectiveWidth(inst.Width)))
 
-		case OP_SHL:
+		case ir.OP_SHL:
 			a := vm.pop()
 			c := vm.pop()
 			w := vm.effectiveWidth(inst.Width)
 			shiftMask := uint64(w*8 - 1)
 			vm.push((c << (a & shiftMask)) & widthMask(w))
 
-		case OP_SHR:
+		case ir.OP_SHR:
 			a := vm.pop()
 			c := vm.pop()
 			w := vm.effectiveWidth(inst.Width)
 			shiftMask := uint64(w*8 - 1)
 			vm.push((c & widthMask(w)) >> (a & shiftMask))
 
-		case OP_EQ:
+		case ir.OP_EQ:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) == vm.signExtendW(a, inst.Width) {
@@ -1095,7 +1099,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(0)
 			}
 
-		case OP_NEQ:
+		case ir.OP_NEQ:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) != vm.signExtendW(a, inst.Width) {
@@ -1104,7 +1108,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(0)
 			}
 
-		case OP_LT:
+		case ir.OP_LT:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) < vm.signExtendW(a, inst.Width) {
@@ -1113,7 +1117,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(0)
 			}
 
-		case OP_GT:
+		case ir.OP_GT:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) > vm.signExtendW(a, inst.Width) {
@@ -1122,7 +1126,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(0)
 			}
 
-		case OP_LEQ:
+		case ir.OP_LEQ:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) <= vm.signExtendW(a, inst.Width) {
@@ -1131,7 +1135,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(0)
 			}
 
-		case OP_GEQ:
+		case ir.OP_GEQ:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) >= vm.signExtendW(a, inst.Width) {
@@ -1140,7 +1144,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(0)
 			}
 
-		case OP_NOT:
+		case ir.OP_NOT:
 			a := vm.pop()
 			if a == 0 {
 				vm.push(1)
@@ -1148,7 +1152,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(0)
 			}
 
-		case OP_LOAD:
+		case ir.OP_LOAD:
 			addr := vm.pop()
 			n := inst.Arg
 			if n == 0 {
@@ -1156,7 +1160,7 @@ func (vm *VM) execFunc(f *IRFunc) {
 			}
 			vm.push(vm.loadN(addr, n))
 
-		case OP_STORE:
+		case ir.OP_STORE:
 			addr := vm.pop()
 			val := vm.pop()
 			n := inst.Arg
@@ -1165,11 +1169,11 @@ func (vm *VM) execFunc(f *IRFunc) {
 			}
 			vm.storeN(addr, val, n)
 
-		case OP_OFFSET:
+		case ir.OP_OFFSET:
 			a := vm.pop()
 			vm.push(a + uint64(inst.Arg))
 
-		case OP_INDEX_ADDR:
+		case ir.OP_INDEX_ADDR:
 			idx := vm.pop()
 			base := vm.pop()
 			var dataPtr uint64
@@ -1178,14 +1182,14 @@ func (vm *VM) execFunc(f *IRFunc) {
 			}
 			vm.push(dataPtr + idx*uint64(inst.Arg))
 
-		case OP_LEN:
+		case ir.OP_LEN:
 			a := vm.pop()
 			if a == 0 {
 				vm.push(0)
 			} else {
 				vm.push(vm.loadWord(a + ws))
 			}
-		case OP_CAP:
+		case ir.OP_CAP:
 			a := vm.pop()
 			if a == 0 {
 				vm.push(0)
@@ -1193,64 +1197,64 @@ func (vm *VM) execFunc(f *IRFunc) {
 				vm.push(vm.loadWord(a + 2*ws))
 			}
 
-		case OP_JMP:
+		case ir.OP_JMP:
 			ip = labels[inst.Arg]
 
-		case OP_JMP_IF:
+		case ir.OP_JMP_IF:
 			a := vm.pop()
 			if a != 0 {
 				ip = labels[inst.Arg]
 			}
 
-		case OP_JMP_IF_NOT:
+		case ir.OP_JMP_IF_NOT:
 			a := vm.pop()
 			if a == 0 {
 				ip = labels[inst.Arg]
 			}
 
-		case OP_JMP_EQ:
+		case ir.OP_JMP_EQ:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) == vm.signExtendW(a, inst.Width) {
 				ip = labels[inst.Arg]
 			}
 
-		case OP_JMP_NEQ:
+		case ir.OP_JMP_NEQ:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) != vm.signExtendW(a, inst.Width) {
 				ip = labels[inst.Arg]
 			}
 
-		case OP_JMP_LT:
+		case ir.OP_JMP_LT:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) < vm.signExtendW(a, inst.Width) {
 				ip = labels[inst.Arg]
 			}
 
-		case OP_JMP_GT:
+		case ir.OP_JMP_GT:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) > vm.signExtendW(a, inst.Width) {
 				ip = labels[inst.Arg]
 			}
 
-		case OP_JMP_LEQ:
+		case ir.OP_JMP_LEQ:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) <= vm.signExtendW(a, inst.Width) {
 				ip = labels[inst.Arg]
 			}
 
-		case OP_JMP_GEQ:
+		case ir.OP_JMP_GEQ:
 			a := vm.pop()
 			c := vm.pop()
 			if vm.signExtendW(c, inst.Width) >= vm.signExtendW(a, inst.Width) {
 				ip = labels[inst.Arg]
 			}
 
-		case OP_CALL:
+		case ir.OP_CALL:
 			if strings.HasPrefix(inst.Name, "builtin.composite.") {
 				vm.builtinComposite(inst.Arg)
 			} else {
@@ -1258,21 +1262,21 @@ func (vm *VM) execFunc(f *IRFunc) {
 				if !ok {
 					fmt.Fprintf(os.Stderr, "vm: unresolved call target: %s\n", inst.Name)
 					vm.exited = true
-					vmExitCode = 2
+					ExitCode = 2
 					return
 				}
 				vm.execFunc(target)
 			}
 
-		case OP_CALL_INTRINSIC:
+		case ir.OP_CALL_INTRINSIC:
 			vm.execIntrinsic(inst.Name, localsAddr, slotPitch)
 
-		case OP_RETURN:
+		case ir.OP_RETURN:
 			vm.frameStackTop = savedFrameTop
 			vm.callStack = vm.callStack[0:csDepth]
 			return
 
-		case OP_CONVERT:
+		case ir.OP_CONVERT:
 			switch inst.Name {
 			case "string":
 				if vm.bytesToStringFunc != nil {
@@ -1303,14 +1307,14 @@ func (vm *VM) execFunc(f *IRFunc) {
 				// no-op conversion
 			}
 
-		case OP_IFACE_BOX:
+		case ir.OP_IFACE_BOX:
 			val := vm.pop()
 			box := vm.slabAllocSmall("iface-box")
 			vm.storeWord(box, uint64(inst.Arg))
 			vm.storeWord(box+ws, val)
 			vm.push(box)
 
-		case OP_IFACE_CALL:
+		case ir.OP_IFACE_CALL:
 			methodName := vmBareMethod(inst.Name)
 			mid := vm.methodIDs[methodName]
 			argc := inst.Arg
@@ -1338,12 +1342,12 @@ func (vm *VM) execFunc(f *IRFunc) {
 			if funcName == "" {
 				fmt.Fprintf(os.Stderr, "vm: interface dispatch failed: typeID=%d method=%s\n", typeID, methodName)
 				vm.exited = true
-				vmExitCode = 2
+				ExitCode = 2
 				return
 			}
 			vm.execFunc(vm.funcs[funcName])
 
-		case OP_PANIC:
+		case ir.OP_PANIC:
 			a := vm.pop()
 			if a != 0 {
 				c := vm.loadWord(a)
@@ -1362,19 +1366,19 @@ func (vm *VM) execFunc(f *IRFunc) {
 			}
 			os.Stderr.Write([]byte("\n"))
 			vm.exited = true
-			vmExitCode = 2
+			ExitCode = 2
 			return
 
-		case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+		case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 			fmt.Fprintf(os.Stderr, "vm: unsupported opcode %d\n", inst.Op)
 			vm.exited = true
-			vmExitCode = 2
+			ExitCode = 2
 			return
 
 		default:
 			fmt.Fprintf(os.Stderr, "vm: unhandled opcode %d\n", inst.Op)
 			vm.exited = true
-			vmExitCode = 2
+			ExitCode = 2
 			return
 		}
 
@@ -1558,7 +1562,7 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.vmSysReturn(int64(n))
 
 	case "SysExit":
-		vmExitCode = int(vm.signExtend(vm.localGet(localsAddr, ws, 0)))
+		ExitCode = int(vm.signExtend(vm.localGet(localsAddr, ws, 0)))
 		vm.exited = true
 
 	case "SysMmap":
@@ -1796,7 +1800,7 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 	default:
 		fmt.Fprintf(os.Stderr, "vm: unknown intrinsic %q\n", name)
 		vm.exited = true
-		vmExitCode = 2
+		ExitCode = 2
 	}
 }
 

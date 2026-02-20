@@ -1,6 +1,6 @@
 //go:build !no_backend_ir
 
-package main
+package irprint
 
 import (
 	"fmt"

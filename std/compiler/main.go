@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 
+	"j5.nz/rtg/std/compiler/backend"
+	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/binary"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/frontend"
@@ -496,7 +498,7 @@ func main() {
 	if compileTarget.CompilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
 	}
-	err := GenerateELF(irmod, outputPath)
+	err := backend.Generate(&compileTarget, irmod, outputPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		runCleanup()
@@ -512,7 +514,7 @@ func main() {
 	// VM backend executes directly — no binary to run
 	if compileTarget.Backend == "vm" {
 		runCleanup()
-		os.Exit(vmExitCode)
+		os.Exit(vm.ExitCode)
 	}
 
 	if runMode {
@@ -688,7 +690,7 @@ func sortNameDataPairs(names []string, data []string) {
 }
 
 func extractEmbeddedStdlib(dest string) error {
-	dest = trimTrailingSlash(dest)
+	dest = common.TrimTrailingSlash(dest)
 	if dest == "" {
 		return fmt.Errorf("destination path cannot be empty")
 	}
@@ -697,8 +699,8 @@ func extractEmbeddedStdlib(dest string) error {
 		return err
 	}
 	extracted := false
-	if shouldUseEmbeddedStdlib() {
-		names, data := walkEmbedFromFS(".")
+	if frontend.ShouldUseEmbeddedStdlib(&compileTarget) {
+		names, data := stdlib.WalkEmbedFromFS(".")
 		if len(names) > 0 {
 			err = writeExtractedStdlibFiles(dest, names, data)
 			if err != nil {
@@ -712,7 +714,7 @@ func extractEmbeddedStdlib(dest string) error {
 		return err
 	}
 	for _, root := range roots {
-		names, data := walkEmbedDir(root, root)
+		names, data := common.WalkDirectory(root, root)
 		if len(names) == 0 {
 			continue
 		}
@@ -729,11 +731,11 @@ func extractEmbeddedStdlib(dest string) error {
 }
 
 func writeExtractedStdlibFiles(dest string, names []string, data []string) error {
-	dest = trimTrailingSlash(dest)
+	dest = common.TrimTrailingSlash(dest)
 	sortNameDataPairs(names, data)
 	i := 0
 	for i < len(names) {
-		rel := normalizePath(names[i])
+		rel := common.NormalizePath(names[i])
 		if strings.HasPrefix(rel, "./") {
 			rel = rel[2:len(rel)]
 		}
@@ -741,7 +743,7 @@ func writeExtractedStdlibFiles(dest string, names []string, data []string) error
 			return fmt.Errorf("unsafe embedded path %q", names[i])
 		}
 		outPath := dest + "/" + rel
-		parent := dirName(outPath)
+		parent := common.DirName(outPath)
 		if parent != "" && parent != "." {
 			err := os.MkdirAll(parent, 0755)
 			if err != nil {

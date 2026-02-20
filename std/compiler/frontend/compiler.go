@@ -2,7 +2,6 @@ package frontend
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"j5.nz/rtg/std/compiler/common"
@@ -1150,7 +1149,7 @@ func (c *Compiler) compileEmbedInit(pkg *Package, gidx int, pattern string) {
 	// then fall back to disk.
 	names, data := stdlib.WalkEmbedFromFS(embedDir)
 	if names == nil {
-		names, data = walkEmbedDir(embedDir, embedDir)
+		names, data = common.WalkDirectory(embedDir, embedDir)
 	}
 
 	// Sort for deterministic order
@@ -5487,33 +5486,4 @@ func encodeStringLiteral(raw string) string {
 		i++
 	}
 	return string(buf)
-}
-
-// walkEmbedDir recursively collects all files under dir, returning
-// relative paths (relative to base) and their contents.
-func walkEmbedDir(base string, dir string) ([]string, []string) {
-	var names []string
-	var data []string
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return names, data
-	}
-	for _, entry := range entries {
-		path := dir + "/" + entry.Name()
-		if entry.IsDir() {
-			subNames, subData := walkEmbedDir(base, path)
-			names = append(names, subNames...)
-			data = append(data, subData...)
-		} else {
-			content, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			// Compute relative path from base
-			rel := path[len(base)+1 : len(path)]
-			names = append(names, rel)
-			data = append(data, string(content))
-		}
-	}
-	return names, data
 }

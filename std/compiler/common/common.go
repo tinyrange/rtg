@@ -74,3 +74,32 @@ func PathExists(path string) bool {
 	_, err := os.ReadFile(path)
 	return err == nil
 }
+
+// WalkDirectory recursively collects all files under dir, returning
+// relative paths (relative to base) and their contents.
+func WalkDirectory(base string, dir string) ([]string, []string) {
+	var names []string
+	var data []string
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return names, data
+	}
+	for _, entry := range entries {
+		path := dir + "/" + entry.Name()
+		if entry.IsDir() {
+			subNames, subData := WalkDirectory(base, path)
+			names = append(names, subNames...)
+			data = append(data, subData...)
+		} else {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			// Compute relative path from base
+			rel := path[len(base)+1 : len(path)]
+			names = append(names, rel)
+			data = append(data, string(content))
+		}
+	}
+	return names, data
+}
