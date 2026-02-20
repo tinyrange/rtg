@@ -109,6 +109,45 @@ jobs:
       - name: WASM to native cross-compile smoke
         run: ./build/build crosscompile-wasm-native
 
+      - name: Collect crosscompile diagnostics
+        if: failure()
+        run: |
+          set +e
+          mkdir -p build/cross_debug
+          cp -f build/cross_stage1.wasm build/cross_stage2 build/cross_stage3 build/cross_stage4 build/cross_smoke build/cross_debug/ 2>/dev/null || true
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum build/cross_stage3 build/cross_stage4 > build/cross_debug/sha256.txt 2>/dev/null || true
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 build/cross_stage3 build/cross_stage4 > build/cross_debug/sha256.txt 2>/dev/null || true
+          fi
+
+          cmp -l build/cross_stage3 build/cross_stage4 > build/cross_debug/cmp_l.txt 2>/dev/null || true
+          head -n 50 build/cross_debug/cmp_l.txt > build/cross_debug/cmp_l_head50.txt 2>/dev/null || true
+
+          diff_line=$(head -n 1 build/cross_debug/cmp_l.txt 2>/dev/null || true)
+          if [ -n "$diff_line" ]; then
+            set -- $diff_line
+            byte_pos=$1
+            start=$((byte_pos-64))
+            if [ $start -lt 0 ]; then start=0; fi
+            od -An -tx1 -j $start -N 160 build/cross_stage3 > build/cross_debug/cross_stage3_around_diff.hex 2>/dev/null || true
+            od -An -tx1 -j $start -N 160 build/cross_stage4 > build/cross_debug/cross_stage4_around_diff.hex 2>/dev/null || true
+          fi
+
+          readelf -S build/cross_stage3 > build/cross_debug/cross_stage3.sections.txt 2>/dev/null || true
+          readelf -S build/cross_stage4 > build/cross_debug/cross_stage4.sections.txt 2>/dev/null || true
+          readelf -s build/cross_stage3 > build/cross_debug/cross_stage3.symbols.txt 2>/dev/null || true
+          readelf -s build/cross_stage4 > build/cross_debug/cross_stage4.symbols.txt 2>/dev/null || true
+
+      - name: Upload crosscompile artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-native-crosscompile-debug-${{ github.run_id }}-${{ github.sha }}
+          path: build/cross_debug
+          if-no-files-found: warn
+
       - name: Fullcompiler suite (WASM backend)
         run: ./build/build test-fullcompiler-wasm
 
