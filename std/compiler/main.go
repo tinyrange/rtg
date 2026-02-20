@@ -208,15 +208,13 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
-	if len(acquired.FrontendErrs) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d frontend errors:\n", len(acquired.FrontendErrs))
-		for _, e := range acquired.FrontendErrs {
-			fmt.Fprintf(os.Stderr, "  %s\n", e)
-		}
+	frontendErrMsg, shouldExitNow := evaluateIRAcquisition(acquired)
+	if frontendErrMsg != "" {
+		fmt.Fprintf(os.Stderr, "%s", frontendErrMsg)
 		runCleanup()
 		os.Exit(1)
 	}
-	if acquired.ShouldExitNow {
+	if shouldExitNow {
 		runCleanup()
 		os.Exit(0)
 	}

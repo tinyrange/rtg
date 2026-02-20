@@ -160,3 +160,21 @@ func validateMainInputs(extractStdlibDest string, fromIRBinaryPath string, entry
 	}
 	return false, nil
 }
+
+func evaluateIRAcquisition(acquired irAcquisitionResult) (string, bool) {
+	if len(acquired.FrontendErrs) > 0 {
+		return frontendErrorsMessage(acquired.FrontendErrs), false
+	}
+	if acquired.ShouldExitNow {
+		return "", true
+	}
+	return "", false
+}
+
+func frontendErrorsMessage(errs []string) string {
+	out := fmt.Sprintf("\n%d frontend errors:\n", len(errs))
+	for _, e := range errs {
+		out = out + "  " + e + "\n"
+	}
+	return out
+}
