@@ -37,7 +37,7 @@ func main() {
 			fromIRBinaryPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
-			sizeAnalysisPath = os.Args[i+1]
+			parsedOpts.SizeReport = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-tags" && i+1 < len(os.Args) {
 			extraTags = os.Args[i+1]
@@ -59,7 +59,7 @@ func main() {
 	}
 
 	// Build and apply driver options explicitly.
-	opts := buildAndApplyDriverOptionsFrom(parsedOpts, extraTags, sizeAnalysisPath != "")
+	opts := buildAndApplyDriverOptionsFrom(parsedOpts, extraTags)
 
 	initEmbeddedStd()
 

@@ -11,13 +11,14 @@ func currentDriverOptions() DriverOptions {
 		BuildTags:   cloneStrings(buildTags),
 		Debug:       compilerDebug,
 		StripBinary: stripBinary,
+		SizeReport:  sizeAnalysisPath,
 	}
 }
 
-func buildAndApplyDriverOptionsFrom(base DriverOptions, extraTags string, forceStrip bool) DriverOptions {
+func buildAndApplyDriverOptionsFrom(base DriverOptions, extraTags string) DriverOptions {
 	opts := base
 	opts.BuildTags = cloneStrings(buildActiveBuildTagsForTarget(opts.Target, extraTags))
-	if forceStrip {
+	if opts.SizeReport != "" {
 		opts.StripBinary = true
 	}
 	applyDriverOptions(opts)

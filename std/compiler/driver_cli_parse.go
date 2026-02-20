@@ -59,7 +59,7 @@ func parseMainArgs(args []string, base DriverOptions) (parseMainArgsResult, erro
 			}
 			i = i + 2
 		} else if args[i] == "-size-analysis" && i+1 < len(args) {
-			sizeAnalysisPath = args[i+1]
+			result.Invocation.ParsedOpts.SizeReport = args[i+1]
 			i = i + 2
 		} else if args[i] == "-parse-only" {
 			result.Invocation.ParseOnly = true

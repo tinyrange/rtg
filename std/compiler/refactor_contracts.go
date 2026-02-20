@@ -19,6 +19,7 @@ type DriverOptions struct {
 	BuildTags   []string
 	Debug       bool
 	StripBinary bool
+	SizeReport  string
 }
 
 // FrontendOptions are the frontend-facing options.
@@ -92,4 +93,5 @@ func applyDriverOptions(opts DriverOptions) {
 	buildTags = cloneStrings(opts.BuildTags)
 	compilerDebug = opts.Debug
 	stripBinary = opts.StripBinary
+	sizeAnalysisPath = opts.SizeReport
 }

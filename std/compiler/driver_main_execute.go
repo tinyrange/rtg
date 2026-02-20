@@ -17,7 +17,7 @@ func executeMainInvocation(invocation mainInvocation) (int, string, error) {
 	}
 
 	// Build and apply driver options explicitly.
-	opts := buildAndApplyDriverOptionsFrom(invocation.ParsedOpts, invocation.ExtraTags, sizeAnalysisPath != "")
+	opts := buildAndApplyDriverOptionsFrom(invocation.ParsedOpts, invocation.ExtraTags)
 
 	// Initialize embedded std if available.
 	initEmbeddedStd()
