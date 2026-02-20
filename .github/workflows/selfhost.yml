@@ -17,26 +17,32 @@ jobs:
         include:
           - runner: ubuntu-latest
             target: linux/amd64
+            target_id: linux-amd64
             cc: cc
             suffix: ""
           - runner: ubuntu-latest
             target: linux/386
+            target_id: linux-386
             cc: cc
             suffix: ""
           - runner: ubuntu-24.04-arm
             target: linux/arm64
+            target_id: linux-arm64
             cc: cc
             suffix: ""
           - runner: macos-latest
             target: darwin/arm64
+            target_id: darwin-arm64
             cc: cc
             suffix: ""
           - runner: windows-latest
             target: windows/386
+            target_id: windows-386
             cc: gcc
             suffix: .exe
           - runner: windows-latest
             target: windows/amd64
+            target_id: windows-amd64
             cc: gcc
             suffix: .exe
     runs-on: ${{ matrix.runner }}
@@ -70,12 +76,31 @@ jobs:
       - name: C self-hosting (3-stage)
         if: matrix.runner != 'windows-latest'
         run: |
-          ./build/rtg${{ matrix.suffix }} -T c/64 -o build/stage1_c.c ./std/compiler/
-          ${{ matrix.cc }} build/stage1_c.c -o build/stage1_c${{ matrix.suffix }}
-          ./build/stage1_c${{ matrix.suffix }} -T c/64 -o build/stage2_c.c compiler
-          ${{ matrix.cc }} build/stage2_c.c -o build/stage2_c${{ matrix.suffix }}
-          ./build/stage2_c${{ matrix.suffix }} -T c/64 -o build/stage3_c.c compiler
-          cmp build/stage2_c.c build/stage3_c.c
+          set -euo pipefail
+          mkdir -p build/selfhost-c-artifacts
+          {
+            set -x
+            ./build/rtg${{ matrix.suffix }} -T c/64 -o build/stage1_c.c ./std/compiler/
+            ${{ matrix.cc }} build/stage1_c.c -o build/stage1_c${{ matrix.suffix }}
+            ./build/stage1_c${{ matrix.suffix }} -T c/64 -o build/stage2_c.c compiler
+            ${{ matrix.cc }} build/stage2_c.c -o build/stage2_c${{ matrix.suffix }}
+            ./build/stage2_c${{ matrix.suffix }} -T c/64 -o build/stage3_c.c compiler
+            cmp build/stage2_c.c build/stage3_c.c
+          } 2>&1 | tee build/selfhost-c-artifacts/c-selfhost.log
+
+      - name: Upload C self-hosting failure artifacts
+        if: matrix.runner != 'windows-latest' && failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-selfhost-failure-${{ matrix.target_id }}
+          if-no-files-found: ignore
+          path: |
+            build/selfhost-c-artifacts/c-selfhost.log
+            build/stage1_c.c
+            build/stage2_c.c
+            build/stage3_c.c
+            build/stage1_c${{ matrix.suffix }}
+            build/stage2_c${{ matrix.suffix }}
 
       - name: Fullcompiler suite (C backend)
         if: matrix.runner != 'windows-latest'

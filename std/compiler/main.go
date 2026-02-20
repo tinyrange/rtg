@@ -8,12 +8,31 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"j5.nz/rtg/std/compiler/backend"
+	"j5.nz/rtg/std/compiler/backend/vm"
+	"j5.nz/rtg/std/compiler/binary"
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/frontend"
+	"j5.nz/rtg/std/compiler/ir"
+	"j5.nz/rtg/std/compiler/stdlib"
 )
 
 // Target and build tag globals — defaults to host platform
-var targetGOOS string = runtime.GOOS
-var targetGOARCH string = runtime.GOARCH
-var targetPtrSize int = defaultPtrSize()
+var compileTarget = common.Target{
+	GOOS:                  runtime.GOOS,
+	GOARCH:                runtime.GOARCH,
+	PtrSize:               defaultPtrSize(),
+	Backend:               "native",         // native, c, ir, or vm
+	CModel:                0,                // 16/32/64 when targetBackend==c
+	WordSize:              defaultPtrSize(), // word size in bytes
+	BuildTags:             []string{},
+	CompilerDebug:         false,
+	StripBinary:           false,
+	StdlibIncludePaths:    []string{},
+	StdlibIncludeExplicit: false,
+	StdlibIncludeEmbedded: false,
+}
 
 func defaultPtrSize() int {
 	if runtime.GOARCH == "386" || runtime.GOARCH == "wasm32" {
@@ -21,16 +40,6 @@ func defaultPtrSize() int {
 	}
 	return 8
 }
-
-var targetBackend string = "native"       // native, c, ir, or vm
-var targetCModel int = 0                  // 16/32/64 when targetBackend==c
-var targetWordSize int = defaultPtrSize() // word size in bytes
-var buildTags []string
-var compilerDebug bool
-var stripBinary bool
-var stdlibIncludePaths []string
-var stdlibIncludeExplicit bool
-var stdlibIncludeEmbedded bool
 
 // Temp file paths for -run mode; cleaned up on exit.
 var runTmpSrc string
@@ -119,61 +128,61 @@ func main() {
 		} else if os.Args[i] == "-T" && i+1 < len(os.Args) {
 			target := os.Args[i+1]
 			if target == "c" || strings.HasPrefix(target, "c/") {
-				targetBackend = "c"
-				targetCModel = 64
+				compileTarget.Backend = "c"
+				compileTarget.CModel = 64
 				if strings.HasPrefix(target, "c/") {
 					model := target[2:]
 					if model == "16" {
-						targetCModel = 16
+						compileTarget.CModel = 16
 					} else if model == "32" {
-						targetCModel = 32
+						compileTarget.CModel = 32
 					} else if model == "64" {
-						targetCModel = 64
+						compileTarget.CModel = 64
 					} else {
 						fmt.Fprintf(os.Stderr, "invalid target %q: expected c, c/16, c/32, or c/64\n", target)
 						os.Exit(1)
 					}
 				}
-				if targetCModel == 16 {
-					targetPtrSize = 2
-				} else if targetCModel == 32 {
-					targetPtrSize = 4
+				if compileTarget.CModel == 16 {
+					compileTarget.PtrSize = 2
+				} else if compileTarget.CModel == 32 {
+					compileTarget.PtrSize = 4
 				} else {
-					targetPtrSize = 8
+					compileTarget.PtrSize = 8
 				}
-				targetGOOS = "c"
-				targetGOARCH = fmt.Sprintf("c%d", targetCModel)
+				compileTarget.GOOS = "c"
+				compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
 			} else if target == "ir" {
-				targetBackend = "ir"
+				compileTarget.Backend = "ir"
 			} else if strings.HasPrefix(target, "vm/") {
-				targetBackend = "vm"
+				compileTarget.Backend = "vm"
 				model := target[3:]
 				if model == "8" {
-					targetWordSize = 1
-					targetPtrSize = 2
+					compileTarget.WordSize = 1
+					compileTarget.PtrSize = 2
 				} else if model == "16" {
-					targetWordSize = 2
-					targetPtrSize = 2
+					compileTarget.WordSize = 2
+					compileTarget.PtrSize = 2
 				} else if model == "32" {
-					targetWordSize = 4
-					targetPtrSize = 4
+					compileTarget.WordSize = 4
+					compileTarget.PtrSize = 4
 				} else if model == "64" {
-					targetWordSize = 8
-					targetPtrSize = 8
+					compileTarget.WordSize = 8
+					compileTarget.PtrSize = 8
 				} else {
 					fmt.Fprintf(os.Stderr, "invalid target %q: expected vm/8, vm/16, vm/32, or vm/64\n", target)
 					os.Exit(1)
 				}
 				// Reuse C backend's runtime/os files via matching build tags
-				targetGOOS = "c"
-				bits := targetWordSize * 8
-				targetGOARCH = fmt.Sprintf("c%d", bits)
+				compileTarget.GOOS = "c"
+				bits := compileTarget.WordSize * 8
+				compileTarget.GOARCH = fmt.Sprintf("c%d", bits)
 			} else {
 				if target == "dos/8086" {
 					// DOS 8086 COM backend.
-					targetGOOS = "dos"
-					targetGOARCH = "dos16"
-					targetPtrSize = 2
+					compileTarget.GOOS = "dos"
+					compileTarget.GOARCH = "dos16"
+					compileTarget.PtrSize = 2
 					i = i + 2
 					continue
 				}
@@ -182,23 +191,23 @@ func main() {
 					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], ir, or vm/<8|16|32|64>\n", target)
 					os.Exit(1)
 				}
-				targetGOOS = target[0:slashIdx]
-				targetGOARCH = target[slashIdx+1:]
-				if targetGOARCH == "386" || targetGOARCH == "wasm32" {
-					targetPtrSize = 4
+				compileTarget.GOOS = target[0:slashIdx]
+				compileTarget.GOARCH = target[slashIdx+1:]
+				if compileTarget.GOARCH == "386" || compileTarget.GOARCH == "wasm32" {
+					compileTarget.PtrSize = 4
 				} else {
-					targetPtrSize = 8
+					compileTarget.PtrSize = 8
 				}
 			}
 			i = i + 2
 		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
-			sizeAnalysisPath = os.Args[i+1]
+			ir.SizeAnalysisPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-parse-only" {
 			parseOnly = true
 			i = i + 1
 		} else if (os.Args[i] == "-emit-ir-binary" || os.Args[i] == "-from-ir-binary") && i+1 < len(os.Args) {
-			if !irBinaryEnabled {
+			if !binary.IrBinaryEnabled {
 				fmt.Fprintf(os.Stderr, "IR binary I/O is experimental; rebuild with -tags exp_ir_binary\n")
 				runCleanup()
 				os.Exit(1)
@@ -216,25 +225,27 @@ func main() {
 			extraTags = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-include" && i+1 < len(os.Args) {
-			val := normalizePath(os.Args[i+1])
-			if !stdlibIncludeExplicit {
-				stdlibIncludeExplicit = true
-				stdlibIncludeEmbedded = false
+			val := common.NormalizePath(os.Args[i+1])
+			if !compileTarget.StdlibIncludeExplicit {
+				compileTarget.StdlibIncludeExplicit = true
+				compileTarget.StdlibIncludeEmbedded = false
 			}
 			if val == "-" {
-				stdlibIncludeEmbedded = true
+				compileTarget.StdlibIncludeEmbedded = true
 			} else if val != "" {
-				stdlibIncludePaths = appendUnique(stdlibIncludePaths, trimTrailingSlash(val))
+				compileTarget.StdlibIncludePaths = common.AppendUnique(
+					compileTarget.StdlibIncludePaths, common.TrimTrailingSlash(val),
+				)
 			}
 			i = i + 2
 		} else if os.Args[i] == "-extract-stdlib" && i+1 < len(os.Args) {
-			extractStdlibDest = normalizePath(os.Args[i+1])
+			extractStdlibDest = common.NormalizePath(os.Args[i+1])
 			i = i + 2
 		} else if os.Args[i] == "-debug" {
-			compilerDebug = true
+			compileTarget.CompilerDebug = true
 			i = i + 1
 		} else if os.Args[i] == "-strip" || os.Args[i] == "-s" {
-			stripBinary = true
+			compileTarget.StripBinary = true
 			i = i + 1
 		} else if os.Args[i] == "--" {
 			i = i + 1
@@ -246,7 +257,7 @@ func main() {
 			stdinInput = true
 			i = i + 1
 		} else {
-			entryFiles = append(entryFiles, normalizePath(os.Args[i]))
+			entryFiles = append(entryFiles, common.NormalizePath(os.Args[i]))
 			i = i + 1
 		}
 	}
@@ -272,7 +283,7 @@ func main() {
 			runTmpSrc = tmpDir + sep + "rtg-run-" + pid + ".go"
 		}
 		runTmpBin = tmpDir + sep + "rtg-run-" + pid
-		if targetGOOS == "windows" {
+		if compileTarget.GOOS == "windows" {
 			runTmpBin = runTmpBin + ".exe"
 		}
 
@@ -302,31 +313,28 @@ func main() {
 	}
 
 	// Build active tag set from target + explicit tags
-	if targetBackend == "c" {
-		buildTags = append(buildTags, "c")
-		buildTags = append(buildTags, fmt.Sprintf("c%d", targetCModel))
-	} else if targetGOOS == "wasi" && targetGOARCH == "wasm32" {
-		buildTags = append(buildTags, "wasi")
-		buildTags = append(buildTags, "wasm32")
+	if compileTarget.Backend == "c" {
+		compileTarget.BuildTags = append(compileTarget.BuildTags, "c")
+		compileTarget.BuildTags = append(compileTarget.BuildTags, fmt.Sprintf("c%d", compileTarget.CModel))
+	} else if compileTarget.GOOS == "wasi" && compileTarget.GOARCH == "wasm32" {
+		compileTarget.BuildTags = append(compileTarget.BuildTags, "wasi")
+		compileTarget.BuildTags = append(compileTarget.BuildTags, "wasm32")
 	} else {
-		buildTags = append(buildTags, targetGOOS)
-		buildTags = append(buildTags, targetGOARCH)
+		compileTarget.BuildTags = append(compileTarget.BuildTags, compileTarget.GOOS)
+		compileTarget.BuildTags = append(compileTarget.BuildTags, compileTarget.GOARCH)
 	}
 	if extraTags != "" {
 		parts := strings.Split(extraTags, ",")
 		for _, t := range parts {
 			if t != "" {
-				buildTags = append(buildTags, t)
+				compileTarget.BuildTags = append(compileTarget.BuildTags, t)
 			}
 		}
 	}
-	buildTags = append(buildTags, "rtg")
-	if sizeAnalysisPath != "" {
-		stripBinary = true
+	compileTarget.BuildTags = append(compileTarget.BuildTags, "rtg")
+	if ir.SizeAnalysisPath != "" {
+		compileTarget.StripBinary = true
 	}
-
-	// Initialize embedded std if available
-	initEmbeddedStd()
 
 	if extractStdlibDest != "" {
 		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || stdinInput || parseOnly || emitIRBinaryPath != "" || buildTagsPath != "" {
@@ -344,7 +352,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	var irmod *IRModule
+	var irmod *ir.IRModule
 	if fromIRBinaryPath != "" {
 		if parseOnly {
 			fmt.Fprintf(os.Stderr, "-parse-only is not valid with -from-ir-binary\n")
@@ -357,20 +365,20 @@ func main() {
 			os.Exit(1)
 		}
 		var err error
-		irmod, err = readIRBinary(fromIRBinaryPath)
+		irmod, err = binary.ReadIRBinary(fromIRBinaryPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error reading IR binary: %v\n", err)
 			runCleanup()
 			os.Exit(1)
 		}
-		if compilerDebug {
+		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 	} else {
 		// Determine base directory for the std library.
 		// When embedded std is available, skip the disk search entirely.
 		var baseDir string
-		if hasEmbeddedStd() {
+		if stdlib.HasEmbeddedStd() {
 			baseDir = "."
 		} else {
 			cwd, err := os.Getwd()
@@ -388,7 +396,7 @@ func main() {
 					baseDir = search
 					break
 				}
-				parent := dirName(search)
+				parent := common.DirName(search)
 				if parent == search || parent == "" {
 					break
 				}
@@ -396,17 +404,17 @@ func main() {
 			}
 		}
 
-		if compilerDebug {
+		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
 		}
-		resetDiscoveredBuildTags()
-		mod := ResolveModule(baseDir, entryFiles)
-		if compilerDebug {
+		frontend.ResetDiscoveredBuildTags()
+		mod := frontend.ResolveModule(&compileTarget, baseDir, entryFiles)
+		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
 		}
 
 		if buildTagsPath != "" {
-			tags := getDiscoveredBuildTags()
+			tags := frontend.GetDiscoveredBuildTags()
 			var out string
 			for _, t := range tags {
 				out = out + t + "\n"
@@ -425,7 +433,7 @@ func main() {
 		}
 
 		// Validate cross-package references
-		valErrs := ValidateModule(mod)
+		valErrs := frontend.ValidateModule(mod)
 		if len(valErrs) > 0 {
 			fmt.Fprintf(os.Stderr, "\n%d validation errors:\n", len(valErrs))
 			for _, e := range valErrs {
@@ -436,11 +444,11 @@ func main() {
 		}
 
 		// Compile to IR
-		if compilerDebug {
+		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
 		}
 		var errs []string
-		irmod, errs = CompileModule(mod)
+		irmod, errs = frontend.CompileModule(compileTarget, mod)
 
 		if len(errs) > 0 {
 			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
@@ -451,15 +459,15 @@ func main() {
 			os.Exit(1)
 		}
 
-		if compilerDebug {
+		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
-		eliminateDeadFunctions(irmod)
-		if compilerDebug {
+		ir.EliminateDeadFunctions(irmod)
+		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
 		}
 		if emitIRBinaryPath != "" {
-			err := writeIRBinary(irmod, emitIRBinaryPath)
+			err := binary.WriteIRBinary(irmod, emitIRBinaryPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error writing IR binary: %v\n", err)
 				runCleanup()
@@ -470,8 +478,10 @@ func main() {
 		}
 	}
 
+	var vmArgs []string
+
 	// Set VM program arguments if using VM backend
-	if targetBackend == "vm" {
+	if compileTarget.Backend == "vm" {
 		// argv[0] is the program name, followed by actual args
 		vmArgs = append(vmArgs, "rtg")
 		if len(programArgs) > 0 {
@@ -483,28 +493,29 @@ func main() {
 				i = i + 1
 			}
 		}
+		vm.SetArgs(vmArgs)
 	}
 
-	if compilerDebug {
-		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, targetGOOS, targetGOARCH)
+	if compileTarget.CompilerDebug {
+		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
 	}
-	err := GenerateELF(irmod, outputPath)
+	err := backend.Generate(&compileTarget, irmod, outputPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		runCleanup()
 		os.Exit(1)
 	}
 
-	if compilerDebug {
+	if compileTarget.CompilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: output generated successfully\n")
 	}
 
-	writeSizeAnalysis()
+	ir.WriteSizeAnalysis(compileTarget)
 
 	// VM backend executes directly — no binary to run
-	if targetBackend == "vm" {
+	if compileTarget.Backend == "vm" {
 		runCleanup()
-		os.Exit(vmExitCode)
+		os.Exit(vm.ExitCode)
 	}
 
 	if runMode {
@@ -548,7 +559,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -include <path|->      Add stdlib search root; first -include disables default embedded stdlib, -include - re-enables it\n")
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
-	if irBinaryEnabled {
+	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")
 		fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
 	}
@@ -567,78 +578,27 @@ func printHelp(program string, out *os.File) {
 
 func possibleTargets() []string {
 	var targets []string
-	targets = appendUnique(targets, runtime.GOOS+"/"+runtime.GOARCH)
-	targets = appendUnique(targets, "linux/amd64")
-	targets = appendUnique(targets, "linux/386")
-	targets = appendUnique(targets, "linux/arm64")
-	targets = appendUnique(targets, "darwin/amd64")
-	targets = appendUnique(targets, "darwin/arm64")
-	targets = appendUnique(targets, "windows/amd64")
-	targets = appendUnique(targets, "windows/386")
-	targets = appendUnique(targets, "windows/arm64")
-	targets = appendUnique(targets, "wasi/wasm32")
-	targets = appendUnique(targets, "dos/8086")
-	targets = appendUnique(targets, "c")
-	targets = appendUnique(targets, "c/16")
-	targets = appendUnique(targets, "c/32")
-	targets = appendUnique(targets, "c/64")
-	targets = appendUnique(targets, "ir")
-	targets = appendUnique(targets, "vm/8")
-	targets = appendUnique(targets, "vm/16")
-	targets = appendUnique(targets, "vm/32")
-	targets = appendUnique(targets, "vm/64")
+	targets = common.AppendUnique(targets, runtime.GOOS+"/"+runtime.GOARCH)
+	targets = common.AppendUnique(targets, "linux/amd64")
+	targets = common.AppendUnique(targets, "linux/386")
+	targets = common.AppendUnique(targets, "linux/arm64")
+	targets = common.AppendUnique(targets, "darwin/amd64")
+	targets = common.AppendUnique(targets, "darwin/arm64")
+	targets = common.AppendUnique(targets, "windows/amd64")
+	targets = common.AppendUnique(targets, "windows/386")
+	targets = common.AppendUnique(targets, "windows/arm64")
+	targets = common.AppendUnique(targets, "wasi/wasm32")
+	targets = common.AppendUnique(targets, "dos/8086")
+	targets = common.AppendUnique(targets, "c")
+	targets = common.AppendUnique(targets, "c/16")
+	targets = common.AppendUnique(targets, "c/32")
+	targets = common.AppendUnique(targets, "c/64")
+	targets = common.AppendUnique(targets, "ir")
+	targets = common.AppendUnique(targets, "vm/8")
+	targets = common.AppendUnique(targets, "vm/16")
+	targets = common.AppendUnique(targets, "vm/32")
+	targets = common.AppendUnique(targets, "vm/64")
 	return targets
-}
-
-func appendUnique(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
-}
-
-// normalizePath replaces backslashes with forward slashes for Windows compatibility.
-func normalizePath(path string) string {
-	buf := make([]byte, len(path))
-	i := 0
-	for i < len(path) {
-		if path[i] == '\\' {
-			buf[i] = '/'
-		} else {
-			buf[i] = path[i]
-		}
-		i = i + 1
-	}
-	return string(buf)
-}
-
-// dirName returns the directory portion of a path.
-func dirName(path string) string {
-	i := len(path) - 1
-	for i >= 0 {
-		if path[i] == '/' {
-			if i == 0 {
-				return "/"
-			}
-			return path[0:i]
-		}
-		i = i - 1
-	}
-	return "."
-}
-
-func trimTrailingSlash(path string) string {
-	for len(path) > 1 && path[len(path)-1] == '/' {
-		path = path[0 : len(path)-1]
-	}
-	return path
-}
-
-func pathExists(path string) bool {
-	_, err := os.ReadFile(path)
-	return err == nil
 }
 
 func detectStdlibBaseDir() (string, error) {
@@ -649,10 +609,10 @@ func detectStdlibBaseDir() (string, error) {
 	baseDir := cwd
 	search := cwd
 	for {
-		if pathExists(search + "/std/runtime/runtime.go") {
+		if common.PathExists(search + "/std/runtime/runtime.go") {
 			return search, nil
 		}
-		parent := dirName(search)
+		parent := common.DirName(search)
 		if parent == search || parent == "" {
 			break
 		}
@@ -662,29 +622,29 @@ func detectStdlibBaseDir() (string, error) {
 }
 
 func appendStdlibRootCandidates(roots []string, include string) []string {
-	include = trimTrailingSlash(normalizePath(include))
+	include = common.TrimTrailingSlash(common.NormalizePath(include))
 	if include == "" || include == "-" {
 		return roots
 	}
 	added := false
-	if pathExists(include + "/runtime/runtime.go") {
-		roots = appendUnique(roots, include)
+	if common.PathExists(include + "/runtime/runtime.go") {
+		roots = common.AppendUnique(roots, include)
 		added = true
 	}
-	if pathExists(include + "/std/runtime/runtime.go") {
-		roots = appendUnique(roots, include+"/std")
+	if common.PathExists(include + "/std/runtime/runtime.go") {
+		roots = common.AppendUnique(roots, include+"/std")
 		added = true
 	}
 	if !added {
-		roots = appendUnique(roots, include)
+		roots = common.AppendUnique(roots, include)
 	}
 	return roots
 }
 
 func resolveStdlibDiskRoots() ([]string, error) {
 	var roots []string
-	if stdlibIncludeExplicit {
-		for _, include := range stdlibIncludePaths {
+	if compileTarget.StdlibIncludeExplicit {
+		for _, include := range compileTarget.StdlibIncludePaths {
 			roots = appendStdlibRootCandidates(roots, include)
 		}
 		return roots, nil
@@ -731,7 +691,7 @@ func sortNameDataPairs(names []string, data []string) {
 }
 
 func extractEmbeddedStdlib(dest string) error {
-	dest = trimTrailingSlash(dest)
+	dest = common.TrimTrailingSlash(dest)
 	if dest == "" {
 		return fmt.Errorf("destination path cannot be empty")
 	}
@@ -740,8 +700,8 @@ func extractEmbeddedStdlib(dest string) error {
 		return err
 	}
 	extracted := false
-	if shouldUseEmbeddedStdlib() {
-		names, data := walkEmbedFromFS(".")
+	if frontend.ShouldUseEmbeddedStdlib(&compileTarget) {
+		names, data := stdlib.WalkEmbedFromFS(".")
 		if len(names) > 0 {
 			err = writeExtractedStdlibFiles(dest, names, data)
 			if err != nil {
@@ -755,7 +715,7 @@ func extractEmbeddedStdlib(dest string) error {
 		return err
 	}
 	for _, root := range roots {
-		names, data := walkEmbedDir(root, root)
+		names, data := common.WalkDirectory(root, root)
 		if len(names) == 0 {
 			continue
 		}
@@ -772,11 +732,11 @@ func extractEmbeddedStdlib(dest string) error {
 }
 
 func writeExtractedStdlibFiles(dest string, names []string, data []string) error {
-	dest = trimTrailingSlash(dest)
+	dest = common.TrimTrailingSlash(dest)
 	sortNameDataPairs(names, data)
 	i := 0
 	for i < len(names) {
-		rel := normalizePath(names[i])
+		rel := common.NormalizePath(names[i])
 		if strings.HasPrefix(rel, "./") {
 			rel = rel[2:len(rel)]
 		}
@@ -784,7 +744,7 @@ func writeExtractedStdlibFiles(dest string, names []string, data []string) error
 			return fmt.Errorf("unsafe embedded path %q", names[i])
 		}
 		outPath := dest + "/" + rel
-		parent := dirName(outPath)
+		parent := common.DirName(outPath)
 		if parent != "" && parent != "." {
 			err := os.MkdirAll(parent, 0755)
 			if err != nil {
