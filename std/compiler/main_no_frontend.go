@@ -71,7 +71,7 @@ func main() {
 	}
 	if opts.Debug {
 		fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
-		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", opts.Target.Backend, opts.Target.GOOS, opts.Target.GOARCH)
+		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s)\n", opts.Target.Backend, compilerTargetString(opts.Target))
 	}
 	err = emitModuleWithOptions(irmod, outputPath, opts)
 	if err != nil {

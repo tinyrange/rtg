@@ -63,6 +63,10 @@ func backendOptionsFromDriver(opts DriverOptions, outputPath string) BackendOpti
 	}
 }
 
+func compilerTargetString(target CompilerTarget) string {
+	return target.GOOS + "/" + target.GOARCH
+}
+
 func currentCompilerTarget() CompilerTarget {
 	return CompilerTarget{
 		GOOS:     targetGOOS,

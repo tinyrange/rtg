@@ -381,7 +381,7 @@ func main() {
 	}
 
 	if opts.Debug {
-		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", opts.Target.Backend, opts.Target.GOOS, opts.Target.GOARCH)
+		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s)\n", opts.Target.Backend, compilerTargetString(opts.Target))
 	}
 	err := emitModuleWithOptions(irmod, outputPath, opts)
 	if err != nil {

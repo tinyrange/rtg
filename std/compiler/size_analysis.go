@@ -62,7 +62,7 @@ func writeSizeAnalysis() {
 	// "target"
 	buf = append(buf, '"', 't', 'a', 'r', 'g', 'e', 't', '"', ':')
 	target := currentCompilerTarget()
-	buf = appendJSONString(buf, target.GOOS+"/"+target.GOARCH)
+	buf = appendJSONString(buf, compilerTargetString(target))
 	buf = append(buf, ',')
 
 	// "total"
