@@ -281,26 +281,17 @@ func main() {
 		configureVMProgramArgs(entryFiles, programArgs)
 	}
 
-	if opts.Debug {
-		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s)\n", opts.Target.Backend, compilerTargetString(opts.Target))
-	}
-	err := emitModuleWithOptions(irmod, outputPath, opts)
+	exitCode, err := emitAndFinalizeWithOptions(irmod, outputPath, opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		runCleanup()
 		os.Exit(1)
 	}
 
-	if opts.Debug {
-		fmt.Fprintf(os.Stderr, "debug: output generated successfully\n")
-	}
-
-	writeSizeAnalysis()
-
-	// VM backend executes directly — no binary to run
-	if opts.Target.Backend == "vm" {
+	// VM backend executes directly — no binary to run.
+	if exitCode != 0 {
 		runCleanup()
-		os.Exit(vmExitCode)
+		os.Exit(exitCode)
 	}
 
 	if runMode {

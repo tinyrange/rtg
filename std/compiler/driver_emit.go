@@ -51,3 +51,21 @@ func loadIRBinaryModule(path string, opts DriverOptions) (*IRModule, error) {
 	}
 	return irmod, nil
 }
+
+func emitAndFinalizeWithOptions(irmod *IRModule, outputPath string, opts DriverOptions) (int, error) {
+	if opts.Debug {
+		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s)\n", opts.Target.Backend, compilerTargetString(opts.Target))
+	}
+	err := emitModuleWithOptions(irmod, outputPath, opts)
+	if err != nil {
+		return 1, fmt.Errorf("codegen error: %v", err)
+	}
+	if opts.Debug {
+		fmt.Fprintf(os.Stderr, "debug: output generated successfully\n")
+	}
+	writeSizeAnalysis()
+	if opts.Target.Backend == "vm" {
+		return vmExitCode, nil
+	}
+	return 0, nil
+}
