@@ -240,41 +240,25 @@ func main() {
 	}
 
 	var irmod *IRModule
-	if fromIRBinaryPath != "" {
-		flagErr := validateFromIRBinaryFlags(parseOnly, buildTagsPath)
-		if flagErr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", flagErr)
-			runCleanup()
-			os.Exit(1)
-		}
-		var loadErr error
-		irmod, loadErr = loadIRBinaryModule(fromIRBinaryPath, opts)
-		if loadErr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", loadErr)
-			runCleanup()
-			os.Exit(1)
-		}
-	} else {
-		res, err := compileFromSourceInputs(entryFiles, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			runCleanup()
-			os.Exit(1)
-		}
-		if len(res.FrontendErrs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d frontend errors:\n", len(res.FrontendErrs))
-			for _, e := range res.FrontendErrs {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
-			}
-			runCleanup()
-			os.Exit(1)
-		}
-		if res.ShouldExitNow {
-			runCleanup()
-			os.Exit(0)
-		}
-		irmod = res.IRModule
+	acquired, err := acquireIRModule(entryFiles, fromIRBinaryPath, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		runCleanup()
+		os.Exit(1)
 	}
+	if len(acquired.FrontendErrs) > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d frontend errors:\n", len(acquired.FrontendErrs))
+		for _, e := range acquired.FrontendErrs {
+			fmt.Fprintf(os.Stderr, "  %s\n", e)
+		}
+		runCleanup()
+		os.Exit(1)
+	}
+	if acquired.ShouldExitNow {
+		runCleanup()
+		os.Exit(0)
+	}
+	irmod = acquired.IRModule
 
 	// Set VM program arguments if using VM backend
 	if opts.Target.Backend == "vm" {

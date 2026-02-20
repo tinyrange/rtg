@@ -55,6 +55,12 @@ type sourceCompileResult struct {
 	ShouldExitNow bool
 }
 
+type irAcquisitionResult struct {
+	IRModule      *IRModule
+	FrontendErrs  []string
+	ShouldExitNow bool
+}
+
 func compileFromSourceInputs(entryFiles []string, buildTagsPath string, parseOnly bool, emitIRBinaryPath string, opts DriverOptions) (sourceCompileResult, error) {
 	baseDir, err := resolveCompilerBaseDir()
 	if err != nil {
@@ -105,4 +111,28 @@ func compileFromSourceInputs(entryFiles []string, buildTagsPath string, parseOnl
 		return sourceCompileResult{ShouldExitNow: true}, nil
 	}
 	return sourceCompileResult{IRModule: irmod}, nil
+}
+
+func acquireIRModule(entryFiles []string, fromIRBinaryPath string, buildTagsPath string, parseOnly bool, emitIRBinaryPath string, opts DriverOptions) (irAcquisitionResult, error) {
+	if fromIRBinaryPath != "" {
+		err := validateFromIRBinaryFlags(parseOnly, buildTagsPath)
+		if err != nil {
+			return irAcquisitionResult{}, err
+		}
+		irmod, err := loadIRBinaryModule(fromIRBinaryPath, opts)
+		if err != nil {
+			return irAcquisitionResult{}, err
+		}
+		return irAcquisitionResult{IRModule: irmod}, nil
+	}
+
+	res, err := compileFromSourceInputs(entryFiles, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
+	if err != nil {
+		return irAcquisitionResult{}, err
+	}
+	return irAcquisitionResult{
+		IRModule:      res.IRModule,
+		FrontendErrs:  res.FrontendErrs,
+		ShouldExitNow: res.ShouldExitNow,
+	}, nil
 }
