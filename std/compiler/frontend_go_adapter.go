@@ -27,5 +27,8 @@ func (f goFrontend) Compile(baseDir string, inputs []string, opts FrontendOption
 	if len(errs) > 0 {
 		return nil, errs
 	}
+	if irmod == nil {
+		return nil, []string{"frontend produced nil IR module"}
+	}
 	return irmod, nil
 }
