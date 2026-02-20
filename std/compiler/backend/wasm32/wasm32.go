@@ -1,6 +1,6 @@
 //go:build !no_backend_wasi_wasm32
 
-package main
+package wasm32
 
 // === WASM Binary Format: Opcodes + LEB128 + Code Writer ===
 
@@ -19,12 +19,12 @@ const (
 
 // WASM value types
 const (
-	WASM_TYPE_I32    = 0x7f
-	WASM_TYPE_I64    = 0x7e
-	WASM_TYPE_F32    = 0x7d
-	WASM_TYPE_F64    = 0x7c
-	WASM_TYPE_FUNC   = 0x60
-	WASM_TYPE_VOID   = 0x40 // empty block type
+	WASM_TYPE_I32  = 0x7f
+	WASM_TYPE_I64  = 0x7e
+	WASM_TYPE_F32  = 0x7d
+	WASM_TYPE_F64  = 0x7c
+	WASM_TYPE_FUNC = 0x60
+	WASM_TYPE_VOID = 0x40 // empty block type
 )
 
 // WASM opcodes
@@ -69,19 +69,19 @@ const (
 	OP_WASM_I32_LE_S = 0x4c
 	OP_WASM_I32_GE_S = 0x4e
 
-	OP_WASM_I32_CLZ    = 0x67
-	OP_WASM_I32_CTZ    = 0x68
-	OP_WASM_I32_ADD    = 0x6a
-	OP_WASM_I32_SUB    = 0x6b
-	OP_WASM_I32_MUL    = 0x6c
-	OP_WASM_I32_DIV_S  = 0x6d
-	OP_WASM_I32_REM_S  = 0x6f
-	OP_WASM_I32_AND    = 0x71
-	OP_WASM_I32_OR     = 0x72
-	OP_WASM_I32_XOR    = 0x73
-	OP_WASM_I32_SHL    = 0x74
-	OP_WASM_I32_SHR_S  = 0x75
-	OP_WASM_I32_SHR_U  = 0x76
+	OP_WASM_I32_CLZ   = 0x67
+	OP_WASM_I32_CTZ   = 0x68
+	OP_WASM_I32_ADD   = 0x6a
+	OP_WASM_I32_SUB   = 0x6b
+	OP_WASM_I32_MUL   = 0x6c
+	OP_WASM_I32_DIV_S = 0x6d
+	OP_WASM_I32_REM_S = 0x6f
+	OP_WASM_I32_AND   = 0x71
+	OP_WASM_I32_OR    = 0x72
+	OP_WASM_I32_XOR   = 0x73
+	OP_WASM_I32_SHL   = 0x74
+	OP_WASM_I32_SHR_S = 0x75
+	OP_WASM_I32_SHR_U = 0x76
 
 	OP_WASM_I32_WRAP_I64 = 0xa7
 

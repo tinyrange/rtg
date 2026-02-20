@@ -6,6 +6,7 @@ import (
 	"j5.nz/rtg/std/compiler/backend/c"
 	"j5.nz/rtg/std/compiler/backend/irprint"
 	"j5.nz/rtg/std/compiler/backend/vm"
+	"j5.nz/rtg/std/compiler/backend/wasm32"
 	"j5.nz/rtg/std/compiler/backend/x64"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
@@ -42,8 +43,8 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	// 		return i386.GenerateI386ELF(irmod, outputPath)
 	// 	}
 	// 	return fmt.Errorf("unsupported OS for i386: %s", target.GOOS)
-	// case "wasm32":
-	// 	return wasm32.GenerateWasm32(irmod, outputPath)
+	case "wasm32":
+		return wasm32.Generate(target, irmod, outputPath)
 	// case "arm64":
 	// 	if target.GOOS == "darwin" {
 	// 		return arm64.GenerateDarwin(irmod, outputPath)

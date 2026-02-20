@@ -1,6 +1,6 @@
 //go:build !no_backend_wasi_wasm32
 
-package main
+package wasm32
 
 // === WASM Binary Module Builder ===
 // Builds a complete .wasm binary from types, imports, functions, exports, etc.
@@ -42,7 +42,7 @@ type wasmDataSeg struct {
 type wasmModule struct {
 	types    []wasmFuncType
 	imports  []wasmImport
-	funcs    []int    // type index for each function
+	funcs    []int // type index for each function
 	exports  []wasmExport
 	globals  []wasmGlobal
 	codes    [][]byte // encoded function bodies (with local decls)

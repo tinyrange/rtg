@@ -57,6 +57,12 @@ func Unhex(c byte) int {
 	return 0
 }
 
+// DispatchEntry pairs a type ID with a method function name for interface dispatch.
+type DispatchEntry struct {
+	TypeID   int
+	FuncName string
+}
+
 // // === Backend: IRModule → ELF binary ===
 
 // // CodeGen holds state for generating machine code from IR.
@@ -140,12 +146,6 @@ func Unhex(c byte) int {
 // 	jumpFixupJmpRel8
 // 	jumpFixupJccRel8
 // )
-
-// // dispatchEntry pairs a type ID with a method function name for interface dispatch.
-// type dispatchEntry struct {
-// 	typeID   int
-// 	funcName string
-// }
 
 // // symEntry holds symbol table entry data for ELF output.
 // type symEntry struct {

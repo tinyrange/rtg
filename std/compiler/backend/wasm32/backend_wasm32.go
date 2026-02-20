@@ -1,10 +1,14 @@
 //go:build !no_backend_wasi_wasm32
 
-package main
+package wasm32
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/backend/becommon"
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 // === WASM32 Backend: IR → WASM binary ===
@@ -12,7 +16,7 @@ import (
 // WasmGen holds state for generating WASM code from IR.
 type WasmGen struct {
 	mod     *wasmModule
-	irmod   *IRModule
+	irmod   *ir.IRModule
 	w       wasmCodeWriter // current function body writer
 	funcMap map[string]int // IR func name → WASM func index
 
@@ -49,7 +53,7 @@ type WasmGen struct {
 	stringData []byte // raw string data + headers
 
 	// Current function state
-	curFunc       *IRFunc
+	curFunc       *ir.IRFunc
 	curFrameSize  int
 	numParams     int
 	numWasmLocals int // WASM locals beyond params (frame slots + temps)
@@ -85,8 +89,8 @@ const (
 	WASM_CTRL_IF    = 2
 )
 
-// generateWasm32 is the entry point for the WASM backend.
-func generateWasm32(irmod *IRModule, outputPath string) error {
+// Generate is the entry point for the WASM backend.
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &WasmGen{
 		mod:       &wasmModule{memMin: 2}, // start with 2 pages (128KB)
 		irmod:     irmod,
@@ -126,7 +130,7 @@ func generateWasm32(irmod *IRModule, outputPath string) error {
 	for _, f := range irmod.Funcs {
 		body := g.compileFunc(f)
 		g.mod.codes = append(g.mod.codes, body)
-		funcSizes = append(funcSizes, FuncSize{Name: f.Name, Size: len(body)})
+		ir.FuncSizes = append(ir.FuncSizes, ir.FuncSize{Name: f.Name, Size: len(body)})
 	}
 
 	// Compile _start
@@ -285,7 +289,7 @@ func (g *WasmGen) setupDataSegments() {
 // === String Constants ===
 
 func (g *WasmGen) internString(s string) int32 {
-	decoded := decodeStringLiteral(s)
+	decoded := becommon.DecodeStringLiteral(s)
 
 	if headerOff, ok := g.stringMap[decoded]; ok {
 		return int32(headerOff) + g.stringsAddr
@@ -368,7 +372,7 @@ func (g *WasmGen) ensureBothSameType() byte {
 
 // === Function Compilation ===
 
-func (g *WasmGen) compileFunc(f *IRFunc) []byte {
+func (g *WasmGen) compileFunc(f *ir.IRFunc) []byte {
 	g.curFunc = f
 	g.w = wasmCodeWriter{}
 	g.blockStack = nil
@@ -652,7 +656,7 @@ func (g *WasmGen) compileStart() []byte {
 
 	// Call init functions
 	for _, f := range g.irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			idx, ok := g.funcMap[f.Name]
 			if ok {
 				g.w.call(uint32(idx))
@@ -684,12 +688,12 @@ func (g *WasmGen) compileStart() []byte {
 // a ||/&& short-circuit pattern. Returns the target label, end label,
 // position of JMP-to-end, and whether it's a short-circuit.
 // Pattern: JMP_IF/JMP_IF_NOT targetLabel, ..., JMP endLabel, LABEL targetLabel, CONST, LABEL endLabel
-func detectShortCircuit(code []Inst, jumpPos int, end int) (targetLabel int, endLabel int, jmpToEndPos int, ok bool) {
+func detectShortCircuit(code []ir.Inst, jumpPos int, end int) (targetLabel int, endLabel int, jmpToEndPos int, ok bool) {
 	targetLabel = code[jumpPos].Arg
 	// Find target label position within range
 	targetPos := -1
 	for j := jumpPos + 1; j < end; j++ {
-		if code[j].Op == OP_LABEL && code[j].Arg == targetLabel {
+		if code[j].Op == ir.OP_LABEL && code[j].Arg == targetLabel {
 			targetPos = j
 			break
 		}
@@ -698,33 +702,33 @@ func detectShortCircuit(code []Inst, jumpPos int, end int) (targetLabel int, end
 		return 0, 0, 0, false
 	}
 	// Check: LABEL target, CONST, LABEL end
-	if code[targetPos+1].Op != OP_CONST_BOOL && code[targetPos+1].Op != OP_CONST_I64 {
+	if code[targetPos+1].Op != ir.OP_CONST_BOOL && code[targetPos+1].Op != ir.OP_CONST_I64 {
 		return 0, 0, 0, false
 	}
-	if code[targetPos+2].Op != OP_LABEL {
+	if code[targetPos+2].Op != ir.OP_LABEL {
 		return 0, 0, 0, false
 	}
 	endLabel = code[targetPos+2].Arg
 	// Verify JMP to endLabel immediately precedes target label
-	if targetPos > 0 && code[targetPos-1].Op == OP_JMP && code[targetPos-1].Arg == endLabel {
+	if targetPos > 0 && code[targetPos-1].Op == ir.OP_JMP && code[targetPos-1].Arg == endLabel {
 		jmpToEndPos = targetPos - 1
 		return targetLabel, endLabel, jmpToEndPos, true
 	}
 	return 0, 0, 0, false
 }
 
-func (g *WasmGen) stackify(code []Inst) {
+func (g *WasmGen) stackify(code []ir.Inst) {
 	// Pass 1: analyze labels using two separate maps
 	loopHeaders := make(map[int]bool)
 	blockTargets := make(map[int]bool)
 	for i, inst := range code {
 		switch inst.Op {
-		case OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+		case ir.OP_JMP, ir.OP_JMP_IF, ir.OP_JMP_IF_NOT, ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
 			targetLabel := inst.Arg
 			// Determine if forward or backward jump
 			labelPos := -1
 			for j, c := range code {
-				if c.Op == OP_LABEL {
+				if c.Op == ir.OP_LABEL {
 					if c.Arg == targetLabel {
 						labelPos = j
 						break
@@ -747,7 +751,7 @@ func (g *WasmGen) stackify(code []Inst) {
 	g.emitStructured(code, 0, len(code), loopHeaders, blockTargets)
 }
 
-func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders map[int]bool, blockTargets map[int]bool) {
+func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders map[int]bool, blockTargets map[int]bool) {
 	// --- Phase 1: Pre-open blocks for forward jump targets ---
 	// Collect all forward jump targets at this level, skipping loop bodies
 	// and short-circuit (||/&&) patterns.
@@ -759,13 +763,13 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 		inst := code[scanPos]
 
 		// Skip loop bodies during pre-scan
-		if inst.Op == OP_LABEL {
+		if inst.Op == ir.OP_LABEL {
 			if loopHeaders[inst.Arg] {
 				breakLabel := g.findBreakLabel(code, scanPos, end, inst.Arg)
 				loopEnd := end
 				if breakLabel >= 0 {
 					for j := scanPos + 1; j < end; j++ {
-						if code[j].Op == OP_LABEL && code[j].Arg == breakLabel {
+						if code[j].Op == ir.OP_LABEL && code[j].Arg == breakLabel {
 							loopEnd = j
 							break
 						}
@@ -777,7 +781,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 		}
 
 		// Detect short-circuit patterns and exclude their labels
-		if inst.Op == OP_JMP_IF || inst.Op == OP_JMP_IF_NOT {
+		if inst.Op == ir.OP_JMP_IF || inst.Op == ir.OP_JMP_IF_NOT {
 			tgtLabel, endLabel, _, scOk := detectShortCircuit(code, scanPos, end)
 			if scOk {
 				excludedLabels[tgtLabel] = true
@@ -788,7 +792,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 		}
 
 		// Collect forward jump targets (excluding short-circuit and loop labels)
-		if inst.Op == OP_JMP || inst.Op == OP_JMP_IF || inst.Op == OP_JMP_IF_NOT || inst.Op == OP_JMP_EQ || inst.Op == OP_JMP_NEQ || inst.Op == OP_JMP_LT || inst.Op == OP_JMP_GT || inst.Op == OP_JMP_LEQ || inst.Op == OP_JMP_GEQ {
+		if inst.Op == ir.OP_JMP || inst.Op == ir.OP_JMP_IF || inst.Op == ir.OP_JMP_IF_NOT || inst.Op == ir.OP_JMP_EQ || inst.Op == ir.OP_JMP_NEQ || inst.Op == ir.OP_JMP_LT || inst.Op == ir.OP_JMP_GT || inst.Op == ir.OP_JMP_LEQ || inst.Op == ir.OP_JMP_GEQ {
 			targetLabel := inst.Arg
 			if excludedLabels[targetLabel] {
 				scanPos++
@@ -797,7 +801,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 			if !loopHeaders[targetLabel] {
 				labelPos := -1
 				for j := scanPos + 1; j < end; j++ {
-					if code[j].Op == OP_LABEL && code[j].Arg == targetLabel {
+					if code[j].Op == ir.OP_LABEL && code[j].Arg == targetLabel {
 						labelPos = j
 						break
 					}
@@ -842,7 +846,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 		inst := code[i]
 
 		switch inst.Op {
-		case OP_LABEL:
+		case ir.OP_LABEL:
 			if loopHeaders[inst.Arg] {
 				breakLabel := g.findBreakLabel(code, i, end, inst.Arg)
 
@@ -855,7 +859,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 				loopEnd := end
 				if breakLabel >= 0 {
 					for j := i + 1; j < end; j++ {
-						if code[j].Op == OP_LABEL && code[j].Arg == breakLabel {
+						if code[j].Op == ir.OP_LABEL && code[j].Arg == breakLabel {
 							loopEnd = j
 							break
 						}
@@ -902,12 +906,12 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 						// on the stack. The last DUP saved it to tempLocal, so re-push.
 						// Skip over intervening LABELs that don't close blocks.
 						peek := i + 1
-						for peek < end && code[peek].Op == OP_LABEL {
+						for peek < end && code[peek].Op == ir.OP_LABEL {
 							peek++
 						}
 						if peek < end {
 							nextOp := code[peek].Op
-							if nextOp == OP_DUP || nextOp == OP_DROP {
+							if nextOp == ir.OP_DUP || nextOp == ir.OP_DROP {
 								g.w.localGet(uint32(g.tempLocal))
 								g.pushType(WASM_TYPE_I32)
 							}
@@ -917,7 +921,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 			}
 			i++
 
-		case OP_JMP:
+		case ir.OP_JMP:
 			if !g.dead {
 				depth := g.findBlockDepth(inst.Arg)
 				if depth >= 0 {
@@ -928,7 +932,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 			}
 			i++
 
-		case OP_JMP_IF:
+		case ir.OP_JMP_IF:
 			if g.dead {
 				i++
 				continue
@@ -939,7 +943,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 				// || pattern: if condition true → const 1, else → right side
 				targetPos := -1
 				for j := i + 1; j < end; j++ {
-					if code[j].Op == OP_LABEL && code[j].Arg == tgtLabel {
+					if code[j].Op == ir.OP_LABEL && code[j].Arg == tgtLabel {
 						targetPos = j
 						break
 					}
@@ -972,7 +976,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 			}
 			i++
 
-		case OP_JMP_IF_NOT:
+		case ir.OP_JMP_IF_NOT:
 			if g.dead {
 				i++
 				continue
@@ -983,7 +987,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 				// && pattern: if condition true → right side, else → const 0
 				targetPos := -1
 				for j := i + 1; j < end; j++ {
-					if code[j].Op == OP_LABEL && code[j].Arg == tgtLabel {
+					if code[j].Op == ir.OP_LABEL && code[j].Arg == tgtLabel {
 						targetPos = j
 						break
 					}
@@ -1017,7 +1021,7 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 			}
 			i++
 
-		case OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+		case ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
 			if g.dead {
 				i++
 				continue
@@ -1041,18 +1045,18 @@ func (g *WasmGen) emitStructured(code []Inst, start int, end int, loopHeaders ma
 
 // findBreakLabel finds the break label for a loop by locating the backward
 // JMP to the loop header and returning the label that immediately follows it.
-func (g *WasmGen) findBreakLabel(code []Inst, loopStart int, end int, loopLabel int) int {
+func (g *WasmGen) findBreakLabel(code []ir.Inst, loopStart int, end int, loopLabel int) int {
 	// Find the last backward JMP to the loop header.
 	// The label immediately after it is the break label.
 	lastJmpToLoop := -1
 	for j := loopStart + 1; j < end; j++ {
-		if code[j].Op == OP_JMP && code[j].Arg == loopLabel {
+		if code[j].Op == ir.OP_JMP && code[j].Arg == loopLabel {
 			lastJmpToLoop = j
 		}
 	}
 	if lastJmpToLoop >= 0 && lastJmpToLoop+1 < end {
 		next := code[lastJmpToLoop+1]
-		if next.Op == OP_LABEL {
+		if next.Op == ir.OP_LABEL {
 			return next.Arg
 		}
 	}
@@ -1084,84 +1088,84 @@ func (g *WasmGen) markLiveBreak(depth int) {
 
 // === Instruction Compilation ===
 
-func (g *WasmGen) compileInst(inst Inst) {
+func (g *WasmGen) compileInst(inst ir.Inst) {
 	switch inst.Op {
-	case OP_CONST_I64:
+	case ir.OP_CONST_I64:
 		g.w.i32Const(int32(inst.Val))
 		g.pushType(WASM_TYPE_I32)
-	case OP_CONST_BOOL:
+	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.w.i32Const(1)
 		} else {
 			g.w.i32Const(0)
 		}
 		g.pushType(WASM_TYPE_I32)
-	case OP_CONST_NIL:
+	case ir.OP_CONST_NIL:
 		g.w.i32Const(0)
 		g.pushType(WASM_TYPE_I32)
-	case OP_CONST_STR:
+	case ir.OP_CONST_STR:
 		addr := g.internString(inst.Name)
 		g.w.i32Const(addr)
 		g.pushType(WASM_TYPE_I32)
 
-	case OP_LOCAL_GET:
+	case ir.OP_LOCAL_GET:
 		g.compileLocalGet(inst.Arg)
-	case OP_LOCAL_SET:
+	case ir.OP_LOCAL_SET:
 		g.compileLocalSet(inst.Arg)
-	case OP_LOCAL_ADD_IMM:
+	case ir.OP_LOCAL_ADD_IMM:
 		g.compileLocalAddImm(inst.Arg, int32(inst.Val))
-	case OP_LOCAL_ADDR:
+	case ir.OP_LOCAL_ADDR:
 		g.compileLocalAddr(inst.Arg)
 
-	case OP_GLOBAL_GET:
+	case ir.OP_GLOBAL_GET:
 		g.compileGlobalGet(inst)
-	case OP_GLOBAL_SET:
+	case ir.OP_GLOBAL_SET:
 		g.compileGlobalSet(inst)
-	case OP_GLOBAL_ADDR:
+	case ir.OP_GLOBAL_ADDR:
 		g.compileGlobalAddr(inst)
 
-	case OP_DROP:
+	case ir.OP_DROP:
 		g.popType()
 		g.w.drop()
-	case OP_DUP:
+	case ir.OP_DUP:
 		g.compileDup()
 
-	case OP_ADD:
+	case ir.OP_ADD:
 		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
-	case OP_SUB:
+	case ir.OP_SUB:
 		g.compileBinaryOp(OP_WASM_I32_SUB, OP_WASM_I64_SUB)
-	case OP_MUL:
+	case ir.OP_MUL:
 		g.compileBinaryOp(OP_WASM_I32_MUL, OP_WASM_I64_MUL)
-	case OP_DIV:
+	case ir.OP_DIV:
 		g.compileBinaryOp(OP_WASM_I32_DIV_S, OP_WASM_I64_DIV_S)
-	case OP_MOD:
+	case ir.OP_MOD:
 		g.compileBinaryOp(OP_WASM_I32_REM_S, OP_WASM_I64_REM_S)
 
-	case OP_AND:
+	case ir.OP_AND:
 		g.compileBinaryOp(OP_WASM_I32_AND, OP_WASM_I64_AND)
-	case OP_OR:
+	case ir.OP_OR:
 		g.compileBinaryOp(OP_WASM_I32_OR, OP_WASM_I64_OR)
-	case OP_XOR:
+	case ir.OP_XOR:
 		g.compileBinaryOp(OP_WASM_I32_XOR, OP_WASM_I64_XOR)
-	case OP_SHL:
+	case ir.OP_SHL:
 		g.compileBinaryOp(OP_WASM_I32_SHL, OP_WASM_I64_SHL)
-	case OP_SHR:
+	case ir.OP_SHR:
 		g.compileBinaryOp(OP_WASM_I32_SHR_S, OP_WASM_I64_SHR_U)
 
-	case OP_EQ:
+	case ir.OP_EQ:
 		g.compileCompareOp(OP_WASM_I32_EQ, OP_WASM_I64_EQ)
-	case OP_NEQ:
+	case ir.OP_NEQ:
 		g.compileCompareOp(OP_WASM_I32_NE, OP_WASM_I64_NE)
-	case OP_LT:
+	case ir.OP_LT:
 		g.compileCompareOp(OP_WASM_I32_LT_S, OP_WASM_I64_LT_S)
-	case OP_GT:
+	case ir.OP_GT:
 		g.compileCompareOp(OP_WASM_I32_GT_S, OP_WASM_I64_GT_S)
-	case OP_LEQ:
+	case ir.OP_LEQ:
 		g.compileCompareOp(OP_WASM_I32_LE_S, OP_WASM_I64_LE_S)
-	case OP_GEQ:
+	case ir.OP_GEQ:
 		g.compileCompareOp(OP_WASM_I32_GE_S, OP_WASM_I64_GE_S)
 
-	case OP_NOT:
+	case ir.OP_NOT:
 		t := g.popType()
 		if t == WASM_TYPE_I64 {
 			g.w.op(OP_WASM_I64_EQZ)
@@ -1170,7 +1174,7 @@ func (g *WasmGen) compileInst(inst Inst) {
 		}
 		g.pushType(WASM_TYPE_I32)
 
-	case OP_NEG:
+	case ir.OP_NEG:
 		t := g.peekType()
 		if t == WASM_TYPE_I64 {
 			g.w.localSet(uint32(g.tempLocal64))
@@ -1186,40 +1190,40 @@ func (g *WasmGen) compileInst(inst Inst) {
 			// type stays i32
 		}
 
-	case OP_LOAD:
+	case ir.OP_LOAD:
 		g.compileLoad(inst.Arg)
-	case OP_STORE:
+	case ir.OP_STORE:
 		g.compileStore(inst.Arg)
-	case OP_OFFSET:
+	case ir.OP_OFFSET:
 		g.compileOffset(inst)
-	case OP_INDEX_ADDR:
+	case ir.OP_INDEX_ADDR:
 		g.compileIndexAddr(inst.Arg)
-	case OP_LEN:
+	case ir.OP_LEN:
 		g.compileLen()
-	case OP_CAP:
+	case ir.OP_CAP:
 		g.compileCap()
 
-	case OP_CALL:
+	case ir.OP_CALL:
 		g.compileCall(inst)
-	case OP_CALL_INTRINSIC:
+	case ir.OP_CALL_INTRINSIC:
 		g.compileCallIntrinsic(inst)
-	case OP_RETURN:
+	case ir.OP_RETURN:
 		g.compileReturn(inst)
 
-	case OP_CONVERT:
+	case ir.OP_CONVERT:
 		g.compileConvert(inst.Name)
 
-	case OP_IFACE_BOX:
+	case ir.OP_IFACE_BOX:
 		g.compileIfaceBox(inst)
-	case OP_IFACE_CALL:
+	case ir.OP_IFACE_CALL:
 		g.compileIfaceCall(inst)
-	case OP_PANIC:
+	case ir.OP_PANIC:
 		g.compilePanic()
 
-	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// Handled by intrinsics
 
-	case OP_LABEL, OP_JMP, OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+	case ir.OP_LABEL, ir.OP_JMP, ir.OP_JMP_IF, ir.OP_JMP_IF_NOT, ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
 		// Handled by stackifier
 
 	default:
@@ -1255,39 +1259,39 @@ func (g *WasmGen) compileCompareOp(i32op byte, i64op byte) {
 	g.pushType(WASM_TYPE_I32)
 }
 
-func (g *WasmGen) compileCompareJump(inst Inst) {
+func (g *WasmGen) compileCompareJump(inst ir.Inst) {
 	t := g.ensureBothSameType()
 	g.popType()
 	g.popType()
 	if t == WASM_TYPE_I64 {
 		switch inst.Op {
-		case OP_JMP_EQ:
+		case ir.OP_JMP_EQ:
 			g.w.op(OP_WASM_I64_EQ)
-		case OP_JMP_NEQ:
+		case ir.OP_JMP_NEQ:
 			g.w.op(OP_WASM_I64_NE)
-		case OP_JMP_LT:
+		case ir.OP_JMP_LT:
 			g.w.op(OP_WASM_I64_LT_S)
-		case OP_JMP_GT:
+		case ir.OP_JMP_GT:
 			g.w.op(OP_WASM_I64_GT_S)
-		case OP_JMP_LEQ:
+		case ir.OP_JMP_LEQ:
 			g.w.op(OP_WASM_I64_LE_S)
-		case OP_JMP_GEQ:
+		case ir.OP_JMP_GEQ:
 			g.w.op(OP_WASM_I64_GE_S)
 		}
 		return
 	}
 	switch inst.Op {
-	case OP_JMP_EQ:
+	case ir.OP_JMP_EQ:
 		g.w.op(OP_WASM_I32_EQ)
-	case OP_JMP_NEQ:
+	case ir.OP_JMP_NEQ:
 		g.w.op(OP_WASM_I32_NE)
-	case OP_JMP_LT:
+	case ir.OP_JMP_LT:
 		g.w.op(OP_WASM_I32_LT_S)
-	case OP_JMP_GT:
+	case ir.OP_JMP_GT:
 		g.w.op(OP_WASM_I32_GT_S)
-	case OP_JMP_LEQ:
+	case ir.OP_JMP_LEQ:
 		g.w.op(OP_WASM_I32_LE_S)
-	case OP_JMP_GEQ:
+	case ir.OP_JMP_GEQ:
 		g.w.op(OP_WASM_I32_GE_S)
 	}
 }
@@ -1368,13 +1372,13 @@ func (g *WasmGen) compileLocalAddr(idx int) {
 
 // === Global variable access (linear memory) ===
 
-func (g *WasmGen) compileGlobalGet(inst Inst) {
+func (g *WasmGen) compileGlobalGet(inst ir.Inst) {
 	g.w.i32Const(g.globalsAddr + int32(inst.Arg*4))
 	g.w.i32Load(2, 0)
 	g.pushType(WASM_TYPE_I32)
 }
 
-func (g *WasmGen) compileGlobalSet(inst Inst) {
+func (g *WasmGen) compileGlobalSet(inst ir.Inst) {
 	t := g.popType()
 	if t == WASM_TYPE_I64 {
 		g.w.i32WrapI64() // globals are always i32
@@ -1385,7 +1389,7 @@ func (g *WasmGen) compileGlobalSet(inst Inst) {
 	g.w.i32Store(2, 0)
 }
 
-func (g *WasmGen) compileGlobalAddr(inst Inst) {
+func (g *WasmGen) compileGlobalAddr(inst ir.Inst) {
 	g.w.i32Const(g.globalsAddr + int32(inst.Arg*4))
 	g.pushType(WASM_TYPE_I32)
 }
@@ -1439,7 +1443,7 @@ func (g *WasmGen) compileStore(size int) {
 	}
 }
 
-func (g *WasmGen) compileOffset(inst Inst) {
+func (g *WasmGen) compileOffset(inst ir.Inst) {
 	// Stack: [ptr] → [ptr + offset]
 	// ptr is i32 (address)
 	if inst.Arg != 0 {
@@ -1505,7 +1509,7 @@ func (g *WasmGen) compileCap() {
 
 // === Function calls ===
 
-func (g *WasmGen) compileCall(inst Inst) {
+func (g *WasmGen) compileCall(inst ir.Inst) {
 	if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
 		g.compileCompositeLitCall(inst)
 		return
@@ -1607,7 +1611,7 @@ func (g *WasmGen) compileCall(inst Inst) {
 	}
 }
 
-func (g *WasmGen) compileCompositeLitCall(inst Inst) {
+func (g *WasmGen) compileCompositeLitCall(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * 4
 
@@ -1674,7 +1678,7 @@ func (g *WasmGen) compileCompositeLitCall(inst Inst) {
 	g.pushType(WASM_TYPE_I32)
 }
 
-func (g *WasmGen) compileReturn(inst Inst) {
+func (g *WasmGen) compileReturn(inst ir.Inst) {
 	// Compute frame bytes from localOffsets
 	var frameBytes int32
 	if g.curFrameSize > 0 {
@@ -1736,7 +1740,7 @@ func (g *WasmGen) compileReturn(inst Inst) {
 
 // === Intrinsics ===
 
-func (g *WasmGen) compileCallIntrinsic(inst Inst) {
+func (g *WasmGen) compileCallIntrinsic(inst ir.Inst) {
 	switch inst.Name {
 	case "SysWrite":
 		scratch := g.scratchAddr
@@ -2058,17 +2062,17 @@ func (g *WasmGen) compileTostringIntrinsic() {
 func (g *WasmGen) compileTostringDispatch(typeIDLocal uint32) {
 	// Generate if/else chain for Error/String methods
 	// concrete value is in g.tempLocal
-	var entries []dispatchEntry
+	var entries []becommon.DispatchEntry
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + ".Error"
 			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 				continue
 			}
 			candidate = typeName + ".String"
 			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 			}
 		}
 	}
@@ -2082,11 +2086,11 @@ func (g *WasmGen) compileTostringDispatch(typeIDLocal uint32) {
 	// For each entry, check type_id
 	for _, entry := range entries {
 		g.w.localGet(typeIDLocal)
-		g.w.i32Const(int32(entry.typeID))
+		g.w.i32Const(int32(entry.TypeID))
 		g.w.op(OP_WASM_I32_EQ)
 		g.w.ifOp(WASM_TYPE_I32)
 		g.w.localGet(uint32(g.tempLocal)) // push concrete value as arg
-		if idx, ok := g.funcMap[entry.funcName]; ok {
+		if idx, ok := g.funcMap[entry.FuncName]; ok {
 			g.w.call(uint32(idx))
 		}
 		g.w.elseOp()
@@ -2617,7 +2621,7 @@ func (g *WasmGen) compileSyscallUnsupported(r1Addr int32, r2Addr int32, errAddr 
 
 // === Interface dispatch ===
 
-func (g *WasmGen) compileIfaceBox(inst Inst) {
+func (g *WasmGen) compileIfaceBox(inst ir.Inst) {
 	typeID := inst.Arg
 
 	// Stack: [concrete_value]
@@ -2650,7 +2654,7 @@ func (g *WasmGen) compileIfaceBox(inst Inst) {
 	g.pushType(WASM_TYPE_I32)
 }
 
-func (g *WasmGen) compileIfaceCall(inst Inst) {
+func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 	argCount := inst.Arg
 	methodName := inst.Name
 
@@ -2733,7 +2737,7 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 	}
 
 	// Collect dispatch entries with signature filtering
-	var entries []dispatchEntry
+	var entries []becommon.DispatchEntry
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + "." + bareMethod
@@ -2742,7 +2746,7 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 				continue
 			}
 
-			var fn *IRFunc
+			var fn *ir.IRFunc
 			for _, f := range g.irmod.Funcs {
 				if f.Name == funcName {
 					fn = f
@@ -2768,7 +2772,7 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 				expectedRetCount = fn.RetCount
 			}
 
-			entries = append(entries, dispatchEntry{tid, funcName})
+			entries = append(entries, becommon.DispatchEntry{tid, funcName})
 		}
 	}
 
@@ -2818,7 +2822,7 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 		// Dispatch chain
 		for ei, entry := range entries {
 			g.w.localGet(temp2) // type_id
-			g.w.i32Const(int32(entry.typeID))
+			g.w.i32Const(int32(entry.TypeID))
 			g.w.op(OP_WASM_I32_EQ)
 
 			if ei < len(entries)-1 {
@@ -2834,7 +2838,7 @@ func (g *WasmGen) compileIfaceCall(inst Inst) {
 				g.w.i32Load(2, uint32(j*4))
 				j++
 			}
-			if idx, ok := g.funcMap[entry.funcName]; ok {
+			if idx, ok := g.funcMap[entry.FuncName]; ok {
 				g.w.call(uint32(idx))
 			}
 
