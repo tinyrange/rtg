@@ -818,7 +818,13 @@ func topologicalSort(pkgs map[string]*Package) []string {
 		pkgs:    pkgs,
 		visited: make(map[string]bool),
 	}
+	// Sort map keys to keep package visitation deterministic across runtimes.
+	var paths []string
 	for path := range pkgs {
+		paths = append(paths, path)
+	}
+	sortStrings(paths)
+	for _, path := range paths {
 		ts.visit(path)
 	}
 	return ts.order
