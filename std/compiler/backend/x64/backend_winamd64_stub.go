@@ -2,7 +2,16 @@
 
 package x64
 
-import "fmt"
+import (
+	"fmt"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
+)
+
+func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return fmt.Errorf("windows/amd64 backend disabled (built with no_backend_windows_amd64 tag)")
+}
 
 func generateWinAmd64PE(irmod *IRModule, outputPath string) error {
 	return fmt.Errorf("windows/amd64 backend disabled (built with no_backend_windows_amd64 tag)")

@@ -1,6 +1,6 @@
 //go:build no_backend_vm
 
-package main
+package vm
 
 import (
 	"fmt"
@@ -10,6 +10,8 @@ import (
 )
 
 var ExitCode int
+
+func SetArgs(args []string) {}
 
 func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	return fmt.Errorf("vm backend disabled (built with no_backend_vm tag)")

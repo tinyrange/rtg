@@ -5,8 +5,8 @@ package wasm32
 import (
 	"fmt"
 
-	"github.com/rtg-project/rtg/compiler/backend/common"
-	"github.com/rtg-project/rtg/compiler/ir"
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {

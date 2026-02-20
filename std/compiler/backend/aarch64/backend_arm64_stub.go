@@ -2,7 +2,24 @@
 
 package aarch64
 
-import "fmt"
+import (
+	"fmt"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
+)
+
+func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
+}
+
+func GenerateLinuxELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
+}
+
+func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
+}
 
 func generateDarwinArm64(irmod *IRModule, outputPath string) error {
 	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
