@@ -493,6 +493,7 @@ func main() {
 				i = i + 1
 			}
 		}
+		vm.SetArgs(vmArgs)
 	}
 
 	if compileTarget.CompilerDebug {

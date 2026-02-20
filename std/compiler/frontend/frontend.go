@@ -3,6 +3,7 @@ package frontend
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/stdlib"
@@ -73,6 +74,8 @@ type Module struct {
 	Order    []string
 	Entry    *Package
 }
+
+const modulePathPrefix = "j5.nz/rtg/"
 
 var discoveredBuildTags []string
 
@@ -244,13 +247,22 @@ func appendStdlibDirCandidates(candidates []string, root string, importPath stri
 // resolveImportDirs maps an import path to possible directories on disk.
 func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []string {
 	var dirs []string
+	importCandidates := []string{importPath}
+	if strings.HasPrefix(importPath, modulePathPrefix) {
+		stripped := importPath[len(modulePathPrefix):]
+		importCandidates = common.AppendUnique(importCandidates, stripped)
+	}
 	if c.target.StdlibIncludeExplicit {
 		for _, include := range c.target.StdlibIncludePaths {
-			dirs = appendStdlibDirCandidates(dirs, include, importPath)
+			for _, candidate := range importCandidates {
+				dirs = appendStdlibDirCandidates(dirs, include, candidate)
+			}
 		}
 		return dirs
 	}
-	dirs = common.AppendUnique(dirs, baseDir+"/std/"+importPath)
+	for _, candidate := range importCandidates {
+		dirs = appendStdlibDirCandidates(dirs, baseDir, candidate)
+	}
 	return dirs
 }
 

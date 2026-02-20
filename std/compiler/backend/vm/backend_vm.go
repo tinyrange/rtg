@@ -1807,6 +1807,10 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 // vmArgs holds the arguments passed to the VM program.
 var vmArgs []string
 
+func SetArgs(args []string) {
+	vmArgs = append(vmArgs[:0], args...)
+}
+
 // Suppress unused import warnings.
 var _ = strings.HasPrefix
 var _ = fmt.Sprintf
