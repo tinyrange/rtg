@@ -223,18 +223,13 @@ func main() {
 	// Initialize embedded std if available
 	initEmbeddedStd()
 
-	if extractStdlibDest != "" {
-		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || stdinInput || parseOnly || emitIRBinaryPath != "" || buildTagsPath != "" {
-			fmt.Fprintf(os.Stderr, "-extract-stdlib cannot be combined with compilation inputs/options\n")
-			runCleanup()
-			os.Exit(1)
-		}
-		err := extractEmbeddedStdlib(extractStdlibDest)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error extracting stdlib: %v\n", err)
-			runCleanup()
-			os.Exit(1)
-		}
+	didExtractStdlib, err := handleExtractStdlibMode(extractStdlibDest, fromIRBinaryPath, entryFiles, runMode, stdinInput, parseOnly, emitIRBinaryPath, buildTagsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		runCleanup()
+		os.Exit(1)
+	}
+	if didExtractStdlib {
 		runCleanup()
 		os.Exit(0)
 	}

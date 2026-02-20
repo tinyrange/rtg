@@ -136,3 +136,17 @@ func acquireIRModule(entryFiles []string, fromIRBinaryPath string, buildTagsPath
 		ShouldExitNow: res.ShouldExitNow,
 	}, nil
 }
+
+func handleExtractStdlibMode(extractStdlibDest string, fromIRBinaryPath string, entryFiles []string, runMode bool, stdinInput bool, parseOnly bool, emitIRBinaryPath string, buildTagsPath string) (bool, error) {
+	if extractStdlibDest == "" {
+		return false, nil
+	}
+	if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || stdinInput || parseOnly || emitIRBinaryPath != "" || buildTagsPath != "" {
+		return false, fmt.Errorf("-extract-stdlib cannot be combined with compilation inputs/options")
+	}
+	err := extractEmbeddedStdlib(extractStdlibDest)
+	if err != nil {
+		return false, fmt.Errorf("error extracting stdlib: %v", err)
+	}
+	return true, nil
+}
