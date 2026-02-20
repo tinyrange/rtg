@@ -9,60 +9,17 @@ import (
 
 // generateLinuxArm64ELF compiles an IRModule to a Linux ARM64 ELF binary.
 func generateLinuxArm64ELF(irmod *IRModule, outputPath string) error {
-	g := &CodeGen{
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		baseAddr:      0x400000,
-		irmod:         irmod,
-		wordSize:      8,
-		isArm64:       true,
-	}
+	g := newNativeCodeGen(irmod, 8, 0x400000, true)
 
 	// Allocate .data space for globals (8 bytes each)
-	for i := range irmod.Globals {
-		g.globalOffsets[i] = i * 8
-	}
-	g.data = make([]byte, len(irmod.Globals)*8)
+	initNativeGlobalsData(g, len(irmod.Globals), 8)
 
 	// Emit _start entry point
 	g.emitStartArm64Linux(irmod)
 
-	// Compile all functions
-	for _, f := range irmod.Funcs {
-		g.funcOffsets[f.Name] = len(g.code)
-		g.compileFuncArm64(f)
-	}
-
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
-	if g.needTostringHelper {
-		g.emitTostringHelperArm64()
-	}
-
-	// Resolve call fixups (skip special targets handled by buildELF64)
-	var unresolved []string
-	for _, fix := range g.callFixups {
-		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
-			continue
-		}
-		target, ok := g.funcOffsets[fix.Target]
-		if !ok {
-			unresolved = append(unresolved, fix.Target)
-			continue
-		}
-		g.patchArm64BAt(fix.CodeOffset, target)
-	}
-	if len(unresolved) > 0 {
-		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
-		seen := make(map[string]bool)
-		for _, name := range unresolved {
-			if !seen[name] {
-				fmt.Fprintf(os.Stderr, "  %s\n", name)
-				seen[name] = true
-			}
-		}
-		return fmt.Errorf("%d unresolved calls", len(unresolved))
+	compileNativeModuleFuncs(g, irmod, nativeCompileModeArm64)
+	if err := resolveNativeCallFixups(g, false, true); err != nil {
+		return err
 	}
 
 	// Build and write ELF

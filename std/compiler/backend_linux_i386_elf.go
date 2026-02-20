@@ -9,56 +9,16 @@ import (
 
 // generateI386ELF compiles an IRModule to an i386 (32-bit) ELF binary.
 func generateI386ELF(irmod *IRModule, outputPath string) error {
-	g := &CodeGen{
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		baseAddr:      0x08048000,
-		irmod:         irmod,
-		wordSize:      4,
-	}
+	g := newNativeCodeGen(irmod, 4, 0x08048000, false)
 
 	slot := g.slotBytes_i386()
-	for i := range irmod.Globals {
-		g.globalOffsets[i] = i * slot
-	}
-	g.data = make([]byte, len(irmod.Globals)*slot)
+	initNativeGlobalsData(g, len(irmod.Globals), slot)
 
 	g.emitStart_i386(irmod)
 
-	for _, f := range irmod.Funcs {
-		g.funcOffsets[f.Name] = len(g.code)
-		g.compileFunc_i386(f)
-	}
-
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
-	if g.needTostringHelper {
-		g.emitTostringHelperI386()
-	}
-
-	var unresolved []string
-	for _, fix := range g.callFixups {
-		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
-			continue
-		}
-		target, ok := g.funcOffsets[fix.Target]
-		if !ok {
-			unresolved = append(unresolved, fix.Target)
-			continue
-		}
-		g.patchRel32At(fix.CodeOffset, target)
-	}
-	if len(unresolved) > 0 {
-		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
-		seen := make(map[string]bool)
-		for _, name := range unresolved {
-			if !seen[name] {
-				fmt.Fprintf(os.Stderr, "  %s\n", name)
-				seen[name] = true
-			}
-		}
-		return fmt.Errorf("%d unresolved calls", len(unresolved))
+	compileNativeModuleFuncs(g, irmod, nativeCompileModeI386)
+	if err := resolveNativeCallFixups(g, false, false); err != nil {
+		return err
 	}
 
 	elf := g.buildELF32(irmod)

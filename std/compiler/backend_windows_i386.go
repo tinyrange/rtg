@@ -39,62 +39,17 @@ var win386Imports = []string{
 
 // generateWin386PE compiles an IRModule to a Windows PE32 executable.
 func generateWin386PE(irmod *IRModule, outputPath string) error {
-	g := &CodeGen{
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		baseAddr:      0x400000,
-		irmod:         irmod,
-		wordSize:      4,
-	}
+	g := newNativeCodeGen(irmod, 4, 0x400000, false)
 
 	// Allocate .data space for globals (4 bytes each)
-	for i := range irmod.Globals {
-		g.globalOffsets[i] = i * 4
-	}
-	g.data = make([]byte, len(irmod.Globals)*4)
+	initNativeGlobalsData(g, len(irmod.Globals), 4)
 
 	// Emit entry point
 	g.emitStart_win386(irmod)
 
-	// Compile all functions
-	for _, f := range irmod.Funcs {
-		g.funcOffsets[f.Name] = len(g.code)
-		g.compileFunc_i386(f)
-	}
-
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
-	if g.needTostringHelper {
-		g.emitTostringHelperI386()
-	}
-
-	// Resolve call fixups (skip $rodata_header$, $data_addr$, $iat$ — handled by buildPE32)
-	var unresolved []string
-	for _, fix := range g.callFixups {
-		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
-			continue
-		}
-		if len(fix.Target) > 5 && fix.Target[0:5] == "$iat$" {
-			continue
-		}
-		target, ok := g.funcOffsets[fix.Target]
-		if !ok {
-			unresolved = append(unresolved, fix.Target)
-			continue
-		}
-		g.patchRel32At(fix.CodeOffset, target)
-	}
-	if len(unresolved) > 0 {
-		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
-		seen := make(map[string]bool)
-		for _, name := range unresolved {
-			if !seen[name] {
-				fmt.Fprintf(os.Stderr, "  %s\n", name)
-				seen[name] = true
-			}
-		}
-		return fmt.Errorf("%d unresolved calls", len(unresolved))
+	compileNativeModuleFuncs(g, irmod, nativeCompileModeI386)
+	if err := resolveNativeCallFixups(g, true, false); err != nil {
+		return err
 	}
 
 	// Build PE32
