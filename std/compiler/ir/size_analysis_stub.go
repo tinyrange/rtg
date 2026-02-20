@@ -7,8 +7,8 @@ type FuncSize struct {
 	Size int
 }
 
-var funcSizes []FuncSize
-var sizeAnalysisPath string
+var FuncSizes []FuncSize
+var SizeAnalysisPath string
 
 func CollectNativeFuncSizes(irmod *IRModule, funcOffsets map[string]int, codeLen int) {}
 func WriteSizeAnalysis()                                                              {}

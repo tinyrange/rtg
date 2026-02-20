@@ -3,6 +3,7 @@ package backend
 import (
 	"fmt"
 
+	"j5.nz/rtg/std/compiler/backend/c"
 	"j5.nz/rtg/std/compiler/backend/irprint"
 	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/common"
@@ -14,9 +15,9 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	if target.Backend == "vm" {
 		return vm.Generate(target, irmod, outputPath)
 	}
-	// if target.Backend == "c" {
-	// 	return c.Generate(irmod, outputPath)
-	// }
+	if target.Backend == "c" {
+		return c.Generate(target, irmod, outputPath)
+	}
 	if target.Backend == "ir" {
 		return irprint.Generate(irmod, outputPath)
 	}

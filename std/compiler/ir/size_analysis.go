@@ -14,8 +14,8 @@ type FuncSize struct {
 	Size int
 }
 
-// funcSizes accumulates per-function compiled sizes across all backends.
-var funcSizes []FuncSize
+// FuncSizes accumulates per-function compiled sizes across all backends.
+var FuncSizes []FuncSize
 
 // SizeAnalysisPath is set by the -size-analysis flag. Empty means disabled.
 var SizeAnalysisPath string
@@ -43,11 +43,11 @@ func CollectNativeFuncSizes(irmod *IRModule, funcOffsets map[string]int, codeLen
 		} else {
 			size = codeLen - offset
 		}
-		funcSizes = append(funcSizes, FuncSize{Name: f.Name, Size: size})
+		FuncSizes = append(FuncSizes, FuncSize{Name: f.Name, Size: size})
 	}
 }
 
-// WriteSizeAnalysis writes the size analysis JSON to sizeAnalysisPath.
+// WriteSizeAnalysis writes the size analysis JSON to SizeAnalysisPath.
 func WriteSizeAnalysis(target common.Target) {
 	if SizeAnalysisPath == "" {
 		return
@@ -55,7 +55,7 @@ func WriteSizeAnalysis(target common.Target) {
 
 	// Compute total
 	total := 0
-	for _, fs := range funcSizes {
+	for _, fs := range FuncSizes {
 		total = total + fs.Size
 	}
 
@@ -75,7 +75,7 @@ func WriteSizeAnalysis(target common.Target) {
 
 	// "functions"
 	buf = append(buf, '"', 'f', 'u', 'n', 'c', 't', 'i', 'o', 'n', 's', '"', ':', '[')
-	for i, fs := range funcSizes {
+	for i, fs := range FuncSizes {
 		if i > 0 {
 			buf = append(buf, ',')
 		}

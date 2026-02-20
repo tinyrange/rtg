@@ -1,12 +1,16 @@
 //go:build !no_backend_c
 
-package main
+package c
 
 import (
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+
+	"j5.nz/rtg/std/compiler/backend/becommon"
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 type cDispatchEntry struct {
@@ -101,8 +105,8 @@ func cWritef(b *strings.Builder, format string, a ...interface{}) {
 	b.WriteString(fmt.Sprintf(format, a...))
 }
 
-func generateCSource(irmod *IRModule, outputPath string) error {
-	bits := targetCModel
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	bits := target.CModel
 	if bits == 0 {
 		bits = 64
 	}
@@ -145,8 +149,8 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 
 	for _, f := range irmod.Funcs {
 		for _, in := range f.Code {
-			if in.Op == OP_CONST_STR {
-				s := decodeStringLiteral(in.Name)
+			if in.Op == ir.OP_CONST_STR {
+				s := becommon.DecodeStringLiteral(in.Name)
 				if _, ok := litIdx[s]; !ok {
 					litIdx[s] = len(literals)
 					literals = append(literals, s)
@@ -160,7 +164,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 	var methods []string
 	for _, f := range irmod.Funcs {
 		for _, in := range f.Code {
-			if in.Op == OP_IFACE_CALL {
+			if in.Op == ir.OP_IFACE_CALL {
 				name := cBareMethod(in.Name)
 				if _, ok := methodID[name]; !ok {
 					methodID[name] = len(methods)
@@ -788,7 +792,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 	bp.WriteString("}\n\n")
 
 	for fi, f := range irmod.Funcs {
-		if compilerDebug && fi%100 == 0 {
+		if target.CompilerDebug && fi%100 == 0 {
 			fmt.Fprintf(os.Stderr, "debug: C codegen func %d/%d (%s)\n", fi, len(irmod.Funcs), f.Name)
 		}
 		funcStart := bp.Len()
@@ -805,41 +809,41 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 		needI := f.Params > 0
 		for _, in := range f.Code {
 			switch in.Op {
-			case OP_DUP:
+			case ir.OP_DUP:
 				needT = true
-			case OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_AND, OP_OR, OP_XOR, OP_SHL, OP_SHR,
-				OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LEQ, OP_GEQ:
+			case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD, ir.OP_AND, ir.OP_OR, ir.OP_XOR, ir.OP_SHL, ir.OP_SHR,
+				ir.OP_EQ, ir.OP_NEQ, ir.OP_LT, ir.OP_GT, ir.OP_LEQ, ir.OP_GEQ:
 				needA = true
 				needC = true
-			case OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+			case ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
 				needA = true
 				needC = true
-			case OP_NEG, OP_NOT, OP_LOAD, OP_OFFSET, OP_LEN, OP_CAP, OP_JMP_IF, OP_JMP_IF_NOT:
+			case ir.OP_NEG, ir.OP_NOT, ir.OP_LOAD, ir.OP_OFFSET, ir.OP_LEN, ir.OP_CAP, ir.OP_JMP_IF, ir.OP_JMP_IF_NOT:
 				needA = true
-			case OP_STORE:
+			case ir.OP_STORE:
 				needA = true
 				needC = true
-			case OP_INDEX_ADDR:
+			case ir.OP_INDEX_ADDR:
 				needA = true
 				needC = true
 				needT = true
-			case OP_CONVERT:
+			case ir.OP_CONVERT:
 				if in.Name == "byte" || in.Name == "uint16" || in.Name == "int16" || in.Name == "int32" || in.Name == "uint32" {
 					needA = true
 				}
-			case OP_IFACE_BOX:
+			case ir.OP_IFACE_BOX:
 				needA = true
 				needC = true
-			case OP_IFACE_CALL:
+			case ir.OP_IFACE_CALL:
 				needA = true
 				needC = true
 				needT = true
 				needI = true
-			case OP_PANIC:
+			case ir.OP_PANIC:
 				needA = true
 				needC = true
 				needT = true
-			case OP_CALL_INTRINSIC:
+			case ir.OP_CALL_INTRINSIC:
 				if in.Name == "Sliceptr" || in.Name == "Stringptr" || in.Name == "ReadPtr" || in.Name == "WritePtr" || in.Name == "WriteByte" {
 					needA = true
 				}
@@ -871,128 +875,128 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 			cWritef(bp, "  for (i = %d; i >= 0; i--) locals[i] = rtg_pop();\n", f.Params-1)
 		}
 		for _, in := range f.Code {
-			if in.Op == OP_LABEL {
+			if in.Op == ir.OP_LABEL {
 				cWritef(bp, "L_%d:\n", in.Arg)
 				continue
 			}
 			switch in.Op {
-			case OP_CONST_I64:
+			case ir.OP_CONST_I64:
 				if bits == 16 {
 					cWritef(bp, "  rtg_push((rtg_word)((rtg_sword)%d));\n", in.Val)
 				} else {
 					cWritef(bp, "  rtg_push((rtg_word)((rtg_sword)%dL));\n", in.Val)
 				}
-			case OP_CONST_STR:
-				lit := decodeStringLiteral(in.Name)
+			case ir.OP_CONST_STR:
+				lit := becommon.DecodeStringLiteral(in.Name)
 				idx := litIdx[lit]
 				cWritef(bp, "  rtg_push((rtg_word)(rtg_size)&g_lit_hdr_%d);\n", idx)
-			case OP_CONST_BOOL:
+			case ir.OP_CONST_BOOL:
 				if in.Arg != 0 {
 					bp.WriteString("  rtg_push(1);\n")
 				} else {
 					bp.WriteString("  rtg_push(0);\n")
 				}
-			case OP_CONST_NIL:
+			case ir.OP_CONST_NIL:
 				bp.WriteString("  rtg_push(0);\n")
 
-			case OP_LOCAL_GET:
+			case ir.OP_LOCAL_GET:
 				cWritef(bp, "  rtg_push(locals[%d]);\n", in.Arg)
-			case OP_LOCAL_SET:
+			case ir.OP_LOCAL_SET:
 				cWritef(bp, "  locals[%d] = rtg_pop();\n", in.Arg)
-			case OP_LOCAL_ADD_IMM:
+			case ir.OP_LOCAL_ADD_IMM:
 				cWritef(bp, "  locals[%d] = (rtg_word)((rtg_sword)locals[%d] + (rtg_sword)%d);\n", in.Arg, in.Arg, int64(in.Val))
-			case OP_LOCAL_ADDR:
+			case ir.OP_LOCAL_ADDR:
 				cWritef(bp, "  rtg_push((rtg_word)(rtg_size)&locals[%d]);\n", in.Arg)
-			case OP_GLOBAL_GET:
+			case ir.OP_GLOBAL_GET:
 				cWritef(bp, "  rtg_push(g_globals[%d]);\n", in.Arg)
-			case OP_GLOBAL_SET:
+			case ir.OP_GLOBAL_SET:
 				cWritef(bp, "  g_globals[%d] = rtg_pop();\n", in.Arg)
-			case OP_GLOBAL_ADDR:
+			case ir.OP_GLOBAL_ADDR:
 				cWritef(bp, "  rtg_push((rtg_word)(rtg_size)&g_globals[%d]);\n", in.Arg)
 
-			case OP_DROP:
+			case ir.OP_DROP:
 				bp.WriteString("  (void)rtg_pop();\n")
-			case OP_DUP:
+			case ir.OP_DUP:
 				bp.WriteString("  t = rtg_pop(); rtg_push(t); rtg_push(t);\n")
 
-			case OP_ADD:
+			case ir.OP_ADD:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c + (rtg_sword)a));\n")
-			case OP_SUB:
+			case ir.OP_SUB:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c - (rtg_sword)a));\n")
-			case OP_MUL:
+			case ir.OP_MUL:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c * (rtg_sword)a));\n")
-			case OP_DIV:
+			case ir.OP_DIV:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((a == 0) ? 0 : (rtg_word)((rtg_sword)c / (rtg_sword)a));\n")
-			case OP_MOD:
+			case ir.OP_MOD:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((a == 0) ? 0 : (rtg_word)((rtg_sword)c % (rtg_sword)a));\n")
-			case OP_NEG:
+			case ir.OP_NEG:
 				bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(-(rtg_sword)a));\n")
-			case OP_AND:
+			case ir.OP_AND:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push(c & a);\n")
-			case OP_OR:
+			case ir.OP_OR:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push(c | a);\n")
-			case OP_XOR:
+			case ir.OP_XOR:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push(c ^ a);\n")
-			case OP_SHL:
+			case ir.OP_SHL:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(c << (a & RTG_SHIFT_MASK)));\n")
-			case OP_SHR:
+			case ir.OP_SHR:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) >> (a & RTG_SHIFT_MASK)));\n")
-			case OP_EQ:
+			case ir.OP_EQ:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) == ((rtg_sword)a)));\n")
-			case OP_NEQ:
+			case ir.OP_NEQ:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) != ((rtg_sword)a)));\n")
-			case OP_LT:
+			case ir.OP_LT:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) < ((rtg_sword)a)));\n")
-			case OP_GT:
+			case ir.OP_GT:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) > ((rtg_sword)a)));\n")
-			case OP_LEQ:
+			case ir.OP_LEQ:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) <= ((rtg_sword)a)));\n")
-			case OP_GEQ:
+			case ir.OP_GEQ:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) >= ((rtg_sword)a)));\n")
-			case OP_NOT:
+			case ir.OP_NOT:
 				bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(a == 0));\n")
 
-			case OP_LOAD:
+			case ir.OP_LOAD:
 				if in.Arg == 0 {
 					bp.WriteString("  a = rtg_pop(); rtg_push(rtg_load(a, RTG_WORD_BYTES));\n")
 				} else {
 					cWritef(bp, "  a = rtg_pop(); rtg_push(rtg_load(a, %d));\n", in.Arg)
 				}
-			case OP_STORE:
+			case ir.OP_STORE:
 				if in.Arg == 0 {
 					bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_store(a, c, RTG_WORD_BYTES);\n")
 				} else {
 					cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_store(a, c, %d);\n", in.Arg)
 				}
-			case OP_OFFSET:
+			case ir.OP_OFFSET:
 				cWritef(bp, "  a = rtg_pop(); rtg_push(a + (rtg_word)%d);\n", in.Arg)
-			case OP_INDEX_ADDR:
+			case ir.OP_INDEX_ADDR:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); t = (c == 0) ? 0 : rtg_load(c, RTG_WORD_BYTES); rtg_push(t + a * (rtg_word)%d);\n", in.Arg)
-			case OP_LEN:
+			case ir.OP_LEN:
 				bp.WriteString("  a = rtg_pop(); rtg_push((a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES));\n")
-			case OP_CAP:
+			case ir.OP_CAP:
 				bp.WriteString("  a = rtg_pop(); rtg_push((a == 0) ? 0 : rtg_load(a + 2*RTG_WORD_BYTES, RTG_WORD_BYTES));\n")
 
-			case OP_JMP:
+			case ir.OP_JMP:
 				cWritef(bp, "  goto L_%d;\n", in.Arg)
-			case OP_JMP_IF:
+			case ir.OP_JMP_IF:
 				cWritef(bp, "  a = rtg_pop(); if (a != 0) goto L_%d;\n", in.Arg)
-			case OP_JMP_IF_NOT:
+			case ir.OP_JMP_IF_NOT:
 				cWritef(bp, "  a = rtg_pop(); if (a == 0) goto L_%d;\n", in.Arg)
-			case OP_JMP_EQ:
+			case ir.OP_JMP_EQ:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) == ((rtg_sword)a)) goto L_%d;\n", in.Arg)
-			case OP_JMP_NEQ:
+			case ir.OP_JMP_NEQ:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) != ((rtg_sword)a)) goto L_%d;\n", in.Arg)
-			case OP_JMP_LT:
+			case ir.OP_JMP_LT:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) < ((rtg_sword)a)) goto L_%d;\n", in.Arg)
-			case OP_JMP_GT:
+			case ir.OP_JMP_GT:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) > ((rtg_sword)a)) goto L_%d;\n", in.Arg)
-			case OP_JMP_LEQ:
+			case ir.OP_JMP_LEQ:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) <= ((rtg_sword)a)) goto L_%d;\n", in.Arg)
-			case OP_JMP_GEQ:
+			case ir.OP_JMP_GEQ:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) >= ((rtg_sword)a)) goto L_%d;\n", in.Arg)
 
-			case OP_CALL:
+			case ir.OP_CALL:
 				if strings.HasPrefix(in.Name, "builtin.composite.") {
 					cWritef(bp, "  rtg_builtin_composite(%d);\n", in.Arg)
 				} else if idx, ok := funcIdx[in.Name]; ok {
@@ -1003,7 +1007,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 					return fmt.Errorf("unresolved call target for C backend: %s", in.Name)
 				}
 
-			case OP_CALL_INTRINSIC:
+			case ir.OP_CALL_INTRINSIC:
 				switch in.Name {
 				case "SysRead":
 					bp.WriteString("  { rtg_sword rv = rtg_host_read(locals[0], locals[1], locals[2]);\n")
@@ -1102,10 +1106,10 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 					return fmt.Errorf("unknown intrinsic %q", in.Name)
 				}
 
-			case OP_RETURN:
+			case ir.OP_RETURN:
 				bp.WriteString("  return;\n")
 
-			case OP_CONVERT:
+			case ir.OP_CONVERT:
 				switch in.Name {
 				case "string":
 					if bytesToStringIdx >= 0 {
@@ -1133,10 +1137,10 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 					bp.WriteString("  /* no-op conversion */\n")
 				}
 
-			case OP_IFACE_BOX:
+			case ir.OP_IFACE_BOX:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_alloc((rtg_word)(2 * RTG_WORD_BYTES)); rtg_store(c, (rtg_word)%d, RTG_WORD_BYTES); rtg_store(c + RTG_WORD_BYTES, a, RTG_WORD_BYTES); rtg_push(c);\n", in.Arg)
 
-			case OP_IFACE_CALL:
+			case ir.OP_IFACE_CALL:
 				mid := methodID[cBareMethod(in.Name)]
 				cWritef(bp, "  {\n")
 				cWritef(bp, "    int ac = %d;\n", in.Arg)
@@ -1155,7 +1159,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				bp.WriteString("    rtg_call_func(i);\n")
 				bp.WriteString("  }\n")
 
-			case OP_PANIC:
+			case ir.OP_PANIC:
 				bp.WriteString("  a = rtg_pop();\n")
 				bp.WriteString("  c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);\n")
 				bp.WriteString("  if (c < 256) a = rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
@@ -1165,7 +1169,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 				bp.WriteString("  rtg_host_write_str(\"\\n\", 1);\n")
 				bp.WriteString("  rtg_host_exit(2);\n")
 
-			case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+			case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 				bp.WriteString("  rtg_fail(\"unexpected unsupported opcode\");\n")
 
 			default:
@@ -1173,7 +1177,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 			}
 		}
 		bp.WriteString("}\n\n")
-		funcSizes = append(funcSizes, FuncSize{Name: f.Name, Size: bp.Len() - funcStart})
+		ir.FuncSizes = append(ir.FuncSizes, ir.FuncSize{Name: f.Name, Size: bp.Len() - funcStart})
 	}
 
 	bp.WriteString("int main(int argc, char** argv) {\n")
@@ -1183,7 +1187,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 	bp.WriteString("  rtg_check_ptr_bits();\n")
 	bp.WriteString("  rtg_init_literals();\n")
 	for i, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			bp.WriteString("  ")
 			bp.WriteString(funcSyms[i])
 			bp.WriteString("();\n")
@@ -1195,7 +1199,7 @@ func generateCSource(irmod *IRModule, outputPath string) error {
 	bp.WriteString("  return 0;\n")
 	bp.WriteString("}\n")
 
-	if compilerDebug {
+	if target.CompilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: C codegen complete, writing %d bytes\n", bp.Len())
 	}
 	if err := os.WriteFile(outputPath, []byte(bp.String()), 0644); err != nil {
