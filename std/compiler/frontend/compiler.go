@@ -4540,7 +4540,14 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	if typeName == "" || typeName == "string" || typeName == "int" || typeName == "bool" || typeName == "byte" || typeName == "error" || typeName == "interface{}" {
 		return typeName
 	}
-	cacheKey := typeName + "\x00" + pkgPath
+	// Unqualified names (pkgPath=="") are resolved relative to c.curPkg.
+	// Include that context in the cache key to avoid cross-package collisions
+	// (e.g. "*CodeGen" in backend/i386 vs backend/x64).
+	cachePkg := pkgPath
+	if cachePkg == "" && c.curPkg != nil {
+		cachePkg = c.curPkg.Path
+	}
+	cacheKey := typeName + "\x00" + cachePkg
 	if cached, ok := c.qualifyTypeCache[cacheKey]; ok {
 		return cached
 	}
@@ -4762,6 +4769,12 @@ func (c *Compiler) resolveCallName(node *Node) string {
 			}
 			return pkg.QualName(node.Name)
 		}
+		// Interface method call (e.g. err.Error()).
+		if ifaceType, ok := c.localTypes[node.X.Name]; ok {
+			if _, hasMethod := c.ifaceMethodReturnCount(ifaceType, node.Name); hasMethod {
+				return c.dotJoin(ifaceType, node.Name)
+			}
+		}
 		// Could be a method call — try to resolve using concrete type
 		concreteType := ""
 		if ct, ok := c.localConcreteTypes[node.X.Name]; ok {
@@ -4780,7 +4793,8 @@ func (c *Compiler) resolveCallName(node *Node) string {
 		if resolved, ok := c.findUniqueMethodByName(node.Name); ok {
 			return resolved
 		}
-		return c.dotJoin(node.X.Name, node.Name)
+		c.errorf("%s: cannot resolve selector call %s.%s (unknown receiver type)", c.curFunc.Name, node.X.Name, node.Name)
+		return "unknown"
 	}
 	// Handle []byte, []int, etc. type conversions
 	if node.Kind == NSliceType {
@@ -4809,6 +4823,8 @@ func (c *Compiler) resolveCallName(node *Node) string {
 		if resolved, ok := c.findUniqueMethodByName(methodName); ok {
 			return resolved
 		}
+		c.errorf("%s: cannot resolve selector call %s on chained receiver field %s", c.curFunc.Name, methodName, fieldName)
+		return "unknown"
 	}
 	return "unknown"
 }
