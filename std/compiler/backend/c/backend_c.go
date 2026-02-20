@@ -144,47 +144,60 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	}
 
 	// String literal interning.
-	litIdx := make(map[string]int)
-	var literals []string
-
+	// Collect into a set first, then sort to make emitted literal IDs stable.
+	litSet := make(map[string]bool)
 	for _, f := range irmod.Funcs {
 		for _, in := range f.Code {
 			if in.Op == ir.OP_CONST_STR {
 				s := becommon.DecodeStringLiteral(in.Name)
-				if _, ok := litIdx[s]; !ok {
-					litIdx[s] = len(literals)
-					literals = append(literals, s)
-				}
+				litSet[s] = true
 			}
 		}
 	}
+	var literals []string
+	for s := range litSet {
+		literals = append(literals, s)
+	}
+	sort.Strings(literals)
+	litIdx := make(map[string]int, len(literals))
+	for i, s := range literals {
+		litIdx[s] = i
+	}
 
 	// Method name interning for interface dispatch.
-	methodID := make(map[string]int)
-	var methods []string
+	// Collect into a set first, then sort to keep method IDs deterministic.
+	methodSet := make(map[string]bool)
 	for _, f := range irmod.Funcs {
 		for _, in := range f.Code {
 			if in.Op == ir.OP_IFACE_CALL {
 				name := cBareMethod(in.Name)
-				if _, ok := methodID[name]; !ok {
-					methodID[name] = len(methods)
-					methods = append(methods, name)
-				}
+				methodSet[name] = true
 			}
 		}
 	}
-	errorMethodID, ok := methodID["Error"]
-	if !ok {
-		errorMethodID = len(methods)
-		methodID["Error"] = errorMethodID
-		methods = append(methods, "Error")
+	for mname := range irmod.MethodTable {
+		dot := len(mname) - 1
+		for dot >= 0 && mname[dot] != '.' {
+			dot--
+		}
+		if dot >= 0 && dot+1 < len(mname) {
+			methodSet[mname[dot+1:]] = true
+		}
 	}
-	stringMethodID, ok := methodID["String"]
-	if !ok {
-		stringMethodID = len(methods)
-		methodID["String"] = stringMethodID
-		methods = append(methods, "String")
+	methodSet["Error"] = true
+	methodSet["String"] = true
+
+	var methods []string
+	for name := range methodSet {
+		methods = append(methods, name)
 	}
+	sort.Strings(methods)
+	methodID := make(map[string]int, len(methods))
+	for i, name := range methods {
+		methodID[name] = i
+	}
+	errorMethodID := methodID["Error"]
+	stringMethodID := methodID["String"]
 
 	// Build dispatch table: type_id + method_name -> function index.
 	var dispatch []cDispatchEntry
@@ -205,9 +218,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			bare := mname[len(prefix):]
 			mid, ok := methodID[bare]
 			if !ok {
-				mid = len(methods)
-				methodID[bare] = mid
-				methods = append(methods, bare)
+				continue
 			}
 			dispatch = append(dispatch, cDispatchEntry{
 				typeID:   tid,
