@@ -115,39 +115,55 @@ func GenerateELF(irmod *IRModule, outputPath string, opts DriverOptions) error {
 	}
 	switch target.GOARCH {
 	case "dos16":
-		if target.GOOS == "dos" {
-			return generateDOSCOM386(irmod, outputPath)
-		}
-		return fmt.Errorf("unsupported OS for dos16: %s", target.GOOS)
+		return generateForDOS16Target(irmod, outputPath, target)
 	case "amd64":
-		if target.GOOS == "windows" {
-			return generateWinAmd64PE(irmod, outputPath)
-		}
-		return generateAmd64ELF(irmod, outputPath)
+		return generateForAMD64Target(irmod, outputPath, target)
 	case "386":
-		if target.GOOS == "windows" {
-			return generateWin386PE(irmod, outputPath)
-		}
-		if target.GOOS == "dos" {
-			return generateDOSCOM386(irmod, outputPath)
-		}
-		return generateI386ELF(irmod, outputPath)
+		return generateForI386Target(irmod, outputPath, target)
 	case "wasm32":
 		return generateWasm32(irmod, outputPath)
 	case "arm64":
-		if target.GOOS == "darwin" {
-			return generateDarwinArm64(irmod, outputPath)
-		}
-		if target.GOOS == "linux" {
-			return generateLinuxArm64ELF(irmod, outputPath)
-		}
-		if target.GOOS == "windows" {
-			return generateWinArm64PE(irmod, outputPath)
-		}
-		return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
+		return generateForARM64Target(irmod, outputPath, target)
 	default:
 		return fmt.Errorf("unsupported target architecture: %s", target.GOARCH)
 	}
+}
+
+func generateForDOS16Target(irmod *IRModule, outputPath string, target CompilerTarget) error {
+	if target.GOOS == "dos" {
+		return generateDOSCOM386(irmod, outputPath)
+	}
+	return fmt.Errorf("unsupported OS for dos16: %s", target.GOOS)
+}
+
+func generateForAMD64Target(irmod *IRModule, outputPath string, target CompilerTarget) error {
+	if target.GOOS == "windows" {
+		return generateWinAmd64PE(irmod, outputPath)
+	}
+	return generateAmd64ELF(irmod, outputPath)
+}
+
+func generateForI386Target(irmod *IRModule, outputPath string, target CompilerTarget) error {
+	if target.GOOS == "windows" {
+		return generateWin386PE(irmod, outputPath)
+	}
+	if target.GOOS == "dos" {
+		return generateDOSCOM386(irmod, outputPath)
+	}
+	return generateI386ELF(irmod, outputPath)
+}
+
+func generateForARM64Target(irmod *IRModule, outputPath string, target CompilerTarget) error {
+	if target.GOOS == "darwin" {
+		return generateDarwinArm64(irmod, outputPath)
+	}
+	if target.GOOS == "linux" {
+		return generateLinuxArm64ELF(irmod, outputPath)
+	}
+	if target.GOOS == "windows" {
+		return generateWinArm64PE(irmod, outputPath)
+	}
+	return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
 }
 
 // isInitFunc checks if a function name is a package init function.
