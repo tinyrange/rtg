@@ -150,3 +150,13 @@ func handleExtractStdlibMode(extractStdlibDest string, fromIRBinaryPath string, 
 	}
 	return true, nil
 }
+
+func validateMainInputs(extractStdlibDest string, fromIRBinaryPath string, entryFiles []string) (bool, error) {
+	if fromIRBinaryPath != "" && len(entryFiles) > 0 {
+		return false, fmt.Errorf("cannot combine source files with -from-ir-binary")
+	}
+	if extractStdlibDest == "" && fromIRBinaryPath == "" && len(entryFiles) == 0 {
+		return true, nil
+	}
+	return false, nil
+}

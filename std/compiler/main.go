@@ -207,12 +207,13 @@ func main() {
 		outputPath = runTmpBin
 	}
 
-	if fromIRBinaryPath != "" && len(entryFiles) > 0 {
-		fmt.Fprintf(os.Stderr, "cannot combine source files with -from-ir-binary\n")
+	showHelp, err := validateMainInputs(extractStdlibDest, fromIRBinaryPath, entryFiles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		runCleanup()
 		os.Exit(1)
 	}
-	if extractStdlibDest == "" && fromIRBinaryPath == "" && len(entryFiles) == 0 {
+	if showHelp {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
