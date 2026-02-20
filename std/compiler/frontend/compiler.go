@@ -624,6 +624,12 @@ func (c *Compiler) resolveExprType(node *Node) string {
 		if node.X != nil && node.X.Kind == NIdent && node.X.Name == "recover" {
 			return "interface{}"
 		}
+		if node.X != nil && node.X.Kind == NIdent && node.X.Name == "new" && len(node.Nodes) == 1 {
+			typeName := nodeTypeName(node.Nodes[0])
+			if typeName != "" {
+				return c.qualifyTypeName("*"+typeName, "")
+			}
+		}
 		if node.X != nil && node.X.Kind == NSliceType && node.X.X != nil {
 			return "[]" + c.qualifyTypeName(nodeTypeName(node.X.X), "")
 		}
@@ -1939,9 +1945,26 @@ func (c *Compiler) compileAssign(node *Node) {
 		if c.isStringTypedExpr(node.Y) {
 			c.localStringVars[node.X.Name] = true
 		}
-		// Track address-of locals for auto-deref (only &variable, not &Struct{})
+		// Track address-of locals for selector auto-deref.
+		// Skip struct-handle sources because &structLocal preserves the handle.
 		if node.Y != nil && node.Y.Kind == NUnaryExpr && node.Y.Name == "&" && node.Y.X != nil && node.Y.X.Kind == NIdent {
-			c.localAddrOf[node.X.Name] = true
+			baseName := node.Y.X.Name
+			needsAutoDeref := true
+			if ct, ok := c.localConcreteTypes[baseName]; ok {
+				if typeNode, _ := c.lookupStructTypeNode(ct); typeNode != nil {
+					needsAutoDeref = false
+				}
+			} else {
+				gqname := c.curPkg.QualName(baseName)
+				if ct, ok := c.globalConcreteTypes[gqname]; ok {
+					if typeNode, _ := c.lookupStructTypeNode(ct); typeNode != nil {
+						needsAutoDeref = false
+					}
+				}
+			}
+			if needsAutoDeref {
+				c.localAddrOf[node.X.Name] = true
+			}
 		}
 		// Track concrete type and elem size for method resolution and indexing
 		if ct := c.exprConcreteType(node.Y); ct != "" {
@@ -2667,6 +2690,12 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 	if expr.Kind == NCallExpr {
 		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "recover" {
 			return "interface{}"
+		}
+		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "new" && len(expr.Nodes) == 1 {
+			typeName := nodeTypeName(expr.Nodes[0])
+			if typeName != "" {
+				return c.qualifyTypeName("*"+typeName, "")
+			}
 		}
 		if expr.X != nil && expr.X.Kind == NSliceType && expr.X.X != nil {
 			return "[]" + c.qualifyTypeName(nodeTypeName(expr.X.X), "")
