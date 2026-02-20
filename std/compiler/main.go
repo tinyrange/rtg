@@ -70,109 +70,30 @@ func readStdinSourceToTemp() error {
 }
 
 func main() {
-	if len(os.Args) < 2 {
+	parsed, err := parseMainArgs(os.Args, currentDriverOptions())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		runCleanup()
+		os.Exit(1)
+	}
+	if parsed.ShowHelp {
+		if parsed.HelpToStdout {
+			printHelp(os.Args[0], os.Stdout)
+			os.Exit(0)
+		}
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
 
-	outputPath := "output"
-	var entryFiles []string
-	var extraTags string
-	var parseOnly bool
-	var buildTagsPath string
-	var emitIRBinaryPath string
-	var fromIRBinaryPath string
-	var extractStdlibDest string
-	var runMode bool
-	var stdinInput bool
-	var programArgs []string
-	parsedOpts := currentDriverOptions()
-	i := 1
-	for i < len(os.Args) {
-		if os.Args[i] == "-h" || os.Args[i] == "--help" {
-			printHelp(os.Args[0], os.Stdout)
-			os.Exit(0)
-		} else if os.Args[i] == "-run" {
-			runMode = true
-			i = i + 1
-		} else if os.Args[i] == "-o" && i+1 < len(os.Args) {
-			outputPath = os.Args[i+1]
-			i = i + 2
-		} else if os.Args[i] == "-T" && i+1 < len(os.Args) {
-			var errMsg string
-			parsedOpts.Target, errMsg = parseTargetFlag(parsedOpts.Target, os.Args[i+1])
-			if errMsg != "" {
-				fmt.Fprintf(os.Stderr, "%s\n", errMsg)
-				os.Exit(1)
-			}
-			i = i + 2
-		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
-			sizeAnalysisPath = os.Args[i+1]
-			i = i + 2
-		} else if os.Args[i] == "-parse-only" {
-			parseOnly = true
-			i = i + 1
-		} else if (os.Args[i] == "-emit-ir-binary" || os.Args[i] == "-from-ir-binary") && i+1 < len(os.Args) {
-			if !irBinaryEnabled {
-				fmt.Fprintf(os.Stderr, "IR binary I/O is experimental; rebuild with -tags exp_ir_binary\n")
-				runCleanup()
-				os.Exit(1)
-			}
-			if os.Args[i] == "-emit-ir-binary" {
-				emitIRBinaryPath = os.Args[i+1]
-			} else {
-				fromIRBinaryPath = os.Args[i+1]
-			}
-			i = i + 2
-		} else if os.Args[i] == "-list-build-tags" && i+1 < len(os.Args) {
-			buildTagsPath = os.Args[i+1]
-			i = i + 2
-		} else if os.Args[i] == "-tags" && i+1 < len(os.Args) {
-			extraTags = os.Args[i+1]
-			i = i + 2
-		} else if os.Args[i] == "-include" && i+1 < len(os.Args) {
-			val := normalizePath(os.Args[i+1])
-			if !stdlibIncludeExplicit {
-				stdlibIncludeExplicit = true
-				stdlibIncludeEmbedded = false
-			}
-			if val == "-" {
-				stdlibIncludeEmbedded = true
-			} else if val != "" {
-				stdlibIncludePaths = appendUnique(stdlibIncludePaths, trimTrailingSlash(val))
-			}
-			i = i + 2
-		} else if os.Args[i] == "-extract-stdlib" && i+1 < len(os.Args) {
-			extractStdlibDest = normalizePath(os.Args[i+1])
-			i = i + 2
-		} else if os.Args[i] == "-debug" {
-			parsedOpts.Debug = true
-			i = i + 1
-		} else if os.Args[i] == "-strip" || os.Args[i] == "-s" {
-			parsedOpts.StripBinary = true
-			i = i + 1
-		} else if os.Args[i] == "--" {
-			i = i + 1
-			for i < len(os.Args) {
-				programArgs = append(programArgs, os.Args[i])
-				i = i + 1
-			}
-		} else if os.Args[i] == "-" {
-			stdinInput = true
-			i = i + 1
-		} else {
-			entryFiles = append(entryFiles, normalizePath(os.Args[i]))
-			i = i + 1
-		}
-	}
-	entryFiles, outputPath, err := prepareRuntimeInputs(entryFiles, fromIRBinaryPath, stdinInput, runMode, outputPath, parsedOpts.Target)
+	invocation := parsed.Invocation
+	entryFiles, outputPath, err := prepareRuntimeInputs(invocation.EntryFiles, invocation.FromIRBinaryPath, invocation.StdinInput, invocation.RunMode, invocation.OutputPath, invocation.ParsedOpts.Target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		runCleanup()
 		os.Exit(1)
 	}
 
-	showHelp, err := validateMainInputs(extractStdlibDest, fromIRBinaryPath, entryFiles)
+	showHelp, err := validateMainInputs(invocation.ExtractStdlibDst, invocation.FromIRBinaryPath, entryFiles)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		runCleanup()
@@ -184,12 +105,12 @@ func main() {
 	}
 
 	// Build and apply driver options explicitly.
-	opts := buildAndApplyDriverOptionsFrom(parsedOpts, extraTags, sizeAnalysisPath != "")
+	opts := buildAndApplyDriverOptionsFrom(invocation.ParsedOpts, invocation.ExtraTags, sizeAnalysisPath != "")
 
 	// Initialize embedded std if available
 	initEmbeddedStd()
 
-	didExtractStdlib, err := handleExtractStdlibMode(extractStdlibDest, fromIRBinaryPath, entryFiles, runMode, stdinInput, parseOnly, emitIRBinaryPath, buildTagsPath)
+	didExtractStdlib, err := handleExtractStdlibMode(invocation.ExtractStdlibDst, invocation.FromIRBinaryPath, entryFiles, invocation.RunMode, invocation.StdinInput, invocation.ParseOnly, invocation.EmitIRBinaryPath, invocation.BuildTagsPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		runCleanup()
@@ -200,7 +121,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	irmod, frontendErrMsg, shouldExitNow, err := resolveIRModuleForMain(entryFiles, fromIRBinaryPath, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
+	irmod, frontendErrMsg, shouldExitNow, err := resolveIRModuleForMain(entryFiles, invocation.FromIRBinaryPath, invocation.BuildTagsPath, invocation.ParseOnly, invocation.EmitIRBinaryPath, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		runCleanup()
@@ -218,7 +139,7 @@ func main() {
 
 	// Set VM program arguments if using VM backend
 	if opts.Target.Backend == "vm" {
-		configureVMProgramArgs(entryFiles, programArgs)
+		configureVMProgramArgs(entryFiles, invocation.ProgramArgs)
 	}
 
 	exitCode, err := emitAndFinalizeWithOptions(irmod, outputPath, opts)
@@ -234,7 +155,7 @@ func main() {
 		os.Exit(exitCode)
 	}
 
-	if runMode {
+	if invocation.RunMode {
 		err = runCompiledBinary(outputPath)
 
 		runCleanup()
