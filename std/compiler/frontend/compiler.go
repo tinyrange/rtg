@@ -1215,7 +1215,7 @@ func sortEmbeds(embeds []embedInfo) {
 	i := 1
 	for i < len(embeds) {
 		j := i
-		for j > 0 && embeds[j].name < embeds[j-1].name {
+		for j > 0 && stringLess(embeds[j].name, embeds[j-1].name) {
 			tmp := embeds[j]
 			embeds[j] = embeds[j-1]
 			embeds[j-1] = tmp
@@ -1230,7 +1230,7 @@ func sortEmbedFiles(names []string, data []string) {
 	i := 1
 	for i < len(names) {
 		j := i
-		for j > 0 && names[j] < names[j-1] {
+		for j > 0 && stringLess(names[j], names[j-1]) {
 			tmpN := names[j]
 			names[j] = names[j-1]
 			names[j-1] = tmpN
