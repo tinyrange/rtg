@@ -17,26 +17,32 @@ jobs:
         include:
           - runner: ubuntu-latest
             target: linux/amd64
+            target_id: linux-amd64
             cc: cc
             suffix: ""
           - runner: ubuntu-latest
             target: linux/386
+            target_id: linux-386
             cc: cc
             suffix: ""
           - runner: ubuntu-24.04-arm
             target: linux/arm64
+            target_id: linux-arm64
             cc: cc
             suffix: ""
           - runner: macos-latest
             target: darwin/arm64
+            target_id: darwin-arm64
             cc: cc
             suffix: ""
           - runner: windows-latest
             target: windows/386
+            target_id: windows-386
             cc: gcc
             suffix: .exe
           - runner: windows-latest
             target: windows/amd64
+            target_id: windows-amd64
             cc: gcc
             suffix: .exe
     runs-on: ${{ matrix.runner }}
@@ -86,7 +92,7 @@ jobs:
         if: matrix.runner != 'windows-latest' && failure()
         uses: actions/upload-artifact@v4
         with:
-          name: c-selfhost-failure-${{ matrix.target }}
+          name: c-selfhost-failure-${{ matrix.target_id }}
           if-no-files-found: ignore
           path: |
             build/selfhost-c-artifacts/c-selfhost.log
