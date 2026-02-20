@@ -1,10 +1,12 @@
 //go:build !no_backend_windows_amd64
 
-package main
+package x64
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 // winAmd64Imports lists all kernel32.dll functions needed by the Windows amd64 backend.
@@ -38,7 +40,7 @@ var winAmd64Imports = []string{
 }
 
 // generateWinAmd64PE compiles an IRModule to a Windows PE32+ (x86-64) executable.
-func generateWinAmd64PE(irmod *IRModule, outputPath string) error {
+func generateWinAmd64PE(irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),
@@ -64,7 +66,7 @@ func generateWinAmd64PE(irmod *IRModule, outputPath string) error {
 		g.compileFunc(f)
 	}
 
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
 	if g.needTostringHelper {
 		g.emitTostringHelperX64()
 	}
@@ -108,7 +110,7 @@ func generateWinAmd64PE(irmod *IRModule, outputPath string) error {
 }
 
 // emitStart_win64 generates the Windows x64 entry point.
-func (g *CodeGen) emitStart_win64(irmod *IRModule) {
+func (g *CodeGen) emitStart_win64(irmod *ir.IRModule) {
 	// Windows x64 entry point. RSP is 16-byte aligned + 8 on entry
 	// (the loader calls us via `call`, pushing a return address).
 	// We use R15 as the operand stack pointer (callee-saved, preserved by kernel32).
@@ -131,7 +133,7 @@ func (g *CodeGen) emitStart_win64(irmod *IRModule) {
 
 	// Call init functions
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			g.emitCallPlaceholder(f.Name)
 		}
 	}
@@ -146,7 +148,7 @@ func (g *CodeGen) emitStart_win64(irmod *IRModule) {
 
 // === Intrinsic dispatcher for Windows x64 ===
 
-func (g *CodeGen) compileCallIntrinsicWin64(inst Inst) {
+func (g *CodeGen) compileCallIntrinsicWin64(inst ir.Inst) {
 	g.flush()
 	switch inst.Name {
 	case "SysRead":

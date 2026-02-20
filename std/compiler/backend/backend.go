@@ -6,6 +6,7 @@ import (
 	"j5.nz/rtg/std/compiler/backend/c"
 	"j5.nz/rtg/std/compiler/backend/irprint"
 	"j5.nz/rtg/std/compiler/backend/vm"
+	"j5.nz/rtg/std/compiler/backend/x64"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
@@ -21,17 +22,17 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	if target.Backend == "ir" {
 		return irprint.Generate(irmod, outputPath)
 	}
-	// switch target.GOARCH {
+	switch target.GOARCH {
 	// case "8086":
 	// 	if target.GOOS == "dos" {
 	// 		return i386.GenerateDOSCOM(irmod, outputPath)
 	// 	}
 	// 	return fmt.Errorf("unsupported OS for dos16: %s", target.GOOS)
-	// case "amd64":
-	// 	if target.GOOS == "windows" {
-	// 		return x64.GenerateWinPE(irmod, outputPath)
-	// 	} else if target.GOOS == "linux" {
-	// 		return x64.GenerateELF(irmod, outputPath)
+	case "amd64":
+		// 	if target.GOOS == "windows" {
+		// 		return x64.GenerateWinPE(irmod, outputPath)
+		// 	} else if target.GOOS == "linux" {
+		return x64.GenerateELF(target, irmod, outputPath)
 	// 	}
 	// 	return fmt.Errorf("unsupported OS for amd64: %s", target.GOOS)
 	// case "386":
@@ -52,7 +53,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	// 		return arm64.GenerateWinPE(irmod, outputPath)
 	// 	}
 	// 	return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
-	// default:
-	return fmt.Errorf("unsupported target architecture: %s", target.GOARCH)
-	// }
+	default:
+		return fmt.Errorf("unsupported target architecture: %s", target.GOARCH)
+	}
 }

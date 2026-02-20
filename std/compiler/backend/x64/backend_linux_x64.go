@@ -1,11 +1,13 @@
 //go:build !no_backend_linux_amd64
 
-package main
+package x64
+
+import "j5.nz/rtg/std/compiler/ir"
 
 // === Linux amd64-specific backend code ===
 
 // emitStart generates the _start entry point.
-func (g *CodeGen) emitStart(irmod *IRModule) {
+func (g *CodeGen) emitStart(irmod *ir.IRModule) {
 	// _start:
 	//   mmap 1MB for operand stack → R15
 	//   call main.main
@@ -15,17 +17,17 @@ func (g *CodeGen) emitStart(irmod *IRModule) {
 
 	// mmap(0, 1048576, PROT_READ|PROT_WRITE=3, MAP_PRIVATE|MAP_ANONYMOUS=0x22, -1, 0)
 	// rax=9, rdi=0, rsi=1048576, rdx=3, r10=0x22, r8=-1(0xffffffffffffffff), r9=0
-	g.xorRR(REG_RDI, REG_RDI)         // addr = NULL
-	g.emitMovRegImm64(REG_RSI, 1048576) // len = 1MB
-	g.emitByte(0xba)                   // mov edx, 3
-	g.emitU32(3)                       // PROT_READ|PROT_WRITE
-	g.emitBytes(0x41, 0xba)           // mov r10d, 0x22
-	g.emitU32(0x22)                    // MAP_PRIVATE|MAP_ANONYMOUS
+	g.xorRR(REG_RDI, REG_RDI)                             // addr = NULL
+	g.emitMovRegImm64(REG_RSI, 1048576)                   // len = 1MB
+	g.emitByte(0xba)                                      // mov edx, 3
+	g.emitU32(3)                                          // PROT_READ|PROT_WRITE
+	g.emitBytes(0x41, 0xba)                               // mov r10d, 0x22
+	g.emitU32(0x22)                                       // MAP_PRIVATE|MAP_ANONYMOUS
 	g.emitBytes(0x49, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff) // mov r8, -1
-	g.emitBytes(0x4d, 0x31, 0xc9)     // xor r9, r9 (offset = 0)
-	g.emitByte(0xb8)                   // mov eax, 9
-	g.emitU32(9)                       // SYS_MMAP
-	g.emitBytes(0x0f, 0x05)                       // syscall
+	g.emitBytes(0x4d, 0x31, 0xc9)                         // xor r9, r9 (offset = 0)
+	g.emitByte(0xb8)                                      // mov eax, 9
+	g.emitU32(9)                                          // SYS_MMAP
+	g.emitBytes(0x0f, 0x05)                               // syscall
 
 	// R15 = rax + 1048576 (stack grows down, point to top)
 	// mov r15, rax
@@ -36,7 +38,7 @@ func (g *CodeGen) emitStart(irmod *IRModule) {
 
 	// Call init functions in topological order
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			g.emitCallPlaceholder(f.Name)
 		}
 	}
@@ -46,9 +48,9 @@ func (g *CodeGen) emitStart(irmod *IRModule) {
 
 	// exit(0)
 	g.xorRR(REG_RDI, REG_RDI) // exit code 0
-	g.emitByte(0xb8)           // mov eax, 231
-	g.emitU32(231)             // SYS_EXIT_GROUP
-	g.emitBytes(0x0f, 0x05)         // syscall
+	g.emitByte(0xb8)          // mov eax, 231
+	g.emitU32(231)            // SYS_EXIT_GROUP
+	g.emitBytes(0x0f, 0x05)   // syscall
 }
 
 func (g *CodeGen) compileSyscallIntrinsic(paramCount int) {

@@ -1,6 +1,6 @@
 //go:build !no_backend_linux_amd64 || !no_backend_arm64
 
-package x64
+package aarch64
 
 import "j5.nz/rtg/std/compiler/ir"
 
@@ -39,20 +39,35 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	rodataVAddr := g.baseAddr + uint64(rodataOffset)
 	dataVAddr := g.baseAddr + uint64(dataOffset)
 
-	// x86-64: fix up string headers in rodata with absolute virtual addresses
-	for _, headerOff := range g.stringMap {
-		dataOff := getU64(g.rodata[headerOff : headerOff+8])
-		putU64(g.rodata[headerOff:headerOff+8], rodataVAddr+dataOff)
-	}
+	if g.isArm64 {
+		// ARM64: patch ADRP+ADD/LDR pairs with PC-relative offsets
+		for _, fix := range g.callFixups {
+			if fix.Target == "$rodata_header$" {
+				pcAddr := textVAddr + uint64(fix.CodeOffset)
+				targetAddr := rodataVAddr + fix.Value
+				g.patchAdrpAddOrLdr(fix.CodeOffset, pcAddr, targetAddr)
+			} else if fix.Target == "$data_addr$" {
+				pcAddr := textVAddr + uint64(fix.CodeOffset)
+				targetAddr := dataVAddr + fix.Value
+				g.patchAdrpAddOrLdr(fix.CodeOffset, pcAddr, targetAddr)
+			}
+		}
+	} else {
+		// x86-64: fix up string headers in rodata with absolute virtual addresses
+		for _, headerOff := range g.stringMap {
+			dataOff := getU64(g.rodata[headerOff : headerOff+8])
+			putU64(g.rodata[headerOff:headerOff+8], rodataVAddr+dataOff)
+		}
 
-	// Fix up code references to rodata headers and data section
-	for _, fix := range g.callFixups {
-		if fix.Target == "$rodata_header$" {
-			headerOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
-			putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], rodataVAddr+headerOff)
-		} else if fix.Target == "$data_addr$" {
-			dataOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
-			putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], dataVAddr+dataOff)
+		// Fix up code references to rodata headers and data section
+		for _, fix := range g.callFixups {
+			if fix.Target == "$rodata_header$" {
+				headerOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
+				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], rodataVAddr+headerOff)
+			} else if fix.Target == "$data_addr$" {
+				dataOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
+				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], dataVAddr+dataOff)
+			}
 		}
 	}
 
@@ -132,7 +147,7 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	shdrTableSize := shdrCount * shdrEntrySize
 
 	totalSize := shdrOffset + shdrTableSize
-	if g.target.StripBinary {
+	if stripBinary {
 		totalSize = loadedSize
 	}
 
@@ -154,11 +169,14 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	// bytes 8-15: padding (zero)
 	putU16(elf[16:], 2)      // e_type: ET_EXEC
 	var eMachine uint16 = 62 // EM_X86_64
+	if g.isArm64 {
+		eMachine = 183 // EM_AARCH64
+	}
 	putU16(elf[18:], eMachine)
 	putU32(elf[20:], 1)                     // e_version: EV_CURRENT
 	putU64(elf[24:], entryAddr)             // e_entry
 	putU64(elf[32:], uint64(elfHeaderSize)) // e_phoff
-	if g.target.StripBinary {
+	if stripBinary {
 		putU64(elf[40:], 0) // e_shoff
 	} else {
 		putU64(elf[40:], uint64(shdrOffset)) // e_shoff
@@ -168,7 +186,7 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	putU16(elf[54:], uint16(phdrSize))      // e_phentsize
 	putU16(elf[56:], 1)                     // e_phnum
 	putU16(elf[58:], uint16(shdrEntrySize)) // e_shentsize
-	if g.target.StripBinary {
+	if stripBinary {
 		putU16(elf[60:], 0) // e_shnum
 		putU16(elf[62:], 0) // e_shstrndx
 	} else {
@@ -192,7 +210,7 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	copy(elf[rodataOffset:], g.rodata)
 	copy(elf[dataOffset:], g.data)
 
-	if !g.target.StripBinary {
+	if !stripBinary {
 		// Copy debug sections (not part of PT_LOAD)
 		copy(elf[symtabOffset:], symtab)
 		copy(elf[strtabOffset:], strtab)

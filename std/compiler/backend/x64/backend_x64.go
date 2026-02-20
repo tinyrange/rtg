@@ -1,15 +1,20 @@
 //go:build !no_backend_linux_amd64 || !no_backend_windows_amd64
 
-package main
+package x64
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/backend/becommon"
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
-// generateAmd64ELF compiles an IRModule to an x86-64 ELF binary.
-func generateAmd64ELF(irmod *IRModule, outputPath string) error {
+// GenerateELF compiles an IRModule to an x86-64 ELF binary.
+func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
+		target:        target,
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),
 		stringMap:     make(map[string]int),
@@ -34,7 +39,7 @@ func generateAmd64ELF(irmod *IRModule, outputPath string) error {
 		g.compileFunc(f)
 	}
 
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
 	if g.needTostringHelper {
 		g.emitTostringHelperX64()
 	}
@@ -75,7 +80,7 @@ func generateAmd64ELF(irmod *IRModule, outputPath string) error {
 }
 
 // compileFunc generates x86-64 code for a single IR function.
-func (g *CodeGen) compileFunc(f *IRFunc) {
+func (g *CodeGen) compileFunc(f *ir.IRFunc) {
 	g.curFunc = f
 	g.configureOperandCache(REG_R13, REG_R14)
 	g.curFrameSize = len(f.Locals)
@@ -92,7 +97,7 @@ func (g *CodeGen) compileFunc(f *IRFunc) {
 	g.movRR(REG_RBP, REG_RSP)
 
 	frameBytes := g.curFrameSize * 8
-	if target.GOOS == "windows" {
+	if g.target.GOOS == "windows" {
 		frameBytes = alignUp(frameBytes, 16)
 	}
 	if frameBytes > 0 {
@@ -112,14 +117,14 @@ func (g *CodeGen) compileFunc(f *IRFunc) {
 		}
 	}
 
-	// Compile instructions
+	// Compile ir.Instructions
 	for _, inst := range f.Code {
 		g.compileInst(inst)
 	}
 
 	// Resolve jump fixups within this function
 	funcStart := g.funcOffsets[f.Name]
-	if target.GOOS != "dos" {
+	if g.target.GOOS != "dos" {
 		g.relaxCurrentFuncJumps()
 	}
 	for _, fix := range g.jumpFixups {
@@ -140,92 +145,92 @@ func (g *CodeGen) compileFunc(f *IRFunc) {
 	g.curFunc = nil
 }
 
-// compileInst generates code for a single IR instruction.
-func (g *CodeGen) compileInst(inst Inst) {
+// compileInst generates code for a single IR ir.Instruction.
+func (g *CodeGen) compileInst(inst ir.Inst) {
 	switch inst.Op {
-	case OP_CONST_I64:
+	case ir.OP_CONST_I64:
 		g.compileConstI64(inst.Val)
-	case OP_CONST_BOOL:
+	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.compileConstI64(1)
 		} else {
 			g.compileConstI64(0)
 		}
-	case OP_CONST_NIL:
+	case ir.OP_CONST_NIL:
 		g.compileConstI64(0)
-	case OP_CONST_STR:
+	case ir.OP_CONST_STR:
 		g.compileConstStr(inst.Name)
 
-	case OP_LOCAL_GET:
+	case ir.OP_LOCAL_GET:
 		g.compileLocalGet(inst.Arg)
-	case OP_LOCAL_SET:
+	case ir.OP_LOCAL_SET:
 		g.compileLocalSet(inst.Arg)
-	case OP_LOCAL_ADD_IMM:
+	case ir.OP_LOCAL_ADD_IMM:
 		g.compileLocalAddImm(inst.Arg, int32(inst.Val))
-	case OP_LOCAL_ADDR:
+	case ir.OP_LOCAL_ADDR:
 		g.compileLocalAddr(inst.Arg)
 
-	case OP_GLOBAL_GET:
+	case ir.OP_GLOBAL_GET:
 		g.compileGlobalGet(inst)
-	case OP_GLOBAL_SET:
+	case ir.OP_GLOBAL_SET:
 		g.compileGlobalSet(inst)
-	case OP_GLOBAL_ADDR:
+	case ir.OP_GLOBAL_ADDR:
 		g.compileGlobalAddr(inst)
 
-	case OP_DROP:
+	case ir.OP_DROP:
 		g.opDrop()
-	case OP_DUP:
+	case ir.OP_DUP:
 		g.opLoad(REG_RAX)
 		g.opPush(REG_RAX)
 
-	case OP_ADD:
+	case ir.OP_ADD:
 		g.compileBinOp(inst.Op)
-	case OP_SUB:
+	case ir.OP_SUB:
 		g.compileBinOp(inst.Op)
-	case OP_MUL:
+	case ir.OP_MUL:
 		g.compileBinOp(inst.Op)
-	case OP_DIV:
+	case ir.OP_DIV:
 		g.compileBinOp(inst.Op)
-	case OP_MOD:
+	case ir.OP_MOD:
 		g.compileBinOp(inst.Op)
-	case OP_NEG:
+	case ir.OP_NEG:
 		g.opPop(REG_RAX)
 		g.negR(REG_RAX)
 		g.opPush(REG_RAX)
 
-	case OP_AND:
+	case ir.OP_AND:
 		g.compileBinOp(inst.Op)
-	case OP_OR:
+	case ir.OP_OR:
 		g.compileBinOp(inst.Op)
-	case OP_XOR:
+	case ir.OP_XOR:
 		g.compileBinOp(inst.Op)
-	case OP_SHL:
+	case ir.OP_SHL:
 		g.compileBinOp(inst.Op)
-	case OP_SHR:
+	case ir.OP_SHR:
 		g.compileBinOp(inst.Op)
 
-	case OP_EQ:
+	case ir.OP_EQ:
 		g.compileCompare(0x94) // sete
-	case OP_NEQ:
+	case ir.OP_NEQ:
 		g.compileCompare(0x95) // setne
-	case OP_LT:
+	case ir.OP_LT:
 		g.compileCompare(0x9c) // setl
-	case OP_GT:
+	case ir.OP_GT:
 		g.compileCompare(0x9f) // setg
-	case OP_LEQ:
+	case ir.OP_LEQ:
 		g.compileCompare(0x9e) // setle
-	case OP_GEQ:
+	case ir.OP_GEQ:
 		g.compileCompare(0x9d) // setge
 
-	case OP_NOT:
+	case ir.OP_NOT:
 		g.opPop(REG_RAX)
 		g.xorRI8(REG_RAX, 0x01)
 		g.opPush(REG_RAX)
 
-	case OP_LABEL:
+	case ir.OP_LABEL:
 		g.flush()
 		g.labelOffsets[inst.Arg] = len(g.code)
-	case OP_JMP:
+	case ir.OP_JMP:
 		g.flush()
 		fixup := g.jmpRel32()
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
@@ -233,7 +238,7 @@ func (g *CodeGen) compileInst(inst Inst) {
 			LabelID:    inst.Arg,
 			Kind:       jumpFixupJmpRel32,
 		})
-	case OP_JMP_IF:
+	case ir.OP_JMP_IF:
 		// pop value, test, jnz
 		g.opPop(REG_RAX)
 		g.testRR(REG_RAX, REG_RAX)
@@ -244,7 +249,7 @@ func (g *CodeGen) compileInst(inst Inst) {
 			Kind:       jumpFixupJccRel32,
 			CC:         CC_NE,
 		})
-	case OP_JMP_IF_NOT:
+	case ir.OP_JMP_IF_NOT:
 		// pop value, test, jz
 		g.opPop(REG_RAX)
 		g.testRR(REG_RAX, REG_RAX)
@@ -255,58 +260,58 @@ func (g *CodeGen) compileInst(inst Inst) {
 			Kind:       jumpFixupJccRel32,
 			CC:         CC_E,
 		})
-	case OP_JMP_EQ:
+	case ir.OP_JMP_EQ:
 		g.compileCompareJump(CC_E, inst.Arg)
-	case OP_JMP_NEQ:
+	case ir.OP_JMP_NEQ:
 		g.compileCompareJump(CC_NE, inst.Arg)
-	case OP_JMP_LT:
+	case ir.OP_JMP_LT:
 		g.compileCompareJump(CC_L, inst.Arg)
-	case OP_JMP_GT:
+	case ir.OP_JMP_GT:
 		g.compileCompareJump(CC_G, inst.Arg)
-	case OP_JMP_LEQ:
+	case ir.OP_JMP_LEQ:
 		g.compileCompareJump(CC_LE, inst.Arg)
-	case OP_JMP_GEQ:
+	case ir.OP_JMP_GEQ:
 		g.compileCompareJump(CC_GE, inst.Arg)
 
-	case OP_CALL:
+	case ir.OP_CALL:
 		g.compileCall(inst)
-	case OP_CALL_INTRINSIC:
+	case ir.OP_CALL_INTRINSIC:
 		g.compileCallIntrinsic(inst)
-	case OP_RETURN:
+	case ir.OP_RETURN:
 		g.compileReturn(inst)
 
-	case OP_LOAD:
+	case ir.OP_LOAD:
 		g.compileLoad(inst.Arg)
-	case OP_STORE:
+	case ir.OP_STORE:
 		g.compileStore(inst.Arg)
-	case OP_OFFSET:
+	case ir.OP_OFFSET:
 		g.compileOffset(inst)
-	case OP_INDEX_ADDR:
+	case ir.OP_INDEX_ADDR:
 		g.compileIndexAddr(inst.Arg)
-	case OP_LEN:
+	case ir.OP_LEN:
 		g.compileLen()
-	case OP_CAP:
+	case ir.OP_CAP:
 		g.compileCap()
 
-	case OP_CONVERT:
+	case ir.OP_CONVERT:
 		g.compileConvert(inst.Name)
 
-	case OP_IFACE_BOX:
+	case ir.OP_IFACE_BOX:
 		g.compileIfaceBox(inst)
-	case OP_IFACE_CALL:
+	case ir.OP_IFACE_CALL:
 		g.compileIfaceCall(inst)
-	case OP_PANIC:
-		if target.GOOS == "windows" {
+	case ir.OP_PANIC:
+		if g.target.GOOS == "windows" {
 			g.compilePanicWin64()
 		} else {
 			g.compilePanic()
 		}
 
-	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// These are handled by intrinsics or builtins
 
 	default:
-		panic("ICE: unhandled opcode in compileInst")
+		panic("ICE: unhandled ir.Opcode in compileInst")
 	}
 }
 
@@ -315,7 +320,7 @@ func (g *CodeGen) compileInst(inst Inst) {
 func (g *CodeGen) compileConstI64(val int64) {
 	g.prepareForClobber(REG_RAX)
 	if val == 0 {
-		g.xorRR(REG_RAX, REG_RAX) // 3 bytes instead of 10
+		g.xorRR(REG_RAX, REG_RAX) // 3 bytes ir.Instead of 10
 	} else if val > 0 && val <= 0x7fffffff {
 		// mov eax, imm32 (zero-extends to rax)
 		g.emitByte(0xb8) // mov eax, imm32
@@ -332,7 +337,7 @@ func (g *CodeGen) compileConstI64(val int64) {
 
 func (g *CodeGen) compileConstStr(s string) {
 	g.prepareForClobber(REG_RAX)
-	decoded := decodeStringLiteral(s)
+	decoded := becommon.DecodeStringLiteral(s)
 
 	headerOff, ok := g.stringMap[decoded]
 	if !ok {
@@ -391,7 +396,7 @@ func (g *CodeGen) compileLocalAddr(idx int) {
 
 // === Global variable access ===
 
-func (g *CodeGen) compileGlobalGet(inst Inst) {
+func (g *CodeGen) compileGlobalGet(inst ir.Inst) {
 	g.prepareForClobber(REG_RAX, REG_RCX)
 	g.emitMovRegImm64(REG_RCX, uint64(inst.Arg*8)) // offset placeholder
 	g.callFixups = append(g.callFixups, CallFixup{
@@ -402,7 +407,7 @@ func (g *CodeGen) compileGlobalGet(inst Inst) {
 	g.opPush(REG_RAX)
 }
 
-func (g *CodeGen) compileGlobalSet(inst Inst) {
+func (g *CodeGen) compileGlobalSet(inst ir.Inst) {
 	g.opPop(REG_RAX)
 	g.emitMovRegImm64(REG_RCX, uint64(inst.Arg*8)) // offset placeholder
 	g.callFixups = append(g.callFixups, CallFixup{
@@ -412,7 +417,7 @@ func (g *CodeGen) compileGlobalSet(inst Inst) {
 	g.storeMem(REG_RCX, 0, REG_RAX)
 }
 
-func (g *CodeGen) compileGlobalAddr(inst Inst) {
+func (g *CodeGen) compileGlobalAddr(inst ir.Inst) {
 	g.prepareForClobber(REG_RAX)
 	g.emitMovRegImm64(REG_RAX, uint64(inst.Arg*8)) // offset placeholder
 	g.callFixups = append(g.callFixups, CallFixup{
@@ -424,44 +429,44 @@ func (g *CodeGen) compileGlobalAddr(inst Inst) {
 
 // === Binary operations ===
 
-func (g *CodeGen) compileBinOp(op Opcode) {
+func (g *CodeGen) compileBinOp(op ir.Opcode) {
 	// pop two values: rax = second (top), rcx = first (below), push result
 	g.opPop(REG_RAX)
 	g.opPop(REG_RCX)
 
 	switch op {
-	case OP_ADD:
+	case ir.OP_ADD:
 		g.addRR(REG_RCX, REG_RAX)
-	case OP_SUB:
+	case ir.OP_SUB:
 		g.subRR(REG_RCX, REG_RAX)
-	case OP_MUL:
+	case ir.OP_MUL:
 		g.imulRR(REG_RCX, REG_RAX)
-	case OP_DIV:
+	case ir.OP_DIV:
 		g.movRR(REG_RDX, REG_RAX)
 		g.movRR(REG_RAX, REG_RCX)
 		g.movRR(REG_RCX, REG_RDX)
 		g.cqo()
 		g.idivR(REG_RCX)
 		g.movRR(REG_RCX, REG_RAX)
-	case OP_MOD:
+	case ir.OP_MOD:
 		g.movRR(REG_RDX, REG_RAX)
 		g.movRR(REG_RAX, REG_RCX)
 		g.movRR(REG_RCX, REG_RDX)
 		g.cqo()
 		g.idivR(REG_RCX)
 		g.movRR(REG_RCX, REG_RDX)
-	case OP_AND:
+	case ir.OP_AND:
 		g.andRR(REG_RCX, REG_RAX)
-	case OP_OR:
+	case ir.OP_OR:
 		g.orRR(REG_RCX, REG_RAX)
-	case OP_XOR:
+	case ir.OP_XOR:
 		g.xorRR(REG_RCX, REG_RAX)
-	case OP_SHL:
+	case ir.OP_SHL:
 		g.movRR(REG_RDX, REG_RCX)
 		g.movRR(REG_RCX, REG_RAX)
 		g.shlCl(REG_RDX)
 		g.movRR(REG_RCX, REG_RDX)
-	case OP_SHR:
+	case ir.OP_SHR:
 		g.movRR(REG_RDX, REG_RCX)
 		g.movRR(REG_RCX, REG_RAX)
 		g.sarCl(REG_RDX)
@@ -497,7 +502,7 @@ func (g *CodeGen) compileCompareJump(cc byte, label int) {
 
 // === Function calls ===
 
-func (g *CodeGen) compileCall(inst Inst) {
+func (g *CodeGen) compileCall(inst ir.Inst) {
 	// Handle composite literals inline
 	if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
 		g.compileCompositeLitCall(inst)
@@ -515,7 +520,7 @@ func (g *CodeGen) compileCall(inst Inst) {
 // compileCompositeLitCall handles struct/slice composite literal creation.
 // Fields are on the operand stack (pushed in order). We allocate memory
 // and store each field at consecutive 8-byte slots.
-func (g *CodeGen) compileCompositeLitCall(inst Inst) {
+func (g *CodeGen) compileCompositeLitCall(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * 8
 
@@ -561,7 +566,7 @@ func (g *CodeGen) compileCompositeLitCall(inst Inst) {
 	g.opPush(REG_RCX)
 }
 
-func (g *CodeGen) compileReturn(inst Inst) {
+func (g *CodeGen) compileReturn(inst ir.Inst) {
 	g.flush()
 	g.leave()
 	g.ret()
@@ -569,9 +574,9 @@ func (g *CodeGen) compileReturn(inst Inst) {
 
 // === Intrinsics ===
 
-func (g *CodeGen) compileCallIntrinsic(inst Inst) {
+func (g *CodeGen) compileCallIntrinsic(inst ir.Inst) {
 	g.flush()
-	if target.GOOS == "windows" {
+	if g.target.GOOS == "windows" {
 		g.compileCallIntrinsicWin64(inst)
 		return
 	}
@@ -653,7 +658,7 @@ func (g *CodeGen) compileMakestringIntrinsic() {
 }
 
 func (g *CodeGen) compileTostringIntrinsic() {
-	// OP_CALL_INTRINSIC is emitted inside intrinsic wrapper functions where
+	// ir.OP_CALL_INTRINSIC is emitted inside intrinsic wrapper functions where
 	// parameters are in frame locals, not on the operand stack. Inline the
 	// body directly so it reads Param 0 via emitLoadLocal.
 	g.compileTostringIntrinsicBodyX64()
@@ -671,7 +676,7 @@ func (g *CodeGen) emitTostringHelperX64() {
 	g.movRR(REG_RBP, REG_RSP)
 
 	frameBytes := 8
-	if target.GOOS == "windows" {
+	if g.target.GOOS == "windows" {
 		frameBytes = alignUp(frameBytes, 16)
 	}
 	if frameBytes > 0 {
@@ -682,7 +687,7 @@ func (g *CodeGen) emitTostringHelperX64() {
 	g.emitStoreLocal(1*8, REG_RAX)
 
 	g.compileTostringIntrinsicBodyX64()
-	g.compileReturn(Inst{})
+	g.compileReturn(ir.Inst{})
 }
 
 func (g *CodeGen) compileTostringIntrinsicBodyX64() {
@@ -814,7 +819,7 @@ func (g *CodeGen) compileWriteByteIntrinsic() {
 
 // === Interface dispatch ===
 
-func (g *CodeGen) compileIfaceBox(inst Inst) {
+func (g *CodeGen) compileIfaceBox(inst ir.Inst) {
 	// Stack: ... concreteValue
 	// Pop concrete value, allocate 16 bytes, store {type_id, value}, push box pointer
 	typeID := inst.Arg
@@ -844,7 +849,7 @@ func (g *CodeGen) compileIfaceBox(inst Inst) {
 	g.opPush(REG_RCX)
 }
 
-func (g *CodeGen) compileIfaceCall(inst Inst) {
+func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 	// Stack: ... ifacePtr arg0 arg1 ...
 	// inst.Arg = number of regular args (excluding receiver)
 	// inst.Name = "ifaceType.Method" e.g. "error.Error"
@@ -979,7 +984,7 @@ func (g *CodeGen) compileStore(size int) {
 	}
 }
 
-func (g *CodeGen) compileOffset(inst Inst) {
+func (g *CodeGen) compileOffset(inst ir.Inst) {
 	g.opPop(REG_RAX)
 	if inst.Arg != 0 {
 		g.addRI(REG_RAX, int32(inst.Arg))

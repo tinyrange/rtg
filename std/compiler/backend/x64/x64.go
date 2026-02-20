@@ -1,6 +1,6 @@
 //go:build !no_backend_linux_amd64 || !no_backend_windows_amd64
 
-package main
+package x64
 
 // === x86-64 Assembler: mnemonic-level instruction encoding ===
 

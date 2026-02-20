@@ -1,6 +1,6 @@
 //go:build no_backend_linux_amd64
 
-package main
+package x64
 
 func (g *CodeGen) emitStart(irmod *IRModule) {
 	panic("linux/amd64 backend disabled")

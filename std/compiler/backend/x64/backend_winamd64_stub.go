@@ -1,6 +1,6 @@
 //go:build no_backend_windows_amd64
 
-package main
+package x64
 
 import "fmt"
 

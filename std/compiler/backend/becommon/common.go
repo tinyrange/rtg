@@ -61,8 +61,6 @@ func Unhex(c byte) int {
 
 // // CodeGen holds state for generating machine code from IR.
 // type CodeGen struct {
-// 	target *common.Target
-
 // 	code   []byte // .text section
 // 	rodata []byte // .rodata section (string data + headers)
 // 	data   []byte // .data section (globals)
