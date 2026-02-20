@@ -14,7 +14,7 @@ func (g *CodeGen) ptrBytes_i386() int {
 }
 
 func (g *CodeGen) initOperandCache_i386() {
-	if targetGOOS != "dos" && g.wordSize == 4 {
+	if target.GOOS != "dos" && g.wordSize == 4 {
 		g.configureOperandCache(REG32_EBX, REG32_ESI)
 	} else {
 		g.clearOperandCache()
@@ -59,7 +59,7 @@ func (g *CodeGen) compileFunc_i386(f *IRFunc) {
 	}
 
 	// Resolve jump fixups within this function
-	if targetGOOS != "dos" {
+	if target.GOOS != "dos" {
 		g.relaxCurrentFuncJumps()
 	}
 	for _, fix := range g.jumpFixups {
@@ -233,7 +233,7 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 	case OP_IFACE_CALL:
 		g.compileIfaceCall_i386(inst)
 	case OP_PANIC:
-		if targetGOOS == "windows" {
+		if target.GOOS == "windows" {
 			g.compilePanic_win386()
 		} else {
 			g.compilePanic_linux386()
@@ -516,7 +516,7 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst Inst) {
 	g.flush()
 	switch inst.Name {
 	case "Syscall":
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			g.compileSyscallIntrinsic_dos386(inst.Arg)
 		} else {
 			// Linux i386 only

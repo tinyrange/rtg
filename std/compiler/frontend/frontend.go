@@ -1,8 +1,11 @@
-package main
+package frontend
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/stdlib"
 )
 
 // SymKind represents the kind of a symbol.
@@ -73,7 +76,7 @@ type Module struct {
 
 var discoveredBuildTags []string
 
-func resetDiscoveredBuildTags() {
+func ResetDiscoveredBuildTags() {
 	discoveredBuildTags = nil
 }
 
@@ -89,7 +92,7 @@ func addDiscoveredBuildTag(tag string) {
 	discoveredBuildTags = append(discoveredBuildTags, tag)
 }
 
-func getDiscoveredBuildTags() []string {
+func GetDiscoveredBuildTags() []string {
 	var tags []string
 	for _, tag := range discoveredBuildTags {
 		if isKnownOS(tag) || isKnownArch(tag) {
@@ -102,7 +105,11 @@ func getDiscoveredBuildTags() []string {
 }
 
 // ResolveModule parses entry files and recursively resolves all imports.
-func ResolveModule(baseDir string, entryFiles []string) *Module {
+func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *Module {
+	p := &Preprocessor{
+		target: target,
+	}
+
 	mod := &Module{
 		BaseDir:  baseDir,
 		Packages: make(map[string]*Package),
@@ -131,13 +138,13 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 		mainPkg.Imports = collectImports(mainPkg)
 	} else if arg != "." {
 		// Bare package name: try embedded std first, then directory scan
-		mainPkg = parsePackageFromStdlibSources(baseDir, arg)
+		mainPkg = p.parsePackageFromStdlibSources(baseDir, arg)
 		if mainPkg == nil {
-			mainPkg = parsePackageDir(entryDir, "main")
+			mainPkg = p.parsePackageDir(entryDir, "main")
 		}
 	} else {
 		// "." or directory: scan the directory for all .go files
-		mainPkg = parsePackageDir(entryDir, "main")
+		mainPkg = p.parsePackageDir(entryDir, "main")
 	}
 	if mainPkg == nil {
 		fmt.Fprintf(os.Stderr, "error: no Go files found in %s\n", entryDir)
@@ -177,9 +184,9 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 			continue
 		}
 
-		pkg := parsePackageFromStdlibSources(baseDir, importPath)
+		pkg := p.parsePackageFromStdlibSources(baseDir, importPath)
 		if pkg == nil {
-			dirs := resolveImportDirs(baseDir, importPath)
+			dirs := p.resolveImportDirs(baseDir, importPath)
 			if len(dirs) == 0 {
 				fmt.Fprintf(os.Stderr, "warning: cannot resolve import %s\n", importPath)
 				continue
@@ -211,52 +218,52 @@ func ResolveModule(baseDir string, entryFiles []string) *Module {
 	return mod
 }
 
-func shouldUseEmbeddedStdlib() bool {
-	if !hasEmbeddedStd() {
+func (c *Preprocessor) shouldUseEmbeddedStdlib() bool {
+	if !stdlib.HasEmbeddedStd() {
 		return false
 	}
-	if !stdlibIncludeExplicit {
+	if !c.target.StdlibIncludeExplicit {
 		return true
 	}
-	return stdlibIncludeEmbedded
+	return c.target.StdlibIncludeEmbedded
 }
 
 func appendStdlibDirCandidates(candidates []string, root string, importPath string) []string {
 	if root == "" {
 		return candidates
 	}
-	root = trimTrailingSlash(normalizePath(root))
+	root = common.TrimTrailingSlash(common.NormalizePath(root))
 	if root == "" {
 		return candidates
 	}
-	candidates = appendUnique(candidates, root+"/"+importPath)
-	candidates = appendUnique(candidates, root+"/std/"+importPath)
+	candidates = common.AppendUnique(candidates, root+"/"+importPath)
+	candidates = common.AppendUnique(candidates, root+"/std/"+importPath)
 	return candidates
 }
 
 // resolveImportDirs maps an import path to possible directories on disk.
-func resolveImportDirs(baseDir string, importPath string) []string {
+func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []string {
 	var dirs []string
-	if stdlibIncludeExplicit {
-		for _, include := range stdlibIncludePaths {
+	if c.target.StdlibIncludeExplicit {
+		for _, include := range c.target.StdlibIncludePaths {
 			dirs = appendStdlibDirCandidates(dirs, include, importPath)
 		}
 		return dirs
 	}
-	dirs = appendUnique(dirs, baseDir+"/std/"+importPath)
+	dirs = common.AppendUnique(dirs, baseDir+"/std/"+importPath)
 	return dirs
 }
 
-func parsePackageFromStdlibSources(baseDir string, importPath string) *Package {
-	if shouldUseEmbeddedStdlib() {
-		pkg := parsePackageFromEmbed(importPath)
+func (c *Preprocessor) parsePackageFromStdlibSources(baseDir string, importPath string) *Package {
+	if c.shouldUseEmbeddedStdlib() {
+		pkg := ParsePackageFromEmbed(importPath)
 		if pkg != nil {
 			return pkg
 		}
 	}
-	dirs := resolveImportDirs(baseDir, importPath)
+	dirs := c.resolveImportDirs(baseDir, importPath)
 	for _, dir := range dirs {
-		pkg := parsePackageDir(dir, importPath)
+		pkg := c.parsePackageDir(dir, importPath)
 		if pkg != nil {
 			return pkg
 		}
@@ -305,7 +312,7 @@ func sortStrings(s []string) {
 // shouldIncludeFile checks if a .go file should be included based on build tags.
 // If a //go:build directive exists, it takes precedence over filename-based filtering.
 // Otherwise, filename-based GOOS/GOARCH conventions are used.
-func shouldIncludeFile(path string, name string) bool {
+func (c *Preprocessor) shouldIncludeFile(path string, name string) bool {
 	// 1. Check //go:build directive in file content (takes precedence)
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -335,7 +342,7 @@ func shouldIncludeFile(path string, name string) bool {
 		// Check for //go:build
 		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
 			expr := trimmed[11:len(trimmed)]
-			return evalBuildExpr(expr)
+			return c.evalBuildExpr(expr)
 		}
 
 		// Check for regular comments (skip them)
@@ -360,18 +367,18 @@ func shouldIncludeFile(path string, name string) bool {
 		maybearch := parts[len(parts)-1]
 		maybeos := parts[len(parts)-2]
 		if isKnownOS(maybeos) && isKnownArch(maybearch) {
-			if !hasTag(maybeos) || !hasTag(maybearch) {
+			if !c.hasTag(maybeos) || !c.hasTag(maybearch) {
 				return false
 			}
 		} else if isKnownOS(maybearch) || isKnownArch(maybearch) {
-			if !hasTag(maybearch) {
+			if !c.hasTag(maybearch) {
 				return false
 			}
 		}
 	} else if len(parts) >= 2 {
 		last := parts[len(parts)-1]
 		if isKnownOS(last) || isKnownArch(last) {
-			if !hasTag(last) {
+			if !c.hasTag(last) {
 				return false
 			}
 		}
@@ -479,11 +486,15 @@ func isKnownArch(s string) bool {
 	return s == "amd64" || s == "386" || s == "arm64" || s == "arm" || s == "wasm32" || s == "dos16" || s == "c8" || s == "c16" || s == "c32" || s == "c64"
 }
 
+type Preprocessor struct {
+	target *common.Target
+}
+
 // hasTag checks if a tag is in the active build tag set.
-func hasTag(tag string) bool {
+func (c *Preprocessor) hasTag(tag string) bool {
 	i := 0
-	for i < len(buildTags) {
-		if buildTags[i] == tag {
+	for i < len(c.target.BuildTags) {
+		if c.target.BuildTags[i] == tag {
 			return true
 		}
 		i++
@@ -493,20 +504,20 @@ func hasTag(tag string) bool {
 
 // evalBuildExpr evaluates a //go:build expression against the active tag set.
 // Supports: bare tags, &&, ||, !, and parentheses.
-func evalBuildExpr(expr string) bool {
+func (c *Preprocessor) evalBuildExpr(expr string) bool {
 	expr = trimLeftSpace(expr)
-	result, _ := parseBuildOr(expr)
+	result, _ := c.parseBuildOr(expr)
 	return result
 }
 
 // parseBuildOr parses: term (|| term)*
-func parseBuildOr(expr string) (bool, string) {
-	left, rest := parseBuildAnd(expr)
+func (c *Preprocessor) parseBuildOr(expr string) (bool, string) {
+	left, rest := c.parseBuildAnd(expr)
 	for {
 		rest = trimLeftSpace(rest)
 		if len(rest) >= 2 && rest[0] == '|' && rest[1] == '|' {
 			var right bool
-			right, rest = parseBuildAnd(rest[2:len(rest)])
+			right, rest = c.parseBuildAnd(rest[2:len(rest)])
 			left = left || right
 		} else {
 			break
@@ -516,13 +527,13 @@ func parseBuildOr(expr string) (bool, string) {
 }
 
 // parseBuildAnd parses: unary (&& unary)*
-func parseBuildAnd(expr string) (bool, string) {
-	left, rest := parseBuildUnary(expr)
+func (c *Preprocessor) parseBuildAnd(expr string) (bool, string) {
+	left, rest := c.parseBuildUnary(expr)
 	for {
 		rest = trimLeftSpace(rest)
 		if len(rest) >= 2 && rest[0] == '&' && rest[1] == '&' {
 			var right bool
-			right, rest = parseBuildUnary(rest[2:len(rest)])
+			right, rest = c.parseBuildUnary(rest[2:len(rest)])
 			left = left && right
 		} else {
 			break
@@ -532,20 +543,20 @@ func parseBuildAnd(expr string) (bool, string) {
 }
 
 // parseBuildUnary parses: !unary | atom
-func parseBuildUnary(expr string) (bool, string) {
+func (c *Preprocessor) parseBuildUnary(expr string) (bool, string) {
 	expr = trimLeftSpace(expr)
 	if len(expr) > 0 && expr[0] == '!' {
-		val, rest := parseBuildUnary(expr[1:len(expr)])
+		val, rest := c.parseBuildUnary(expr[1:len(expr)])
 		return !val, rest
 	}
-	return parseBuildAtom(expr)
+	return c.parseBuildAtom(expr)
 }
 
 // parseBuildAtom parses: (expr) | tag
-func parseBuildAtom(expr string) (bool, string) {
+func (c *Preprocessor) parseBuildAtom(expr string) (bool, string) {
 	expr = trimLeftSpace(expr)
 	if len(expr) > 0 && expr[0] == '(' {
-		val, rest := parseBuildOr(expr[1:len(expr)])
+		val, rest := c.parseBuildOr(expr[1:len(expr)])
 		rest = trimLeftSpace(rest)
 		if len(rest) > 0 && rest[0] == ')' {
 			rest = rest[1:len(rest)]
@@ -561,7 +572,7 @@ func parseBuildAtom(expr string) (bool, string) {
 		return false, expr
 	}
 	tag := expr[0:i]
-	return hasTag(tag), expr[i:len(expr)]
+	return c.hasTag(tag), expr[i:len(expr)]
 }
 
 // isAlphaNum returns true if c is a letter or digit.
@@ -570,7 +581,7 @@ func isAlphaNum(c byte) bool {
 }
 
 // parsePackageDir lists .go files in a directory, parses each, and merges into one Package.
-func parsePackageDir(dir string, importPath string) *Package {
+func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -587,7 +598,7 @@ func parsePackageDir(dir string, importPath string) *Package {
 			continue
 		}
 		// Check build tags before including
-		if !shouldIncludeFile(dir+"/"+entry.Name(), entry.Name()) {
+		if !c.shouldIncludeFile(dir+"/"+entry.Name(), entry.Name()) {
 			continue
 		}
 		goFiles = append(goFiles, entry.Name())
@@ -689,7 +700,7 @@ func parseSource(name string, src string) *Node {
 
 // shouldIncludeContent checks if source content should be included based on build tags.
 // This is like shouldIncludeFile but takes content directly instead of reading from disk.
-func shouldIncludeContent(content string, name string) bool {
+func (c *Preprocessor) shouldIncludeContent(content string, name string) bool {
 	collectBuildTagsFromContent(content)
 	collectBuildTagsFromFilename(name)
 
@@ -708,7 +719,7 @@ func shouldIncludeContent(content string, name string) bool {
 		}
 		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
 			expr := trimmed[11:len(trimmed)]
-			return evalBuildExpr(expr)
+			return c.evalBuildExpr(expr)
 		}
 		if len(trimmed) >= 2 && trimmed[0:2] == "//" {
 			pos = eol + 1
@@ -724,18 +735,18 @@ func shouldIncludeContent(content string, name string) bool {
 		maybearch := parts[len(parts)-1]
 		maybeos := parts[len(parts)-2]
 		if isKnownOS(maybeos) && isKnownArch(maybearch) {
-			if !hasTag(maybeos) || !hasTag(maybearch) {
+			if !c.hasTag(maybeos) || !c.hasTag(maybearch) {
 				return false
 			}
 		} else if isKnownOS(maybearch) || isKnownArch(maybearch) {
-			if !hasTag(maybearch) {
+			if !c.hasTag(maybearch) {
 				return false
 			}
 		}
 	} else if len(parts) >= 2 {
 		last := parts[len(parts)-1]
 		if isKnownOS(last) || isKnownArch(last) {
-			if !hasTag(last) {
+			if !c.hasTag(last) {
 				return false
 			}
 		}

@@ -1,13 +1,15 @@
-package main
+package ir
 
-// optimizeIRModule runs lightweight, backend-independent IR cleanups.
-func optimizeIRModule(irmod *IRModule) {
+import "j5.nz/rtg/std/compiler/common"
+
+// OptimizeIRModule runs lightweight, backend-independent IR cleanups.
+func OptimizeIRModule(target *common.Target, irmod *IRModule) {
 	for _, f := range irmod.Funcs {
-		f.Code = optimizeIRFuncCode(f)
+		f.Code = optimizeIRFuncCode(target, f)
 	}
 }
 
-func optimizeIRFuncCode(f *IRFunc) []Inst {
+func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
 	code := f.Code
 	if len(code) == 0 {
 		return code
@@ -43,7 +45,7 @@ func optimizeIRFuncCode(f *IRFunc) []Inst {
 			changed = true
 		}
 
-		if !(targetGOOS == "wasi" && targetGOARCH == "wasm32") {
+		if !(target.GOOS == "wasi" && target.GOARCH == "wasm32") {
 			code, stepChanged = threadJumps(code)
 			if stepChanged {
 				changed = true

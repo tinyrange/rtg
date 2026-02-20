@@ -1,175 +1,14 @@
-package main
+package frontend
 
 import (
 	"fmt"
 	"os"
 	"strings"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
+	"j5.nz/rtg/std/compiler/stdlib"
 )
-
-// === Type System ===
-
-// TypeKind represents the kind of a type.
-type TypeKind int
-
-const (
-	TY_VOID TypeKind = iota
-	TY_BOOL
-	TY_BYTE
-	TY_INT32
-	TY_INT
-	TY_UINTPTR
-	TY_STRING
-	TY_POINTER
-	TY_SLICE
-	TY_STRUCT
-	TY_INTERFACE
-	TY_FUNC
-	TY_MAP
-)
-
-// TypeInfo describes a resolved type.
-type TypeInfo struct {
-	Kind    TypeKind
-	Name    string
-	Pkg     string
-	Size    int
-	Align   int
-	Elem    *TypeInfo
-	Key     *TypeInfo
-	Fields  []FieldInfo
-	Params  []*TypeInfo
-	Results []*TypeInfo
-}
-
-// FieldInfo describes a struct field.
-type FieldInfo struct {
-	Name   string
-	Type   *TypeInfo
-	Offset int
-}
-
-// === Stack Machine IR ===
-
-// Opcode represents a stack machine instruction.
-type Opcode int
-
-const (
-	OP_CONST_I64 Opcode = iota
-	OP_CONST_STR
-	OP_CONST_BOOL
-	OP_CONST_NIL
-
-	OP_LOCAL_GET
-	OP_LOCAL_SET
-	OP_LOCAL_ADD_IMM
-	OP_LOCAL_ADDR
-	OP_GLOBAL_GET
-	OP_GLOBAL_SET
-	OP_GLOBAL_ADDR
-
-	OP_DROP
-	OP_DUP
-
-	OP_ADD
-	OP_SUB
-	OP_MUL
-	OP_DIV
-	OP_MOD
-	OP_NEG
-
-	OP_AND
-	OP_OR
-	OP_XOR
-	OP_SHL
-	OP_SHR
-
-	OP_EQ
-	OP_NEQ
-	OP_LT
-	OP_GT
-	OP_LEQ
-	OP_GEQ
-	OP_JMP_EQ
-	OP_JMP_NEQ
-	OP_JMP_LT
-	OP_JMP_GT
-	OP_JMP_LEQ
-	OP_JMP_GEQ
-
-	OP_NOT
-
-	OP_LOAD
-	OP_STORE
-	OP_OFFSET
-
-	OP_LABEL
-	OP_JMP
-	OP_JMP_IF
-	OP_JMP_IF_NOT
-	OP_CALL
-	OP_CALL_INTRINSIC
-	OP_RETURN
-
-	OP_SLICE_GET
-	OP_SLICE_MAKE
-	OP_STRING_GET
-	OP_STRING_MAKE
-	OP_INDEX_ADDR
-	OP_LEN
-
-	OP_CONVERT
-
-	OP_IFACE_BOX
-	OP_IFACE_CALL
-
-	OP_PANIC
-	OP_CAP
-)
-
-// Inst represents a single IR instruction.
-type Inst struct {
-	Op    Opcode
-	Arg   int
-	Width int // operand width in bytes: 0=word, 1=byte, 2=int16, 4=int32, 8=int64
-	Val   int64
-	Name  string
-}
-
-// IRLocal represents a local variable in a function.
-type IRLocal struct {
-	Name  string
-	Type  *TypeInfo
-	Index int
-	Is64  bool // true for uint64/int64 locals (need i64 on wasm32)
-	Width int  // storage width: 0=word, 1=byte, 2=int16, 4=int32, 8=int64
-}
-
-// IRFunc represents a compiled function.
-type IRFunc struct {
-	Name     string
-	Params   int
-	Locals   []IRLocal
-	RetCount int
-	Code     []Inst
-}
-
-// IRGlobal represents a global variable.
-type IRGlobal struct {
-	Name  string
-	Type  *TypeInfo
-	Index int
-}
-
-// IRModule holds all compiled IR.
-type IRModule struct {
-	Funcs           []*IRFunc
-	Globals         []IRGlobal
-	Types           []*TypeInfo
-	TypeIDs         map[string]int      // concrete type → type ID
-	MethodTable     map[string]string   // "pkg.Type.Method" → IR func name
-	IfaceMethods    map[string][]string // interface name → method names
-	IfaceMethodRets map[string]int      // iface+"\x00"+method → return count
-}
 
 type closureCaptureSpec struct {
 	Name  string
@@ -186,15 +25,16 @@ type closureCaptureBinding struct {
 
 // Compiler lowers AST from a Module into stack machine IR.
 type Compiler struct {
+	target              *common.Target
 	mod                 *Module
-	irmod               *IRModule
-	curFunc             *IRFunc
+	irmod               *ir.IRModule
+	curFunc             *ir.IRFunc
 	scopes              []map[string]int
 	labelSeq            int
 	breaks              []int
 	continues           []int
 	globals             map[string]int
-	types               map[string]*TypeInfo
+	types               map[string]*ir.TypeInfo
 	curPkg              *Package
 	errors              []string
 	funcRets            map[string]int      // function name → return count
@@ -256,12 +96,13 @@ func (c *Compiler) dotJoin(a string, b string) string {
 }
 
 // CompileModule compiles an entire resolved module to IR.
-func CompileModule(mod *Module) (*IRModule, []string) {
+func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 	c := &Compiler{
+		target:              &target,
 		mod:                 mod,
-		irmod:               &IRModule{},
+		irmod:               &ir.IRModule{},
 		globals:             make(map[string]int),
-		types:               make(map[string]*TypeInfo),
+		types:               make(map[string]*ir.TypeInfo),
 		funcRets:            make(map[string]int),
 		funcParams:          make(map[string]int),
 		funcParamTypes:      make(map[string][]string),
@@ -307,7 +148,7 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 			qname := pkg.QualName(name)
 			idx := len(c.irmod.Globals)
 			c.globals[qname] = idx
-			c.irmod.Globals = append(c.irmod.Globals, IRGlobal{Name: qname, Index: idx})
+			c.irmod.Globals = append(c.irmod.Globals, ir.IRGlobal{Name: qname, Index: idx})
 			if sym.Node != nil && sym.Node.Type != nil && sym.Node.Type.Kind == NSliceType {
 				c.globalElemSizes[qname] = c.sliceElemSize(sym.Node.Type)
 			}
@@ -358,22 +199,22 @@ func CompileModule(mod *Module) (*IRModule, []string) {
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
 	c.irmod.IfaceMethodRets = c.ifaceMethodRets
-	optimizeIRModule(c.irmod)
+	ir.OptimizeIRModule(c.target, c.irmod)
 
 	return c.irmod, c.errors
 }
 
 func (c *Compiler) initBuiltinTypes() {
-	c.types["bool"] = &TypeInfo{Kind: TY_BOOL, Name: "bool", Size: 1, Align: 1}
-	c.types["byte"] = &TypeInfo{Kind: TY_BYTE, Name: "byte", Size: 1, Align: 1}
-	c.types["int16"] = &TypeInfo{Kind: TY_INT32, Name: "int16", Size: 2, Align: 2}
-	c.types["uint16"] = &TypeInfo{Kind: TY_INT32, Name: "uint16", Size: 2, Align: 2}
-	c.types["int32"] = &TypeInfo{Kind: TY_INT32, Name: "int32", Size: 4, Align: 4}
-	c.types["int"] = &TypeInfo{Kind: TY_INT, Name: "int", Size: 8, Align: 8}
-	c.types["uintptr"] = &TypeInfo{Kind: TY_UINTPTR, Name: "uintptr", Size: 8, Align: 8}
-	c.types["string"] = &TypeInfo{Kind: TY_STRING, Name: "string", Size: 16, Align: 8}
-	c.types["error"] = &TypeInfo{Kind: TY_INTERFACE, Name: "error", Size: 16, Align: 8}
-	c.types["int64"] = &TypeInfo{Kind: TY_INT, Name: "int64", Size: 8, Align: 8}
+	c.types["bool"] = &ir.TypeInfo{Kind: ir.TY_BOOL, Name: "bool", Size: 1, Align: 1}
+	c.types["byte"] = &ir.TypeInfo{Kind: ir.TY_BYTE, Name: "byte", Size: 1, Align: 1}
+	c.types["int16"] = &ir.TypeInfo{Kind: ir.TY_INT32, Name: "int16", Size: 2, Align: 2}
+	c.types["uint16"] = &ir.TypeInfo{Kind: ir.TY_INT32, Name: "uint16", Size: 2, Align: 2}
+	c.types["int32"] = &ir.TypeInfo{Kind: ir.TY_INT32, Name: "int32", Size: 4, Align: 4}
+	c.types["int"] = &ir.TypeInfo{Kind: ir.TY_INT, Name: "int", Size: 8, Align: 8}
+	c.types["uintptr"] = &ir.TypeInfo{Kind: ir.TY_UINTPTR, Name: "uintptr", Size: 8, Align: 8}
+	c.types["string"] = &ir.TypeInfo{Kind: ir.TY_STRING, Name: "string", Size: 16, Align: 8}
+	c.types["error"] = &ir.TypeInfo{Kind: ir.TY_INTERFACE, Name: "error", Size: 16, Align: 8}
+	c.types["int64"] = &ir.TypeInfo{Kind: ir.TY_INT, Name: "int64", Size: 8, Align: 8}
 	c.typeIDs["bool"] = 3
 	c.ifaceMethods["interface{}"] = []string{}
 	c.ifaceMethods["error"] = []string{"Error"}
@@ -537,7 +378,7 @@ func (c *Compiler) resolveFieldPathRec(qualifiedType string, fieldName string, v
 			continue
 		}
 		if field.Name == fieldName {
-			return []int{fieldIdx * targetPtrSize}, true
+			return []int{fieldIdx * c.target.PtrSize}, true
 		}
 		fieldIdx++
 	}
@@ -551,7 +392,7 @@ func (c *Compiler) resolveFieldPathRec(qualifiedType string, fieldName string, v
 		if field.Type != nil && field.Name == nodeTypeName(field.Type) {
 			embeddedType := c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
 			if subPath, ok := c.resolveFieldPathRec(embeddedType, fieldName, visited); ok {
-				path := []int{fieldIdx * targetPtrSize}
+				path := []int{fieldIdx * c.target.PtrSize}
 				for _, off := range subPath {
 					path = append(path, off)
 				}
@@ -577,7 +418,7 @@ func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) stri
 			if typeNode == nil {
 				return ""
 			}
-			targetIdx := path[i] / targetPtrSize
+			targetIdx := path[i] / c.target.PtrSize
 			fieldIdx := 0
 			var match *Node
 			for _, field := range typeNode.Nodes {
@@ -651,12 +492,12 @@ func (c *Compiler) resolveStructSlotCount(qualifiedType string) int {
 // Non-byte elements are pointer-sized handles to values.
 func (c *Compiler) typeElemSize(typeName string) int {
 	if typeName == "" {
-		return targetPtrSize
+		return c.target.PtrSize
 	}
 	if typeName == "byte" {
 		return 1
 	}
-	return targetPtrSize
+	return c.target.PtrSize
 }
 
 // resolveFieldElemSize looks up a struct field's type and returns its element size for indexing.
@@ -1106,7 +947,7 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 			isVariadic := false
 			isIfaceVariadic := false
-			varElemSize := targetPtrSize
+			varElemSize := c.target.PtrSize
 			for _, param := range fn.Nodes {
 				paramTypeName := ""
 				if param.Type != nil {
@@ -1260,7 +1101,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		return
 	}
 	// Create a synthetic init function for global var initialization
-	f := &IRFunc{Name: pkg.Path + ".init$globals"}
+	f := &ir.IRFunc{Name: pkg.Path + ".init$globals"}
 	c.curFunc = f
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
@@ -1278,7 +1119,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 			continue
 		}
 		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_GLOBAL_SET, Arg: gidx})
+		c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 	}
 
 	// Generate embed init code
@@ -1291,7 +1132,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		c.compileEmbedInit(pkg, gidx, emb.pattern)
 	}
 
-	c.emit(Inst{Op: OP_RETURN, Arg: 0})
+	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 	if c.stackDepth != 0 {
 		panic("ICE: stack not balanced at end of function")
 	}
@@ -1307,7 +1148,7 @@ func (c *Compiler) compileEmbedInit(pkg *Package, gidx int, pattern string) {
 
 	// Try embedded FS first (when self-hosting from embedded std),
 	// then fall back to disk.
-	names, data := walkEmbedFromFS(embedDir)
+	names, data := stdlib.WalkEmbedFromFS(embedDir)
 	if names == nil {
 		names, data = walkEmbedDir(embedDir, embedDir)
 	}
@@ -1316,17 +1157,17 @@ func (c *Compiler) compileEmbedInit(pkg *Package, gidx int, pattern string) {
 	sortEmbedFiles(names, data)
 
 	// Create empty FS struct: push 2 nil fields (names, data slices)
-	c.emit(Inst{Op: OP_CONST_I64, Val: 0}) // nil names slice
-	c.emit(Inst{Op: OP_CONST_I64, Val: 0}) // nil data slice
-	c.emit(Inst{Op: OP_CALL, Name: "builtin.composite.embed.FS", Arg: 2})
-	c.emit(Inst{Op: OP_GLOBAL_SET, Arg: gidx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0}) // nil names slice
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0}) // nil data slice
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "builtin.composite.embed.FS", Arg: 2})
+	c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 
 	// For each file, call embed.AddFile(fs, name, data)
 	for i := 0; i < len(names); i++ {
-		c.emit(Inst{Op: OP_GLOBAL_GET, Arg: gidx})
-		c.emit(Inst{Op: OP_CONST_STR, Name: encodeStringLiteral(names[i])})
-		c.emit(Inst{Op: OP_CONST_STR, Name: encodeStringLiteral(data[i])})
-		c.emit(Inst{Op: OP_CALL, Name: "embed.AddFile", Arg: 3})
+		c.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: gidx})
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(names[i])})
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(data[i])})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "embed.AddFile", Arg: 3})
 	}
 }
 
@@ -1415,7 +1256,7 @@ func (c *Compiler) compileFunc(node *Node) {
 		recvType := nodeTypeName(node.X.Type)
 		qname = c.dotJoin(c.curPkg.QualName(recvType), node.Name)
 	}
-	f := &IRFunc{Name: qname}
+	f := &ir.IRFunc{Name: qname}
 	c.curFunc = f
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
@@ -1469,7 +1310,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	// Register params
 	isVariadic := false
 	isIfaceVariadic := false
-	varElemSize := targetPtrSize
+	varElemSize := c.target.PtrSize
 	fixedParams := 0
 	if node.X != nil {
 		fixedParams = 1 // receiver counts as fixed
@@ -1567,11 +1408,11 @@ func (c *Compiler) compileFunc(node *Node) {
 
 	// Ensure function ends with a return
 	codeLen := len(f.Code)
-	if codeLen == 0 || f.Code[codeLen-1].Op != OP_RETURN {
+	if codeLen == 0 || f.Code[codeLen-1].Op != ir.OP_RETURN {
 		if len(c.deferNames) > 0 {
 			c.emitDeferredCalls()
 		}
-		c.emit(Inst{Op: OP_RETURN, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 	}
 
 	c.popScope()
@@ -1591,7 +1432,7 @@ func (c *Compiler) compileIntrinsicFunc(directive *Node) {
 	qname := c.curPkg.QualName(node.Name)
 	intern := parseInternalDirective(directive.Name)
 
-	f := &IRFunc{Name: qname}
+	f := &ir.IRFunc{Name: qname}
 	c.curFunc = f
 
 	// Count params and detect variadic
@@ -1605,7 +1446,7 @@ func (c *Compiler) compileIntrinsicFunc(directive *Node) {
 	if node.X != nil {
 		fixedParams = 1
 	}
-	varElemSizeI := targetPtrSize
+	varElemSizeI := c.target.PtrSize
 	for _, param := range node.Nodes {
 		if len(param.Name) > 3 && param.Name[0:3] == "..." {
 			isVariadic = true
@@ -1628,8 +1469,8 @@ func (c *Compiler) compileIntrinsicFunc(directive *Node) {
 
 	// Emit single intrinsic call
 	c.stackDepth = 0
-	c.emit(Inst{Op: OP_CALL_INTRINSIC, Name: intern, Arg: paramCount})
-	c.emit(Inst{Op: OP_RETURN, Arg: f.RetCount})
+	c.emit(ir.Inst{Op: ir.OP_CALL_INTRINSIC, Name: intern, Arg: paramCount})
+	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: f.RetCount})
 
 	c.funcRets[f.Name] = f.RetCount
 	c.funcParams[f.Name] = f.Params
@@ -1655,7 +1496,7 @@ func (c *Compiler) popScope() {
 
 func (c *Compiler) addLocal(name string) int {
 	idx := len(c.curFunc.Locals)
-	c.curFunc.Locals = append(c.curFunc.Locals, IRLocal{Name: name, Index: idx})
+	c.curFunc.Locals = append(c.curFunc.Locals, ir.IRLocal{Name: name, Index: idx})
 	if len(c.scopes) > 0 {
 		c.scopes[len(c.scopes)-1][name] = idx
 	}
@@ -1680,46 +1521,46 @@ func (c *Compiler) newLabel() int {
 	return l
 }
 
-func (c *Compiler) emit(inst Inst) {
+func (c *Compiler) emit(inst ir.Inst) {
 	c.curFunc.Code = append(c.curFunc.Code, inst)
 	c.stackDepth = c.stackDepth + c.instStackDelta(inst)
 }
 
-func (c *Compiler) instStackDelta(inst Inst) int {
+func (c *Compiler) instStackDelta(inst ir.Inst) int {
 	switch inst.Op {
-	case OP_CONST_I64, OP_CONST_STR, OP_CONST_BOOL, OP_CONST_NIL:
+	case ir.OP_CONST_I64, ir.OP_CONST_STR, ir.OP_CONST_BOOL, ir.OP_CONST_NIL:
 		return 1
-	case OP_LOCAL_GET, OP_GLOBAL_GET, OP_LOCAL_ADDR, OP_GLOBAL_ADDR:
+	case ir.OP_LOCAL_GET, ir.OP_GLOBAL_GET, ir.OP_LOCAL_ADDR, ir.OP_GLOBAL_ADDR:
 		return 1
-	case OP_LOCAL_SET, OP_GLOBAL_SET:
+	case ir.OP_LOCAL_SET, ir.OP_GLOBAL_SET:
 		return -1
-	case OP_LOCAL_ADD_IMM:
+	case ir.OP_LOCAL_ADD_IMM:
 		return 0
-	case OP_DROP:
+	case ir.OP_DROP:
 		return -1
-	case OP_DUP:
+	case ir.OP_DUP:
 		return 1
-	case OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD:
+	case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD:
 		return -1
-	case OP_AND, OP_OR, OP_XOR, OP_SHL, OP_SHR:
+	case ir.OP_AND, ir.OP_OR, ir.OP_XOR, ir.OP_SHL, ir.OP_SHR:
 		return -1
-	case OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LEQ, OP_GEQ:
+	case ir.OP_EQ, ir.OP_NEQ, ir.OP_LT, ir.OP_GT, ir.OP_LEQ, ir.OP_GEQ:
 		return -1
-	case OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+	case ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
 		return -2
-	case OP_NEG, OP_NOT:
+	case ir.OP_NEG, ir.OP_NOT:
 		return 0
-	case OP_LOAD:
+	case ir.OP_LOAD:
 		return 0 // pop addr, push value
-	case OP_STORE:
+	case ir.OP_STORE:
 		return -2 // pop addr + value
-	case OP_OFFSET:
+	case ir.OP_OFFSET:
 		return 0
-	case OP_LABEL, OP_JMP:
+	case ir.OP_LABEL, ir.OP_JMP:
 		return 0
-	case OP_JMP_IF, OP_JMP_IF_NOT:
+	case ir.OP_JMP_IF, ir.OP_JMP_IF_NOT:
 		return -1
-	case OP_CALL:
+	case ir.OP_CALL:
 		retCount := 0
 		if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
 			retCount = 1 // composite literal calls consume N fields, produce 1 pointer
@@ -1727,30 +1568,30 @@ func (c *Compiler) instStackDelta(inst Inst) int {
 			retCount = n
 		}
 		return -inst.Arg + retCount
-	case OP_CALL_INTRINSIC:
+	case ir.OP_CALL_INTRINSIC:
 		// Intrinsics read params from frame, only push results
 		if c.curFunc != nil {
 			return c.curFunc.RetCount
 		}
 		return 0
-	case OP_RETURN:
+	case ir.OP_RETURN:
 		return -inst.Arg
-	case OP_INDEX_ADDR:
+	case ir.OP_INDEX_ADDR:
 		return -1 // pop base + index, push addr
-	case OP_LEN:
+	case ir.OP_LEN:
 		return 0 // pop header, push len
-	case OP_CAP:
+	case ir.OP_CAP:
 		return 0 // pop header, push cap
-	case OP_CONVERT:
+	case ir.OP_CONVERT:
 		return 0
-	case OP_IFACE_BOX:
+	case ir.OP_IFACE_BOX:
 		return 0 // pop value, push boxed
-	case OP_IFACE_CALL:
+	case ir.OP_IFACE_CALL:
 		// consumes receiver + args, produces 1 result
 		return -(inst.Arg + 1) + 1
-	case OP_PANIC:
+	case ir.OP_PANIC:
 		return -1
-	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		return 0
 	}
 	panic("ICE: unknown opcode in instStackDelta")
@@ -1761,11 +1602,11 @@ func (c *Compiler) blockEndsWithReturn() bool {
 		return false
 	}
 	last := c.curFunc.Code[len(c.curFunc.Code)-1]
-	return last.Op == OP_RETURN || last.Op == OP_PANIC
+	return last.Op == ir.OP_RETURN || last.Op == ir.OP_PANIC
 }
 
 func (c *Compiler) emitLabel(label int) {
-	c.emit(Inst{Op: OP_LABEL, Arg: label})
+	c.emit(ir.Inst{Op: ir.OP_LABEL, Arg: label})
 }
 
 // === Statement compilation ===
@@ -1807,7 +1648,7 @@ func (c *Compiler) compileStmt(node *Node) {
 		retCount := c.exprReturnCount(node.X)
 		i := 0
 		for i < retCount {
-			c.emit(Inst{Op: OP_DROP})
+			c.emit(ir.Inst{Op: ir.OP_DROP})
 			i++
 		}
 	case NIncStmt:
@@ -1827,11 +1668,11 @@ func (c *Compiler) compileStmt(node *Node) {
 				c.compileExpr(arg)
 				if isIfaceVar && argCount >= fixedCount {
 					if typeID := c.exprPrimitiveTypeID(arg); typeID > 0 {
-						c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+						c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
 					}
 				}
 				idx := c.addLocal(fmt.Sprintf("_defer_%d_%d", len(c.deferNames), argCount))
-				c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 				if argStart < 0 {
 					argStart = idx
 				}
@@ -1874,7 +1715,7 @@ func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
 		lhs := lhsNodes[i]
 		if define {
 			idx := c.addLocal(lhs.Name)
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 		} else {
 			c.compileLValueSet(lhs)
 		}
@@ -1882,11 +1723,11 @@ func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
 	}
 }
 
-func (c *Compiler) compileCompoundAssign(node *Node, op Opcode) {
+func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
 	w := c.exprWidth(node.X)
 	c.compileLValueGet(node.X)
 	c.compileExpr(node.Y)
-	c.emit(Inst{Op: op, Width: w})
+	c.emit(ir.Inst{Op: op, Width: w})
 	c.compileLValueSet(node.X)
 }
 
@@ -1945,8 +1786,8 @@ func (c *Compiler) compileVarDecl(node *Node) {
 	}
 	if node.X != nil {
 		if c.registerFuncValueBinding(node.Name, node.X) {
-			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
 			return
 		}
 		// Lower function literals to generated package-scope functions.
@@ -1956,8 +1797,8 @@ func (c *Compiler) compileVarDecl(node *Node) {
 			c.bindFuncCaptures(node.Name, target)
 			delete(c.localMethodTargets, node.Name)
 			delete(c.localMethodRecv, node.Name)
-			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
 			return
 		}
 		c.compileExpr(node.X)
@@ -1966,7 +1807,7 @@ func (c *Compiler) compileVarDecl(node *Node) {
 				c.maybeBoxValueForInterface(node.X)
 			}
 		}
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
 	} else {
 		// Struct locals are represented as pointers to heap-allocated storage.
 		// A zero-value struct var must still be addressable and non-nil.
@@ -1978,22 +1819,22 @@ func (c *Compiler) compileVarDecl(node *Node) {
 			// (e.g. *Parser) must remain nil-zero by default.
 			if typeNode != nil && (len(rawTypeName) == 0 || rawTypeName[0] != '*') {
 				slots := c.resolveStructSlotCount(typeName)
-				size := slots * targetPtrSize
+				size := slots * c.target.PtrSize
 				if size <= 0 {
-					size = targetPtrSize
+					size = c.target.PtrSize
 				}
-				c.emit(Inst{Op: OP_CONST_I64, Val: int64(size)})
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
-				c.emit(Inst{Op: OP_DUP})
-				c.emit(Inst{Op: OP_CONST_I64, Val: int64(size)})
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.Memzero", Arg: 2})
-				c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
+				c.emit(ir.Inst{Op: ir.OP_DUP})
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Memzero", Arg: 2})
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 				return
 			}
 		}
 		// Zero-initialize the local to avoid stack garbage
-		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 	}
 }
 
@@ -2013,7 +1854,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		if node.Y != nil && node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X) {
 			c.compileExpr(node.Y.X) // push map
 			c.compileExpr(node.Y.Y) // push key
-			c.emit(Inst{Op: OP_CALL, Name: "runtime.MapGet", Arg: 2})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapGet", Arg: 2})
 			// MapGet returns (value, ok) — both on stack
 			// Assign in reverse order: ok first (top of stack), then value
 			c.assignStackValuesToLHS(node.Nodes, isDefine)
@@ -2145,8 +1986,8 @@ func (c *Compiler) compileAssign(node *Node) {
 			return
 		}
 		if c.registerFuncValueBinding(node.X.Name, node.Y) {
-			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
 			return
 		}
 		if node.Y != nil && node.Y.Kind == NFuncType && node.Y.Body != nil {
@@ -2155,45 +1996,45 @@ func (c *Compiler) compileAssign(node *Node) {
 			c.bindFuncCaptures(node.X.Name, target)
 			delete(c.localMethodTargets, node.X.Name)
 			delete(c.localMethodRecv, node.X.Name)
-			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
 			return
 		}
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
 		return
 	}
 
 	switch node.Name {
 	case "+=":
-		c.compileCompoundAssign(node, OP_ADD)
+		c.compileCompoundAssign(node, ir.OP_ADD)
 		return
 	case "-=":
-		c.compileCompoundAssign(node, OP_SUB)
+		c.compileCompoundAssign(node, ir.OP_SUB)
 		return
 	case "*=":
-		c.compileCompoundAssign(node, OP_MUL)
+		c.compileCompoundAssign(node, ir.OP_MUL)
 		return
 	case "/=":
-		c.compileCompoundAssign(node, OP_DIV)
+		c.compileCompoundAssign(node, ir.OP_DIV)
 		return
 	case "%=":
-		c.compileCompoundAssign(node, OP_MOD)
+		c.compileCompoundAssign(node, ir.OP_MOD)
 		return
 	case "|=":
-		c.compileCompoundAssign(node, OP_OR)
+		c.compileCompoundAssign(node, ir.OP_OR)
 		return
 	case "&=":
-		c.compileCompoundAssign(node, OP_AND)
+		c.compileCompoundAssign(node, ir.OP_AND)
 		return
 	case "^=":
-		c.compileCompoundAssign(node, OP_XOR)
+		c.compileCompoundAssign(node, ir.OP_XOR)
 		return
 	case "<<=":
-		c.compileCompoundAssign(node, OP_SHL)
+		c.compileCompoundAssign(node, ir.OP_SHL)
 		return
 	case ">>=":
-		c.compileCompoundAssign(node, OP_SHR)
+		c.compileCompoundAssign(node, ir.OP_SHR)
 		return
 	}
 
@@ -2202,8 +2043,8 @@ func (c *Compiler) compileAssign(node *Node) {
 		c.compileExpr(node.X.X) // push map
 		c.compileExpr(node.X.Y) // push key
 		c.compileExpr(node.Y)   // push value
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.MapSet", Arg: 3})
-		c.emit(Inst{Op: OP_DROP}) // discard returned header (unchanged)
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapSet", Arg: 3})
+		c.emit(ir.Inst{Op: ir.OP_DROP}) // discard returned header (unchanged)
 		return
 	}
 
@@ -2222,7 +2063,7 @@ func trimVariadicName(name string) string {
 	return name
 }
 
-func localWidth(locals []IRLocal, idx int) int {
+func localWidth(locals []ir.IRLocal, idx int) int {
 	if idx >= 0 && idx < len(locals) {
 		return locals[idx].Width
 	}
@@ -2398,7 +2239,7 @@ func (c *Compiler) registerMethodValueBinding(localName string, rhs *Node, local
 
 	// Method values capture the receiver expression at binding time.
 	c.compileExpr(rhs.X)
-	c.emit(Inst{Op: OP_LOCAL_SET, Arg: localIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: localIdx})
 
 	delete(c.localFuncTargets, localName)
 	delete(c.localFuncCaptures, localName)
@@ -2434,7 +2275,7 @@ func (c *Compiler) compileLValueSet(node *Node) {
 	switch node.Kind {
 	case NIdent:
 		if node.Name == "_" {
-			c.emit(Inst{Op: OP_DROP})
+			c.emit(ir.Inst{Op: ir.OP_DROP})
 			return
 		}
 		idx, ok := c.lookupLocal(node.Name)
@@ -2443,24 +2284,24 @@ func (c *Compiler) compileLValueSet(node *Node) {
 			if idx < len(c.curFunc.Locals) {
 				w = c.curFunc.Locals[idx].Width
 			}
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: idx, Width: w})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
 		} else {
 			if capture, ok := c.activeCaptures[node.Name]; ok {
-				c.emit(Inst{Op: OP_LOCAL_GET, Arg: capture.LocalIdx})
-				c.emit(Inst{Op: OP_STORE, Arg: capture.Width})
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: capture.LocalIdx})
+				c.emit(ir.Inst{Op: ir.OP_STORE, Arg: capture.Width})
 				return
 			}
 			gidx, gok := c.lookupGlobal(node.Name)
 			if gok {
-				c.emit(Inst{Op: OP_GLOBAL_SET, Arg: gidx})
+				c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 			}
 		}
 	case NIndexExpr:
 		elemSize := c.exprElemSize(node.X)
 		c.compileExpr(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_INDEX_ADDR, Arg: elemSize})
-		c.emit(Inst{Op: OP_STORE, Arg: elemSize})
+		c.emit(ir.Inst{Op: ir.OP_INDEX_ADDR, Arg: elemSize})
+		c.emit(ir.Inst{Op: ir.OP_STORE, Arg: elemSize})
 	case NSelectorExpr:
 		offset := 0
 		recvType := c.resolveExprType(node.X)
@@ -2473,14 +2314,14 @@ func (c *Compiler) compileLValueSet(node *Node) {
 		c.compileExpr(node.X)
 		// Auto-deref pointer-to-struct for field write (e.g., pp.X = 100)
 		if node.X != nil && c.needsSelectorDeref(node.X) {
-			c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+			c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 		}
-		c.emit(Inst{Op: OP_OFFSET, Arg: offset})
-		c.emit(Inst{Op: OP_STORE, Arg: targetPtrSize})
+		c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: offset})
+		c.emit(ir.Inst{Op: ir.OP_STORE, Arg: c.target.PtrSize})
 	case NUnaryExpr:
 		if node.Name == "*" {
 			c.compileExpr(node.X)
-			c.emit(Inst{Op: OP_STORE, Arg: targetPtrSize})
+			c.emit(ir.Inst{Op: ir.OP_STORE, Arg: c.target.PtrSize})
 		}
 	default:
 		panic("ICE: unhandled lvalue kind in compileLValueSet")
@@ -2518,68 +2359,68 @@ func (c *Compiler) emitDeferredCalls() {
 			}
 			k := 0
 			for k < fixedCount {
-				c.emit(Inst{Op: OP_LOCAL_GET, Arg: argStart + k})
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argStart + k})
 				k++
 			}
 			variadicCount := argCount - fixedCount
 			if variadicCount < 0 {
 				variadicCount = 0
 			}
-			varElemSz := targetPtrSize
+			varElemSz := c.target.PtrSize
 			if esz, ok := c.funcVariadicElem[name]; ok {
 				varElemSz = esz
 			}
-			sliceHdrSize := 4 * targetPtrSize
+			sliceHdrSize := 4 * c.target.PtrSize
 			allocSize := sliceHdrSize + variadicCount*varElemSz
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(allocSize)})
-			c.emit(Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(allocSize)})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
 			tmpIdx := c.addLocal("$defer_varslice")
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(sliceHdrSize)})
-			c.emit(Inst{Op: OP_ADD})
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-			c.emit(Inst{Op: OP_STORE})
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(variadicCount)})
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(targetPtrSize)})
-			c.emit(Inst{Op: OP_ADD})
-			c.emit(Inst{Op: OP_STORE})
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(variadicCount)})
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(2 * targetPtrSize)})
-			c.emit(Inst{Op: OP_ADD})
-			c.emit(Inst{Op: OP_STORE})
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(varElemSz)})
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(3 * targetPtrSize)})
-			c.emit(Inst{Op: OP_ADD})
-			c.emit(Inst{Op: OP_STORE})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(sliceHdrSize)})
+			c.emit(ir.Inst{Op: ir.OP_ADD})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_STORE})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(variadicCount)})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.target.PtrSize)})
+			c.emit(ir.Inst{Op: ir.OP_ADD})
+			c.emit(ir.Inst{Op: ir.OP_STORE})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(variadicCount)})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(2 * c.target.PtrSize)})
+			c.emit(ir.Inst{Op: ir.OP_ADD})
+			c.emit(ir.Inst{Op: ir.OP_STORE})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(varElemSz)})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(3 * c.target.PtrSize)})
+			c.emit(ir.Inst{Op: ir.OP_ADD})
+			c.emit(ir.Inst{Op: ir.OP_STORE})
 			j := 0
 			for j < variadicCount {
-				c.emit(Inst{Op: OP_LOCAL_GET, Arg: argStart + fixedCount + j})
-				c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-				c.emit(Inst{Op: OP_CONST_I64, Val: int64(sliceHdrSize + j*varElemSz)})
-				c.emit(Inst{Op: OP_ADD})
-				c.emit(Inst{Op: OP_STORE, Arg: varElemSz})
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argStart + fixedCount + j})
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(sliceHdrSize + j*varElemSz)})
+				c.emit(ir.Inst{Op: ir.OP_ADD})
+				c.emit(ir.Inst{Op: ir.OP_STORE, Arg: varElemSz})
 				j++
 			}
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-			c.emit(Inst{Op: OP_CALL, Name: name, Arg: fixedCount + 1})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: name, Arg: fixedCount + 1})
 		} else {
 			k := 0
 			for k < argCount {
-				c.emit(Inst{Op: OP_LOCAL_GET, Arg: argStart + k})
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argStart + k})
 				k++
 			}
-			c.emit(Inst{Op: OP_CALL, Name: name, Arg: argCount})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: name, Arg: argCount})
 		}
 		dropCount := 0
 		if idx < len(c.deferRetCounts) {
 			dropCount = c.deferRetCounts[idx]
 		}
 		for dropCount > 0 {
-			c.emit(Inst{Op: OP_DROP})
+			c.emit(ir.Inst{Op: ir.OP_DROP})
 			dropCount--
 		}
 		di++
@@ -2600,10 +2441,10 @@ func (c *Compiler) compileReturn(node *Node) {
 			if idx < len(c.curFunc.Locals) {
 				w = c.curFunc.Locals[idx].Width
 			}
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: idx, Width: w})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx, Width: w})
 			if i < len(retTypes) && c.isInterfaceTypeName(retTypes[i]) {
 				if typeID := c.typeIDForTypeName(c.localConcreteTypes[name]); typeID > 0 {
-					c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+					c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
 				}
 			}
 			count++
@@ -2623,7 +2464,7 @@ func (c *Compiler) compileReturn(node *Node) {
 	if len(c.deferNames) > 0 {
 		c.emitDeferredCalls()
 	}
-	c.emit(Inst{Op: OP_RETURN, Arg: count})
+	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
 }
 
 // maybeBoxInterface checks if the return value at position idx needs boxing
@@ -2653,7 +2494,7 @@ func (c *Compiler) maybeBoxInterface(expr *Node, retTypes []string, idx int) {
 	}
 	typeID := c.resolveConcreteTypeID(expr)
 	if typeID > 0 {
-		c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+		c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
 	}
 }
 
@@ -2869,7 +2710,7 @@ func (c *Compiler) compileIf(node *Node) {
 	c.compileBlock(node.Body)
 	thenDepth := c.stackDepth
 	thenReturns := c.blockEndsWithReturn()
-	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+	c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 
 	c.stackDepth = branchDepth
 	c.emitLabel(elseLabel)
@@ -2916,26 +2757,26 @@ func (c *Compiler) invertCmpOp(op string) string {
 }
 
 func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
-	var irOp Opcode
+	var irOp ir.Opcode
 	switch op {
 	case "==":
-		irOp = OP_JMP_EQ
+		irOp = ir.OP_JMP_EQ
 	case "!=":
-		irOp = OP_JMP_NEQ
+		irOp = ir.OP_JMP_NEQ
 	case "<":
-		irOp = OP_JMP_LT
+		irOp = ir.OP_JMP_LT
 	case ">":
-		irOp = OP_JMP_GT
+		irOp = ir.OP_JMP_GT
 	case "<=":
-		irOp = OP_JMP_LEQ
+		irOp = ir.OP_JMP_LEQ
 	case ">=":
-		irOp = OP_JMP_GEQ
+		irOp = ir.OP_JMP_GEQ
 	default:
 		return false
 	}
 	c.compileExpr(node.X)
 	c.compileExpr(node.Y)
-	c.emit(Inst{Op: irOp, Arg: targetLabel, Width: c.exprWidth(node)})
+	c.emit(ir.Inst{Op: irOp, Arg: targetLabel, Width: c.exprWidth(node)})
 	return true
 }
 
@@ -2945,7 +2786,7 @@ func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
 func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int) {
 	if cond == nil {
 		if !jumpIfTrue {
-			c.emit(Inst{Op: OP_JMP, Arg: targetLabel})
+			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: targetLabel})
 		}
 		return
 	}
@@ -2983,9 +2824,9 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 			if (cond.Name == "==" || cond.Name == "!=") && (c.isStringTypedExpr(cond.X) || c.isStringTypedExpr(cond.Y) || isStringExpr(cond.X) || isStringExpr(cond.Y)) {
 				c.emitStringEqualCall(cond.X, cond.Y)
 				if (cond.Name == "==" && jumpIfTrue) || (cond.Name == "!=" && !jumpIfTrue) {
-					c.emit(Inst{Op: OP_JMP_IF, Arg: targetLabel})
+					c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: targetLabel})
 				} else {
-					c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: targetLabel})
+					c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: targetLabel})
 				}
 				return
 			}
@@ -3004,9 +2845,9 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 
 	c.compileExpr(cond)
 	if jumpIfTrue {
-		c.emit(Inst{Op: OP_JMP_IF, Arg: targetLabel})
+		c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: targetLabel})
 	} else {
-		c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: targetLabel})
+		c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: targetLabel})
 	}
 }
 
@@ -3038,7 +2879,7 @@ func (c *Compiler) compileFor(node *Node) {
 		if node.Type != nil {
 			c.compileStmt(node.Type)
 		}
-		c.emit(Inst{Op: OP_JMP, Arg: loopLabel})
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: loopLabel})
 		c.emitLabel(breakLabel)
 		c.popScope()
 	} else if node.Y != nil {
@@ -3049,7 +2890,7 @@ func (c *Compiler) compileFor(node *Node) {
 			c.compileBlock(node.Body)
 		}
 		c.emitLabel(continueLabel)
-		c.emit(Inst{Op: OP_JMP, Arg: loopLabel})
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: loopLabel})
 		c.emitLabel(breakLabel)
 	} else {
 		// Bare for loop (infinite)
@@ -3058,7 +2899,7 @@ func (c *Compiler) compileFor(node *Node) {
 			c.compileBlock(node.Body)
 		}
 		c.emitLabel(continueLabel)
-		c.emit(Inst{Op: OP_JMP, Arg: loopLabel})
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: loopLabel})
 		c.emitLabel(breakLabel)
 	}
 
@@ -3076,82 +2917,82 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 	// Compile the iterable and store it
 	c.compileExpr(node.Type)
 	iterIdx := c.addLocal("$iter")
-	c.emit(Inst{Op: OP_LOCAL_SET, Arg: iterIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: iterIdx})
 
 	// Initialize index to 0
 	idxIdx := c.addLocal("$idx")
-	c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-	c.emit(Inst{Op: OP_LOCAL_SET, Arg: idxIdx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idxIdx})
 
 	c.emitLabel(loopLabel)
 
 	// Compare index < len(iterable)
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: iterIdx})
 	if isMap {
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.MapLen", Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapLen", Arg: 1})
 	} else {
-		c.emit(Inst{Op: OP_LEN})
+		c.emit(ir.Inst{Op: ir.OP_LEN})
 	}
-	c.emit(Inst{Op: OP_JMP_GEQ, Arg: breakLabel})
+	c.emit(ir.Inst{Op: ir.OP_JMP_GEQ, Arg: breakLabel})
 
 	// Bind loop variables
 	if node.X != nil {
 		keyIdx := c.addLocal(node.X.Name)
 		if isMap {
 			// For maps, key = MapEntryKey(hdr, idx)
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
-			c.emit(Inst{Op: OP_CALL, Name: "runtime.MapEntryKey", Arg: 2})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: iterIdx})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxIdx})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapEntryKey", Arg: 2})
 			// Track string-typed key vars for interface boxing
 			if c.mapExprKeyKind(node.Type) == 1 {
 				c.localStringVars[node.X.Name] = true
 			}
 		} else {
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxIdx})
 		}
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: keyIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: keyIdx})
 	}
 	if isString {
 		sizeIdx := c.addLocal("$rsize")
 		runeIdx := c.addLocal("$rrune")
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.StringDecodeRune", Arg: 2})
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: sizeIdx})
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: runeIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: iterIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxIdx})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringDecodeRune", Arg: 2})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: sizeIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: runeIdx})
 		if node.Y != nil {
 			valIdx := c.addLocal(node.Y.Name)
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: runeIdx})
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: valIdx})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: runeIdx})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: valIdx})
 			c.localConcreteTypes[node.Y.Name] = "int"
 		}
 		if node.Body != nil {
 			c.compileBlock(node.Body)
 		}
 		c.emitLabel(continueLabel)
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: sizeIdx})
-		c.emit(Inst{Op: OP_ADD})
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: idxIdx})
-		c.emit(Inst{Op: OP_JMP, Arg: loopLabel})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: sizeIdx})
+		c.emit(ir.Inst{Op: ir.OP_ADD})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idxIdx})
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: loopLabel})
 		c.emitLabel(breakLabel)
 		c.popScope()
 		return
 	}
 	if node.Y != nil {
 		valIdx := c.addLocal(node.Y.Name)
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: iterIdx})
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: iterIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxIdx})
 		if isMap {
 			// For maps, value = MapEntryValue(hdr, idx)
-			c.emit(Inst{Op: OP_CALL, Name: "runtime.MapEntryValue", Arg: 2})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapEntryValue", Arg: 2})
 		} else {
 			elemSize := c.exprElemSize(node.Type)
-			c.emit(Inst{Op: OP_INDEX_ADDR, Arg: elemSize})
-			c.emit(Inst{Op: OP_LOAD, Arg: elemSize})
+			c.emit(ir.Inst{Op: ir.OP_INDEX_ADDR, Arg: elemSize})
+			c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: elemSize})
 		}
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: valIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: valIdx})
 		// Track value type from collection element type for method resolution
 		if isMap && node.Type != nil {
 			valType := c.resolveMapValueType(node.Type)
@@ -3205,12 +3046,11 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 	c.emitLabel(continueLabel)
 
 	// Increment index
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: idxIdx})
-	c.emit(Inst{Op: OP_CONST_I64, Val: 1})
-	c.emit(Inst{Op: OP_ADD})
-	c.emit(Inst{Op: OP_LOCAL_SET, Arg: idxIdx})
-	c.emit(Inst{Op: OP_JMP, Arg: loopLabel})
-
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxIdx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idxIdx})
+	c.emit(ir.Inst{Op: ir.OP_JMP, Arg: loopLabel})
 	c.emitLabel(breakLabel)
 	c.popScope()
 }
@@ -3230,8 +3070,8 @@ func (c *Compiler) compileSwitch(node *Node) {
 	if hasTag {
 		if isTypeSwitch {
 			c.compileExpr(node.Y)
-			c.emit(Inst{Op: OP_OFFSET, Arg: 0})
-			c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+			c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: 0})
+			c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 		} else {
 			c.compileExpr(node.Y)
 		}
@@ -3263,12 +3103,12 @@ func (c *Compiler) compileSwitch(node *Node) {
 		if cas.Name == "default" {
 			c.emitLabel(bodyLabel)
 			if hasTag {
-				c.emit(Inst{Op: OP_DROP})
+				c.emit(ir.Inst{Op: ir.OP_DROP})
 			}
 			if cas.Body != nil {
 				c.compileBlock(cas.Body)
 			}
-			c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 			c.stackDepth = caseCheckDepth // reset for next case
 		} else {
 			// Collect all case values: first in cas.X, rest in cas.Nodes
@@ -3282,18 +3122,18 @@ func (c *Compiler) compileSwitch(node *Node) {
 				// Check each case value with OR logic
 				// DUP/expr/EQ/JMP_IF is net-zero on the fallthrough path
 				for _, expr := range caseExprs {
-					c.emit(Inst{Op: OP_DUP})
+					c.emit(ir.Inst{Op: ir.OP_DUP})
 					if isTypeSwitch {
-						c.emit(Inst{Op: OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
+						c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
 					} else {
 						c.compileExpr(expr)
 						if isStringSwitch {
-							c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
-							c.emit(Inst{Op: OP_JMP_IF, Arg: bodyLabel})
+							c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+							c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: bodyLabel})
 							continue
 						}
 					}
-					c.emit(Inst{Op: OP_JMP_EQ, Arg: bodyLabel})
+					c.emit(ir.Inst{Op: ir.OP_JMP_EQ, Arg: bodyLabel})
 				}
 			} else {
 				// No tag — each case expr is a bool condition, OR them
@@ -3301,18 +3141,18 @@ func (c *Compiler) compileSwitch(node *Node) {
 					c.compileCondJump(expr, true, bodyLabel)
 				}
 			}
-			c.emit(Inst{Op: OP_JMP, Arg: nextLabel})
+			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: nextLabel})
 
 			// Body is reached from JMP_IF; depth = caseCheckDepth
 			c.stackDepth = caseCheckDepth
 			c.emitLabel(bodyLabel)
 			if hasTag {
-				c.emit(Inst{Op: OP_DROP})
+				c.emit(ir.Inst{Op: ir.OP_DROP})
 			}
 			if cas.Body != nil {
 				c.compileBlock(cas.Body)
 			}
-			c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 			// Reset depth for next case's check path
 			c.stackDepth = caseCheckDepth
 			c.emitLabel(nextLabel)
@@ -3320,7 +3160,7 @@ func (c *Compiler) compileSwitch(node *Node) {
 	}
 
 	if hasTag {
-		c.emit(Inst{Op: OP_DROP})
+		c.emit(ir.Inst{Op: ir.OP_DROP})
 	}
 	c.emitLabel(endLabel)
 	if needsScope {
@@ -3379,53 +3219,53 @@ func (c *Compiler) maybeBoxValueForInterface(expr *Node) {
 		return
 	}
 	if typeID := c.resolveConcreteTypeID(expr); typeID > 0 {
-		c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+		c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
 		return
 	}
 	if ct := c.exprConcreteType(expr); ct != "" {
-		c.emit(Inst{Op: OP_IFACE_BOX, Arg: c.typeIDForTypeName(ct)})
+		c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: c.typeIDForTypeName(ct)})
 		return
 	}
 	if typeID := c.exprPrimitiveTypeID(expr); typeID > 0 {
-		c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+		c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
 		return
 	}
 }
 
 func (c *Compiler) compileTypeAssert(node *Node, commaOk bool) {
 	if node == nil || node.X == nil || node.Type == nil {
-		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		if commaOk {
-			c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+			c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 0})
 		}
 		return
 	}
 	typeID := c.typeIDForTypeNode(node.Type)
 
 	c.compileExpr(node.X)
-	c.emit(Inst{Op: OP_DUP})
-	c.emit(Inst{Op: OP_OFFSET, Arg: 0})
-	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(typeID)})
+	c.emit(ir.Inst{Op: ir.OP_DUP})
+	c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: 0})
+	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(typeID)})
 
 	failLabel := c.newLabel()
 	endLabel := c.newLabel()
-	c.emit(Inst{Op: OP_JMP_NEQ, Arg: failLabel})
-	c.emit(Inst{Op: OP_OFFSET, Arg: targetPtrSize})
-	c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+	c.emit(ir.Inst{Op: ir.OP_JMP_NEQ, Arg: failLabel})
+	c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: c.target.PtrSize})
+	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 	if commaOk {
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 1})
 	}
-	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+	c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 
 	c.emitLabel(failLabel)
-	c.emit(Inst{Op: OP_DROP})
+	c.emit(ir.Inst{Op: ir.OP_DROP})
 	if commaOk {
-		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 0})
 	} else {
-		c.emit(Inst{Op: OP_CONST_STR, Name: "type assertion failed"})
-		c.emit(Inst{Op: OP_PANIC})
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "type assertion failed"})
+		c.emit(ir.Inst{Op: ir.OP_PANIC})
 	}
 	c.emitLabel(endLabel)
 }
@@ -3440,23 +3280,23 @@ func (c *Compiler) compileTypeAssertCommaOk(node *Node) {
 
 func (c *Compiler) compileInc(node *Node) {
 	c.compileLValueGet(node.X)
-	c.emit(Inst{Op: OP_CONST_I64, Val: 1})
-	c.emit(Inst{Op: OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
 	c.compileLValueSet(node.X)
 }
 
 func (c *Compiler) compileDec(node *Node) {
 	c.compileLValueGet(node.X)
-	c.emit(Inst{Op: OP_CONST_I64, Val: 1})
-	c.emit(Inst{Op: OP_SUB})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_SUB})
 	c.compileLValueSet(node.X)
 }
 
 func (c *Compiler) compileBranch(node *Node) {
 	if node.Name == "break" && len(c.breaks) > 0 {
-		c.emit(Inst{Op: OP_JMP, Arg: c.breaks[len(c.breaks)-1]})
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.breaks[len(c.breaks)-1]})
 	} else if node.Name == "continue" && len(c.continues) > 0 {
-		c.emit(Inst{Op: OP_JMP, Arg: c.continues[len(c.continues)-1]})
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.continues[len(c.continues)-1]})
 	}
 }
 
@@ -3470,7 +3310,7 @@ func (c *Compiler) compileExpr(node *Node) {
 	case NIntLit:
 		c.compileIntLit(node)
 	case NStringLit:
-		c.emit(Inst{Op: OP_CONST_STR, Name: node.Name})
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: node.Name})
 	case NRuneLit:
 		c.compileRuneLit(node)
 	case NBasicLit:
@@ -3496,7 +3336,7 @@ func (c *Compiler) compileExpr(node *Node) {
 	case NFuncType:
 		if node.Body != nil {
 			c.compileFuncLiteral(node)
-			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		} else {
 			panic("ICE: bare function type in compileExpr")
 		}
@@ -3507,24 +3347,24 @@ func (c *Compiler) compileExpr(node *Node) {
 
 func (c *Compiler) compileIntLit(node *Node) {
 	val := parseIntLiteral(node.Name)
-	c.emit(Inst{Op: OP_CONST_I64, Val: val})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 }
 
 func (c *Compiler) compileRuneLit(node *Node) {
 	val := parseRuneLiteral(node.Name)
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(val)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(val)})
 }
 
 func (c *Compiler) compileBasicLit(node *Node) {
 	if node.Name == "true" {
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 1})
 	} else if node.Name == "false" {
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 0})
 	} else if node.Name == "nil" {
-		c.emit(Inst{Op: OP_CONST_NIL})
+		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 	} else if node.Name == "iota" {
 		// Iota is resolved at const-eval time; emit 0 as placeholder
-		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 	}
 }
 
@@ -3535,42 +3375,42 @@ func (c *Compiler) compileIdent(node *Node) {
 		if idx < len(c.curFunc.Locals) {
 			w = c.curFunc.Locals[idx].Width
 		}
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: idx, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx, Width: w})
 		return
 	}
 	if capture, ok := c.activeCaptures[node.Name]; ok {
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: capture.LocalIdx})
-		c.emit(Inst{Op: OP_LOAD, Arg: capture.Width})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: capture.LocalIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: capture.Width})
 		return
 	}
 	gidx, gok := c.lookupGlobal(node.Name)
 	if gok {
-		c.emit(Inst{Op: OP_GLOBAL_GET, Arg: gidx})
+		c.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: gidx})
 		return
 	}
 	// Check if it's a precomputed constant
 	qname2 := c.curPkg.QualName(node.Name)
 	if sval, ok2 := c.constStringValues[qname2]; ok2 {
-		c.emit(Inst{Op: OP_CONST_STR, Name: sval})
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: sval})
 		return
 	}
 	if val, ok2 := c.constValues[qname2]; ok2 {
-		c.emit(Inst{Op: OP_CONST_I64, Val: val})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 		return
 	}
 	// Check if it's a constant in the current package
 	sym, symOk := c.curPkg.Symbols[node.Name]
 	if symOk && sym.Kind == SymConst {
 		if c.isConstStringExpr(sym.Node.X) {
-			c.emit(Inst{Op: OP_CONST_STR, Name: c.evalConstString(sym.Node.X)})
+			c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: c.evalConstString(sym.Node.X)})
 			return
 		}
 		val := c.resolveConstValue(sym.Node)
-		c.emit(Inst{Op: OP_CONST_I64, Val: val})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 		return
 	}
 	// Could be a package name or unresolved — emit as global reference
-	c.emit(Inst{Op: OP_GLOBAL_GET, Name: node.Name})
+	c.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Name: node.Name})
 }
 
 // resolveConstValue evaluates a constant declaration's value at compile time.
@@ -3782,7 +3622,7 @@ func (c *Compiler) constIntArg(node *Node) (int, bool) {
 func (c *Compiler) emitStringEqualCall(x *Node, y *Node) {
 	c.compileExpr(x)
 	c.compileExpr(y)
-	c.emit(Inst{Op: OP_CALL, Name: "runtime.StringEqual", Arg: 2})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringEqual", Arg: 2})
 }
 
 func (c *Compiler) compileLogicalBinary(node *Node, isAnd bool) {
@@ -3790,21 +3630,21 @@ func (c *Compiler) compileLogicalBinary(node *Node, isAnd bool) {
 	endLabel := c.newLabel()
 	c.compileExpr(node.X)
 	if isAnd {
-		c.emit(Inst{Op: OP_JMP_IF_NOT, Arg: branchLabel})
+		c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: branchLabel})
 	} else {
-		c.emit(Inst{Op: OP_JMP_IF, Arg: branchLabel})
+		c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: branchLabel})
 	}
 	// Conditional jump popped condition; now compile Y (pushes 1 value)
 	savedDepth := c.stackDepth
 	c.compileExpr(node.Y)
-	c.emit(Inst{Op: OP_JMP, Arg: endLabel})
+	c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 	// Alternate branch starts at same depth after conditional jump
 	c.stackDepth = savedDepth
 	c.emitLabel(branchLabel)
 	if isAnd {
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 0})
 	} else {
-		c.emit(Inst{Op: OP_CONST_BOOL, Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 1})
 	}
 	c.emitLabel(endLabel)
 }
@@ -3825,7 +3665,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	if isStr && node.Name == "+" {
 		c.compileExpr(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.StringConcat", Arg: 2})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringConcat", Arg: 2})
 		return
 	}
 	if isStr && node.Name == "==" {
@@ -3834,7 +3674,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	}
 	if isStr && node.Name == "!=" {
 		c.emitStringEqualCall(node.X, node.Y)
-		c.emit(Inst{Op: OP_NOT})
+		c.emit(ir.Inst{Op: ir.OP_NOT})
 		return
 	}
 
@@ -3843,12 +3683,12 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	if node.Name == "+" && c.exprWidth(node) == 0 {
 		if off, ok := c.constIntArg(node.Y); ok {
 			c.compileExpr(node.X)
-			c.emit(Inst{Op: OP_OFFSET, Arg: off})
+			c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: off})
 			return
 		}
 		if off, ok := c.constIntArg(node.X); ok {
 			c.compileExpr(node.Y)
-			c.emit(Inst{Op: OP_OFFSET, Arg: off})
+			c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: off})
 			return
 		}
 	}
@@ -3860,37 +3700,37 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 
 	switch node.Name {
 	case "+":
-		c.emit(Inst{Op: OP_ADD, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_ADD, Width: w})
 	case "-":
-		c.emit(Inst{Op: OP_SUB, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_SUB, Width: w})
 	case "*":
-		c.emit(Inst{Op: OP_MUL, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_MUL, Width: w})
 	case "/":
-		c.emit(Inst{Op: OP_DIV, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_DIV, Width: w})
 	case "%":
-		c.emit(Inst{Op: OP_MOD, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_MOD, Width: w})
 	case "&":
-		c.emit(Inst{Op: OP_AND, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_AND, Width: w})
 	case "|":
-		c.emit(Inst{Op: OP_OR, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_OR, Width: w})
 	case "^":
-		c.emit(Inst{Op: OP_XOR, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_XOR, Width: w})
 	case "<<":
-		c.emit(Inst{Op: OP_SHL, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_SHL, Width: w})
 	case ">>":
-		c.emit(Inst{Op: OP_SHR, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_SHR, Width: w})
 	case "==":
-		c.emit(Inst{Op: OP_EQ, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_EQ, Width: w})
 	case "!=":
-		c.emit(Inst{Op: OP_NEQ, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_NEQ, Width: w})
 	case "<":
-		c.emit(Inst{Op: OP_LT, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_LT, Width: w})
 	case ">":
-		c.emit(Inst{Op: OP_GT, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_GT, Width: w})
 	case "<=":
-		c.emit(Inst{Op: OP_LEQ, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_LEQ, Width: w})
 	case ">=":
-		c.emit(Inst{Op: OP_GEQ, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_GEQ, Width: w})
 	default:
 		panic("ICE: unhandled binary operator in compileBinaryExpr")
 	}
@@ -3900,26 +3740,26 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 	switch node.Name {
 	case "!":
 		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_NOT})
+		c.emit(ir.Inst{Op: ir.OP_NOT})
 	case "-":
 		w := c.exprWidth(node.X)
 		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_NEG, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_NEG, Width: w})
 	case "*":
 		c.compileExpr(node.X)
 		if !c.isPointerToStructDeref(node.X) {
-			c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+			c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 		}
 	case "&":
 		c.compileAddrOf(node.X)
 	case "^":
 		w := c.exprWidth(node.X)
 		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_CONST_I64, Val: -1, Width: w})
-		c.emit(Inst{Op: OP_XOR, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: -1, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_XOR, Width: w})
 		if w == 1 {
-			c.emit(Inst{Op: OP_CONST_I64, Val: 0xFF})
-			c.emit(Inst{Op: OP_AND})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0xFF})
+			c.emit(ir.Inst{Op: ir.OP_AND})
 		}
 	default:
 		panic("ICE: unhandled unary operator in compileUnaryExpr")
@@ -4061,16 +3901,16 @@ func (c *Compiler) compileAddrOf(node *Node) {
 	switch node.Kind {
 	case NIdent:
 		if capture, ok := c.activeCaptures[node.Name]; ok {
-			c.emit(Inst{Op: OP_LOCAL_GET, Arg: capture.LocalIdx})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: capture.LocalIdx})
 			return
 		}
 		idx, ok := c.lookupLocal(node.Name)
 		if ok {
-			c.emit(Inst{Op: OP_LOCAL_ADDR, Arg: idx})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: idx})
 		} else {
 			gidx, gok := c.lookupGlobal(node.Name)
 			if gok {
-				c.emit(Inst{Op: OP_GLOBAL_ADDR, Arg: gidx})
+				c.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: gidx})
 			}
 		}
 	case NCompositeLit:
@@ -4088,39 +3928,39 @@ func (c *Compiler) compileAddrOf(node *Node) {
 // and ifaceKey is the function name to check in funcVariadicIface.
 func (c *Compiler) packVariadicSlice(args []*Node, firstArgIdx int, varCount int, elemSz int, ifaceKey string) {
 	if varCount == 0 {
-		c.emit(Inst{Op: OP_CONST_NIL})
+		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 		return
 	}
-	sliceHdrSize := 4 * targetPtrSize // 32 on amd64, 16 on i386
+	sliceHdrSize := 4 * c.target.PtrSize // 32 on amd64, 16 on i386
 	allocSize := sliceHdrSize + varCount*elemSz
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(allocSize)})
-	c.emit(Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(allocSize)})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
 	tmpIdx := c.addLocal("$varslice")
-	c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: tmpIdx})
 	// header[0] = data_ptr (header + sliceHdrSize)
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(sliceHdrSize)})
-	c.emit(Inst{Op: OP_ADD})
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-	c.emit(Inst{Op: OP_STORE})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(sliceHdrSize)})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+	c.emit(ir.Inst{Op: ir.OP_STORE})
 	// header[ptrSize] = len
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(varCount)})
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(targetPtrSize)})
-	c.emit(Inst{Op: OP_ADD})
-	c.emit(Inst{Op: OP_STORE})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(varCount)})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.target.PtrSize)})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_STORE})
 	// header[2*ptrSize] = cap
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(varCount)})
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(2 * targetPtrSize)})
-	c.emit(Inst{Op: OP_ADD})
-	c.emit(Inst{Op: OP_STORE})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(varCount)})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(2 * c.target.PtrSize)})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_STORE})
 	// header[3*ptrSize] = elem_size
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSz)})
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(3 * targetPtrSize)})
-	c.emit(Inst{Op: OP_ADD})
-	c.emit(Inst{Op: OP_STORE})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(elemSz)})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(3 * c.target.PtrSize)})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_STORE})
 	// Store each variadic arg into data region
 	isIfaceVar := c.funcVariadicIface[ifaceKey]
 	j := 0
@@ -4130,16 +3970,16 @@ func (c *Compiler) packVariadicSlice(args []*Node, firstArgIdx int, varCount int
 		if isIfaceVar {
 			typeID := c.exprPrimitiveTypeID(arg)
 			if typeID > 0 {
-				c.emit(Inst{Op: OP_IFACE_BOX, Arg: typeID})
+				c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
 			}
 		}
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
-		c.emit(Inst{Op: OP_CONST_I64, Val: int64(sliceHdrSize + j*elemSz)})
-		c.emit(Inst{Op: OP_ADD})
-		c.emit(Inst{Op: OP_STORE, Arg: elemSz})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(sliceHdrSize + j*elemSz)})
+		c.emit(ir.Inst{Op: ir.OP_ADD})
+		c.emit(ir.Inst{Op: ir.OP_STORE, Arg: elemSz})
 		j++
 	}
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: tmpIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
 }
 
 func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName string) {
@@ -4147,7 +3987,7 @@ func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName s
 	for _, arg := range args {
 		c.compileExpr(arg)
 	}
-	c.emit(Inst{Op: OP_CALL, Name: callName, Arg: len(args) + 1})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: len(args) + 1})
 }
 
 func runtimeMemBuiltinReturnCount(name string) (int, bool) {
@@ -4163,19 +4003,19 @@ func runtimeMemBuiltinReturnCount(name string) (int, bool) {
 func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool {
 	if callName == "runtime.ReadPtr" && len(args) == 1 {
 		c.compileExpr(args[0])
-		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+		c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 		return true
 	}
 	if callName == "runtime.WritePtr" && len(args) == 2 {
 		c.compileExpr(args[1])
 		c.compileExpr(args[0])
-		c.emit(Inst{Op: OP_STORE, Arg: targetPtrSize})
+		c.emit(ir.Inst{Op: ir.OP_STORE, Arg: c.target.PtrSize})
 		return true
 	}
 	if callName == "runtime.WriteByte" && len(args) == 2 {
 		c.compileExpr(args[1])
 		c.compileExpr(args[0])
-		c.emit(Inst{Op: OP_STORE, Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_STORE, Arg: 1})
 		return true
 	}
 	return false
@@ -4188,11 +4028,11 @@ func (c *Compiler) compileNewBuiltin(node *Node) bool {
 	typeArg := node.Nodes[0]
 	typeName := nodeTypeName(typeArg)
 	qualified := c.qualifyTypeName(typeName, "")
-	size := targetPtrSize
+	size := c.target.PtrSize
 	if typeNode, _ := c.lookupStructTypeNode(qualified); typeNode != nil {
 		slots := c.resolveStructSlotCount(qualified)
 		if slots > 0 {
-			size = slots * targetPtrSize
+			size = slots * c.target.PtrSize
 		}
 	} else if typeArg.Kind == NIdent {
 		if w := typeWidth(typeArg.Name); w > 0 {
@@ -4200,27 +4040,27 @@ func (c *Compiler) compileNewBuiltin(node *Node) bool {
 		}
 	}
 	if size <= 0 {
-		size = targetPtrSize
+		size = c.target.PtrSize
 	}
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(size)})
-	c.emit(Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
-	c.emit(Inst{Op: OP_DUP})
-	c.emit(Inst{Op: OP_CONST_I64, Val: int64(size)})
-	c.emit(Inst{Op: OP_CALL, Name: "runtime.Memzero", Arg: 2})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
+	c.emit(ir.Inst{Op: ir.OP_DUP})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Memzero", Arg: 2})
 	return true
 }
 
 func (c *Compiler) emitSysWriteStringLocal(localIdx int) {
-	c.emit(Inst{Op: OP_CONST_I64, Val: 1})
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: localIdx})
-	c.emit(Inst{Op: OP_CALL, Name: "runtime.Stringptr", Arg: 1})
-	c.emit(Inst{Op: OP_LOCAL_GET, Arg: localIdx})
-	c.emit(Inst{Op: OP_LEN})
-	c.emit(Inst{Op: OP_CONVERT, Name: "uintptr"})
-	c.emit(Inst{Op: OP_CALL, Name: "runtime.SysWrite", Arg: 3})
-	c.emit(Inst{Op: OP_DROP})
-	c.emit(Inst{Op: OP_DROP})
-	c.emit(Inst{Op: OP_DROP})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: localIdx})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Stringptr", Arg: 1})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: localIdx})
+	c.emit(ir.Inst{Op: ir.OP_LEN})
+	c.emit(ir.Inst{Op: ir.OP_CONVERT, Name: "uintptr"})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SysWrite", Arg: 3})
+	c.emit(ir.Inst{Op: ir.OP_DROP})
+	c.emit(ir.Inst{Op: ir.OP_DROP})
+	c.emit(ir.Inst{Op: ir.OP_DROP})
 }
 
 func (c *Compiler) compilePrintBuiltin(node *Node, withNewline bool) {
@@ -4228,18 +4068,18 @@ func (c *Compiler) compilePrintBuiltin(node *Node, withNewline bool) {
 	for i, arg := range node.Nodes {
 		c.compileExpr(arg)
 		c.maybeBoxValueForInterface(arg)
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.Tostring", Arg: 1})
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Tostring", Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: tmpIdx})
 		c.emitSysWriteStringLocal(tmpIdx)
 		if withNewline && i < len(node.Nodes)-1 {
-			c.emit(Inst{Op: OP_CONST_STR, Name: " "})
-			c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: " "})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: tmpIdx})
 			c.emitSysWriteStringLocal(tmpIdx)
 		}
 	}
 	if withNewline {
-		c.emit(Inst{Op: OP_CONST_STR, Name: "\n"})
-		c.emit(Inst{Op: OP_LOCAL_SET, Arg: tmpIdx})
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "\n"})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: tmpIdx})
 		c.emitSysWriteStringLocal(tmpIdx)
 	}
 }
@@ -4262,15 +4102,15 @@ func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 		if recvIdx < len(c.curFunc.Locals) {
 			w = c.curFunc.Locals[recvIdx].Width
 		}
-		c.emit(Inst{Op: OP_LOCAL_GET, Arg: recvIdx, Width: w})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recvIdx, Width: w})
 	} else {
 		c.errorf("%s: missing method receiver for %s", c.curFunc.Name, name)
-		c.emit(Inst{Op: OP_CONST_NIL})
+		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 	}
 	for _, arg := range node.Nodes {
 		c.compileExpr(arg)
 	}
-	c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes) + 1})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: target, Arg: len(node.Nodes) + 1})
 	return true
 }
 
@@ -4280,15 +4120,15 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			captureArgs := c.localFuncCaptures[node.X.Name]
 			for _, capture := range captureArgs {
 				if capture.IsPtr {
-					c.emit(Inst{Op: OP_LOCAL_GET, Arg: capture.LocalIdx})
+					c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: capture.LocalIdx})
 				} else {
-					c.emit(Inst{Op: OP_LOCAL_ADDR, Arg: capture.LocalIdx})
+					c.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: capture.LocalIdx})
 				}
 			}
 			for _, arg := range node.Nodes {
 				c.compileExpr(arg)
 			}
-			c.emit(Inst{Op: OP_CALL, Name: target, Arg: len(node.Nodes) + len(captureArgs)})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: target, Arg: len(node.Nodes) + len(captureArgs)})
 			return
 		}
 		if c.compileBoundMethodValueCall(node) {
@@ -4302,32 +4142,32 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		if name == "recover" {
 			// Minimal recover stub: outside panic unwinding this returns nil.
 			// Full panic/recover semantics remain unimplemented.
-			c.emit(Inst{Op: OP_CONST_NIL})
+			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 			return
 		}
 		if name == "complex" || name == "real" || name == "imag" {
 			c.errorf("%s: %s builtin is not supported (complex numbers are not implemented)", c.curFunc.Name, name)
-			c.emit(Inst{Op: OP_CONST_NIL})
+			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 			return
 		}
 		if name == "float32" || name == "float64" {
 			c.errorf("%s: %s conversion is not supported (floating-point support is not implemented)", c.curFunc.Name, name)
-			c.emit(Inst{Op: OP_CONST_NIL})
+			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 			return
 		}
 		if name == "len" {
 			if len(node.Nodes) > 0 && c.isMapExpr(node.Nodes[0]) {
 				c.compileExpr(node.Nodes[0])
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.MapLen", Arg: 1})
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapLen", Arg: 1})
 				return
 			}
 			c.compileExpr(node.Nodes[0])
-			c.emit(Inst{Op: OP_LEN})
+			c.emit(ir.Inst{Op: ir.OP_LEN})
 			return
 		}
 		if name == "cap" {
 			c.compileExpr(node.Nodes[0])
-			c.emit(Inst{Op: OP_CAP})
+			c.emit(ir.Inst{Op: ir.OP_CAP})
 			return
 		}
 		if name == "append" {
@@ -4342,7 +4182,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			if len(node.Nodes) >= 2 {
 				c.compileExpr(node.Nodes[0])
 				c.compileExpr(node.Nodes[1])
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.MapDelete", Arg: 2})
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapDelete", Arg: 2})
 			}
 			return
 		}
@@ -4359,8 +4199,8 @@ func (c *Compiler) compileCallExpr(node *Node) {
 							keyKind = k
 						}
 					}
-					c.emit(Inst{Op: OP_CONST_I64, Val: int64(keyKind)})
-					c.emit(Inst{Op: OP_CALL, Name: "runtime.MapMake", Arg: 1})
+					c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
+					c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapMake", Arg: 1})
 					c.compileLValueSet(target)
 					return
 				}
@@ -4379,9 +4219,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			if len(node.Nodes) > 0 {
 				c.compileExpr(node.Nodes[0])
 			} else {
-				c.emit(Inst{Op: OP_CONST_STR, Name: "panic"})
+				c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "panic"})
 			}
-			c.emit(Inst{Op: OP_PANIC})
+			c.emit(ir.Inst{Op: ir.OP_PANIC})
 			return
 		}
 		if name == "new" {
@@ -4403,20 +4243,20 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			c.compileExpr(arg)
 			if name == "string" {
 				if c.isExprByte(arg) {
-					c.emit(Inst{Op: OP_CALL, Name: "runtime.ByteToString", Arg: 1})
+					c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ByteToString", Arg: 1})
 				} else if c.isExprByteSlice(arg) {
-					c.emit(Inst{Op: OP_CONVERT, Name: name})
+					c.emit(ir.Inst{Op: ir.OP_CONVERT, Name: name})
 				} else if c.isStringTypedExpr(arg) {
 					// string(string) is a no-op.
 				} else if c.isExprIntegerLike(arg) {
 					// string(int/rune) conversion.
-					c.emit(Inst{Op: OP_CALL, Name: "runtime.RuneToString", Arg: 1})
+					c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.RuneToString", Arg: 1})
 				} else {
 					// Prefer slice->string semantics unless we know this is integer-like.
-					c.emit(Inst{Op: OP_CONVERT, Name: name})
+					c.emit(ir.Inst{Op: ir.OP_CONVERT, Name: name})
 				}
 			} else {
-				c.emit(Inst{Op: OP_CONVERT, Name: name})
+				c.emit(ir.Inst{Op: ir.OP_CONVERT, Name: name})
 			}
 			return
 		}
@@ -4425,7 +4265,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	// Check for []byte() conversion
 	if node.X != nil && node.X.Kind == NSliceType {
 		c.compileExpr(node.Nodes[0])
-		c.emit(Inst{Op: OP_CONVERT, Name: "[]byte"})
+		c.emit(ir.Inst{Op: ir.OP_CONVERT, Name: "[]byte"})
 		return
 	}
 
@@ -4433,7 +4273,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent && len(node.Nodes) == 1 {
 		if _, ok := c.lookupCurrentTypeDecl(node.X.Name); ok {
 			c.compileExpr(node.Nodes[0])
-			c.emit(Inst{Op: OP_CONVERT, Name: node.X.Name})
+			c.emit(ir.Inst{Op: ir.OP_CONVERT, Name: node.X.Name})
 			return
 		}
 	}
@@ -4446,7 +4286,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		if impPkg != nil {
 			if sym, ok := impPkg.Symbols[typeName]; ok && sym.Kind == SymType {
 				c.compileExpr(node.Nodes[0])
-				c.emit(Inst{Op: OP_CONVERT, Name: typeName})
+				c.emit(ir.Inst{Op: ir.OP_CONVERT, Name: typeName})
 				return
 			}
 		}
@@ -4463,7 +4303,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				for _, arg := range node.Nodes {
 					c.compileExpr(arg)
 				}
-				c.emit(Inst{Op: OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(node.Nodes)})
+				c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(node.Nodes)})
 				return
 			}
 		}
@@ -4487,14 +4327,14 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					c.compileExpr(node.X.X)
 					i := 0
 					for i < len(pm.Offsets) {
-						c.emit(Inst{Op: OP_OFFSET, Arg: pm.Offsets[i]})
-						c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+						c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: pm.Offsets[i]})
+						c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 						i++
 					}
 					for _, arg := range node.Nodes {
 						c.compileExpr(arg)
 					}
-					c.emit(Inst{Op: OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
+					c.emit(ir.Inst{Op: ir.OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
 					return
 				}
 			}
@@ -4516,12 +4356,12 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					if variadicCount < 0 {
 						variadicCount = 0
 					}
-					mVarElemSz := targetPtrSize
+					mVarElemSz := c.target.PtrSize
 					if mesz, ok := c.funcVariadicElem[resolvedName]; ok {
 						mVarElemSz = mesz
 					}
 					c.packVariadicSlice(node.Nodes, fixedCount-1, variadicCount, mVarElemSz, resolvedName)
-					c.emit(Inst{Op: OP_CALL, Name: resolvedName, Arg: fixedCount + 1})
+					c.emit(ir.Inst{Op: ir.OP_CALL, Name: resolvedName, Arg: fixedCount + 1})
 				} else {
 					// Non-variadic or spread: push receiver first, then args
 					c.emitCallWithReceiver(node.X.X, node.Nodes, resolvedName)
@@ -4586,7 +4426,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			variadicCount = 0
 		}
 
-		varElemSz := targetPtrSize
+		varElemSz := c.target.PtrSize
 		if esz, ok := c.funcVariadicElem[callName]; ok {
 			varElemSz = esz
 		}
@@ -4594,7 +4434,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		c.packVariadicSlice(node.Nodes, fixedCount, variadicCount, varElemSz, callName)
 
 		// Call with fixedCount + 1 args (fixed params + one slice)
-		c.emit(Inst{Op: OP_CALL, Name: callName, Arg: fixedCount + 1})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: fixedCount + 1})
 	} else {
 		// Non-variadic call, or spread call — compile all args normally.
 		for i, arg := range node.Nodes {
@@ -4615,12 +4455,12 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		// Pad missing args with nil
 		if expected, ok := c.funcParams[callName]; ok && argCount < expected {
 			for argCount < expected {
-				c.emit(Inst{Op: OP_CONST_NIL})
+				c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 				argCount++
 			}
 		}
 
-		c.emit(Inst{Op: OP_CALL, Name: callName, Arg: argCount})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: argCount})
 	}
 }
 
@@ -4907,7 +4747,7 @@ func (c *Compiler) compileAppend(node *Node) {
 		return
 	}
 	// Determine element size from the slice argument
-	elemSize := targetPtrSize // default: pointer-sized elements
+	elemSize := c.target.PtrSize // default: pointer-sized elements
 	if node.Nodes[0].Kind == NIdent {
 		name := node.Nodes[0].Name
 		if es, ok := c.localElemSizes[name]; ok {
@@ -4926,14 +4766,14 @@ func (c *Compiler) compileAppend(node *Node) {
 	if node.Name == "spread" {
 		// append(dst, src...) — append all elements from src slice
 		c.compileExpr(node.Nodes[1])
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceAppendSlice", Arg: 2})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceAppendSlice", Arg: 2})
 	} else {
 		// Append one element at a time, chaining the result
 		i := 1
 		for i < len(node.Nodes) {
 			c.compileExpr(node.Nodes[i])
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSize)})
-			c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceAppend", Arg: 3})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(elemSize)})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceAppend", Arg: 3})
 			i++
 		}
 	}
@@ -4941,13 +4781,13 @@ func (c *Compiler) compileAppend(node *Node) {
 
 func (c *Compiler) compileCopy(node *Node) {
 	if len(node.Nodes) < 2 {
-		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		return
 	}
 	// copy(dst, src) → runtime.SliceCopy(dst, src)
 	c.compileExpr(node.Nodes[0])
 	c.compileExpr(node.Nodes[1])
-	c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceCopy", Arg: 2})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceCopy", Arg: 2})
 }
 
 func (c *Compiler) compileMake(node *Node) {
@@ -4955,24 +4795,24 @@ func (c *Compiler) compileMake(node *Node) {
 	if node.Nodes[0].Kind == NMapType {
 		// Map creation: make(map[K]V)
 		keyKind := c.mapKeyKind(node.Nodes[0].X)
-		c.emit(Inst{Op: OP_CONST_I64, Val: int64(keyKind)})
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.MapMake", Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapMake", Arg: 1})
 		return
 	}
 	// Slice creation: make([]T, len) or make([]T, len, cap)
 	if len(node.Nodes) >= 2 {
 		c.compileExpr(node.Nodes[1]) // length
 	} else {
-		c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 	}
 	elemSize := c.sliceElemSize(node.Nodes[0])
 	if len(node.Nodes) >= 3 {
 		c.compileExpr(node.Nodes[2]) // capacity
-		c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSize)})
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceMakeCap", Arg: 3})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(elemSize)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceMakeCap", Arg: 3})
 	} else {
-		c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSize)})
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceMake", Arg: 2})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(elemSize)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceMake", Arg: 2})
 	}
 }
 
@@ -5096,7 +4936,7 @@ func (c *Compiler) exprElemSize(node *Node) int {
 				}
 			}
 		}
-		return targetPtrSize
+		return c.target.PtrSize
 	}
 	return 1
 }
@@ -5104,12 +4944,12 @@ func (c *Compiler) exprElemSize(node *Node) int {
 // sliceElemSize returns the element size for a slice type node.
 func (c *Compiler) sliceElemSize(typeNode *Node) int {
 	if typeNode == nil {
-		return targetPtrSize
+		return c.target.PtrSize
 	}
 	if typeNode.Kind == NSliceType && typeNode.X != nil {
 		return c.typeElemSize(nodeTypeName(typeNode.X))
 	}
-	return targetPtrSize
+	return c.target.PtrSize
 }
 
 func (c *Compiler) compileSelectorExpr(node *Node) {
@@ -5124,21 +4964,21 @@ func (c *Compiler) compileSelectorExpr(node *Node) {
 			qname := pkg.QualName(node.Name)
 			// Check if it's a precomputed constant
 			if val, ok := c.constValues[qname]; ok {
-				c.emit(Inst{Op: OP_CONST_I64, Val: val})
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 				return
 			}
 			// Check if it's a constant in the target package
 			if sym, ok := pkg.Symbols[node.Name]; ok && sym.Kind == SymConst {
 				val := c.resolveConstValue(sym.Node)
-				c.emit(Inst{Op: OP_CONST_I64, Val: val})
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 				return
 			}
 			gidx, gok := c.globals[qname]
 			if gok {
-				c.emit(Inst{Op: OP_GLOBAL_GET, Arg: gidx})
+				c.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: gidx})
 				return
 			}
-			c.emit(Inst{Op: OP_GLOBAL_GET, Name: qname})
+			c.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Name: qname})
 			return
 		}
 	}
@@ -5156,12 +4996,12 @@ func (c *Compiler) compileSelectorExpr(node *Node) {
 	c.compileExpr(node.X)
 	// Auto-deref pointer-to-struct for field access (e.g., pp.X where pp is *Point)
 	if node.X != nil && c.needsSelectorDeref(node.X) {
-		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+		c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 	}
 	i := 0
 	for i < len(offsets) {
-		c.emit(Inst{Op: OP_OFFSET, Arg: offsets[i]})
-		c.emit(Inst{Op: OP_LOAD, Arg: targetPtrSize})
+		c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: offsets[i]})
+		c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 		i++
 	}
 }
@@ -5191,14 +5031,14 @@ func (c *Compiler) findPromotedMethodRec(qualifiedType string, methodName string
 			embeddedType := c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
 			candidate := c.dotJoin(embeddedType, methodName)
 			if resolved, ok := c.methodTable[candidate]; ok {
-				return promotedMethodMatch{Offsets: []int{fieldIdx * targetPtrSize}, Target: resolved}, true
+				return promotedMethodMatch{Offsets: []int{fieldIdx * c.target.PtrSize}, Target: resolved}, true
 			}
 			ptrCandidate := c.dotJoin(pointerMethodTypeName(embeddedType), methodName)
 			if resolved, ok := c.methodTable[ptrCandidate]; ok {
-				return promotedMethodMatch{Offsets: []int{fieldIdx * targetPtrSize}, Target: resolved}, true
+				return promotedMethodMatch{Offsets: []int{fieldIdx * c.target.PtrSize}, Target: resolved}, true
 			}
 			if sub, ok := c.findPromotedMethodRec(embeddedType, methodName, visited); ok {
-				offsets := []int{fieldIdx * targetPtrSize}
+				offsets := []int{fieldIdx * c.target.PtrSize}
 				for _, off := range sub.Offsets {
 					offsets = append(offsets, off)
 				}
@@ -5219,17 +5059,17 @@ func (c *Compiler) compileIndexExpr(node *Node) {
 	if c.isMapExpr(node.X) {
 		c.compileExpr(node.X)
 		c.compileExpr(node.Y)
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.MapGet", Arg: 2})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapGet", Arg: 2})
 		// MapGet returns (value, ok) — drop ok for single-value context
 		// (multi-value context is handled in compileAssign)
-		c.emit(Inst{Op: OP_DROP})
+		c.emit(ir.Inst{Op: ir.OP_DROP})
 		return
 	}
 	elemSize := c.exprElemSize(node.X)
 	c.compileExpr(node.X)
 	c.compileExpr(node.Y)
-	c.emit(Inst{Op: OP_INDEX_ADDR, Arg: elemSize})
-	c.emit(Inst{Op: OP_LOAD, Arg: elemSize})
+	c.emit(ir.Inst{Op: ir.OP_INDEX_ADDR, Arg: elemSize})
+	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: elemSize})
 }
 
 // mapExprKeyKind returns the key kind of a map expression (0=int, 1=string, -1=not a map).
@@ -5339,17 +5179,17 @@ func (c *Compiler) compileSliceExpr(node *Node) {
 		c.compileExpr(node.Body)
 	} else {
 		c.compileExpr(node.X)
-		c.emit(Inst{Op: OP_LEN})
+		c.emit(ir.Inst{Op: ir.OP_LEN})
 	}
 
 	// Use StringSlice for string-typed targets, SliceReslice for slices
 	if c.isStringTypedExpr(node.X) {
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.StringSlice", Arg: 3})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringSlice", Arg: 3})
 	} else if node.Type != nil {
 		c.compileExpr(node.Type)
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceResliceFull", Arg: 4})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceResliceFull", Arg: 4})
 	} else {
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceReslice", Arg: 3})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceReslice", Arg: 3})
 	}
 }
 
@@ -5357,18 +5197,18 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 	// Handle map composite literals: map[K]V{k1: v1, k2: v2, ...}
 	if node.Type != nil && node.Type.Kind == NMapType {
 		keyKind := c.mapKeyKind(node.Type.X)
-		c.emit(Inst{Op: OP_CONST_I64, Val: int64(keyKind)})
-		c.emit(Inst{Op: OP_CALL, Name: "runtime.MapMake", Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapMake", Arg: 1})
 		// For each key-value pair, call MapSet
 		for _, elem := range node.Nodes {
 			if elem.Kind == NKeyValue {
 				// Stack: map_hdr
 				// Dup map header, push key, push value, call MapSet
-				c.emit(Inst{Op: OP_DUP})
+				c.emit(ir.Inst{Op: ir.OP_DUP})
 				c.compileExpr(elem.X)
 				c.compileExpr(elem.Y)
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.MapSet", Arg: 3})
-				c.emit(Inst{Op: OP_DROP}) // drop the returned header (same as input)
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapSet", Arg: 3})
+				c.emit(ir.Inst{Op: ir.OP_DROP}) // drop the returned header (same as input)
 				// Original map_hdr still on stack
 			}
 		}
@@ -5380,16 +5220,16 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 		elemSize := c.sliceElemSize(node.Type)
 		if len(node.Nodes) == 0 {
 			// Empty slice literal: use SliceMake with length 0
-			c.emit(Inst{Op: OP_CONST_I64, Val: 0})
-			c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSize)})
-			c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceMake", Arg: 2})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(elemSize)})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceMake", Arg: 2})
 		} else {
 			// Build slice by appending each element
-			c.emit(Inst{Op: OP_CONST_I64, Val: 0}) // nil slice
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0}) // nil slice
 			for _, elem := range node.Nodes {
 				c.compileExpr(elem) // push element value
-				c.emit(Inst{Op: OP_CONST_I64, Val: int64(elemSize)})
-				c.emit(Inst{Op: OP_CALL, Name: "runtime.SliceAppend", Arg: 3})
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(elemSize)})
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceAppend", Arg: 3})
 			}
 		}
 		return
@@ -5427,10 +5267,10 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 				if ok {
 					c.compileExpr(val)
 				} else {
-					c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+					c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 				}
 			}
-			c.emit(Inst{Op: OP_CALL, Name: "builtin.composite." + typeName, Arg: len(structFields)})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "builtin.composite." + typeName, Arg: len(structFields)})
 		} else {
 			// Fallback: push values in literal order
 			for _, elem := range node.Nodes {
@@ -5440,7 +5280,7 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 					c.compileExpr(elem)
 				}
 			}
-			c.emit(Inst{Op: OP_CALL, Name: "builtin.composite." + typeName, Arg: len(node.Nodes)})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "builtin.composite." + typeName, Arg: len(node.Nodes)})
 		}
 	} else {
 		if len(node.Nodes) == 0 {
@@ -5452,16 +5292,16 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 			}
 			i := 0
 			for i < nfields {
-				c.emit(Inst{Op: OP_CONST_I64, Val: 0})
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 				i++
 			}
-			c.emit(Inst{Op: OP_CALL, Name: "builtin.composite." + typeName, Arg: nfields})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "builtin.composite." + typeName, Arg: nfields})
 		} else {
 			// Positional: push values in literal order
 			for _, elem := range node.Nodes {
 				c.compileExpr(elem)
 			}
-			c.emit(Inst{Op: OP_CALL, Name: "builtin.composite." + typeName, Arg: len(node.Nodes)})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "builtin.composite." + typeName, Arg: len(node.Nodes)})
 		}
 	}
 }
@@ -5640,20 +5480,13 @@ func encodeStringLiteral(raw string) string {
 		} else if ch == 0 {
 			buf = append(buf, '\\', '0')
 		} else if ch < 32 || ch >= 127 {
-			buf = append(buf, '\\', 'x', hexDigit(ch>>4), hexDigit(ch&0x0f))
+			buf = append(buf, '\\', 'x', common.HexDigit(ch>>4), common.HexDigit(ch&0x0f))
 		} else {
 			buf = append(buf, ch)
 		}
 		i++
 	}
 	return string(buf)
-}
-
-func hexDigit(v byte) byte {
-	if v < 10 {
-		return '0' + v
-	}
-	return 'a' + v - 10
 }
 
 // walkEmbedDir recursively collects all files under dir, returning

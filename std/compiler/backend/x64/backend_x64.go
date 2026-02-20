@@ -92,7 +92,7 @@ func (g *CodeGen) compileFunc(f *IRFunc) {
 	g.movRR(REG_RBP, REG_RSP)
 
 	frameBytes := g.curFrameSize * 8
-	if targetGOOS == "windows" {
+	if target.GOOS == "windows" {
 		frameBytes = alignUp(frameBytes, 16)
 	}
 	if frameBytes > 0 {
@@ -119,7 +119,7 @@ func (g *CodeGen) compileFunc(f *IRFunc) {
 
 	// Resolve jump fixups within this function
 	funcStart := g.funcOffsets[f.Name]
-	if targetGOOS != "dos" {
+	if target.GOOS != "dos" {
 		g.relaxCurrentFuncJumps()
 	}
 	for _, fix := range g.jumpFixups {
@@ -296,7 +296,7 @@ func (g *CodeGen) compileInst(inst Inst) {
 	case OP_IFACE_CALL:
 		g.compileIfaceCall(inst)
 	case OP_PANIC:
-		if targetGOOS == "windows" {
+		if target.GOOS == "windows" {
 			g.compilePanicWin64()
 		} else {
 			g.compilePanic()
@@ -571,7 +571,7 @@ func (g *CodeGen) compileReturn(inst Inst) {
 
 func (g *CodeGen) compileCallIntrinsic(inst Inst) {
 	g.flush()
-	if targetGOOS == "windows" {
+	if target.GOOS == "windows" {
 		g.compileCallIntrinsicWin64(inst)
 		return
 	}
@@ -671,7 +671,7 @@ func (g *CodeGen) emitTostringHelperX64() {
 	g.movRR(REG_RBP, REG_RSP)
 
 	frameBytes := 8
-	if targetGOOS == "windows" {
+	if target.GOOS == "windows" {
 		frameBytes = alignUp(frameBytes, 16)
 	}
 	if frameBytes > 0 {

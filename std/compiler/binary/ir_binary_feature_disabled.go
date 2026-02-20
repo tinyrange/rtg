@@ -1,5 +1,5 @@
 //go:build !exp_ir_binary
 
-package main
+package binary
 
-const irBinaryEnabled = false
+const IrBinaryEnabled = false

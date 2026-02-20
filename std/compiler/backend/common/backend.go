@@ -120,52 +120,39 @@ func GenerateELF(irmod *IRModule, outputPath string) error {
 	}
 	switch targetGOARCH {
 	case "dos16":
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			return generateDOSCOM386(irmod, outputPath)
 		}
-		return fmt.Errorf("unsupported OS for dos16: %s", targetGOOS)
+		return fmt.Errorf("unsupported OS for dos16: %s", target.GOOS)
 	case "amd64":
-		if targetGOOS == "windows" {
+		if target.GOOS == "windows" {
 			return generateWinAmd64PE(irmod, outputPath)
 		}
 		return generateAmd64ELF(irmod, outputPath)
 	case "386":
-		if targetGOOS == "windows" {
+		if target.GOOS == "windows" {
 			return generateWin386PE(irmod, outputPath)
 		}
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			return generateDOSCOM386(irmod, outputPath)
 		}
 		return generateI386ELF(irmod, outputPath)
 	case "wasm32":
 		return generateWasm32(irmod, outputPath)
 	case "arm64":
-		if targetGOOS == "darwin" {
+		if target.GOOS == "darwin" {
 			return generateDarwinArm64(irmod, outputPath)
 		}
-		if targetGOOS == "linux" {
+		if target.GOOS == "linux" {
 			return generateLinuxArm64ELF(irmod, outputPath)
 		}
-		if targetGOOS == "windows" {
+		if target.GOOS == "windows" {
 			return generateWinArm64PE(irmod, outputPath)
 		}
-		return fmt.Errorf("unsupported OS for arm64: %s", targetGOOS)
+		return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
 	default:
 		return fmt.Errorf("unsupported target architecture: %s", targetGOARCH)
 	}
-}
-
-// isInitFunc checks if a function name is a package init function.
-func isInitFunc(name string) bool {
-	n := len(name)
-	if n < 5 {
-		return false
-	}
-	// Match both ".init" and ".init$globals"
-	if n >= 13 && name[n-13:n] == ".init$globals" {
-		return true
-	}
-	return name[n-5:n] == ".init"
 }
 
 // === Shared byte emission ===
@@ -237,7 +224,7 @@ func getU32(b []byte) uint32 {
 // emitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
 func (g *CodeGen) emitCallPlaceholder(target string) {
 	g.flush()
-	if targetGOOS == "dos" && g.wordSize == 2 {
+	if target.GOOS == "dos" && g.wordSize == 2 {
 		g.emitBytes(0xe8) // call rel16
 		g.callFixups = append(g.callFixups, CallFixup{
 			CodeOffset: len(g.code),
@@ -246,7 +233,7 @@ func (g *CodeGen) emitCallPlaceholder(target string) {
 		g.emitU16(0)
 		return
 	}
-	if targetGOOS == "dos" && g.wordSize == 4 {
+	if target.GOOS == "dos" && g.wordSize == 4 {
 		g.emitByte(0x66) // call rel32 in 16-bit mode
 	}
 	g.emitBytes(0xe8) // call rel32
@@ -259,7 +246,7 @@ func (g *CodeGen) emitCallPlaceholder(target string) {
 
 // patchRel32At patches the rel32 at fixupOff to jump to targetOff.
 func (g *CodeGen) patchRel32At(fixupOff int, targetOff int) {
-	if targetGOOS == "dos" && g.wordSize == 2 {
+	if target.GOOS == "dos" && g.wordSize == 2 {
 		rel := int16(targetOff - (fixupOff + 2))
 		g.code[fixupOff] = byte(rel)
 		g.code[fixupOff+1] = byte(rel >> 8)
@@ -275,7 +262,7 @@ func (g *CodeGen) patchRel32At(fixupOff int, targetOff int) {
 // patchRel32 patches the rel32 at fixupOff to jump to the current code position.
 func (g *CodeGen) patchRel32(fixupOff int) {
 	target := len(g.code)
-	if targetGOOS == "dos" && g.wordSize == 2 {
+	if target.GOOS == "dos" && g.wordSize == 2 {
 		rel := int16(target - (fixupOff + 2))
 		g.code[fixupOff] = byte(rel)
 		g.code[fixupOff+1] = byte(rel >> 8)
@@ -291,13 +278,13 @@ func (g *CodeGen) patchRel32(fixupOff int) {
 // jmpRel32 emits `jmp rel32` and returns the offset of the rel32 for fixup.
 func (g *CodeGen) jmpRel32() int {
 	g.flush()
-	if targetGOOS == "dos" && g.wordSize == 2 {
+	if target.GOOS == "dos" && g.wordSize == 2 {
 		g.emitByte(0xe9) // jmp rel16
 		off := len(g.code)
 		g.emitU16(0)
 		return off
 	}
-	if targetGOOS == "dos" && g.wordSize == 4 {
+	if target.GOOS == "dos" && g.wordSize == 4 {
 		g.emitByte(0x66) // jmp rel32 in 16-bit mode
 	}
 	g.emitByte(0xe9)
@@ -309,7 +296,7 @@ func (g *CodeGen) jmpRel32() int {
 // jccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
 func (g *CodeGen) jccRel32(cc byte) int {
 	g.flush()
-	if targetGOOS == "dos" && g.wordSize == 2 {
+	if target.GOOS == "dos" && g.wordSize == 2 {
 		// 8086 has only short conditional branches.
 		// Lower near Jcc as:
 		//   j!cc +3
@@ -320,7 +307,7 @@ func (g *CodeGen) jccRel32(cc byte) int {
 		g.emitU16(0)
 		return off
 	}
-	if targetGOOS == "dos" && g.wordSize == 4 {
+	if target.GOOS == "dos" && g.wordSize == 4 {
 		g.emitByte(0x66) // jcc rel32 in 16-bit mode
 	}
 	g.emitBytes(0x0f, cc)
@@ -424,7 +411,7 @@ func (g *CodeGen) relaxCurrentFuncJumps() {
 
 // ret emits `ret`.
 func (g *CodeGen) ret() {
-	if targetGOOS == "dos" && g.wordSize == 4 {
+	if target.GOOS == "dos" && g.wordSize == 4 {
 		g.emitByte(0x66)
 	}
 	g.emitByte(0xc3)
@@ -491,7 +478,7 @@ func (g *CodeGen) moveReg(dst, src int) {
 		return
 	}
 	if g.wordSize == 4 {
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			g.emitBytes(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		} else {
 			g.emitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
@@ -548,7 +535,7 @@ func (g *CodeGen) rawPush(reg int) {
 		return
 	}
 	if g.wordSize == 4 {
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			g.emitBytes(0x66, 0x67, 0x8d, 0x7f, 0xfc)          // lea edi, [edi-4]
 			g.emitBytes(0x66, 0x67, 0x89, byte(0x07|(reg<<3))) // mov [edi], reg
 		} else {
@@ -576,7 +563,7 @@ func (g *CodeGen) rawPop(reg int) {
 		return
 	}
 	if g.wordSize == 4 {
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			g.emitBytes(0x66, 0x67, 0x8b, byte(0x07|(reg<<3))) // mov reg, [edi]
 			g.emitBytes(0x66, 0x67, 0x8d, 0x7f, 0x04)          // lea edi, [edi+4]
 		} else {
@@ -602,7 +589,7 @@ func (g *CodeGen) rawLoad(reg int) {
 		return
 	}
 	if g.wordSize == 4 {
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			g.emitBytes(0x66, 0x67, 0x8b, byte(0x07|(reg<<3)))
 		} else {
 			g.emitBytes(0x8b, byte(0x07|(reg<<3)))
@@ -624,7 +611,7 @@ func (g *CodeGen) rawDrop() {
 		return
 	}
 	if g.wordSize == 4 {
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			g.emitBytes(0x66, 0x67, 0x83, 0xc7, 0x04)
 		} else {
 			g.emitBytes(0x83, 0xc7, 0x04)
@@ -714,7 +701,7 @@ func (g *CodeGen) opStore(reg int) {
 		return
 	}
 	if g.wordSize == 4 {
-		if targetGOOS == "dos" {
+		if target.GOOS == "dos" {
 			g.emitBytes(0x66, 0x67, 0x89, byte(0x07|(reg<<3)))
 		} else {
 			g.emitBytes(0x89, byte(0x07|(reg<<3)))

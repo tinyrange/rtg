@@ -1,6 +1,19 @@
-package main
+package ir
 
 import "strings"
+
+// isInitFunc checks if a function name is a package init function.
+func isInitFunc(name string) bool {
+	n := len(name)
+	if n < 5 {
+		return false
+	}
+	// Match both ".init" and ".init$globals"
+	if n >= 13 && name[n-13:n] == ".init$globals" {
+		return true
+	}
+	return name[n-5:n] == ".init"
+}
 
 // intrinsicRuntimeDep returns the runtime function name that an intrinsic
 // depends on, or "" if none.
@@ -35,7 +48,7 @@ func dceMethodName(name string) string {
 // eliminateDeadFunctions removes unreachable functions from the IR module
 // using a mark-and-sweep reachability analysis starting from main.main,
 // init functions, and backend-implicit roots.
-func eliminateDeadFunctions(irmod *IRModule) {
+func EliminateDeadFunctions(irmod *IRModule) {
 	// Build name→index for fast lookup
 	funcIndex := make(map[string]int)
 	for i, f := range irmod.Funcs {

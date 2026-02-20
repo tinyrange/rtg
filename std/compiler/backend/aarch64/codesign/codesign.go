@@ -1,7 +1,4 @@
-//go:build !no_backend_darwin_arm64
-
-package main
-
+package codesign
 
 // Code signature layout for ad-hoc signing of Mach-O files.
 // Adapted from the Go toolchain's codesign package.
@@ -265,7 +262,7 @@ func csSbSize(nblobs uint32) uint32 {
 func csCdSize(nslots int64, nspecial int64, id string) int64 {
 	sz := int64(csCodeDirectorySize)
 	sz = sz + int64(len(id)+1)
-	sz = sz + (nslots + nspecial) * int64(csHashSize)
+	sz = sz + (nslots+nspecial)*int64(csHashSize)
 	return sz
 }
 
@@ -339,25 +336,25 @@ func CodeSign(out []byte, data []byte, codeSize int64, textOff int64, textSize i
 	}
 	outp = csPut32be(outp, CSMAGIC_CODEDIRECTORY)
 	outp = csPut32be(outp, cdLen)
-	outp = csPut32be(outp, 0x20400)                // version
-	outp = csPut32be(outp, 0x20002)                // flags: adhoc | linkerSigned
-	outp = csPut32be(outp, uint32(hashOff))        // hashOffset
-	outp = csPut32be(outp, uint32(idOff))          // identOffset
-	outp = csPut32be(outp, uint32(nspecial))       // nSpecialSlots
-	outp = csPut32be(outp, uint32(nslots))         // nCodeSlots
-	outp = csPut32be(outp, uint32(codeSize))       // codeLimit
-	outp = csPut8(outp, csHashSize)                // hashSize
-	outp = csPut8(outp, CS_HASHTYPE_SHA256)        // hashType
-	outp = csPut8(outp, 0)                         // pad1
-	outp = csPut8(outp, byte(csPageSizeBits))      // pageSize
-	outp = csPut32be(outp, 0)                      // pad2
-	outp = csPut32be(outp, 0)                      // scatterOffset
-	outp = csPut32be(outp, 0)                      // teamOffset
-	outp = csPut32be(outp, 0)                      // pad3
-	outp = csPut64be(outp, 0)                      // codeLimit64
-	outp = csPut64be(outp, uint64(textOff))        // execSegBase
-	outp = csPut64be(outp, uint64(textSize))       // execSegLimit
-	outp = csPut64be(outp, execSegFlags)           // execSegFlags
+	outp = csPut32be(outp, 0x20400)           // version
+	outp = csPut32be(outp, 0x20002)           // flags: adhoc | linkerSigned
+	outp = csPut32be(outp, uint32(hashOff))   // hashOffset
+	outp = csPut32be(outp, uint32(idOff))     // identOffset
+	outp = csPut32be(outp, uint32(nspecial))  // nSpecialSlots
+	outp = csPut32be(outp, uint32(nslots))    // nCodeSlots
+	outp = csPut32be(outp, uint32(codeSize))  // codeLimit
+	outp = csPut8(outp, csHashSize)           // hashSize
+	outp = csPut8(outp, CS_HASHTYPE_SHA256)   // hashType
+	outp = csPut8(outp, 0)                    // pad1
+	outp = csPut8(outp, byte(csPageSizeBits)) // pageSize
+	outp = csPut32be(outp, 0)                 // pad2
+	outp = csPut32be(outp, 0)                 // scatterOffset
+	outp = csPut32be(outp, 0)                 // teamOffset
+	outp = csPut32be(outp, 0)                 // pad3
+	outp = csPut64be(outp, 0)                 // codeLimit64
+	outp = csPut64be(outp, uint64(textOff))   // execSegBase
+	outp = csPut64be(outp, uint64(textSize))  // execSegLimit
+	outp = csPut64be(outp, execSegFlags)      // execSegFlags
 
 	// Identifier string (null terminated)
 	outp = csPuts(outp, []byte(id))

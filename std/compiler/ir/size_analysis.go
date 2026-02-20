@@ -1,8 +1,12 @@
 //go:build !no_size_analysis
 
-package main
+package ir
 
-import "os"
+import (
+	"os"
+
+	"j5.nz/rtg/std/compiler/common"
+)
 
 // FuncSize records the compiled size of a single function.
 type FuncSize struct {
@@ -13,13 +17,13 @@ type FuncSize struct {
 // funcSizes accumulates per-function compiled sizes across all backends.
 var funcSizes []FuncSize
 
-// sizeAnalysisPath is set by the -size-analysis flag. Empty means disabled.
-var sizeAnalysisPath string
+// SizeAnalysisPath is set by the -size-analysis flag. Empty means disabled.
+var SizeAnalysisPath string
 
-// collectNativeFuncSizes computes per-function sizes from funcOffsets for native backends.
+// CollectNativeFuncSizes computes per-function sizes from funcOffsets for native backends.
 // codeLen is the total length of the code buffer after all functions are compiled.
-func collectNativeFuncSizes(irmod *IRModule, funcOffsets map[string]int, codeLen int) {
-	if sizeAnalysisPath == "" {
+func CollectNativeFuncSizes(irmod *IRModule, funcOffsets map[string]int, codeLen int) {
+	if SizeAnalysisPath == "" {
 		return
 	}
 	// Build ordered list matching irmod.Funcs
@@ -43,9 +47,9 @@ func collectNativeFuncSizes(irmod *IRModule, funcOffsets map[string]int, codeLen
 	}
 }
 
-// writeSizeAnalysis writes the size analysis JSON to sizeAnalysisPath.
-func writeSizeAnalysis() {
-	if sizeAnalysisPath == "" {
+// WriteSizeAnalysis writes the size analysis JSON to sizeAnalysisPath.
+func WriteSizeAnalysis(target common.Target) {
+	if SizeAnalysisPath == "" {
 		return
 	}
 
@@ -61,7 +65,7 @@ func writeSizeAnalysis() {
 
 	// "target"
 	buf = append(buf, '"', 't', 'a', 'r', 'g', 'e', 't', '"', ':')
-	buf = appendJSONString(buf, targetGOOS+"/"+targetGOARCH)
+	buf = appendJSONString(buf, target.GOOS+"/"+target.GOARCH)
 	buf = append(buf, ',')
 
 	// "total"
@@ -96,7 +100,7 @@ func writeSizeAnalysis() {
 	}
 	buf = append(buf, ']', '}', '\n')
 
-	os.WriteFile(sizeAnalysisPath, buf, 0644)
+	os.WriteFile(SizeAnalysisPath, buf, 0644)
 }
 
 // extractPackage returns the package portion of a qualified function name.
@@ -121,7 +125,7 @@ func appendJSONString(buf []byte, s string) []byte {
 			buf = append(buf, '\\', '\\')
 		} else if c < 32 {
 			buf = append(buf, '\\', 'u', '0', '0')
-			buf = append(buf, hexDigit(c>>4), hexDigit(c&0xf))
+			buf = append(buf, common.HexDigit(c>>4), common.HexDigit(c&0xf))
 		} else {
 			buf = append(buf, c)
 		}

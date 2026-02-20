@@ -10,7 +10,7 @@ import (
 )
 
 // Target and build tag globals — defaults to host platform
-var targetGOOS string = runtime.GOOS
+var target.GOOS string = runtime.GOOS
 var targetGOARCH string = runtime.GOARCH
 var targetPtrSize int = defaultPtrSize()
 
@@ -70,7 +70,7 @@ func main() {
 				} else {
 					targetPtrSize = 8
 				}
-				targetGOOS = "c"
+				target.GOOS = "c"
 				targetGOARCH = fmt.Sprintf("c%d", targetCModel)
 			} else if target == "ir" {
 				targetBackend = "ir"
@@ -93,12 +93,12 @@ func main() {
 					fmt.Fprintf(os.Stderr, "invalid target %q: expected vm/8, vm/16, vm/32, or vm/64\n", target)
 					os.Exit(1)
 				}
-				targetGOOS = "c"
+				target.GOOS = "c"
 				bits := targetWordSize * 8
 				targetGOARCH = fmt.Sprintf("c%d", bits)
 			} else {
 				if target == "dos/8086" {
-					targetGOOS = "dos"
+					target.GOOS = "dos"
 					targetGOARCH = "dos16"
 					targetPtrSize = 2
 					i = i + 2
@@ -109,7 +109,7 @@ func main() {
 					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], ir, or vm/<8|16|32|64>\n", target)
 					os.Exit(1)
 				}
-				targetGOOS = target[0:slashIdx]
+				target.GOOS = target[0:slashIdx]
 				targetGOARCH = target[slashIdx+1:]
 				if targetGOARCH == "386" || targetGOARCH == "wasm32" {
 					targetPtrSize = 4
@@ -148,11 +148,11 @@ func main() {
 	if targetBackend == "c" {
 		buildTags = append(buildTags, "c")
 		buildTags = append(buildTags, fmt.Sprintf("c%d", targetCModel))
-	} else if targetGOOS == "wasi" && targetGOARCH == "wasm32" {
+	} else if target.GOOS == "wasi" && targetGOARCH == "wasm32" {
 		buildTags = append(buildTags, "wasi")
 		buildTags = append(buildTags, "wasm32")
 	} else {
-		buildTags = append(buildTags, targetGOOS)
+		buildTags = append(buildTags, target.GOOS)
 		buildTags = append(buildTags, targetGOARCH)
 	}
 	if extraTags != "" {
@@ -177,7 +177,7 @@ func main() {
 	}
 	if compilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
-		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, targetGOOS, targetGOARCH)
+		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, target.GOOS, targetGOARCH)
 	}
 	err = GenerateELF(irmod, outputPath)
 	if err != nil {

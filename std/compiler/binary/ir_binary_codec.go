@@ -1,6 +1,6 @@
 //go:build exp_ir_binary
 
-package main
+package binary
 
 import (
 	"fmt"
@@ -168,7 +168,7 @@ func collectTypeInfo(t *TypeInfo, idx map[*TypeInfo]int, all *[]*TypeInfo) {
 	}
 }
 
-func writeIRBinary(irmod *IRModule, path string) error {
+func WriteIRBinary(irmod *IRModule, path string) error {
 	if irmod == nil {
 		return fmt.Errorf("nil IR module")
 	}
@@ -629,7 +629,7 @@ func readIfaceMethodsMap(r *irBinReader) (map[string][]string, error) {
 	return m, nil
 }
 
-func readIRBinary(path string) (*IRModule, error) {
+func ReadIRBinary(path string) (*IRModule, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
