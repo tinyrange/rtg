@@ -262,33 +262,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 	} else {
-		// Determine base directory for the std library.
-		// When embedded std is available, skip the disk search entirely.
-		var baseDir string
-		if hasEmbeddedStd() {
-			baseDir = "."
-		} else {
-			cwd, err := os.Getwd()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error getting working directory: %v\n", err)
-				runCleanup()
-				os.Exit(1)
-			}
-			// Walk up from cwd until we find a directory containing std/runtime/runtime.go
-			baseDir = cwd
-			search := cwd
-			for {
-				_, err := os.ReadFile(search + "/std/runtime/runtime.go")
-				if err == nil {
-					baseDir = search
-					break
-				}
-				parent := dirName(search)
-				if parent == search || parent == "" {
-					break
-				}
-				search = parent
-			}
+		baseDir, err := resolveCompilerBaseDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error getting working directory: %v\n", err)
+			runCleanup()
+			os.Exit(1)
 		}
 
 		if opts.Debug {
@@ -301,12 +279,7 @@ func main() {
 		}
 
 		if buildTagsPath != "" {
-			tags := getDiscoveredBuildTags()
-			var out string
-			for _, t := range tags {
-				out = out + t + "\n"
-			}
-			err := os.WriteFile(buildTagsPath, []byte(out), 0644)
+			err := writeDiscoveredBuildTags(buildTagsPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
 				runCleanup()
