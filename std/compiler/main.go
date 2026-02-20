@@ -262,68 +262,25 @@ func main() {
 			fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 	} else {
-		baseDir, err := resolveCompilerBaseDir()
+		res, err := compileFromSourceInputs(entryFiles, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error getting working directory: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%v\n", err)
 			runCleanup()
 			os.Exit(1)
 		}
-
-		if opts.Debug {
-			fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
-		}
-		resetDiscoveredBuildTags()
-		mod := ResolveModule(baseDir, entryFiles)
-		if opts.Debug {
-			fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
-		}
-
-		if buildTagsPath != "" {
-			err := writeDiscoveredBuildTags(buildTagsPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
-				runCleanup()
-				os.Exit(1)
-			}
-		}
-
-		if parseOnly {
-			runCleanup()
-			os.Exit(0)
-		}
-
-		// Compile to IR via Go frontend adapter (concrete dispatch).
-		if opts.Debug {
-			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
-		}
-		var errs []string
-		irmod, errs = compileResolvedGoModule(mod, opts)
-		if len(errs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d frontend errors:\n", len(errs))
-			for _, e := range errs {
+		if len(res.FrontendErrs) > 0 {
+			fmt.Fprintf(os.Stderr, "\n%d frontend errors:\n", len(res.FrontendErrs))
+			for _, e := range res.FrontendErrs {
 				fmt.Fprintf(os.Stderr, "  %s\n", e)
 			}
 			runCleanup()
 			os.Exit(1)
 		}
-
-		if opts.Debug {
-			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
-		}
-		eliminateDeadFunctions(irmod)
-		if opts.Debug {
-			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
-		}
-		if emitIRBinaryPath != "" {
-			err := writeIRBinary(irmod, emitIRBinaryPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error writing IR binary: %v\n", err)
-				runCleanup()
-				os.Exit(1)
-			}
+		if res.ShouldExitNow {
 			runCleanup()
 			os.Exit(0)
 		}
+		irmod = res.IRModule
 	}
 
 	// Set VM program arguments if using VM backend
