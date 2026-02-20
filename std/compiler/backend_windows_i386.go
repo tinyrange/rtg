@@ -7,36 +7,6 @@ import (
 	"os"
 )
 
-// win386Imports lists all kernel32.dll functions needed by the backend.
-var win386Imports = []string{
-	"VirtualAlloc",
-	"ExitProcess",
-	"GetStdHandle",
-	"WriteFile",
-	"ReadFile",
-	"CreateFileA",
-	"CloseHandle",
-	"GetCommandLineA",
-	"GetEnvironmentStringsA",
-	"FreeEnvironmentStringsA",
-	"GetCurrentDirectoryA",
-	"CreateDirectoryA",
-	"RemoveDirectoryA",
-	"DeleteFileA",
-	"FindFirstFileA",
-	"FindNextFileA",
-	"FindClose",
-	"GetFileAttributesExA",
-	"CreateProcessA",
-	"WaitForSingleObject",
-	"GetExitCodeProcess",
-	"CreatePipe",
-	"SetStdHandle",
-	"SetHandleInformation",
-	"GetLastError",
-	"GetCurrentProcessId",
-}
-
 // generateWin386PE compiles an IRModule to a Windows PE32 executable.
 func generateWin386PE(irmod *IRModule, outputPath string) error {
 	g := newNativeCodeGen(irmod, 4, 0x400000, false)
@@ -53,7 +23,7 @@ func generateWin386PE(irmod *IRModule, outputPath string) error {
 	}
 
 	// Build PE32
-	pe := g.buildPE32(irmod, win386Imports)
+	pe := g.buildPE32(irmod, winCommonImports)
 	err := os.WriteFile(outputPath, pe, 0755)
 	if err != nil {
 		return fmt.Errorf("write output: %v", err)

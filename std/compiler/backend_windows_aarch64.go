@@ -7,36 +7,6 @@ import (
 	"os"
 )
 
-// winArm64Imports lists all kernel32.dll functions needed by the Windows ARM64 backend.
-var winArm64Imports = []string{
-	"VirtualAlloc",
-	"ExitProcess",
-	"GetStdHandle",
-	"WriteFile",
-	"ReadFile",
-	"CreateFileA",
-	"CloseHandle",
-	"GetCommandLineA",
-	"GetEnvironmentStringsA",
-	"FreeEnvironmentStringsA",
-	"GetCurrentDirectoryA",
-	"CreateDirectoryA",
-	"RemoveDirectoryA",
-	"DeleteFileA",
-	"FindFirstFileA",
-	"FindNextFileA",
-	"FindClose",
-	"GetFileAttributesExA",
-	"CreateProcessA",
-	"WaitForSingleObject",
-	"GetExitCodeProcess",
-	"CreatePipe",
-	"SetStdHandle",
-	"SetHandleInformation",
-	"GetLastError",
-	"GetCurrentProcessId",
-}
-
 // generateWinArm64PE compiles an IRModule to a Windows ARM64 PE32+ executable.
 func generateWinArm64PE(irmod *IRModule, outputPath string) error {
 	g := newNativeCodeGen(irmod, 8, 0x400000, true)
@@ -53,7 +23,7 @@ func generateWinArm64PE(irmod *IRModule, outputPath string) error {
 	}
 
 	// Build PE32+
-	pe := g.buildPE64(irmod, winArm64Imports)
+	pe := g.buildPE64(irmod, winCommonImports)
 	err := os.WriteFile(outputPath, pe, 0755)
 	if err != nil {
 		return fmt.Errorf("write output: %v", err)
