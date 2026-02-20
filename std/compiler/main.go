@@ -323,13 +323,8 @@ func main() {
 		if opts.Debug {
 			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
 		}
-		frontend := goFrontend{}
 		var errs []string
-		irmod, errs = frontend.CompileResolved(mod, FrontendOptions{
-			Target:    opts.Target,
-			BuildTags: cloneStrings(opts.BuildTags),
-			Debug:     opts.Debug,
-		})
+		irmod, errs = compileResolvedGoModule(mod, opts)
 		if len(errs) > 0 {
 			fmt.Fprintf(os.Stderr, "\n%d frontend errors:\n", len(errs))
 			for _, e := range errs {
