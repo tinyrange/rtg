@@ -200,14 +200,12 @@ func main() {
 		os.Exit(0)
 	}
 
-	var irmod *IRModule
-	acquired, err := acquireIRModule(entryFiles, fromIRBinaryPath, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
+	irmod, frontendErrMsg, shouldExitNow, err := resolveIRModuleForMain(entryFiles, fromIRBinaryPath, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		runCleanup()
 		os.Exit(1)
 	}
-	frontendErrMsg, shouldExitNow := evaluateIRAcquisition(acquired)
 	if frontendErrMsg != "" {
 		fmt.Fprintf(os.Stderr, "%s", frontendErrMsg)
 		runCleanup()
@@ -217,7 +215,6 @@ func main() {
 		runCleanup()
 		os.Exit(0)
 	}
-	irmod = acquired.IRModule
 
 	// Set VM program arguments if using VM backend
 	if opts.Target.Backend == "vm" {

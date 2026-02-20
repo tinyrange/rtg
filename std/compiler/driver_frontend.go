@@ -163,3 +163,15 @@ func frontendErrorsMessage(errs []string) string {
 	}
 	return out
 }
+
+func resolveIRModuleForMain(entryFiles []string, fromIRBinaryPath string, buildTagsPath string, parseOnly bool, emitIRBinaryPath string, opts DriverOptions) (*IRModule, string, bool, error) {
+	acquired, err := acquireIRModule(entryFiles, fromIRBinaryPath, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
+	if err != nil {
+		return nil, "", false, err
+	}
+	frontendErrMsg, shouldExitNow := evaluateIRAcquisition(acquired)
+	if frontendErrMsg != "" || shouldExitNow {
+		return nil, frontendErrMsg, shouldExitNow, nil
+	}
+	return acquired.IRModule, "", false, nil
+}
