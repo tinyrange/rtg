@@ -113,57 +113,63 @@ func GenerateELF(irmod *IRModule, outputPath string, opts DriverOptions) error {
 	if target.Backend != "native" {
 		return emitRegisteredBackendWithOptions(target.Backend, irmod, backendOptionsFromDriver(opts, outputPath))
 	}
-	switch target.GOARCH {
-	case "dos16":
-		return generateForDOS16Target(irmod, outputPath, target)
-	case "amd64":
-		return generateForAMD64Target(irmod, outputPath, target)
-	case "386":
-		return generateForI386Target(irmod, outputPath, target)
-	case "wasm32":
-		return generateWasm32(irmod, outputPath)
-	case "arm64":
-		return generateForARM64Target(irmod, outputPath, target)
-	default:
-		return fmt.Errorf("unsupported target architecture: %s", target.GOARCH)
+	nativeID := nativeTargetGenerators[compilerTargetString(target)]
+	if nativeID == nativeTargetUnknown {
+		return fmt.Errorf("unsupported native target: %s", compilerTargetString(target))
 	}
-}
-
-func generateForDOS16Target(irmod *IRModule, outputPath string, target CompilerTarget) error {
-	if target.GOOS == "dos" {
+	switch nativeID {
+	case nativeTargetDOS16:
 		return generateDOSCOM386(irmod, outputPath)
-	}
-	return fmt.Errorf("unsupported OS for dos16: %s", target.GOOS)
-}
-
-func generateForAMD64Target(irmod *IRModule, outputPath string, target CompilerTarget) error {
-	if target.GOOS == "windows" {
+	case nativeTargetLinuxAMD64:
+		return generateAmd64ELF(irmod, outputPath)
+	case nativeTargetWindowsAMD64:
 		return generateWinAmd64PE(irmod, outputPath)
-	}
-	return generateAmd64ELF(irmod, outputPath)
-}
-
-func generateForI386Target(irmod *IRModule, outputPath string, target CompilerTarget) error {
-	if target.GOOS == "windows" {
+	case nativeTargetLinux386:
+		return generateI386ELF(irmod, outputPath)
+	case nativeTargetWindows386:
 		return generateWin386PE(irmod, outputPath)
-	}
-	if target.GOOS == "dos" {
+	case nativeTargetDOS386:
 		return generateDOSCOM386(irmod, outputPath)
+	case nativeTargetWASIWASM32:
+		return generateWasm32(irmod, outputPath)
+	case nativeTargetDarwinARM64:
+		return generateDarwinArm64(irmod, outputPath)
+	case nativeTargetLinuxARM64:
+		return generateLinuxArm64ELF(irmod, outputPath)
+	case nativeTargetWindowsARM64:
+		return generateWinArm64PE(irmod, outputPath)
+	default:
+		return fmt.Errorf("unsupported native target id: %d", int(nativeID))
 	}
-	return generateI386ELF(irmod, outputPath)
 }
 
-func generateForARM64Target(irmod *IRModule, outputPath string, target CompilerTarget) error {
-	if target.GOOS == "darwin" {
-		return generateDarwinArm64(irmod, outputPath)
-	}
-	if target.GOOS == "linux" {
-		return generateLinuxArm64ELF(irmod, outputPath)
-	}
-	if target.GOOS == "windows" {
-		return generateWinArm64PE(irmod, outputPath)
-	}
-	return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
+type nativeTargetID int
+
+const (
+	nativeTargetUnknown nativeTargetID = iota
+	nativeTargetDOS16
+	nativeTargetLinuxAMD64
+	nativeTargetWindowsAMD64
+	nativeTargetLinux386
+	nativeTargetWindows386
+	nativeTargetDOS386
+	nativeTargetWASIWASM32
+	nativeTargetDarwinARM64
+	nativeTargetLinuxARM64
+	nativeTargetWindowsARM64
+)
+
+var nativeTargetGenerators = map[string]nativeTargetID{
+	"dos/dos16":     nativeTargetDOS16,
+	"linux/amd64":   nativeTargetLinuxAMD64,
+	"windows/amd64": nativeTargetWindowsAMD64,
+	"linux/386":     nativeTargetLinux386,
+	"windows/386":   nativeTargetWindows386,
+	"dos/386":       nativeTargetDOS386,
+	"wasi/wasm32":   nativeTargetWASIWASM32,
+	"darwin/arm64":  nativeTargetDarwinARM64,
+	"linux/arm64":   nativeTargetLinuxARM64,
+	"windows/arm64": nativeTargetWindowsARM64,
 }
 
 // isInitFunc checks if a function name is a package init function.

@@ -7,6 +7,14 @@ func (f goFrontend) Name() string {
 }
 
 func (f goFrontend) Compile(baseDir string, inputs []string, opts FrontendOptions) (*IRModule, []string) {
+	mod := ResolveModule(baseDir, inputs)
+	if mod == nil {
+		return nil, []string{"failed to resolve module"}
+	}
+	return f.CompileResolved(mod, opts)
+}
+
+func (f goFrontend) CompileResolved(mod *Module, opts FrontendOptions) (*IRModule, []string) {
 	prev := currentDriverOptions()
 	applyDriverOptions(DriverOptions{
 		Target:      opts.Target,
@@ -16,10 +24,6 @@ func (f goFrontend) Compile(baseDir string, inputs []string, opts FrontendOption
 	})
 	defer applyDriverOptions(prev)
 
-	mod := ResolveModule(baseDir, inputs)
-	if mod == nil {
-		return nil, []string{"failed to resolve module"}
-	}
 	if valErrs := ValidateModule(mod); len(valErrs) > 0 {
 		return nil, valErrs
 	}

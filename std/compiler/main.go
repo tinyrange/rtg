@@ -319,26 +319,19 @@ func main() {
 			os.Exit(0)
 		}
 
-		// Validate cross-package references
-		valErrs := ValidateModule(mod)
-		if len(valErrs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d validation errors:\n", len(valErrs))
-			for _, e := range valErrs {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
-			}
-			runCleanup()
-			os.Exit(1)
-		}
-
-		// Compile to IR
+		// Compile to IR via Go frontend adapter (concrete dispatch).
 		if opts.Debug {
 			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
 		}
+		frontend := goFrontend{}
 		var errs []string
-		irmod, errs = CompileModule(mod)
-
+		irmod, errs = frontend.CompileResolved(mod, FrontendOptions{
+			Target:    opts.Target,
+			BuildTags: cloneStrings(opts.BuildTags),
+			Debug:     opts.Debug,
+		})
 		if len(errs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
+			fmt.Fprintf(os.Stderr, "\n%d frontend errors:\n", len(errs))
 			for _, e := range errs {
 				fmt.Fprintf(os.Stderr, "  %s\n", e)
 			}
