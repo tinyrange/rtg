@@ -685,6 +685,24 @@ function formatSize(bytes) {
   return bytes + " B";
 }
 
+function normalizeSizeNamePrefix(name) {
+  if (name.startsWith("j5.nz/rtg/std/")) return name.substring("j5.nz/rtg/std/".length);
+  if (name.startsWith("j5.nz/rtg/")) return name.substring("j5.nz/rtg/".length);
+  return name;
+}
+
+function shortSizeFuncName(f) {
+  const full = normalizeSizeNamePrefix(f.name || "");
+  const pkg = f.pkg || "";
+  if (pkg && full.startsWith(pkg + ".")) {
+    return full.substring(pkg.length + 1);
+  }
+  const lastSlash = full.lastIndexOf("/");
+  const dot = full.indexOf(".", lastSlash + 1);
+  if (dot >= 0) return full.substring(dot + 1);
+  return full;
+}
+
 function renderSizeAnalysis(data) {
   if (!data || !data.functions || data.functions.length === 0) return;
 
@@ -729,7 +747,7 @@ function renderSizeAnalysis(data) {
     list.className = "size-func-list";
     for (const f of info.funcs) {
       const fpct = info.size > 0 ? ((f.size / info.size) * 100).toFixed(1) : "0.0";
-      const shortName = f.name.indexOf(".") >= 0 ? f.name.substring(f.name.indexOf(".") + 1) : f.name;
+      const shortName = shortSizeFuncName(f);
       const row = el("div", "size-func-row",
         span("size-func-name", shortName),
         span("size-func-size", `${formatSize(f.size)} (${fpct}%)`));

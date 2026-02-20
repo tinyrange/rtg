@@ -4,6 +4,7 @@ package ir
 
 import (
 	"os"
+	"strings"
 
 	"j5.nz/rtg/std/compiler/common"
 )
@@ -106,12 +107,28 @@ func WriteSizeAnalysis(target common.Target) {
 // extractPackage returns the package portion of a qualified function name.
 // e.g. "fmt.Println" → "fmt", "main.main" → "main"
 func extractPackage(name string) string {
+	lastSlash := -1
 	for i := 0; i < len(name); i++ {
-		if name[i] == '.' {
-			return name[0:i]
+		if name[i] == '/' {
+			lastSlash = i
 		}
 	}
-	return name
+	for i := lastSlash + 1; i < len(name); i++ {
+		if name[i] == '.' {
+			return normalizePackagePrefix(name[0:i])
+		}
+	}
+	return normalizePackagePrefix(name)
+}
+
+func normalizePackagePrefix(pkg string) string {
+	if strings.HasPrefix(pkg, "j5.nz/rtg/std/") {
+		return pkg[len("j5.nz/rtg/std/"):]
+	}
+	if strings.HasPrefix(pkg, "j5.nz/rtg/") {
+		return pkg[len("j5.nz/rtg/"):]
+	}
+	return pkg
 }
 
 // appendJSONString appends a JSON-encoded string (with quotes) to buf.

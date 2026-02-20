@@ -11,6 +11,7 @@ Primary build/test orchestration is defined in `tools/Buildfile`.
 2. Prefer Buildfile targets through the compiled runner after `test-build` creates `build/build`:
    - `./build/build <target>`
 3. Do not use `go test ./...` for project validation. RTG runtime/std use `//rtg:internal` intrinsics that do not compile with the host Go toolchain.
+4. Do not create Go test files (`*_test.go`) in this repository; validate behavior via Buildfile targets instead.
 
 ## Verified Buildfile Targets
 
