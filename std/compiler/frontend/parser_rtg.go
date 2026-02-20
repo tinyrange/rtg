@@ -2,9 +2,13 @@
 
 package frontend
 
-func ParsePackageFromEmbed(importPath string) *Package {
+import (
+	"j5.nz/rtg/std/compiler/stdlib"
+)
+
+func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 	// List files in the embedded std directory for this import path
-	files := embeddedStd.ReadDir(importPath)
+	files := stdlib.ReadDirFromEmbed(importPath)
 	if len(files) == 0 {
 		return nil
 	}
@@ -15,8 +19,8 @@ func ParsePackageFromEmbed(importPath string) *Package {
 	for i < len(files) {
 		name := files[i]
 		if isGoFile(name) {
-			content := embeddedStd.ReadFile(importPath + "/" + name)
-			if shouldIncludeContent(content, name) {
+			content := stdlib.ReadFileFromEmbed(importPath + "/" + name)
+			if p.shouldIncludeContent(content, name) {
 				goFiles = append(goFiles, name)
 			}
 		}
@@ -33,7 +37,7 @@ func ParsePackageFromEmbed(importPath string) *Package {
 	i = 0
 	for i < len(goFiles) {
 		name := goFiles[i]
-		content := embeddedStd.ReadFile(importPath + "/" + name)
+		content := stdlib.ReadFileFromEmbed(importPath + "/" + name)
 		node := parseSource(importPath+"/"+name, content)
 		if node != nil {
 			if pkg.Name == "" {

@@ -2,6 +2,6 @@
 
 package frontend
 
-func ParsePackageFromEmbed(importPath string) *Package {
+func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 	return nil
 }

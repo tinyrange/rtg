@@ -1,6 +1,6 @@
 //go:build rtg && !no_embed_std
 
-package main
+package stdlib
 
 import (
 	"embed"
@@ -15,4 +15,12 @@ func HasEmbeddedStd() bool {
 
 func WalkEmbedFromFS(embedDir string) ([]string, []string) {
 	return embeddedStd.WalkDir(embedDir)
+}
+
+func ReadDirFromEmbed(path string) []string {
+	return embeddedStd.ReadDir(path)
+}
+
+func ReadFileFromEmbed(path string) string {
+	return embeddedStd.ReadFile(path)
 }

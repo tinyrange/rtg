@@ -268,7 +268,7 @@ func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []st
 
 func (c *Preprocessor) parsePackageFromStdlibSources(baseDir string, importPath string) *Package {
 	if ShouldUseEmbeddedStdlib(c.target) {
-		pkg := ParsePackageFromEmbed(importPath)
+		pkg := c.parsePackageFromEmbed(importPath)
 		if pkg != nil {
 			return pkg
 		}
