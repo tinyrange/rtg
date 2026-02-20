@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
@@ -40,8 +41,9 @@ var winAmd64Imports = []string{
 }
 
 // generateWinAmd64PE compiles an IRModule to a Windows PE32+ (x86-64) executable.
-func GenerateWinPE(irmod *ir.IRModule, outputPath string) error {
+func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
+		target:        target,
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),
 		stringMap:     make(map[string]int),

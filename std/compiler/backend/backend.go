@@ -33,7 +33,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		return fmt.Errorf("unsupported OS for dos16: %s", target.GOOS)
 	case "amd64":
 		if target.GOOS == "windows" {
-			return x64.GenerateWinPE(irmod, outputPath)
+			return x64.GenerateWinPE(target, irmod, outputPath)
 		} else if target.GOOS == "linux" {
 			return x64.GenerateELF(target, irmod, outputPath)
 		}
