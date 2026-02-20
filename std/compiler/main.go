@@ -278,17 +278,7 @@ func main() {
 
 	// Set VM program arguments if using VM backend
 	if opts.Target.Backend == "vm" {
-		// argv[0] is the program name, followed by actual args
-		vmArgs = append(vmArgs, "rtg")
-		if len(programArgs) > 0 {
-			vmArgs = append(vmArgs, programArgs...)
-		} else {
-			i := 0
-			for i < len(entryFiles) {
-				vmArgs = append(vmArgs, entryFiles[i])
-				i = i + 1
-			}
-		}
+		configureVMProgramArgs(entryFiles, programArgs)
 	}
 
 	if opts.Debug {
