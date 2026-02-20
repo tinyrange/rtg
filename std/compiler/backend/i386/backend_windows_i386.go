@@ -243,9 +243,10 @@ func (g *CodeGen) compileSyscallWrite_win386() {
 	fixOk := g.jccRel32(CC32_NE)
 	// Failed: get error
 	g.emitCallIAT("GetLastError")
-	g.compileConstI32(0) // r1 = 0
-	g.compileConstI32(0) // r2 = 0
-	g.opPush(REG32_EAX)  // err
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
+	g.compileConstI32(0)              // r1 = 0
+	g.compileConstI32(0)              // r2 = 0
+	g.opPush(REG32_ECX)               // err
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -280,9 +281,10 @@ func (g *CodeGen) compileSyscallRead_win386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -338,9 +340,10 @@ func (g *CodeGen) compileSyscallOpen_win386() {
 	fixOpenOk := g.jccRel32(CC32_NE)
 	// Failed
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixOpenEnd := g.jmpRel32()
 
 	g.patchRel32(fixOpenOk)
@@ -372,9 +375,10 @@ func (g *CodeGen) compileSyscallClose_win386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixCloseOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixCloseEnd := g.jmpRel32()
 
 	g.patchRel32(fixCloseOk)
@@ -415,9 +419,10 @@ func (g *CodeGen) compileSyscallMkdir_win386() {
 	g.cmpRI32(REG32_EAX, 183)
 	fixExists := g.jccRel32(CC32_E)
 	// Real error
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixExists)
@@ -445,9 +450,10 @@ func (g *CodeGen) compileSyscallRmdir_win386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -466,9 +472,10 @@ func (g *CodeGen) compileSyscallUnlink_win386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -492,9 +499,10 @@ func (g *CodeGen) compileSyscallGetcwd_win386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -577,9 +585,10 @@ func (g *CodeGen) compileSyscallFindFirstFile_win386() {
 	g.cmpRI32(REG32_EAX, -1)
 	fixOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -655,9 +664,10 @@ func (g *CodeGen) compileSyscallCreateProcess_win386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -724,9 +734,10 @@ func (g *CodeGen) compileSyscallCreatePipe_win386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -770,9 +781,10 @@ func (g *CodeGen) compileSyscallStat_win386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixOk := g.jccRel32(CC32_NE)
 	g.emitCallIAT("GetLastError")
+	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
 	g.compileConstI32(0)
 	g.compileConstI32(0)
-	g.opPush(REG32_EAX)
+	g.opPush(REG32_ECX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)

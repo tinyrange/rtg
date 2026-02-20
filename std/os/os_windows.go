@@ -273,7 +273,10 @@ func ListDir(dirname string) ([]string, error) {
 	findData := make([]byte, 320)
 
 	handle, _, errn := runtime.SysFindFirstFile(runtime.Sliceptr(pbuf), runtime.Sliceptr(findData))
-	if errn != 0 {
+	if errn != 0 || handle == 0 || int(handle) == -1 {
+		if errn == 0 {
+			errn = 2 // ERROR_FILE_NOT_FOUND
+		}
 		return nil, Errno(errn)
 	}
 
@@ -327,7 +330,10 @@ func ReadDir(dirname string) ([]DirEntry, error) {
 	findData := make([]byte, 320)
 
 	handle, _, errn := runtime.SysFindFirstFile(runtime.Sliceptr(pbuf), runtime.Sliceptr(findData))
-	if errn != 0 {
+	if errn != 0 || handle == 0 || int(handle) == -1 {
+		if errn == 0 {
+			errn = 2 // ERROR_FILE_NOT_FOUND
+		}
 		return nil, Errno(errn)
 	}
 

@@ -87,8 +87,8 @@ selfhost-winamd64: build
 
 selfhost-win386: build
   sh ./build/rtg -T windows/386 -o build/stage1.exe ./std/compiler/
-  sh wine build/stage1.exe -T windows/386 -o build/stage2.exe ./std/compiler/
-  sh wine build/stage2.exe -T windows/386 -o build/stage3.exe ./std/compiler/
+  sh ./build/stage1.exe -T windows/386 -o build/stage2.exe ./std/compiler/
+  sh ./build/stage2.exe -T windows/386 -o build/stage3.exe ./std/compiler/
   sh cmp build/stage2.exe build/stage3.exe && echo "PASS: windows/386 self-hosting OK"
 
 selfhost-exp: selfhost

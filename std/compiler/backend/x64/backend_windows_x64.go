@@ -304,9 +304,10 @@ func (g *CodeGen) compileSyscallWrite_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
-	g.compileConstI64(0) // r1 = 0
-	g.compileConstI64(0) // r2 = 0
-	g.opPush(REG_RAX)    // err
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
+	g.compileConstI64(0)       // r1 = 0
+	g.compileConstI64(0)       // r2 = 0
+	g.opPush(REG_RCX)          // err
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -341,9 +342,10 @@ func (g *CodeGen) compileSyscallRead_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
 	g.compileConstI64(0)
 	g.compileConstI64(0)
-	g.opPush(REG_RAX)
+	g.opPush(REG_RCX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -416,9 +418,10 @@ func (g *CodeGen) compileSyscallOpen_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
 	g.compileConstI64(0)
 	g.compileConstI64(0)
-	g.opPush(REG_RAX)
+	g.opPush(REG_RCX)
 	fixOpenEnd := g.jmpRel32()
 
 	g.patchRel32(fixOpenOk)
@@ -453,9 +456,10 @@ func (g *CodeGen) compileSyscallClose_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
 	g.compileConstI64(0)
 	g.compileConstI64(0)
-	g.opPush(REG_RAX)
+	g.opPush(REG_RCX)
 	fixCloseEnd := g.jmpRel32()
 
 	g.patchRel32(fixCloseOk)
@@ -545,9 +549,10 @@ func (g *CodeGen) emitWinApiReturn64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
 	g.compileConstI64(0)
 	g.compileConstI64(0)
-	g.opPush(REG_RAX)
+	g.opPush(REG_RCX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -571,9 +576,10 @@ func (g *CodeGen) compileSyscallGetcwd_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
 	g.compileConstI64(0)
 	g.compileConstI64(0)
-	g.opPush(REG_RAX)
+	g.opPush(REG_RCX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -676,9 +682,10 @@ func (g *CodeGen) compileSyscallFindFirstFile_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
 	g.compileConstI64(0)
 	g.compileConstI64(0)
-	g.opPush(REG_RAX)
+	g.opPush(REG_RCX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -761,9 +768,10 @@ func (g *CodeGen) compileSyscallCreateProcess_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
 	g.compileConstI64(0)
 	g.compileConstI64(0)
-	g.opPush(REG_RAX)
+	g.opPush(REG_RCX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
@@ -827,9 +835,10 @@ func (g *CodeGen) compileSyscallCreatePipe_win64() {
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
+	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
 	g.compileConstI64(0)
 	g.compileConstI64(0)
-	g.opPush(REG_RAX)
+	g.opPush(REG_RCX)
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)

@@ -2,7 +2,9 @@
 
 package x64
 
-import "j5.nz/rtg/std/compiler/ir"
+import (
+	"j5.nz/rtg/std/compiler/ir"
+)
 
 // writeSection writes a 40-byte section header entry.
 func writeSection(buf []byte, name string, virtualSize, rva, rawSize, fileOff int, characteristics uint32) {
