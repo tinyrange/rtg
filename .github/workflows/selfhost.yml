@@ -115,9 +115,7 @@ jobs:
   compiler-size-report:
     name: Compiler Size Report (stage2 linux/amd64)
     runs-on: ubuntu-latest
-    needs:
-      - selfhost
-      - selfhost-wasm
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request'
     env:
       SIZE_REPORT_ISSUE_NUMBER: ${{ vars.COMPILER_SIZE_ISSUE_NUMBER }}
