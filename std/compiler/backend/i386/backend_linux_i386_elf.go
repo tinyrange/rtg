@@ -1,15 +1,19 @@
 //go:build !no_backend_linux_i386
 
-package main
+package i386
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
-// generateI386ELF compiles an IRModule to an i386 (32-bit) ELF binary.
-func generateI386ELF(irmod *IRModule, outputPath string) error {
+// GenerateELF compiles an IRModule to an i386 (32-bit) ELF binary.
+func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
+		target:        target,
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),
 		stringMap:     make(map[string]int),
@@ -32,7 +36,7 @@ func generateI386ELF(irmod *IRModule, outputPath string) error {
 		g.compileFunc_i386(f)
 	}
 
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
 	if g.needTostringHelper {
 		g.emitTostringHelperI386()
 	}

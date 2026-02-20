@@ -1,23 +1,23 @@
 //go:build !no_backend_linux_i386 || !no_backend_windows_i386
 
-package main
+package i386
 
 // === i386 Assembler: mnemonic-level instruction encoding ===
 
 func (g *CodeGen) dos32OpPrefix() {
-	if target.GOOS == "dos" && g.wordSize == 4 {
+	if g.target.GOOS == "dos" && g.wordSize == 4 {
 		g.emitByte(0x66)
 	}
 }
 
 func (g *CodeGen) dos32AddrPrefix() {
-	if target.GOOS == "dos" {
+	if g.target.GOOS == "dos" {
 		g.emitByte(0x67)
 	}
 }
 
 func (g *CodeGen) dos32OpAddrPrefix() {
-	if target.GOOS == "dos" && g.wordSize == 4 {
+	if g.target.GOOS == "dos" && g.wordSize == 4 {
 		g.emitBytes(0x66, 0x67)
 	}
 }

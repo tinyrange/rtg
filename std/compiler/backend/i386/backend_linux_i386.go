@@ -1,11 +1,13 @@
 //go:build !no_backend_linux_i386
 
-package main
+package i386
+
+import "j5.nz/rtg/std/compiler/ir"
 
 // === Linux i386-specific backend code ===
 
 // emitStart_i386 generates the _start entry point for i386.
-func (g *CodeGen) emitStart_i386(irmod *IRModule) {
+func (g *CodeGen) emitStart_i386(irmod *ir.IRModule) {
 	// _start:
 	//   mmap2(NULL, 1MB, PROT_RW, MAP_PRIV|MAP_ANON, 0, 0) via int 0x80
 	//   edi = eax + 1MB (operand stack top, grows down)
@@ -20,13 +22,13 @@ func (g *CodeGen) emitStart_i386(irmod *IRModule) {
 	g.pushR32(REG32_EBP)
 
 	// mmap2(NULL, 1048576, 3, 0x22, 0, 0)
-	g.xorRR32(REG32_EBX, REG32_EBX)        // addr = NULL
-	g.emitMovRegImm32(REG32_ECX, 1048576)   // size = 1MB
-	g.emitMovRegImm32(REG32_EDX, 3)         // prot = RW
-	g.emitMovRegImm32(REG32_ESI, 0x22)      // flags = PRIVATE|ANONYMOUS
-	g.xorRR32(REG32_EDI, REG32_EDI)         // fd = 0
-	g.xorRR32(REG32_EBP, REG32_EBP)         // offset = 0
-	g.emitMovRegImm32(REG32_EAX, 192)       // SYS_MMAP2
+	g.xorRR32(REG32_EBX, REG32_EBX)       // addr = NULL
+	g.emitMovRegImm32(REG32_ECX, 1048576) // size = 1MB
+	g.emitMovRegImm32(REG32_EDX, 3)       // prot = RW
+	g.emitMovRegImm32(REG32_ESI, 0x22)    // flags = PRIVATE|ANONYMOUS
+	g.xorRR32(REG32_EDI, REG32_EDI)       // fd = 0
+	g.xorRR32(REG32_EBP, REG32_EBP)       // offset = 0
+	g.emitMovRegImm32(REG32_EAX, 192)     // SYS_MMAP2
 	g.emitInt80()
 
 	// Restore ebp
@@ -38,7 +40,7 @@ func (g *CodeGen) emitStart_i386(irmod *IRModule) {
 
 	// Call init functions
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			g.emitCallPlaceholder(f.Name)
 		}
 	}
@@ -91,16 +93,16 @@ func (g *CodeGen) compileSyscallIntrinsic_linux386(paramCount int) {
 	g.movRR32(REG32_ECX, REG32_EDX) // save r2
 
 	// Check if eax is an error: cmp eax, 0xfffff001; jb success (unsigned)
-	g.cmpRI32(REG32_EAX, int32(-4095))       // cmp eax, 0xfffff001
-	g.emitBytes(0x72, 0x08)                   // jb +8 (unsigned below = success)
+	g.cmpRI32(REG32_EAX, int32(-4095)) // cmp eax, 0xfffff001
+	g.emitBytes(0x72, 0x08)            // jb +8 (unsigned below = success)
 	// Error case: err = -eax, r1 = 0
-	g.movRR32(REG32_EDX, REG32_EAX)          // mov edx, eax    (2 bytes)
-	g.negR32(REG32_EDX)                       // neg edx         (2 bytes)
-	g.xorRR32(REG32_EAX, REG32_EAX)          // xor eax, eax    (2 bytes)
-	g.jmpRel8(0x04)                           // jmp +4          (2 bytes)
+	g.movRR32(REG32_EDX, REG32_EAX) // mov edx, eax    (2 bytes)
+	g.negR32(REG32_EDX)             // neg edx         (2 bytes)
+	g.xorRR32(REG32_EAX, REG32_EAX) // xor eax, eax    (2 bytes)
+	g.jmpRel8(0x04)                 // jmp +4          (2 bytes)
 	// Success case: err = 0
-	g.xorRR32(REG32_EDX, REG32_EDX)          // xor edx, edx    (2 bytes)
-	g.jmpRel8(0x00)                           // jmp +0 (nop)    (2 bytes)
+	g.xorRR32(REG32_EDX, REG32_EDX) // xor edx, edx    (2 bytes)
+	g.jmpRel8(0x00)                 // jmp +0 (nop)    (2 bytes)
 
 	// Push r1 (eax), r2 (ecx), err (edx)
 	g.opPush(REG32_EAX) // r1
@@ -113,40 +115,40 @@ func (g *CodeGen) compilePanic_linux386() {
 	g.opPop(REG32_EAX)
 
 	// Tostring heuristic: if first dword < 256, it's an interface box
-	g.loadMem32(REG32_ECX, REG32_EAX, 0)     // mov ecx, [eax]
-	g.cmpRI32(REG32_ECX, int32(256))           // cmp ecx, 256
-	g.emitBytes(0x73, 0x03)                   // jae +3 (skip next instruction)
+	g.loadMem32(REG32_ECX, REG32_EAX, 0) // mov ecx, [eax]
+	g.cmpRI32(REG32_ECX, int32(256))     // cmp ecx, 256
+	g.emitBytes(0x73, 0x03)              // jae +3 (skip next instruction)
 	// Interface box: extract value field (the string ptr) at [eax+4]
-	g.loadMem32(REG32_EAX, REG32_EAX, 4)     // mov eax, [eax+4] (3 bytes)
+	g.loadMem32(REG32_EAX, REG32_EAX, 4) // mov eax, [eax+4] (3 bytes)
 
 	// eax = string header ptr {data_ptr:4, len:4}
 	// Save edi and ebp before syscall
 	g.pushR32(REG32_EDI)
 	g.pushR32(REG32_EBP)
 
-	g.loadMem32(REG32_ECX, REG32_EAX, 0)     // ecx = data_ptr
-	g.loadMem32(REG32_EDX, REG32_EAX, 4)     // edx = len
-	g.emitMovRegImm32(REG32_EBX, 2)          // fd = stderr
-	g.movRR32(REG32_ECX, REG32_ECX)          // ecx already has buf
+	g.loadMem32(REG32_ECX, REG32_EAX, 0) // ecx = data_ptr
+	g.loadMem32(REG32_EDX, REG32_EAX, 4) // edx = len
+	g.emitMovRegImm32(REG32_EBX, 2)      // fd = stderr
+	g.movRR32(REG32_ECX, REG32_ECX)      // ecx already has buf
 	// Swap: ebx=fd, ecx=buf, edx=count for SYS_WRITE
 	// Actually: eax=SYS_WRITE, ebx=fd, ecx=buf, edx=count
 	// ecx has data_ptr, edx has len - but we need ebx=fd
 	// Save data_ptr, set up regs
-	g.pushR32(REG32_ECX)                     // save data_ptr
-	g.emitMovRegImm32(REG32_EBX, 2)          // fd = 2 (stderr)
-	g.popR32(REG32_ECX)                       // restore data_ptr into ecx (buf)
-	g.emitMovRegImm32(REG32_EAX, 4)          // SYS_WRITE = 4
+	g.pushR32(REG32_ECX)            // save data_ptr
+	g.emitMovRegImm32(REG32_EBX, 2) // fd = 2 (stderr)
+	g.popR32(REG32_ECX)             // restore data_ptr into ecx (buf)
+	g.emitMovRegImm32(REG32_EAX, 4) // SYS_WRITE = 4
 	g.xorRR32(REG32_EBP, REG32_EBP)
 	g.emitInt80()
 
 	// Write newline
-	g.emitBytes(0x6a, 0x0a)                  // push 0x0a ('\n')
-	g.movRR32(REG32_ECX, REG32_ESP)          // buf = esp
-	g.emitMovRegImm32(REG32_EDX, 1)          // len = 1
-	g.emitMovRegImm32(REG32_EBX, 2)          // fd = stderr
-	g.emitMovRegImm32(REG32_EAX, 4)          // SYS_WRITE
+	g.emitBytes(0x6a, 0x0a)         // push 0x0a ('\n')
+	g.movRR32(REG32_ECX, REG32_ESP) // buf = esp
+	g.emitMovRegImm32(REG32_EDX, 1) // len = 1
+	g.emitMovRegImm32(REG32_EBX, 2) // fd = stderr
+	g.emitMovRegImm32(REG32_EAX, 4) // SYS_WRITE
 	g.emitInt80()
-	g.addRI32(REG32_ESP, 4)                   // pop the '\n'
+	g.addRI32(REG32_ESP, 4) // pop the '\n'
 
 	// Restore edi and ebp
 	g.popR32(REG32_EBP)
@@ -154,5 +156,5 @@ func (g *CodeGen) compilePanic_linux386() {
 
 	// Crash: null dereference -> SIGSEGV
 	g.xorRR32(REG32_EAX, REG32_EAX)
-	g.loadMem32(REG32_EAX, REG32_EAX, 0)    // mov eax, [eax] -> segfault
+	g.loadMem32(REG32_EAX, REG32_EAX, 0) // mov eax, [eax] -> segfault
 }

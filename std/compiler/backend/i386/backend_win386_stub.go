@@ -1,6 +1,6 @@
 //go:build no_backend_windows_i386
 
-package main
+package i386
 
 import "fmt"
 

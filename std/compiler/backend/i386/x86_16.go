@@ -1,6 +1,6 @@
 //go:build !no_backend_dos_i386
 
-package x64
+package i386
 
 // === x86-16 Assembler: mnemonic-level instruction encoding ===
 //

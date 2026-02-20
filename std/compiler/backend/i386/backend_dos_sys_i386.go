@@ -1,6 +1,6 @@
 //go:build !no_backend_dos_i386
 
-package main
+package i386
 
 // compileSyscallIntrinsic_dos386 lowers runtime.Syscall for the dos/8086 target.
 //

@@ -1,10 +1,12 @@
 //go:build !no_backend_windows_i386 || !no_backend_arm64 || !no_backend_windows_amd64
 
-package main
+package i386
+
+import "j5.nz/rtg/std/compiler/ir"
 
 // buildPE32 assembles a PE32 executable from the compiled code, rodata, data,
 // and a list of kernel32.dll imports.
-func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
+func (g *CodeGen) buildPE32(irmod *ir.IRModule, imports []string) []byte {
 	// PE32 Layout:
 	// 0x000  DOS Header (64 bytes)
 	// 0x040  DOS Stub (64 bytes)
@@ -32,7 +34,7 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	coffHeaderSize := 20
 	optionalHeaderSize := 224
 	numSections := 6
-	if stripBinary {
+	if g.target.StripBinary {
 		numSections = 4
 	}
 	sectionTableSize := numSections * 40
@@ -76,7 +78,7 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	debugInfo := []byte{}
 	debugAbbrevRawSize := 0
 	debugInfoRawSize := 0
-	if !stripBinary {
+	if !g.target.StripBinary {
 		debugAbbrev, debugInfo = g.buildDWARF(irmod, textVA, len(g.code))
 		debugAbbrevRawSize = alignUp(len(debugAbbrev), fileAlignment)
 		debugInfoRawSize = alignUp(len(debugInfo), fileAlignment)
@@ -98,14 +100,14 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	coffSyms := []byte{}
 	coffStrtab := []byte{}
 	numSyms := 0
-	if !stripBinary {
+	if !g.target.StripBinary {
 		coffSyms, coffStrtab, numSyms = g.buildCOFFSymbols(irmod)
 	}
 
 	// Add long section names to string table and record their offsets
 	debugAbbrevNameOff := 0
 	debugInfoNameOff := 0
-	if !stripBinary {
+	if !g.target.StripBinary {
 		debugAbbrevNameOff = len(coffStrtab)
 		coffStrtab = append(coffStrtab, []byte(".debug_abbrev")...)
 		coffStrtab = append(coffStrtab, 0)
@@ -119,13 +121,13 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	symtabFileOff := debugInfoFileOff + debugInfoRawSize
 	strtabFileOff := symtabFileOff + len(coffSyms)
 	totalFileSize := strtabFileOff + len(coffStrtab)
-	if stripBinary {
+	if g.target.StripBinary {
 		totalFileSize = idataFileOff + idataRawSize
 	}
 
 	// Virtual size of image
 	imageSize := debugInfoRVA + sectionSpan(len(debugInfo), sectionAlignment)
-	if stripBinary {
+	if g.target.StripBinary {
 		imageSize = idataRVA + sectionSpan(len(idataContent), sectionAlignment)
 	}
 
@@ -187,7 +189,7 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	putU16(coff[0:], 0x014C)              // Machine: IMAGE_FILE_MACHINE_I386
 	putU16(coff[2:], uint16(numSections)) // NumberOfSections
 	putU32(coff[4:], 0)                   // TimeDateStamp
-	if stripBinary {
+	if g.target.StripBinary {
 		putU32(coff[8:], 0) // PointerToSymbolTable
 		putU32(coff[12:], 0)
 	} else {
@@ -264,7 +266,7 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 		len(idataContent), idataRVA, idataRawSize, idataFileOff,
 		0xC0000040) // INITIALIZED_DATA | READ | WRITE
 
-	if !stripBinary {
+	if !g.target.StripBinary {
 		// .debug_abbrev — long name via COFF string table
 		writeSectionLongName(pe[sectBase+160:], debugAbbrevNameOff,
 			len(debugAbbrev), debugAbbrevRVA, debugAbbrevRawSize, debugAbbrevFileOff,
@@ -281,13 +283,13 @@ func (g *CodeGen) buildPE32(irmod *IRModule, imports []string) []byte {
 	copy(pe[rdataFileOff:], rdataContent)
 	copy(pe[dataFileOff:], dataContent)
 	copy(pe[idataFileOff:], idataContent)
-	if !stripBinary {
+	if !g.target.StripBinary {
 		copy(pe[debugAbbrevFileOff:], debugAbbrev)
 		copy(pe[debugInfoFileOff:], debugInfo)
 	}
 
 	// Copy COFF symbol table and string table
-	if !stripBinary {
+	if !g.target.StripBinary {
 		copy(pe[symtabFileOff:], coffSyms)
 		copy(pe[strtabFileOff:], coffStrtab)
 	}
@@ -503,7 +505,7 @@ func makeCOFFSym(name []byte, value uint32, section uint16, symType uint16, stor
 }
 
 // buildCOFFSymbols creates the COFF symbol table and string table.
-func (g *CodeGen) buildCOFFSymbols(irmod *IRModule) ([]byte, []byte, int) {
+func (g *CodeGen) buildCOFFSymbols(irmod *ir.IRModule) ([]byte, []byte, int) {
 	var coffSyms []byte
 	var coffStrtab []byte
 	coffStrtab = append(coffStrtab, 0, 0, 0, 0) // placeholder for string table size
@@ -540,7 +542,7 @@ func (g *CodeGen) buildCOFFSymbols(irmod *IRModule) ([]byte, []byte, int) {
 
 // buildDWARF generates minimal DWARF2 .debug_abbrev and .debug_info sections
 // so that WineDbg can resolve function names in backtraces.
-func (g *CodeGen) buildDWARF(irmod *IRModule, textVA int, textSize int) ([]byte, []byte) {
+func (g *CodeGen) buildDWARF(irmod *ir.IRModule, textVA int, textSize int) ([]byte, []byte) {
 	// === .debug_abbrev ===
 	// Abbrev 1: DW_TAG_compile_unit, has children
 	//   DW_AT_name (string), DW_AT_low_pc (addr), DW_AT_high_pc (addr)

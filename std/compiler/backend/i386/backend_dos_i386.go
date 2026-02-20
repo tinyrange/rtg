@@ -1,10 +1,13 @@
 //go:build !no_backend_dos_i386
 
-package main
+package i386
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 const (
@@ -12,15 +15,16 @@ const (
 	comMaxImage    = 65536 - comLoadAddr386
 )
 
-// generateDOSCOM386 compiles an IRModule to a DOS .COM image.
+// GenerateDOSCOM compiles an IRModule to a DOS .COM image.
 //
 // The image is laid out as:
 //
 //	[code][_rodata][_data]
 //
 // loaded by DOS at segment:0100h.
-func generateDOSCOM386(irmod *IRModule, outputPath string) error {
+func GenerateDOSCOM(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
+		target:        target,
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),
 		stringMap:     make(map[string]int),
@@ -41,7 +45,7 @@ func generateDOSCOM386(irmod *IRModule, outputPath string) error {
 		g.funcOffsets[f.Name] = len(g.code)
 		g.compileFunc_i386(f)
 	}
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
 	if g.needTostringHelper {
 		g.emitTostringHelperI386()
 	}
@@ -81,12 +85,12 @@ func generateDOSCOM386(irmod *IRModule, outputPath string) error {
 }
 
 // emitStart_dos386 emits a minimal COM entry sequence.
-func (g *CodeGen) emitStart_dos386(irmod *IRModule) {
+func (g *CodeGen) emitStart_dos386(irmod *ir.IRModule) {
 	// Operand stack starts near the top of the 64KB segment.
 	g.emitMovRegImm32(REG32_EDI, 0xff00)
 
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			g.emitCallPlaceholder(f.Name)
 		}
 	}

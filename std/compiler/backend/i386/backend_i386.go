@@ -1,6 +1,11 @@
 //go:build !no_backend_linux_i386 || !no_backend_windows_i386
 
-package main
+package i386
+
+import (
+	"j5.nz/rtg/std/compiler/backend/becommon"
+	"j5.nz/rtg/std/compiler/ir"
+)
 
 func (g *CodeGen) slotBytes_i386() int {
 	if g.wordSize <= 0 {
@@ -14,7 +19,7 @@ func (g *CodeGen) ptrBytes_i386() int {
 }
 
 func (g *CodeGen) initOperandCache_i386() {
-	if target.GOOS != "dos" && g.wordSize == 4 {
+	if g.target.GOOS != "dos" && g.wordSize == 4 {
 		g.configureOperandCache(REG32_EBX, REG32_ESI)
 	} else {
 		g.clearOperandCache()
@@ -22,7 +27,7 @@ func (g *CodeGen) initOperandCache_i386() {
 }
 
 // compileFunc_i386 generates i386 code for a single IR function.
-func (g *CodeGen) compileFunc_i386(f *IRFunc) {
+func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 	g.curFunc = f
 	g.initOperandCache_i386()
 	g.curFrameSize = len(f.Locals)
@@ -59,7 +64,7 @@ func (g *CodeGen) compileFunc_i386(f *IRFunc) {
 	}
 
 	// Resolve jump fixups within this function
-	if target.GOOS != "dos" {
+	if g.target.GOOS != "dos" {
 		g.relaxCurrentFuncJumps()
 	}
 	for _, fix := range g.jumpFixups {
@@ -80,91 +85,91 @@ func (g *CodeGen) compileFunc_i386(f *IRFunc) {
 }
 
 // compileInst_i386 generates code for a single IR instruction (i386).
-func (g *CodeGen) compileInst_i386(inst Inst) {
+func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	switch inst.Op {
-	case OP_CONST_I64:
+	case ir.OP_CONST_I64:
 		g.compileConstI32(inst.Val)
-	case OP_CONST_BOOL:
+	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.compileConstI32(1)
 		} else {
 			g.compileConstI32(0)
 		}
-	case OP_CONST_NIL:
+	case ir.OP_CONST_NIL:
 		g.compileConstI32(0)
-	case OP_CONST_STR:
+	case ir.OP_CONST_STR:
 		g.compileConstStr_i386(inst.Name)
 
-	case OP_LOCAL_GET:
+	case ir.OP_LOCAL_GET:
 		g.compileLocalGet_i386(inst.Arg)
-	case OP_LOCAL_SET:
+	case ir.OP_LOCAL_SET:
 		g.compileLocalSet_i386(inst.Arg)
-	case OP_LOCAL_ADD_IMM:
+	case ir.OP_LOCAL_ADD_IMM:
 		g.compileLocalAddImm_i386(inst.Arg, int32(inst.Val))
-	case OP_LOCAL_ADDR:
+	case ir.OP_LOCAL_ADDR:
 		g.compileLocalAddr_i386(inst.Arg)
 
-	case OP_GLOBAL_GET:
+	case ir.OP_GLOBAL_GET:
 		g.compileGlobalGet_i386(inst)
-	case OP_GLOBAL_SET:
+	case ir.OP_GLOBAL_SET:
 		g.compileGlobalSet_i386(inst)
-	case OP_GLOBAL_ADDR:
+	case ir.OP_GLOBAL_ADDR:
 		g.compileGlobalAddr_i386(inst)
 
-	case OP_DROP:
+	case ir.OP_DROP:
 		g.opDrop()
-	case OP_DUP:
+	case ir.OP_DUP:
 		g.opLoad(REG32_EAX)
 		g.opPush(REG32_EAX)
 
-	case OP_ADD:
-		g.compileBinOp_i386(inst.Op)
-	case OP_SUB:
-		g.compileBinOp_i386(inst.Op)
-	case OP_MUL:
-		g.compileBinOp_i386(inst.Op)
-	case OP_DIV:
-		g.compileBinOp_i386(inst.Op)
-	case OP_MOD:
-		g.compileBinOp_i386(inst.Op)
-	case OP_NEG:
+	case ir.OP_ADD:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_SUB:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_MUL:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_DIV:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_MOD:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_NEG:
 		g.opPop(REG32_EAX)
 		g.negR32(REG32_EAX)
 		g.opPush(REG32_EAX)
 
-	case OP_AND:
-		g.compileBinOp_i386(inst.Op)
-	case OP_OR:
-		g.compileBinOp_i386(inst.Op)
-	case OP_XOR:
-		g.compileBinOp_i386(inst.Op)
-	case OP_SHL:
-		g.compileBinOp_i386(inst.Op)
-	case OP_SHR:
-		g.compileBinOp_i386(inst.Op)
+	case ir.OP_AND:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_OR:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_XOR:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_SHL:
+		g.compileBinOP_i386(inst.Op)
+	case ir.OP_SHR:
+		g.compileBinOP_i386(inst.Op)
 
-	case OP_EQ:
+	case ir.OP_EQ:
 		g.compileCompare_i386(0x94) // sete
-	case OP_NEQ:
+	case ir.OP_NEQ:
 		g.compileCompare_i386(0x95) // setne
-	case OP_LT:
+	case ir.OP_LT:
 		g.compileCompare_i386(0x9c) // setl
-	case OP_GT:
+	case ir.OP_GT:
 		g.compileCompare_i386(0x9f) // setg
-	case OP_LEQ:
+	case ir.OP_LEQ:
 		g.compileCompare_i386(0x9e) // setle
-	case OP_GEQ:
+	case ir.OP_GEQ:
 		g.compileCompare_i386(0x9d) // setge
 
-	case OP_NOT:
+	case ir.OP_NOT:
 		g.opPop(REG32_EAX)
 		g.xorRI8_32(REG32_EAX, 0x01)
 		g.opPush(REG32_EAX)
 
-	case OP_LABEL:
+	case ir.OP_LABEL:
 		g.flush()
 		g.labelOffsets[inst.Arg] = len(g.code)
-	case OP_JMP:
+	case ir.OP_JMP:
 		g.flush()
 		fixup := g.jmpRel32()
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
@@ -172,7 +177,7 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 			LabelID:    inst.Arg,
 			Kind:       jumpFixupJmpRel32,
 		})
-	case OP_JMP_IF:
+	case ir.OP_JMP_IF:
 		g.opPop(REG32_EAX)
 		g.testRR32(REG32_EAX, REG32_EAX)
 		fixup := g.jccRel32(CC32_NE)
@@ -182,7 +187,7 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 			Kind:       jumpFixupJccRel32,
 			CC:         CC32_NE,
 		})
-	case OP_JMP_IF_NOT:
+	case ir.OP_JMP_IF_NOT:
 		g.opPop(REG32_EAX)
 		g.testRR32(REG32_EAX, REG32_EAX)
 		fixup := g.jccRel32(CC32_E)
@@ -192,54 +197,54 @@ func (g *CodeGen) compileInst_i386(inst Inst) {
 			Kind:       jumpFixupJccRel32,
 			CC:         CC32_E,
 		})
-	case OP_JMP_EQ:
+	case ir.OP_JMP_EQ:
 		g.compileCompareJump_i386(CC32_E, inst.Arg)
-	case OP_JMP_NEQ:
+	case ir.OP_JMP_NEQ:
 		g.compileCompareJump_i386(CC32_NE, inst.Arg)
-	case OP_JMP_LT:
+	case ir.OP_JMP_LT:
 		g.compileCompareJump_i386(CC32_L, inst.Arg)
-	case OP_JMP_GT:
+	case ir.OP_JMP_GT:
 		g.compileCompareJump_i386(CC32_G, inst.Arg)
-	case OP_JMP_LEQ:
+	case ir.OP_JMP_LEQ:
 		g.compileCompareJump_i386(CC32_LE, inst.Arg)
-	case OP_JMP_GEQ:
+	case ir.OP_JMP_GEQ:
 		g.compileCompareJump_i386(CC32_GE, inst.Arg)
 
-	case OP_CALL:
+	case ir.OP_CALL:
 		g.compileCall_i386(inst)
-	case OP_CALL_INTRINSIC:
+	case ir.OP_CALL_INTRINSIC:
 		g.compileCallIntrinsic_i386(inst)
-	case OP_RETURN:
+	case ir.OP_RETURN:
 		g.compileReturn_i386(inst)
 
-	case OP_LOAD:
+	case ir.OP_LOAD:
 		g.compileLoad_i386(inst.Arg)
-	case OP_STORE:
+	case ir.OP_STORE:
 		g.compileStore_i386(inst.Arg)
-	case OP_OFFSET:
+	case ir.OP_OFFSET:
 		g.compileOffset_i386(inst)
-	case OP_INDEX_ADDR:
+	case ir.OP_INDEX_ADDR:
 		g.compileIndexAddr_i386(inst.Arg)
-	case OP_LEN:
+	case ir.OP_LEN:
 		g.compileLen_i386()
-	case OP_CAP:
+	case ir.OP_CAP:
 		g.compileCap_i386()
 
-	case OP_CONVERT:
+	case ir.OP_CONVERT:
 		g.compileConvert_i386(inst.Name)
 
-	case OP_IFACE_BOX:
+	case ir.OP_IFACE_BOX:
 		g.compileIfaceBox_i386(inst)
-	case OP_IFACE_CALL:
+	case ir.OP_IFACE_CALL:
 		g.compileIfaceCall_i386(inst)
-	case OP_PANIC:
-		if target.GOOS == "windows" {
+	case ir.OP_PANIC:
+		if g.target.GOOS == "windows" {
 			g.compilePanic_win386()
 		} else {
 			g.compilePanic_linux386()
 		}
 
-	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// Handled by intrinsics or builtins
 
 	default:
@@ -272,7 +277,7 @@ func (g *CodeGen) compileConstI32(val int64) {
 
 func (g *CodeGen) compileConstStr_i386(s string) {
 	g.prepareForClobber(REG32_EAX)
-	decoded := decodeStringLiteral(s)
+	decoded := becommon.DecodeStringLiteral(s)
 
 	headerOff, ok := g.stringMap[decoded]
 	if !ok {
@@ -339,7 +344,7 @@ func (g *CodeGen) compileLocalAddr_i386(idx int) {
 
 // === Global variable access (i386) ===
 
-func (g *CodeGen) compileGlobalGet_i386(inst Inst) {
+func (g *CodeGen) compileGlobalGet_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX, REG32_ECX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
@@ -350,7 +355,7 @@ func (g *CodeGen) compileGlobalGet_i386(inst Inst) {
 	g.opPush(REG32_EAX)
 }
 
-func (g *CodeGen) compileGlobalSet_i386(inst Inst) {
+func (g *CodeGen) compileGlobalSet_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
@@ -360,7 +365,7 @@ func (g *CodeGen) compileGlobalSet_i386(inst Inst) {
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
 }
 
-func (g *CodeGen) compileGlobalAddr_i386(inst Inst) {
+func (g *CodeGen) compileGlobalAddr_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX)
 	g.emitMovRegImm32(REG32_EAX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
@@ -372,16 +377,16 @@ func (g *CodeGen) compileGlobalAddr_i386(inst Inst) {
 
 // === Binary operations (i386) ===
 
-func (g *CodeGen) compileBinOp_i386(op Opcode) {
+func (g *CodeGen) compileBinOP_i386(op ir.Opcode) {
 	g.opPop(REG32_EAX)
 	g.opPop(REG32_ECX)
 
 	switch op {
-	case OP_ADD:
+	case ir.OP_ADD:
 		g.addRR32(REG32_ECX, REG32_EAX)
-	case OP_SUB:
+	case ir.OP_SUB:
 		g.subRR32(REG32_ECX, REG32_EAX)
-	case OP_MUL:
+	case ir.OP_MUL:
 		if g.wordSize == 2 {
 			// 8086-safe signed multiply: AX = ECX * EAX (low 16 bits kept).
 			g.movRR32(REG32_EDX, REG32_EAX)
@@ -391,32 +396,32 @@ func (g *CodeGen) compileBinOp_i386(op Opcode) {
 		} else {
 			g.imulRR32(REG32_ECX, REG32_EAX)
 		}
-	case OP_DIV:
+	case ir.OP_DIV:
 		g.movRR32(REG32_EDX, REG32_EAX)
 		g.movRR32(REG32_EAX, REG32_ECX)
 		g.movRR32(REG32_ECX, REG32_EDX)
 		g.cdq32()
 		g.idivR32(REG32_ECX)
 		g.movRR32(REG32_ECX, REG32_EAX)
-	case OP_MOD:
+	case ir.OP_MOD:
 		g.movRR32(REG32_EDX, REG32_EAX)
 		g.movRR32(REG32_EAX, REG32_ECX)
 		g.movRR32(REG32_ECX, REG32_EDX)
 		g.cdq32()
 		g.idivR32(REG32_ECX)
 		g.movRR32(REG32_ECX, REG32_EDX)
-	case OP_AND:
+	case ir.OP_AND:
 		g.andRR32(REG32_ECX, REG32_EAX)
-	case OP_OR:
+	case ir.OP_OR:
 		g.orRR32(REG32_ECX, REG32_EAX)
-	case OP_XOR:
+	case ir.OP_XOR:
 		g.xorRR32(REG32_ECX, REG32_EAX)
-	case OP_SHL:
+	case ir.OP_SHL:
 		g.movRR32(REG32_EDX, REG32_ECX)
 		g.movRR32(REG32_ECX, REG32_EAX)
 		g.shlCl32(REG32_EDX)
 		g.movRR32(REG32_ECX, REG32_EDX)
-	case OP_SHR:
+	case ir.OP_SHR:
 		g.movRR32(REG32_EDX, REG32_ECX)
 		g.movRR32(REG32_ECX, REG32_EAX)
 		g.sarCl32(REG32_EDX)
@@ -462,7 +467,7 @@ func (g *CodeGen) compileCompareJump_i386(cc byte, label int) {
 
 // === Function calls (i386) ===
 
-func (g *CodeGen) compileCall_i386(inst Inst) {
+func (g *CodeGen) compileCall_i386(inst ir.Inst) {
 	if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
 		g.compileCompositeLitCall_i386(inst)
 		return
@@ -470,7 +475,7 @@ func (g *CodeGen) compileCall_i386(inst Inst) {
 	g.emitCallPlaceholder(inst.Name)
 }
 
-func (g *CodeGen) compileCompositeLitCall_i386(inst Inst) {
+func (g *CodeGen) compileCompositeLitCall_i386(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * g.slotBytes_i386()
 
@@ -504,7 +509,7 @@ func (g *CodeGen) compileCompositeLitCall_i386(inst Inst) {
 	g.opPush(REG32_ECX)
 }
 
-func (g *CodeGen) compileReturn_i386(inst Inst) {
+func (g *CodeGen) compileReturn_i386(inst ir.Inst) {
 	g.flush()
 	g.leave()
 	g.ret()
@@ -512,11 +517,11 @@ func (g *CodeGen) compileReturn_i386(inst Inst) {
 
 // === Intrinsics (i386) ===
 
-func (g *CodeGen) compileCallIntrinsic_i386(inst Inst) {
+func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	g.flush()
 	switch inst.Name {
 	case "Syscall":
-		if target.GOOS == "dos" {
+		if g.target.GOOS == "dos" {
 			g.compileSyscallIntrinsic_dos386(inst.Arg)
 		} else {
 			// Linux i386 only
@@ -640,7 +645,7 @@ func (g *CodeGen) compileMakestringIntrinsic_i386() {
 }
 
 func (g *CodeGen) compileTostringIntrinsic_i386() {
-	// OP_CALL_INTRINSIC is emitted inside intrinsic wrapper functions where
+	// ir.OP_CALL_INTRINSIC is emitted inside intrinsic wrapper functions where
 	// parameters are in frame locals, not on the operand stack. Inline the
 	// body directly so it reads Param 0 via emitLoadLocal32.
 	g.compileTostringIntrinsicBody_i386()
@@ -665,7 +670,7 @@ func (g *CodeGen) emitTostringHelperI386() {
 	g.emitStoreLocal32(1*slot, REG32_EAX)
 
 	g.compileTostringIntrinsicBody_i386()
-	g.compileReturn_i386(Inst{})
+	g.compileReturn_i386(ir.Inst{})
 }
 
 func (g *CodeGen) compileTostringIntrinsicBody_i386() {
@@ -687,17 +692,17 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 	g.pushR32(REG32_ECX)
 
 	// Generate dispatch chain for Error/String methods
-	var entries []dispatchEntry
+	var entries []becommon.DispatchEntry
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + ".Error"
 			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 				continue
 			}
 			candidate = typeName + ".String"
 			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 			}
 		}
 	}
@@ -721,9 +726,9 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 
 	// User-defined type dispatch
 	for _, entry := range entries {
-		g.cmpRI32(REG32_ECX, int32(entry.typeID))
+		g.cmpRI32(REG32_ECX, int32(entry.TypeID))
 		nextFixup = g.jccRel32(CC32_NE)
-		g.emitCallPlaceholder(entry.funcName)
+		g.emitCallPlaceholder(entry.FuncName)
 		endFixups = append(endFixups, g.jmpRel32())
 		g.patchRel32(nextFixup)
 	}
@@ -774,7 +779,7 @@ func (g *CodeGen) compileWriteByteIntrinsic_i386() {
 
 // === Interface dispatch (i386) ===
 
-func (g *CodeGen) compileIfaceBox_i386(inst Inst) {
+func (g *CodeGen) compileIfaceBox_i386(inst ir.Inst) {
 	typeID := inst.Arg
 
 	g.opPop(REG32_EAX)
@@ -796,7 +801,7 @@ func (g *CodeGen) compileIfaceBox_i386(inst Inst) {
 	g.opPush(REG32_ECX)
 }
 
-func (g *CodeGen) compileIfaceCall_i386(inst Inst) {
+func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 	argCount := inst.Arg
 	methodName := inst.Name
 
@@ -845,12 +850,12 @@ func (g *CodeGen) compileIfaceCall_i386(inst Inst) {
 	}
 
 	// Collect dispatch entries
-	var entries []dispatchEntry
+	var entries []becommon.DispatchEntry
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + "." + bareMethod
 			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, dispatchEntry{tid, candidate})
+				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 			}
 		}
 	}
@@ -862,9 +867,9 @@ func (g *CodeGen) compileIfaceCall_i386(inst Inst) {
 	} else {
 		endFixups := make([]int, 0)
 		for _, entry := range entries {
-			g.cmpRI32(REG32_ECX, int32(entry.typeID))
+			g.cmpRI32(REG32_ECX, int32(entry.TypeID))
 			nextFixup := g.jccRel32(CC32_NE)
-			g.emitCallPlaceholder(entry.funcName)
+			g.emitCallPlaceholder(entry.FuncName)
 			endFixups = append(endFixups, g.jmpRel32())
 			g.patchRel32(nextFixup)
 		}
@@ -905,7 +910,7 @@ func (g *CodeGen) compileStore_i386(size int) {
 	}
 }
 
-func (g *CodeGen) compileOffset_i386(inst Inst) {
+func (g *CodeGen) compileOffset_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
 	if inst.Arg != 0 {
 		g.addRI32(REG32_EAX, int32(inst.Arg))

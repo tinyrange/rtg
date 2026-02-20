@@ -1,10 +1,13 @@
 //go:build !no_backend_windows_i386
 
-package main
+package i386
 
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 // win386Imports lists all kernel32.dll functions needed by the backend.
@@ -37,9 +40,10 @@ var win386Imports = []string{
 	"GetCurrentProcessId",
 }
 
-// generateWin386PE compiles an IRModule to a Windows PE32 executable.
-func generateWin386PE(irmod *IRModule, outputPath string) error {
+// GenerateWinPE compiles an IRModule to a Windows PE32 executable.
+func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
+		target:        target,
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),
 		stringMap:     make(map[string]int),
@@ -64,7 +68,7 @@ func generateWin386PE(irmod *IRModule, outputPath string) error {
 		g.compileFunc_i386(f)
 	}
 
-	collectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
 	if g.needTostringHelper {
 		g.emitTostringHelperI386()
 	}
@@ -108,7 +112,7 @@ func generateWin386PE(irmod *IRModule, outputPath string) error {
 }
 
 // emitStart_win386 generates the Windows entry point.
-func (g *CodeGen) emitStart_win386(irmod *IRModule) {
+func (g *CodeGen) emitStart_win386(irmod *ir.IRModule) {
 	// Windows entry point: no arguments passed, we use stdcall.
 	// EDI = operand stack pointer (callee-saved)
 	// EBP = frame pointer (callee-saved)
@@ -133,7 +137,7 @@ func (g *CodeGen) emitStart_win386(irmod *IRModule) {
 
 	// Call init functions
 	for _, f := range irmod.Funcs {
-		if isInitFunc(f.Name) {
+		if ir.IsInitFunc(f.Name) {
 			g.emitCallPlaceholder(f.Name)
 		}
 	}

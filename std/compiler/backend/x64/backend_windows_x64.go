@@ -40,7 +40,7 @@ var winAmd64Imports = []string{
 }
 
 // generateWinAmd64PE compiles an IRModule to a Windows PE32+ (x86-64) executable.
-func generateWinAmd64PE(irmod *ir.IRModule, outputPath string) error {
+func GenerateWinPE(irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
 		funcOffsets:   make(map[string]int),
 		labelOffsets:  make(map[int]int),

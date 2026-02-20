@@ -1,10 +1,12 @@
 //go:build !no_backend_linux_i386
 
-package main
+package i386
+
+import "j5.nz/rtg/std/compiler/ir"
 
 // === ELF32 Binary Builder ===
 
-func (g *CodeGen) buildELF32(irmod *IRModule) []byte {
+func (g *CodeGen) buildELF32(irmod *ir.IRModule) []byte {
 	// Layout:
 	// [ELF header: 52 bytes]
 	// [Program header: 32 bytes]
@@ -123,7 +125,7 @@ func (g *CodeGen) buildELF32(irmod *IRModule) []byte {
 	shdrTableSize := shdrCount * shdrEntrySize
 
 	totalSize := shdrOffset + shdrTableSize
-	if stripBinary {
+	if g.target.StripBinary {
 		totalSize = loadedSize
 	}
 
@@ -146,7 +148,7 @@ func (g *CodeGen) buildELF32(irmod *IRModule) []byte {
 	putU32(elf[20:], 1)                     // e_version: EV_CURRENT
 	putU32(elf[24:], uint32(entryAddr))     // e_entry (4 bytes)
 	putU32(elf[28:], uint32(elfHeaderSize)) // e_phoff (4 bytes)
-	if stripBinary {
+	if g.target.StripBinary {
 		putU32(elf[32:], 0) // e_shoff (4 bytes)
 	} else {
 		putU32(elf[32:], uint32(shdrOffset)) // e_shoff (4 bytes)
@@ -156,7 +158,7 @@ func (g *CodeGen) buildELF32(irmod *IRModule) []byte {
 	putU16(elf[42:], uint16(phdrSize))      // e_phentsize
 	putU16(elf[44:], 1)                     // e_phnum
 	putU16(elf[46:], uint16(shdrEntrySize)) // e_shentsize
-	if stripBinary {
+	if g.target.StripBinary {
 		putU16(elf[48:], 0) // e_shnum
 		putU16(elf[50:], 0) // e_shstrndx
 	} else {
@@ -180,7 +182,7 @@ func (g *CodeGen) buildELF32(irmod *IRModule) []byte {
 	copy(elf[rodataOffset:], g.rodata)
 	copy(elf[dataOffset:], g.data)
 
-	if !stripBinary {
+	if !g.target.StripBinary {
 		// Copy debug sections
 		copy(elf[symtabOffset:], symtab)
 		copy(elf[strtabOffset:], strtab)
