@@ -28,7 +28,7 @@ func emitModuleWithOptions(irmod *IRModule, outputPath string, opts DriverOption
 	if opts.Target.Backend != "native" {
 		err = emitRegisteredBackendWithOptions(opts.Target.Backend, irmod, backendOptionsFromDriver(opts, outputPath))
 	} else {
-		err = GenerateELFWithOptions(irmod, outputPath, opts)
+		err = GenerateELF(irmod, outputPath, opts)
 	}
 
 	return err

@@ -68,3 +68,4 @@ For each feature/change:
 
 - Backend selection is primarily controlled by file build constraints; special tags like `no_backend_*` and `no_embed_std` are used in targeted flows.
 - Keep `tools/Buildfile` targets and backend/tag assumptions aligned when adding/removing backends.
+- Compiler APIs in `std/compiler` are internal; do not keep compatibility shims during refactors unless explicitly requested.
