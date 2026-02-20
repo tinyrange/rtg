@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 func configureVMProgramArgs(entryFiles []string, programArgs []string) {
@@ -57,4 +58,20 @@ func prepareRuntimeInputs(entryFiles []string, fromIRBinaryPath string, stdinInp
 	}
 
 	return entryFiles, outputPath, nil
+}
+
+func parseExitStatusFromErrorString(errStr string) (int, bool) {
+	if !strings.HasPrefix(errStr, "exit status ") {
+		return 0, false
+	}
+	codeStr := errStr[12:]
+	code := 0
+	j := 0
+	for j < len(codeStr) {
+		if codeStr[j] >= '0' && codeStr[j] <= '9' {
+			code = code*10 + int(codeStr[j]-'0')
+		}
+		j++
+	}
+	return code, true
 }

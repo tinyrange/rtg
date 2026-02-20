@@ -249,16 +249,8 @@ func main() {
 		if err != nil {
 			// Parse exit code from "exit status N"
 			errStr := err.Error()
-			if strings.HasPrefix(errStr, "exit status ") {
-				codeStr := errStr[12:]
-				code := 0
-				j := 0
-				for j < len(codeStr) {
-					if codeStr[j] >= '0' && codeStr[j] <= '9' {
-						code = code*10 + int(codeStr[j]-'0')
-					}
-					j++
-				}
+			code, ok := parseExitStatusFromErrorString(errStr)
+			if ok {
 				os.Exit(code)
 			}
 			fmt.Fprintf(os.Stderr, "rtg -run: %s\n", err.Error())
