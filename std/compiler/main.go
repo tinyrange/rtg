@@ -166,45 +166,11 @@ func main() {
 			i = i + 1
 		}
 	}
-	if stdinInput {
-		if fromIRBinaryPath != "" {
-			fmt.Fprintf(os.Stderr, "cannot use - with -from-ir-binary\n")
-			runCleanup()
-			os.Exit(1)
-		}
-		err := readStdinSourceToTemp()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "rtg: failed to read stdin source: %v\n", err)
-			runCleanup()
-			os.Exit(1)
-		}
-		entryFiles = append(entryFiles, runTmpSrc)
-	}
-	if runMode {
-		tmpDir := tempDirPath()
-		sep := pathSep()
-		pid := fmt.Sprintf("%d", os.Getpid())
-		if runTmpSrc == "" {
-			runTmpSrc = tmpDir + sep + "rtg-run-" + pid + ".go"
-		}
-		runTmpBin = tmpDir + sep + "rtg-run-" + pid
-		if parsedOpts.Target.GOOS == "windows" {
-			runTmpBin = runTmpBin + ".exe"
-		}
-
-		// Read from stdin if no entry files
-		if len(entryFiles) == 0 {
-			err := readStdinSourceToTemp()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "rtg -run: failed to read stdin source: %v\n", err)
-				runCleanup()
-				os.Exit(1)
-			}
-			entryFiles = append(entryFiles, runTmpSrc)
-		}
-
-		// Override output to temp binary
-		outputPath = runTmpBin
+	entryFiles, outputPath, err := prepareRuntimeInputs(entryFiles, fromIRBinaryPath, stdinInput, runMode, outputPath, parsedOpts.Target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		runCleanup()
+		os.Exit(1)
 	}
 
 	showHelp, err := validateMainInputs(extractStdlibDest, fromIRBinaryPath, entryFiles)
