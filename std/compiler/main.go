@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 )
@@ -239,10 +238,7 @@ func main() {
 	}
 
 	if runMode {
-		cmd := exec.Command(outputPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err = cmd.Run()
+		err = runCompiledBinary(outputPath)
 
 		runCleanup()
 

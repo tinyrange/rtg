@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -74,4 +75,11 @@ func parseExitStatusFromErrorString(errStr string) (int, bool) {
 		j++
 	}
 	return code, true
+}
+
+func runCompiledBinary(outputPath string) error {
+	cmd := exec.Command(outputPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
