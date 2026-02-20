@@ -119,16 +119,7 @@ func acquireIRModule(entryFiles []string, fromIRBinaryPath string, buildTagsPath
 		}
 		return compileResult{IRModule: irmod}, nil
 	}
-
-	res, err := compileFromSourceInputs(entryFiles, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
-	if err != nil {
-		return compileResult{}, err
-	}
-	return compileResult{
-		IRModule:      res.IRModule,
-		FrontendErrs:  res.FrontendErrs,
-		ShouldExitNow: res.ShouldExitNow,
-	}, nil
+	return compileFromSourceInputs(entryFiles, buildTagsPath, parseOnly, emitIRBinaryPath, opts)
 }
 
 func handleExtractStdlibMode(extractStdlibDest string, fromIRBinaryPath string, entryFiles []string, runMode bool, stdinInput bool, parseOnly bool, emitIRBinaryPath string, buildTagsPath string) (bool, error) {
