@@ -163,7 +163,7 @@ crosscompile-wasm-native: build
   sh ./build/cross_stage3 -o build/cross_stage4 ./std/compiler/
   sh ./build/cross_stage3 -h >/dev/null
   sh ./build/cross_stage4 -h >/dev/null
-  sh cmp build/cross_stage3 build/cross_stage4 && echo "PASS: wasm->native cross-compile OK"
+  sh set -eu; if cmp build/cross_stage3 build/cross_stage4; then echo PASS: wasm->native cross-compile OK; else echo FAIL: wasm->native cross-compile mismatch; ls -l build/cross_stage3 build/cross_stage4; if command -v sha256sum >/dev/null 2>&1; then sha256sum build/cross_stage3 build/cross_stage4; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 build/cross_stage3 build/cross_stage4; fi; diff_line=$(cmp -l build/cross_stage3 build/cross_stage4 | head -n 1 || true); echo first cmp -l line: ${diff_line:-<none>}; if [ x$diff_line != x ]; then set -- $diff_line; byte_pos=$1; start=$((byte_pos-24)); if [ $start -lt 0 ]; then start=0; fi; echo first differing byte offset: $byte_pos; echo --- cross_stage3 around offset $start ---; od -An -tx1 -j $start -N 64 build/cross_stage3; echo --- cross_stage4 around offset $start ---; od -An -tx1 -j $start -N 64 build/cross_stage4; echo --- first 20 cmp -l differences ---; cmp -l build/cross_stage3 build/cross_stage4 | head -n 20; fi; exit 1; fi
 
 test-fullcompiler-rtg: build
   fullcompiler rtg
