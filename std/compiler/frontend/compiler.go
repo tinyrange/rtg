@@ -169,6 +169,11 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 				if tn != "" {
 					c.globalConcreteTypes[qname] = c.qualifyTypeName(tn, pkg.Path)
 				}
+			} else if sym.Node != nil && sym.Node.X != nil && sym.Node.X.Kind == NCompositeLit && sym.Node.X.Type != nil {
+				tn := nodeTypeName(sym.Node.X.Type)
+				if tn != "" {
+					c.globalConcreteTypes[qname] = c.qualifyTypeName(tn, pkg.Path)
+				}
 			}
 		}
 	}
@@ -580,6 +585,10 @@ func (c *Compiler) resolveExprType(node *Node) string {
 	}
 	if node.Kind == NIdent {
 		if ct, ok := c.localConcreteTypes[node.Name]; ok {
+			return ct
+		}
+		qname := c.curPkg.QualName(node.Name)
+		if ct, ok := c.globalConcreteTypes[qname]; ok {
 			return ct
 		}
 		return ""
@@ -2302,13 +2311,30 @@ func (c *Compiler) compileLValueSet(node *Node) {
 		c.emit(ir.Inst{Op: ir.OP_INDEX_ADDR, Arg: elemSize})
 		c.emit(ir.Inst{Op: ir.OP_STORE, Arg: elemSize})
 	case NSelectorExpr:
-		offset := 0
-		recvType := c.resolveExprType(node.X)
-		if recvType != "" {
-			off := c.resolveFieldOffset(recvType, node.Name)
-			if off >= 0 {
-				offset = off
+		if node.X != nil && node.X.Kind == NIdent {
+			pkg := c.resolvePackage(node.X.Name)
+			if pkg != nil {
+				qname := pkg.QualName(node.Name)
+				gidx, ok := c.globals[qname]
+				if ok {
+					c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
+				} else {
+					c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Name: qname})
+				}
+				return
 			}
+		}
+		recvType := c.resolveExprType(node.X)
+		if recvType == "" {
+			c.errorf("%s: cannot resolve selector %s (unknown receiver type)", c.curFunc.Name, node.Name)
+			c.emit(ir.Inst{Op: ir.OP_DROP})
+			return
+		}
+		offset := c.resolveFieldOffset(recvType, node.Name)
+		if offset < 0 {
+			c.errorf("%s: cannot resolve selector %s on %s", c.curFunc.Name, node.Name, recvType)
+			c.emit(ir.Inst{Op: ir.OP_DROP})
+			return
 		}
 		c.compileExpr(node.X)
 		// Auto-deref pointer-to-struct for field write (e.g., pp.X = 100)
@@ -3905,10 +3931,27 @@ func (c *Compiler) compileAddrOf(node *Node) {
 		}
 		idx, ok := c.lookupLocal(node.Name)
 		if ok {
+			// Struct-typed locals are represented as heap handles in the slot.
+			// Taking their address should preserve that handle, not the slot address.
+			if ct, hasType := c.localConcreteTypes[node.Name]; hasType {
+				if typeNode, _ := c.lookupStructTypeNode(ct); typeNode != nil {
+					c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+					return
+				}
+			}
 			c.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: idx})
 		} else {
 			gidx, gok := c.lookupGlobal(node.Name)
 			if gok {
+				// Struct-typed globals are already represented as heap handles.
+				// Taking their address should preserve that handle, not the global slot address.
+				qname := c.curPkg.QualName(node.Name)
+				if ct, ok := c.globalConcreteTypes[qname]; ok {
+					if typeNode, _ := c.lookupStructTypeNode(ct); typeNode != nil {
+						c.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: gidx})
+						return
+					}
+				}
 				c.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: gidx})
 			}
 		}
@@ -4981,16 +5024,17 @@ func (c *Compiler) compileSelectorExpr(node *Node) {
 			return
 		}
 	}
-	// Field access — resolve byte offset path from concrete type (supports promoted fields).
-	var offsets []int
 	recvType := c.resolveExprType(node.X)
-	if recvType != "" {
-		if path, ok := c.resolveFieldPath(recvType, node.Name); ok {
-			offsets = path
-		}
+	if recvType == "" {
+		c.errorf("%s: cannot resolve selector %s (unknown receiver type)", c.curFunc.Name, node.Name)
+		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+		return
 	}
-	if len(offsets) == 0 {
-		offsets = []int{0}
+	offsets, ok := c.resolveFieldPath(recvType, node.Name)
+	if !ok || len(offsets) == 0 {
+		c.errorf("%s: cannot resolve selector %s on %s", c.curFunc.Name, node.Name, recvType)
+		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+		return
 	}
 	c.compileExpr(node.X)
 	// Auto-deref pointer-to-struct for field access (e.g., pp.X where pp is *Point)
