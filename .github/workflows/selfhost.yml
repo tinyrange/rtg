@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 jobs:
   selfhost:
@@ -117,7 +118,7 @@ jobs:
     needs:
       - selfhost
       - selfhost-wasm
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request'
     env:
       SIZE_REPORT_ISSUE_NUMBER: ${{ vars.COMPILER_SIZE_ISSUE_NUMBER }}
     steps:
@@ -127,6 +128,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Validate issue configuration
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           if [ -z "${SIZE_REPORT_ISSUE_NUMBER}" ]; then
             echo "Repository variable COMPILER_SIZE_ISSUE_NUMBER is not set."
@@ -235,7 +237,7 @@ jobs:
           matrix_json+='},"generated_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","commit":"'"${GITHUB_SHA}"'"}'
           printf '%s\n' "$matrix_json" > build/compiler-size-data.json
 
-      - name: Post size report issue comment
+      - name: Post size report comment
         uses: actions/github-script@v7
         env:
           SIZE_DATA_PATH: build/compiler-size-data.json
@@ -243,7 +245,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require("fs");
-            const issueNumber = Number(process.env.SIZE_REPORT_ISSUE_NUMBER);
+            const isPR = context.eventName === "pull_request";
+            const issueNumber = isPR
+              ? context.payload.pull_request.number
+              : Number(process.env.SIZE_REPORT_ISSUE_NUMBER);
             const data = JSON.parse(fs.readFileSync(process.env.SIZE_DATA_PATH, "utf8"));
             const marker = "<!-- compiler-size-report -->";
             const dataPrefix = "<!-- compiler-size-data:";
@@ -293,6 +298,7 @@ jobs:
             lines.push("## Compiler Size Matrix");
             lines.push("");
             lines.push(`Generated from stage2 compiler built for \`linux/amd64\`.`);
+            lines.push(`Source: ${isPR ? `PR #${context.payload.pull_request.number}` : "main branch"}`);
             lines.push(`Commit: \`${data.commit.slice(0, 12)}\``);
             lines.push("");
             lines.push(`| ${header.join(" | ")} |`);
@@ -321,10 +327,22 @@ jobs:
             }
 
             const payload = `${marker}\n${lines.join("\n")}\n\n${dataPrefix}${JSON.stringify(data)}-->`;
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issueNumber,
-              body: payload,
-            });
+            try {
+              if (isPR && existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body: payload,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  body: payload,
+                });
+              }
+            } catch (err) {
+              core.warning(`Could not post size report comment: ${err.message}`);
+            }
