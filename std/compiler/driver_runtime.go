@@ -83,3 +83,11 @@ func runCompiledBinary(outputPath string) error {
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
+
+func classifyRunModeError(errStr string) (int, string) {
+	code, ok := parseExitStatusFromErrorString(errStr)
+	if ok {
+		return code, ""
+	}
+	return 1, "rtg -run: " + errStr
+}

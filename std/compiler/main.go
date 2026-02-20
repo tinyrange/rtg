@@ -243,14 +243,12 @@ func main() {
 		runCleanup()
 
 		if err != nil {
-			// Parse exit code from "exit status N"
 			errStr := err.Error()
-			code, ok := parseExitStatusFromErrorString(errStr)
-			if ok {
-				os.Exit(code)
+			code, msg := classifyRunModeError(errStr)
+			if msg != "" {
+				fmt.Fprintf(os.Stderr, "%s\n", msg)
 			}
-			fmt.Fprintf(os.Stderr, "rtg -run: %s\n", err.Error())
-			os.Exit(1)
+			os.Exit(code)
 		}
 		os.Exit(0)
 	}
