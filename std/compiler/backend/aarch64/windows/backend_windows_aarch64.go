@@ -11,36 +11,6 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
-// winArm64Imports lists all kernel32.dll functions needed by the Windows ARM64 backend.
-var winArm64Imports = []string{
-	"VirtualAlloc",
-	"ExitProcess",
-	"GetStdHandle",
-	"WriteFile",
-	"ReadFile",
-	"CreateFileA",
-	"CloseHandle",
-	"GetCommandLineA",
-	"GetEnvironmentStringsA",
-	"FreeEnvironmentStringsA",
-	"GetCurrentDirectoryA",
-	"CreateDirectoryA",
-	"RemoveDirectoryA",
-	"DeleteFileA",
-	"FindFirstFileA",
-	"FindNextFileA",
-	"FindClose",
-	"GetFileAttributesExA",
-	"CreateProcessA",
-	"WaitForSingleObject",
-	"GetExitCodeProcess",
-	"CreatePipe",
-	"SetStdHandle",
-	"SetHandleInformation",
-	"GetLastError",
-	"GetCurrentProcessId",
-}
-
 // GenerateWinPE compiles an IRModule to a Windows ARM64 PE32+ executable.
 func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := aarch64.NewCodeGen(target, irmod, 0x140000000, 0, false)
@@ -71,7 +41,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 	}
 
 	// Build PE32+
-	pe := BuildPE64(g, irmod, winArm64Imports)
+	pe := BuildPE64(g, irmod)
 	err := os.WriteFile(outputPath, pe, 0755)
 	if err != nil {
 		return fmt.Errorf("write output: %v", err)
@@ -114,13 +84,17 @@ func emitStartArm64Windows(g *aarch64.CodeGen, irmod *ir.IRModule) {
 
 // emitCallIATArm64 emits ADRP+LDR X16 (placeholder) then BLR X16 for calling a Windows IAT entry.
 func emitCallIATArm64(g *aarch64.CodeGen, funcName string) {
+	emitCallIATArm64InLib(g, winDefaultImportLibrary, funcName)
+}
+
+func emitCallIATArm64InLib(g *aarch64.CodeGen, libName string, funcName string) {
 	g.Flush()
 	// Windows ARM64 ABI requires 32 bytes of home space for callees.
 	emitAddImm64Arm64(g, aarch64.REG_SP, aarch64.REG_SP, -32)
 	off := g.EmitAdrp(aarch64.REG_X16)
 	inst := uint32(0xF9400000) | (uint32(aarch64.REG_X16&0x1f) << 5) | uint32(aarch64.REG_X16&0x1f)
 	g.EmitArm64(inst)
-	g.AddCallFixup(off, "$iat$"+funcName, 0)
+	g.AddCallFixup(off, encodeIATFixupTarget(libName, funcName), 0)
 	g.EmitBlr(aarch64.REG_X16)
 	emitAddImm64Arm64(g, aarch64.REG_SP, aarch64.REG_SP, 32)
 }

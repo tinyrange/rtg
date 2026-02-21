@@ -10,36 +10,6 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
-// winArm64Imports lists all kernel32.dll functions needed by the Windows ARM64 backend.
-var winArm64Imports = []string{
-	"VirtualAlloc",
-	"ExitProcess",
-	"GetStdHandle",
-	"WriteFile",
-	"ReadFile",
-	"CreateFileA",
-	"CloseHandle",
-	"GetCommandLineA",
-	"GetEnvironmentStringsA",
-	"FreeEnvironmentStringsA",
-	"GetCurrentDirectoryA",
-	"CreateDirectoryA",
-	"RemoveDirectoryA",
-	"DeleteFileA",
-	"FindFirstFileA",
-	"FindNextFileA",
-	"FindClose",
-	"GetFileAttributesExA",
-	"CreateProcessA",
-	"WaitForSingleObject",
-	"GetExitCodeProcess",
-	"CreatePipe",
-	"SetStdHandle",
-	"SetHandleInformation",
-	"GetLastError",
-	"GetCurrentProcessId",
-}
-
 // GenerateWinPE compiles an IRModule to a Windows ARM64 PE32+ executable.
 func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
@@ -103,7 +73,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 	}
 
 	// Build PE32+
-	pe := g.buildPE64(irmod, winArm64Imports)
+	pe := g.buildPE64(irmod)
 	err := os.WriteFile(outputPath, pe, 0755)
 	if err != nil {
 		return fmt.Errorf("write output: %v", err)
@@ -161,6 +131,10 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 // emitCallIATArm64 emits ADRP+LDR X16 (placeholder) then BLR X16 for calling
 // a Windows IAT entry. Creates a $iat$funcName callFixup.
 func (g *CodeGen) emitCallIATArm64(funcName string) {
+	g.emitCallIATArm64InLib(winDefaultImportLibraryArm64, funcName)
+}
+
+func (g *CodeGen) emitCallIATArm64InLib(libName string, funcName string) {
 	g.Flush()
 	// Windows ARM64 ABI requires 32 bytes of home space for callees.
 	g.emitSubImm(REG_SP, REG_SP, 32)
@@ -170,7 +144,7 @@ func (g *CodeGen) emitCallIATArm64(funcName string) {
 	g.EmitArm64(inst)
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: off,
-		Target:     "$iat$" + funcName,
+		Target:     encodeIATFixupTargetArm64(libName, funcName),
 	})
 	g.EmitBlr(REG_X16)
 	g.emitAddImm(REG_SP, REG_SP, 32)
