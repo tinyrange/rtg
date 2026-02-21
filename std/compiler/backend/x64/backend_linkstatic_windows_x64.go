@@ -22,6 +22,140 @@ func decodeLinkStaticSpecWin64(raw string) (string, string, string, bool) {
 	return lib, sym, mode, true
 }
 
+func (g *CodeGen) compileKnownLinkStaticIntrinsicWin64(instName string, lib string, sym string) bool {
+	prevActive := g.linkStaticImportActive
+	prevLib := g.linkStaticImportLib
+	prevSym := g.linkStaticImportSymbol
+	g.linkStaticImportActive = true
+	g.linkStaticImportLib = lib
+	g.linkStaticImportSymbol = sym
+
+	known := true
+	switch instName {
+	case "SysRead":
+		g.compileSyscallRead_win64()
+	case "SysWrite":
+		g.compileSyscallWrite_win64()
+	case "SysOpen":
+		g.compileSyscallOpen_win64()
+	case "SysClose":
+		g.compileSyscallClose_win64()
+	case "SysStat":
+		g.compileSyscallStat_win64()
+	case "SysExit":
+		g.compileSyscallExit_win64()
+	case "SysMmap":
+		g.compileSyscallMmap_win64()
+	case "SysMkdir":
+		g.compileSyscallMkdir_win64()
+	case "SysRmdir":
+		g.compileSyscallRmdir_win64()
+	case "SysUnlink":
+		g.compileSyscallUnlink_win64()
+	case "SysGetcwd":
+		g.compileSyscallGetcwd_win64()
+	case "SysGetCommandLine":
+		g.compileSyscallGetCommandLine_win64()
+	case "SysGetEnvStrings":
+		g.compileSyscallGetEnvStrings_win64()
+	case "SysFindFirstFile":
+		g.compileSyscallFindFirstFile_win64()
+	case "SysFindNextFile":
+		g.compileSyscallFindNextFile_win64()
+	case "SysFindClose":
+		g.compileSyscallFindClose_win64()
+	case "SysCreateProcess":
+		g.compileSyscallCreateProcess_win64()
+	case "SysWaitProcess":
+		g.compileSyscallWaitProcess_win64()
+	case "SysCreatePipe":
+		g.compileSyscallCreatePipe_win64()
+	case "SysSetStdHandle":
+		g.compileSyscallSetStdHandle_win64()
+	case "SysGetpid":
+		g.compileSyscallGetpid_win64()
+	default:
+		known = false
+	}
+	g.linkStaticImportActive = prevActive
+	g.linkStaticImportLib = prevLib
+	g.linkStaticImportSymbol = prevSym
+	return known
+}
+
+func (g *CodeGen) emitGenericLinkStaticCallWin64(paramCount int, lib string, sym string) {
+	if paramCount < 0 {
+		panic("ICE: invalid linkstatic arg count")
+	}
+	extra := 0
+	if paramCount > 4 {
+		extra = paramCount - 4
+	}
+	for i := paramCount; i > 4; i-- {
+		g.emitLoadLocal(i*8, REG_RAX)
+		g.pushR(REG_RAX)
+	}
+	g.subRI(REG_RSP, 32) // Windows x64 shadow space
+	if paramCount >= 1 {
+		g.emitLoadLocal(1*8, REG_RCX)
+	}
+	if paramCount >= 2 {
+		g.emitLoadLocal(2*8, REG_RDX)
+	}
+	if paramCount >= 3 {
+		g.emitLoadLocal(3*8, REG_R8)
+	}
+	if paramCount >= 4 {
+		g.emitLoadLocal(4*8, REG_R9)
+	}
+	g.emitCallIATInLib(lib, sym)
+	g.addRI(REG_RSP, int32(32+extra*8))
+}
+
+func (g *CodeGen) emitLinkStaticPtrReturnWin64() {
+	g.testRR(REG_RAX, REG_RAX)
+	fixNonZero := g.jccRel32(CC_NE)
+	g.compileConstI64(0)
+	g.compileConstI64(0)
+	g.compileConstI64(1)
+	fixDone := g.jmpRel32()
+
+	g.patchRel32(fixNonZero)
+	g.emitMovRegImm64(REG_RCX, 0xFFFFFFFFFFFFFFFF)
+	g.cmpRR(REG_RAX, REG_RCX)
+	fixNotMinusOne := g.jccRel32(CC_NE)
+	g.compileConstI64(0)
+	g.compileConstI64(0)
+	g.compileConstI64(1)
+	fixDone2 := g.jmpRel32()
+
+	g.patchRel32(fixNotMinusOne)
+	g.opPush(REG_RAX)
+	g.compileConstI64(0)
+	g.compileConstI64(0)
+	g.patchRel32(fixDone2)
+	g.patchRel32(fixDone)
+}
+
+func (g *CodeGen) emitLinkStaticReturnWin64(mode string) {
+	switch mode {
+	case "syscall":
+		g.opPush(REG_RAX)
+		g.compileConstI64(0)
+		g.compileConstI64(0)
+	case "ptr":
+		g.emitLinkStaticPtrReturnWin64()
+	case "rawptr":
+		g.opPush(REG_RAX)
+		g.compileConstI64(0)
+		g.compileConstI64(0)
+	case "noreturn":
+		g.clearOperandCache()
+	default:
+		panic("ICE: unknown linkstatic mode '" + mode + "'")
+	}
+}
+
 func (g *CodeGen) compileLinkStaticIntrinsicWin64(inst ir.Inst) bool {
 	if g.target.GOOS != "windows" || g.irmod == nil || g.irmod.LinkStaticFuncs == nil {
 		return false
@@ -30,72 +164,22 @@ func (g *CodeGen) compileLinkStaticIntrinsicWin64(inst ir.Inst) bool {
 	if !ok {
 		return false
 	}
-	lib, sym, _, ok := decodeLinkStaticSpecWin64(raw)
+	lib, sym, mode, ok := decodeLinkStaticSpecWin64(raw)
 	if !ok {
 		panic("ICE: invalid windows linkstatic metadata for '" + inst.Name + "'")
 	}
 	lib = canonicalWinImportLibrary(lib)
-
-	prevActive := g.linkStaticImportActive
-	prevLib := g.linkStaticImportLib
-	prevSym := g.linkStaticImportSymbol
-	g.linkStaticImportActive = true
-	g.linkStaticImportLib = lib
-	g.linkStaticImportSymbol = sym
-
-	knownSymbol := true
-
-	switch sym {
-	case "ReadFile":
-		g.compileSyscallRead_win64()
-	case "WriteFile":
-		g.compileSyscallWrite_win64()
-	case "CreateFileA":
-		g.compileSyscallOpen_win64()
-	case "CloseHandle":
-		g.compileSyscallClose_win64()
-	case "GetFileAttributesExA":
-		g.compileSyscallStat_win64()
-	case "ExitProcess":
-		g.compileSyscallExit_win64()
-	case "VirtualAlloc":
-		g.compileSyscallMmap_win64()
-	case "CreateDirectoryA":
-		g.compileSyscallMkdir_win64()
-	case "RemoveDirectoryA":
-		g.compileSyscallRmdir_win64()
-	case "DeleteFileA":
-		g.compileSyscallUnlink_win64()
-	case "GetCurrentDirectoryA":
-		g.compileSyscallGetcwd_win64()
-	case "GetCommandLineA":
-		g.compileSyscallGetCommandLine_win64()
-	case "GetEnvironmentStringsA":
-		g.compileSyscallGetEnvStrings_win64()
-	case "FindFirstFileA":
-		g.compileSyscallFindFirstFile_win64()
-	case "FindNextFileA":
-		g.compileSyscallFindNextFile_win64()
-	case "FindClose":
-		g.compileSyscallFindClose_win64()
-	case "CreateProcessA":
-		g.compileSyscallCreateProcess_win64()
-	case "WaitForSingleObject":
-		g.compileSyscallWaitProcess_win64()
-	case "CreatePipe":
-		g.compileSyscallCreatePipe_win64()
-	case "SetStdHandle":
-		g.compileSyscallSetStdHandle_win64()
-	case "GetCurrentProcessId":
-		g.compileSyscallGetpid_win64()
-	default:
-		knownSymbol = false
+	if mode == "" {
+		mode = "syscall"
 	}
-	g.linkStaticImportActive = prevActive
-	g.linkStaticImportLib = prevLib
-	g.linkStaticImportSymbol = prevSym
-	if !knownSymbol {
-		panic("ICE: unknown windows linkstatic symbol '" + sym + "'")
+
+	// Preserve existing Windows runtime syscall semantics where wrappers adapt
+	// arguments/returns. All other linkstatic intrinsics use generic lowering.
+	if g.compileKnownLinkStaticIntrinsicWin64(inst.Name, lib, sym) {
+		return true
 	}
+
+	g.emitGenericLinkStaticCallWin64(inst.Arg, lib, sym)
+	g.emitLinkStaticReturnWin64(mode)
 	return true
 }
