@@ -159,6 +159,7 @@ type IRModule struct {
 	Funcs           []*IRFunc
 	Globals         []IRGlobal
 	Types           []*TypeInfo
+	LinkStaticFuncs map[string]string   // intrinsic name → "library,symbol,mode"
 	TypeIDs         map[string]int      // concrete type → type ID
 	MethodTable     map[string]string   // "pkg.Type.Method" → IR func name
 	IfaceMethods    map[string][]string // interface name → method names

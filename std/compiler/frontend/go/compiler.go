@@ -916,9 +916,9 @@ func (c *Compiler) compilePackage(pkg *Package) {
 func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
-			fn := node
-			if fn.Kind == NDirective && fn.X != nil {
-				fn = fn.X
+			fn, _ := unwrapDirectiveNode(node)
+			if fn == nil {
+				continue
 			}
 			if fn.Kind != NFunc {
 				continue
@@ -1243,6 +1243,24 @@ func sortEmbedFiles(names []string, data []string) {
 	}
 }
 
+func unwrapDirectiveNode(node *Node) (*Node, []string) {
+	var directives []string
+	cur := node
+	for cur != nil && cur.Kind == NDirective {
+		directives = append(directives, cur.Name)
+		cur = cur.X
+	}
+	return cur, directives
+}
+
+func validLinkStaticMode(mode string) bool {
+	return mode == "" || mode == "syscall" || mode == "ptr" || mode == "rawptr" || mode == "noreturn"
+}
+
+func encodeLinkStaticDirective(spec LinkStaticDirective) string {
+	return spec.Library + "," + spec.Symbol + "," + spec.Mode
+}
+
 func (c *Compiler) compileTopDecl(node *Node) {
 	if node == nil {
 		return
@@ -1251,8 +1269,29 @@ func (c *Compiler) compileTopDecl(node *Node) {
 	case NFunc:
 		c.compileFunc(node)
 	case NDirective:
-		if node.X != nil && node.X.Kind == NFunc {
-			c.compileIntrinsicFunc(node)
+		base, directives := unwrapDirectiveNode(node)
+		if base != nil && base.Kind == NFunc {
+			intern := ""
+			var linkspec LinkStaticDirective
+			hasLinkStatic := false
+			for _, d := range directives {
+				in := parseInternalDirective(d)
+				if in != "" {
+					intern = in
+				}
+				ls, ok := parseLinkStaticDirective(d)
+				if ok {
+					linkspec = ls
+					hasLinkStatic = true
+				}
+			}
+			if intern != "" {
+				c.compileIntrinsicFunc(base, intern)
+			} else if hasLinkStatic {
+				c.compileLinkStaticFunc(base, linkspec)
+			} else {
+				c.compileFunc(base)
+			}
 		}
 	case NVarDecl:
 		// Global var — init handled separately
@@ -1441,10 +1480,8 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.curFunc = nil
 }
 
-func (c *Compiler) compileIntrinsicFunc(directive *Node) {
-	node := directive.X
+func (c *Compiler) compileIntrinsicFunc(node *Node, intern string) {
 	qname := c.curPkg.QualName(node.Name)
-	intern := parseInternalDirective(directive.Name)
 
 	f := &ir.IRFunc{Name: qname}
 	c.curFunc = f
@@ -1484,6 +1521,83 @@ func (c *Compiler) compileIntrinsicFunc(directive *Node) {
 	// Emit single intrinsic call
 	c.stackDepth = 0
 	c.emit(ir.Inst{Op: ir.OP_CALL_INTRINSIC, Name: intern, Arg: paramCount})
+	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: f.RetCount})
+
+	c.funcRets[f.Name] = f.RetCount
+	c.funcParams[f.Name] = f.Params
+	if isVariadic {
+		c.funcVariadic[f.Name] = fixedParams
+		c.funcVariadicElem[f.Name] = varElemSizeI
+	}
+	c.irmod.Funcs = append(c.irmod.Funcs, f)
+	c.curFunc = nil
+}
+
+func (c *Compiler) compileLinkStaticFunc(node *Node, spec LinkStaticDirective) {
+	if node.X != nil {
+		c.errors = append(c.errors, "linkstatic methods are not supported")
+		return
+	}
+	if !validLinkStaticMode(spec.Mode) {
+		c.errors = append(c.errors, fmt.Sprintf("invalid linkstatic mode %q on %s", spec.Mode, node.Name))
+		return
+	}
+
+	qname := c.curPkg.QualName(node.Name)
+	intrinsicName := qname
+
+	f := &ir.IRFunc{Name: qname}
+	c.curFunc = f
+
+	// Count params and detect variadic
+	paramCount := len(node.Nodes)
+	f.Params = paramCount
+	isVariadic := false
+	fixedParams := 0
+	varElemSizeI := c.target.PtrSize
+	for _, param := range node.Nodes {
+		if len(param.Name) > 3 && param.Name[0:3] == "..." {
+			isVariadic = true
+			if param.Type != nil && param.Type.Kind == NIdent && param.Type.Name == "byte" {
+				varElemSizeI = 1
+			}
+		} else {
+			fixedParams++
+		}
+	}
+
+	// Count returns
+	if node.Type != nil {
+		if node.Type.Kind == NFuncType && len(node.Type.Nodes) > 0 {
+			f.RetCount = len(node.Type.Nodes)
+		} else {
+			f.RetCount = 1
+		}
+	}
+	mode := spec.Mode
+	if mode == "" {
+		mode = "syscall"
+	}
+	if mode == "noreturn" {
+		if f.RetCount != 0 {
+			c.errors = append(c.errors, fmt.Sprintf("linkstatic noreturn function %s must return no values", qname))
+			c.curFunc = nil
+			return
+		}
+	} else if f.RetCount != 3 {
+		c.errors = append(c.errors, fmt.Sprintf("linkstatic function %s must return (uintptr, uintptr, int32)", qname))
+		c.curFunc = nil
+		return
+	}
+
+	if c.irmod.LinkStaticFuncs == nil {
+		c.irmod.LinkStaticFuncs = make(map[string]string)
+	}
+	c.irmod.LinkStaticFuncs[intrinsicName] = encodeLinkStaticDirective(spec)
+
+	// Emit single intrinsic call
+	c.stackDepth = 0
+	c.emit(ir.Inst{Op: ir.OP_CALL_INTRINSIC, Name: intrinsicName, Arg: paramCount})
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: f.RetCount})
 
 	c.funcRets[f.Name] = f.RetCount

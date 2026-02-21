@@ -988,3 +988,41 @@ func parseInternalDirective(val string) string {
 	}
 	return val[len(prefix):len(val)]
 }
+
+// LinkStaticDirective describes a static-link external symbol target.
+type LinkStaticDirective struct {
+	Library string
+	Symbol  string
+	Mode    string
+}
+
+// parseLinkStaticDirective parses a directive value like:
+//
+//	"linkstatic libSystem.dylib,_write"
+//	"linkstatic libSystem.dylib,_getcwd,ptr"
+//
+// and returns metadata plus true on success.
+func parseLinkStaticDirective(val string) (LinkStaticDirective, bool) {
+	prefix := "linkstatic "
+	if len(val) <= len(prefix) || val[0:len(prefix)] != prefix {
+		return LinkStaticDirective{}, false
+	}
+	rest := strings.TrimSpace(val[len(prefix):len(val)])
+	if rest == "" {
+		return LinkStaticDirective{}, false
+	}
+	parts := strings.Split(rest, ",")
+	if len(parts) < 2 || len(parts) > 3 {
+		return LinkStaticDirective{}, false
+	}
+	lib := strings.TrimSpace(parts[0])
+	sym := strings.TrimSpace(parts[1])
+	mode := ""
+	if len(parts) == 3 {
+		mode = strings.TrimSpace(parts[2])
+	}
+	if lib == "" || sym == "" {
+		return LinkStaticDirective{}, false
+	}
+	return LinkStaticDirective{Library: lib, Symbol: sym, Mode: mode}, true
+}

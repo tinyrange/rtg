@@ -447,110 +447,10 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.compileCallIntrinsicArm64Windows(inst)
 		return
 	}
+	if g.compileLinkStaticIntrinsicArm64(inst) {
+		return
+	}
 	switch inst.Name {
-	case "SysRead":
-		g.emitLoadLocalArm64(1*8, REG_X0) // fd
-		g.emitLoadLocalArm64(2*8, REG_X1) // buf
-		g.emitLoadLocalArm64(3*8, REG_X2) // count
-		g.EmitCallGOT("_read")
-		g.emitSyscallReturnArm64()
-	case "SysWrite":
-		g.emitLoadLocalArm64(1*8, REG_X0) // fd
-		g.emitLoadLocalArm64(2*8, REG_X1) // buf
-		g.emitLoadLocalArm64(3*8, REG_X2) // count
-		g.EmitCallGOT("_write")
-		g.emitSyscallReturnArm64()
-	case "SysOpen":
-		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.emitLoadLocalArm64(2*8, REG_X1) // flags
-		g.emitLoadLocalArm64(3*8, REG_X2) // mode
-		g.EmitCallGOT("_open")
-		g.emitSyscallReturnArm64()
-	case "SysClose":
-		g.emitLoadLocalArm64(1*8, REG_X0) // fd
-		g.EmitCallGOT("_close")
-		g.emitSyscallReturnArm64()
-	case "SysStat":
-		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.emitLoadLocalArm64(2*8, REG_X1) // buf
-		g.EmitCallGOT("_stat")
-		g.emitSyscallReturnArm64()
-	case "SysMkdir":
-		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.emitLoadLocalArm64(2*8, REG_X1) // mode
-		g.EmitCallGOT("_mkdir")
-		g.emitSyscallReturnArm64()
-	case "SysRmdir":
-		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.EmitCallGOT("_rmdir")
-		g.emitSyscallReturnArm64()
-	case "SysUnlink":
-		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.EmitCallGOT("_unlink")
-		g.emitSyscallReturnArm64()
-	case "SysGetcwd":
-		g.emitLoadLocalArm64(1*8, REG_X0) // buf
-		g.emitLoadLocalArm64(2*8, REG_X1) // size
-		g.EmitCallGOT("_getcwd")
-		g.emitSyscallReturnPtrArm64()
-	case "SysExit":
-		g.emitLoadLocalArm64(1*8, REG_X0) // code
-		g.EmitCallGOT("_exit")
-	case "SysMmap":
-		g.emitLoadLocalArm64(1*8, REG_X0) // addr
-		g.emitLoadLocalArm64(2*8, REG_X1) // len
-		g.emitLoadLocalArm64(3*8, REG_X2) // prot
-		g.emitLoadLocalArm64(4*8, REG_X3) // flags
-		g.emitLoadLocalArm64(5*8, REG_X4) // fd
-		g.emitLoadLocalArm64(6*8, REG_X5) // offset
-		g.EmitCallGOT("_mmap")
-		g.emitSyscallReturnPtrArm64()
-	case "SysOpendir":
-		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.EmitCallGOT("_opendir")
-		g.emitSyscallReturnPtrArm64()
-	case "SysReaddir":
-		g.emitLoadLocalArm64(1*8, REG_X0) // dirp
-		g.EmitCallGOT("_readdir")
-		g.rawPush(REG_X0) // r1 = dirent* or 0
-		g.EmitMovZ(REG_X0, 0, 0)
-		g.rawPush(REG_X0) // r2=0
-		g.rawPush(REG_X0) // err=0
-		g.ClearOperandCache()
-	case "SysClosedir":
-		g.emitLoadLocalArm64(1*8, REG_X0) // dirp
-		g.EmitCallGOT("_closedir")
-		g.emitSyscallReturnArm64()
-	case "SysDup2":
-		g.emitLoadLocalArm64(1*8, REG_X0) // oldfd
-		g.emitLoadLocalArm64(2*8, REG_X1) // newfd
-		g.EmitCallGOT("_dup2")
-		g.emitSyscallReturnArm64()
-	case "SysFork":
-		g.EmitCallGOT("_fork")
-		g.emitSyscallReturnArm64()
-	case "SysExecve":
-		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.emitLoadLocalArm64(2*8, REG_X1) // argv
-		g.emitLoadLocalArm64(3*8, REG_X2) // envp
-		g.EmitCallGOT("_execve")
-		g.emitSyscallReturnArm64()
-	case "SysWait4":
-		g.emitLoadLocalArm64(1*8, REG_X0) // pid
-		g.emitLoadLocalArm64(2*8, REG_X1) // status
-		g.emitLoadLocalArm64(3*8, REG_X2) // options
-		g.emitLoadLocalArm64(4*8, REG_X3) // rusage
-		g.EmitCallGOT("_wait4")
-		g.emitSyscallReturnArm64()
-	case "SysPipe":
-		g.emitLoadLocalArm64(1*8, REG_X0) // fds
-		g.EmitCallGOT("_pipe")
-		g.emitSyscallReturnArm64()
-	case "SysChmod":
-		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.emitLoadLocalArm64(2*8, REG_X1) // mode
-		g.EmitCallGOT("_chmod")
-		g.emitSyscallReturnArm64()
 	case "SysGetargc":
 		argcOff := len(g.irmod.Globals) * 8
 		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argcOff))
@@ -575,9 +475,6 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
 		g.ClearOperandCache()
-	case "SysGetpid":
-		g.EmitCallGOT("_getpid")
-		g.emitSyscallReturnArm64()
 	case "Syscall":
 		g.compileSyscallIntrinsicArm64(inst.Arg)
 	case "Sliceptr":
