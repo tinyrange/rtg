@@ -13,7 +13,7 @@ import (
 	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/binary"
 	"j5.nz/rtg/std/compiler/common"
-	"j5.nz/rtg/std/compiler/frontend"
+	frontend "j5.nz/rtg/std/compiler/frontend/go"
 	"j5.nz/rtg/std/compiler/ir"
 	"j5.nz/rtg/std/compiler/stdlib"
 )
