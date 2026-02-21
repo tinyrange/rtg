@@ -136,6 +136,68 @@ jobs:
       - name: Fullcompiler suite (WASM backend)
         run: ./build/build test-fullcompiler-wasm
 
+  comemu-dos:
+    name: DOS COMEMU sweep (tests/*.go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build bootstrap compiler
+        run: go build -o build/rtg ./std/compiler/
+
+      - name: Run DOS COMEMU sweep
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+
+          out_dir="build/comemu-ci"
+          mkdir -p "$out_dir"
+          find "$out_dir" -mindepth 1 -delete
+
+          fail=0
+          while IFS= read -r test_path; do
+            name="$(basename "${test_path%.go}")"
+            com_path="$out_dir/${name}.com"
+            out_path="$out_dir/${name}.out.txt"
+            err_path="$out_dir/${name}.err.txt"
+            compile_err_path="$out_dir/${name}.compile.err.txt"
+
+            if ! ./build/rtg -T dos/8086 "$test_path" -o "$com_path" > /dev/null 2>"$compile_err_path"; then
+              echo "COMPILE_FAIL: $test_path"
+              sed -n '1,40p' "$compile_err_path"
+              fail=1
+              continue
+            fi
+
+            if ! go run ./tools/comemu/main.go "$com_path" >"$out_path" 2>"$err_path"; then
+              echo "RUN_FAIL: $test_path"
+              sed -n '1,40p' "$err_path"
+              fail=1
+              continue
+            fi
+
+            if ! rg -a -q "PASS" "$out_path"; then
+              echo "NO_PASS_TEXT: $test_path"
+              fail=1
+            fi
+          done < <(find tests -maxdepth 1 -type f -name '*.go' | sort)
+
+          if [ "$fail" -ne 0 ]; then
+            echo "DOS COMEMU sweep failed"
+            exit 1
+          fi
+
+      - name: Upload DOS COMEMU artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: comemu-dos-failure
+          if-no-files-found: ignore
+          path: build/comemu-ci
+
   compiler-size-report:
     name: Compiler Size Report (stage2 linux/amd64)
     runs-on: ubuntu-latest
