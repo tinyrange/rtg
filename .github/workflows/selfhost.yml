@@ -179,7 +179,7 @@ jobs:
               continue
             fi
 
-            if ! rg -a -q "PASS" "$out_path"; then
+            if ! grep -a -q "PASS" "$out_path"; then
               echo "NO_PASS_TEXT: $test_path"
               fail=1
             fi
