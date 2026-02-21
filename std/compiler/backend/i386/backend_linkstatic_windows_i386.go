@@ -22,67 +22,6 @@ func decodeLinkStaticSpecWin386(raw string) (string, string, string, bool) {
 	return lib, sym, mode, true
 }
 
-func (g *CodeGen) compileKnownLinkStaticIntrinsicWin386(instName string, lib string, sym string) bool {
-	prevActive := g.linkStaticImportActive
-	prevLib := g.linkStaticImportLib
-	prevSym := g.linkStaticImportSymbol
-	g.linkStaticImportActive = true
-	g.linkStaticImportLib = lib
-	g.linkStaticImportSymbol = sym
-
-	known := true
-	switch instName {
-	case "SysRead":
-		g.compileSyscallRead_win386()
-	case "SysWrite":
-		g.compileSyscallWrite_win386()
-	case "SysOpen":
-		g.compileSyscallOpen_win386()
-	case "SysClose":
-		g.compileSyscallClose_win386()
-	case "SysStat":
-		g.compileSyscallStat_win386()
-	case "SysExit":
-		g.compileSyscallExit_win386()
-	case "SysMmap":
-		g.compileSyscallMmap_win386()
-	case "SysMkdir":
-		g.compileSyscallMkdir_win386()
-	case "SysRmdir":
-		g.compileSyscallRmdir_win386()
-	case "SysUnlink":
-		g.compileSyscallUnlink_win386()
-	case "SysGetcwd":
-		g.compileSyscallGetcwd_win386()
-	case "SysGetCommandLine":
-		g.compileSyscallGetCommandLine_win386()
-	case "SysGetEnvStrings":
-		g.compileSyscallGetEnvStrings_win386()
-	case "SysFindFirstFile":
-		g.compileSyscallFindFirstFile_win386()
-	case "SysFindNextFile":
-		g.compileSyscallFindNextFile_win386()
-	case "SysFindClose":
-		g.compileSyscallFindClose_win386()
-	case "SysCreateProcess":
-		g.compileSyscallCreateProcess_win386()
-	case "SysWaitProcess":
-		g.compileSyscallWaitProcess_win386()
-	case "SysCreatePipe":
-		g.compileSyscallCreatePipe_win386()
-	case "SysSetStdHandle":
-		g.compileSyscallSetStdHandle_win386()
-	case "SysGetpid":
-		g.compileSyscallGetpid_win386()
-	default:
-		known = false
-	}
-	g.linkStaticImportActive = prevActive
-	g.linkStaticImportLib = prevLib
-	g.linkStaticImportSymbol = prevSym
-	return known
-}
-
 func (g *CodeGen) emitGenericLinkStaticCallWin386(paramCount int, lib string, sym string) {
 	if paramCount < 0 {
 		panic("ICE: invalid linkstatic arg count")
@@ -153,13 +92,6 @@ func (g *CodeGen) compileLinkStaticIntrinsicWin386(inst ir.Inst) bool {
 	if mode == "" {
 		mode = "syscall"
 	}
-
-	// Preserve existing Windows runtime syscall semantics where wrappers adapt
-	// arguments/returns. All other linkstatic intrinsics use generic lowering.
-	if g.compileKnownLinkStaticIntrinsicWin386(inst.Name, lib, sym) {
-		return true
-	}
-
 	g.emitGenericLinkStaticCallWin386(inst.Arg, lib, sym)
 	g.emitLinkStaticReturnWin386(mode)
 	return true

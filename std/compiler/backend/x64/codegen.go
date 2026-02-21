@@ -59,12 +59,6 @@ type CodeGen struct {
 	// Outlined intrinsic helpers
 	needTostringHelper bool
 	hasTostringHelper  bool
-
-	// Windows linkstatic wrapper state: route the primary import call in a
-	// syscall helper to the library declared on the current linkstatic intrinsic.
-	linkStaticImportLib    string
-	linkStaticImportSymbol string
-	linkStaticImportActive bool
 }
 
 const outlinedTostringHelper = "$rtg.tostring$"
@@ -576,11 +570,7 @@ func (g *CodeGen) opDrop() {
 
 // emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.
 func (g *CodeGen) emitCallIAT(funcName string) {
-	libName := winDefaultImportLibrary
-	if g.linkStaticImportActive && g.linkStaticImportSymbol == funcName && g.linkStaticImportLib != "" {
-		libName = g.linkStaticImportLib
-	}
-	g.emitCallIATInLib(libName, funcName)
+	g.emitCallIATInLib(winDefaultImportLibrary, funcName)
 }
 
 func (g *CodeGen) emitCallIATInLib(libName string, funcName string) {

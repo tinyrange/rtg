@@ -22,67 +22,6 @@ func decodeLinkStaticSpecWin64(raw string) (string, string, string, bool) {
 	return lib, sym, mode, true
 }
 
-func (g *CodeGen) compileKnownLinkStaticIntrinsicWin64(instName string, lib string, sym string) bool {
-	prevActive := g.linkStaticImportActive
-	prevLib := g.linkStaticImportLib
-	prevSym := g.linkStaticImportSymbol
-	g.linkStaticImportActive = true
-	g.linkStaticImportLib = lib
-	g.linkStaticImportSymbol = sym
-
-	known := true
-	switch instName {
-	case "SysRead":
-		g.compileSyscallRead_win64()
-	case "SysWrite":
-		g.compileSyscallWrite_win64()
-	case "SysOpen":
-		g.compileSyscallOpen_win64()
-	case "SysClose":
-		g.compileSyscallClose_win64()
-	case "SysStat":
-		g.compileSyscallStat_win64()
-	case "SysExit":
-		g.compileSyscallExit_win64()
-	case "SysMmap":
-		g.compileSyscallMmap_win64()
-	case "SysMkdir":
-		g.compileSyscallMkdir_win64()
-	case "SysRmdir":
-		g.compileSyscallRmdir_win64()
-	case "SysUnlink":
-		g.compileSyscallUnlink_win64()
-	case "SysGetcwd":
-		g.compileSyscallGetcwd_win64()
-	case "SysGetCommandLine":
-		g.compileSyscallGetCommandLine_win64()
-	case "SysGetEnvStrings":
-		g.compileSyscallGetEnvStrings_win64()
-	case "SysFindFirstFile":
-		g.compileSyscallFindFirstFile_win64()
-	case "SysFindNextFile":
-		g.compileSyscallFindNextFile_win64()
-	case "SysFindClose":
-		g.compileSyscallFindClose_win64()
-	case "SysCreateProcess":
-		g.compileSyscallCreateProcess_win64()
-	case "SysWaitProcess":
-		g.compileSyscallWaitProcess_win64()
-	case "SysCreatePipe":
-		g.compileSyscallCreatePipe_win64()
-	case "SysSetStdHandle":
-		g.compileSyscallSetStdHandle_win64()
-	case "SysGetpid":
-		g.compileSyscallGetpid_win64()
-	default:
-		known = false
-	}
-	g.linkStaticImportActive = prevActive
-	g.linkStaticImportLib = prevLib
-	g.linkStaticImportSymbol = prevSym
-	return known
-}
-
 func (g *CodeGen) emitGenericLinkStaticCallWin64(paramCount int, lib string, sym string) {
 	if paramCount < 0 {
 		panic("ICE: invalid linkstatic arg count")
@@ -172,13 +111,6 @@ func (g *CodeGen) compileLinkStaticIntrinsicWin64(inst ir.Inst) bool {
 	if mode == "" {
 		mode = "syscall"
 	}
-
-	// Preserve existing Windows runtime syscall semantics where wrappers adapt
-	// arguments/returns. All other linkstatic intrinsics use generic lowering.
-	if g.compileKnownLinkStaticIntrinsicWin64(inst.Name, lib, sym) {
-		return true
-	}
-
 	g.emitGenericLinkStaticCallWin64(inst.Arg, lib, sym)
 	g.emitLinkStaticReturnWin64(mode)
 	return true
