@@ -18,65 +18,65 @@ const (
 var GOOS string = "windows"
 var GOARCH string = "386"
 
-//rtg:internal SysRead
+//rtg:linkstatic kernel32.dll,ReadFile
 func SysRead(fd, buf, count uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysWrite
+//rtg:linkstatic kernel32.dll,WriteFile
 func SysWrite(fd, buf, count uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysOpen
+//rtg:linkstatic kernel32.dll,CreateFileA
 func SysOpen(path, flags, mode uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysClose
+//rtg:linkstatic kernel32.dll,CloseHandle
 func SysClose(fd uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysStat
+//rtg:linkstatic kernel32.dll,GetFileAttributesExA
 func SysStat(path, buf uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysExit
+//rtg:linkstatic kernel32.dll,ExitProcess,noreturn
 func SysExit(code uintptr)
 
-//rtg:internal SysMmap
+//rtg:linkstatic kernel32.dll,VirtualAlloc
 func SysMmap(addr, length, prot, flags, fd, offset uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysMkdir
+//rtg:linkstatic kernel32.dll,CreateDirectoryA
 func SysMkdir(path, mode uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysRmdir
+//rtg:linkstatic kernel32.dll,RemoveDirectoryA
 func SysRmdir(path uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysUnlink
+//rtg:linkstatic kernel32.dll,DeleteFileA
 func SysUnlink(path uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysGetcwd
+//rtg:linkstatic kernel32.dll,GetCurrentDirectoryA
 func SysGetcwd(buf, size uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysGetCommandLine
+//rtg:linkstatic kernel32.dll,GetCommandLineA,rawptr
 func SysGetCommandLine() (uintptr, uintptr, int32)
 
-//rtg:internal SysGetEnvStrings
+//rtg:linkstatic kernel32.dll,GetEnvironmentStringsA,rawptr
 func SysGetEnvStrings() (uintptr, uintptr, int32)
 
-//rtg:internal SysFindFirstFile
+//rtg:linkstatic kernel32.dll,FindFirstFileA
 func SysFindFirstFile(pattern, findData uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysFindNextFile
+//rtg:linkstatic kernel32.dll,FindNextFileA
 func SysFindNextFile(handle, findData uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysFindClose
+//rtg:linkstatic kernel32.dll,FindClose
 func SysFindClose(handle uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysCreateProcess
+//rtg:linkstatic kernel32.dll,CreateProcessA
 func SysCreateProcess(appName, cmdLine, startupInfo, processInfo, envp uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysWaitProcess
+//rtg:linkstatic kernel32.dll,WaitForSingleObject
 func SysWaitProcess(handle, exitCodeBuf uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysCreatePipe
+//rtg:linkstatic kernel32.dll,CreatePipe
 func SysCreatePipe(readBuf, writeBuf uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysSetStdHandle
+//rtg:linkstatic kernel32.dll,SetStdHandle
 func SysSetStdHandle(stdHandle, handle uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysGetpid
+//rtg:linkstatic kernel32.dll,GetCurrentProcessId
 func SysGetpid() (uintptr, uintptr, int32)

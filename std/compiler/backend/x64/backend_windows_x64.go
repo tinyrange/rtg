@@ -152,51 +152,12 @@ func (g *CodeGen) emitStart_win64(irmod *ir.IRModule) {
 
 func (g *CodeGen) compileCallIntrinsicWin64(inst ir.Inst) {
 	g.flush()
+	if g.compileLinkStaticIntrinsicWin64(inst) {
+		return
+	}
 	switch inst.Name {
-	case "SysRead":
-		g.compileSyscallRead_win64()
-	case "SysWrite":
-		g.compileSyscallWrite_win64()
-	case "SysOpen":
-		g.compileSyscallOpen_win64()
-	case "SysClose":
-		g.compileSyscallClose_win64()
-	case "SysExit":
-		g.compileSyscallExit_win64()
-	case "SysMmap":
-		g.compileSyscallMmap_win64()
-	case "SysMkdir":
-		g.compileSyscallMkdir_win64()
-	case "SysRmdir":
-		g.compileSyscallRmdir_win64()
-	case "SysUnlink":
-		g.compileSyscallUnlink_win64()
-	case "SysGetcwd":
-		g.compileSyscallGetcwd_win64()
 	case "SysGetdents64":
 		g.compileSyscallGetdents_win64()
-	case "SysStat":
-		g.compileSyscallStat_win64()
-	case "SysGetCommandLine":
-		g.compileSyscallGetCommandLine_win64()
-	case "SysGetEnvStrings":
-		g.compileSyscallGetEnvStrings_win64()
-	case "SysFindFirstFile":
-		g.compileSyscallFindFirstFile_win64()
-	case "SysFindNextFile":
-		g.compileSyscallFindNextFile_win64()
-	case "SysFindClose":
-		g.compileSyscallFindClose_win64()
-	case "SysCreateProcess":
-		g.compileSyscallCreateProcess_win64()
-	case "SysWaitProcess":
-		g.compileSyscallWaitProcess_win64()
-	case "SysCreatePipe":
-		g.compileSyscallCreatePipe_win64()
-	case "SysSetStdHandle":
-		g.compileSyscallSetStdHandle_win64()
-	case "SysGetpid":
-		g.compileSyscallGetpid_win64()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic()
 	case "Makeslice":
@@ -305,9 +266,9 @@ func (g *CodeGen) compileSyscallWrite_win64() {
 	g.emitCallIAT("GetLastError")
 	g.addRI(REG_RSP, 32)
 	g.movRR(REG_RCX, REG_RAX) // save GetLastError result
-	g.compileConstI64(0)       // r1 = 0
-	g.compileConstI64(0)       // r2 = 0
-	g.opPush(REG_RCX)          // err
+	g.compileConstI64(0)      // r1 = 0
+	g.compileConstI64(0)      // r2 = 0
+	g.opPush(REG_RCX)         // err
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
