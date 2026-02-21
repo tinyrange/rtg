@@ -145,8 +145,8 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 	const (
 		fileAlignment    = 0x200
 		sectionAlignment = 0x1000
-		imageBase        = 0x400000
 	)
+	imageBase := g.baseAddr
 
 	dosHeaderSize := 64
 	dosStubSize := 64
@@ -201,7 +201,7 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 	if g.isArm64 {
 		// Collect .data offsets that will contain absolute addresses (string header pointers)
 		var relocOffsets []int
-		for _, headerOff := range g.stringMap {
+		for _, headerOff := range g.stringHeaderOff {
 			relocOffsets = append(relocOffsets, headerOff)
 		}
 		// Insertion sort for deterministic output (critical for self-hosting)
@@ -222,13 +222,14 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 	}
 
 	// Build DWARF debug sections with 8-byte addresses
-	textVA := imageBase + textRVA
+	textVA := imageBase + uint64(textRVA)
+	textVAInt := int(textVA)
 	debugAbbrev := []byte{}
 	debugInfo := []byte{}
 	debugAbbrevRawSize := 0
 	debugInfoRawSize := 0
 	if !g.target.StripBinary {
-		debugAbbrev, debugInfo = g.buildDWARF64(irmod, textVA, len(g.code))
+		debugAbbrev, debugInfo = g.buildDWARF64(irmod, textVAInt, len(g.code))
 		debugAbbrevRawSize = alignUp(len(debugAbbrev), fileAlignment)
 		debugInfoRawSize = alignUp(len(debugInfo), fileAlignment)
 	}
@@ -295,36 +296,36 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 	iatOffsets := g.buildIATOffsets64(imports)
 	if g.isArm64 {
 		// ARM64: string headers are in .data section
-		for _, headerOff := range g.stringMap {
+		for _, headerOff := range g.stringHeaderOff {
 			rodataOff := g.stringRodataMap[headerOff]
-			putU64(g.data[headerOff:headerOff+8], uint64(imageBase+rdataRVA+rodataOff))
+			putU64(g.data[headerOff:headerOff+8], imageBase+uint64(rdataRVA+rodataOff))
 		}
 
 		// Fix up code references (ADRP+ADD/LDR pairs)
 		for _, fix := range g.callFixups {
 			if fix.Target == "$rodata_header$" {
-				pcAddr := uint64(imageBase + textRVA + fix.CodeOffset)
-				targetAddr := uint64(imageBase+rdataRVA) + fix.Value
+				pcAddr := imageBase + uint64(textRVA+fix.CodeOffset)
+				targetAddr := imageBase + uint64(rdataRVA) + fix.Value
 				g.PatchAdrpAddOrLdr(fix.CodeOffset, pcAddr, targetAddr)
 			} else if fix.Target == "$data_addr$" {
-				pcAddr := uint64(imageBase + textRVA + fix.CodeOffset)
-				targetAddr := uint64(imageBase+dataRVA) + fix.Value
+				pcAddr := imageBase + uint64(textRVA+fix.CodeOffset)
+				targetAddr := imageBase + uint64(dataRVA) + fix.Value
 				g.PatchAdrpAddOrLdr(fix.CodeOffset, pcAddr, targetAddr)
 			} else if len(fix.Target) > 5 && fix.Target[0:5] == "$iat$" {
 				funcName := fix.Target[5:]
 				iatOff, ok := iatOffsets[funcName]
 				if ok {
-					pcAddr := uint64(imageBase + textRVA + fix.CodeOffset)
-					targetAddr := uint64(imageBase+idataRVA) + uint64(iatOff)
+					pcAddr := imageBase + uint64(textRVA+fix.CodeOffset)
+					targetAddr := imageBase + uint64(idataRVA) + uint64(iatOff)
 					g.PatchAdrpLdr(fix.CodeOffset, pcAddr, targetAddr)
 				}
 			}
 		}
 	} else {
 		// x64: string headers are in .rodata section
-		for _, headerOff := range g.stringMap {
+		for _, headerOff := range g.stringHeaderOff {
 			dataOff := getU64(g.rodata[headerOff : headerOff+8])
-			putU64(g.rodata[headerOff:headerOff+8], uint64(imageBase+rdataRVA)+dataOff)
+			putU64(g.rodata[headerOff:headerOff+8], imageBase+uint64(rdataRVA)+dataOff)
 		}
 
 		// Fix up code references (movabs imm64 and RIP-relative call)
@@ -332,18 +333,18 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 			if fix.Target == "$rodata_header$" {
 				// Patch 8-byte movabs immediate with rodata VA
 				headerOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
-				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], uint64(imageBase+rdataRVA)+headerOff)
+				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], imageBase+uint64(rdataRVA)+headerOff)
 			} else if fix.Target == "$data_addr$" {
 				// Patch 8-byte movabs immediate with data VA
 				dataOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
-				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], uint64(imageBase+dataRVA)+dataOff)
+				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], imageBase+uint64(dataRVA)+dataOff)
 			} else if len(fix.Target) > 5 && fix.Target[0:5] == "$iat$" {
 				funcName := fix.Target[5:]
 				iatOff, ok := iatOffsets[funcName]
 				if ok {
 					// Patch RIP-relative disp32: target = iatVA, rip = textVA + codeOffset + 4
-					iatVA := uint64(imageBase+idataRVA) + uint64(iatOff)
-					rip := uint64(imageBase+textRVA) + uint64(fix.CodeOffset) + 4
+					iatVA := imageBase + uint64(idataRVA) + uint64(iatOff)
+					rip := imageBase + uint64(textRVA) + uint64(fix.CodeOffset) + 4
 					disp32 := int32(int64(iatVA) - int64(rip))
 					putU32(g.code[fix.CodeOffset:fix.CodeOffset+4], uint32(disp32))
 				}
@@ -422,9 +423,9 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 	putU32(opt[60:], uint32(headersAligned))   // SizeOfHeaders
 	putU32(opt[64:], 0)                        // CheckSum
 	putU16(opt[68:], 3)                        // Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI
-	dllChars := uint16(0x0100)                 // NX_COMPAT
+	dllChars := uint16(0x0100) // NX_COMPAT
 	if g.isArm64 {
-		dllChars = 0x0160 // HIGH_ENTROPY_VA | DYNAMIC_BASE | NX_COMPAT
+		dllChars = 0x0140 // DYNAMIC_BASE | NX_COMPAT
 	}
 	putU16(opt[70:], dllChars) // DllCharacteristics
 	// PE32+: Stack/Heap sizes are 8 bytes each

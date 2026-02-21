@@ -148,8 +148,9 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	const (
 		fileAlignment    = 0x200
 		sectionAlignment = 0x1000
-		imageBase        = 0x400000
 	)
+	imageBase := g.BaseAddr()
+	hasReloc := g.IsArm64()
 
 	dosHeaderSize := 64
 	dosStubSize := 64
@@ -157,8 +158,8 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	coffHeaderSize := 20
 	optionalHeaderSize := 240
 	numSections := 6
-	if g.IsArm64() {
-		numSections = 7 // includes .reloc for ASLR
+	if hasReloc {
+		numSections = 7
 	}
 	if g.Target().StripBinary {
 		numSections = numSections - 2 // strip .debug_abbrev and .debug_info
@@ -197,47 +198,38 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	// Fix up .idata internal RVAs
 	fixupIData64(g, idataContent, idataRVA, imports)
 
-	// Build .reloc section for ARM64 (Windows ARM64 requires ASLR)
+	// Build .reloc section for ARM64 (required for ASLR).
 	var relocContent []byte
 	relocRVA := 0
 	relocRawSize := 0
-	if g.IsArm64() {
-		// Collect .data offsets that will contain absolute addresses (string header pointers)
-		var relocOffsets []int
-		for _, headerOff := range g.StringMap() {
+	if hasReloc {
+		// Only relocate known absolute addresses emitted into .data.
+		// String headers are the only intentional absolute-pointer payloads today.
+		relocOffsets := make([]int, 0, len(g.StringHeaderOffsets()))
+		for _, headerOff := range g.StringHeaderOffsets() {
 			relocOffsets = append(relocOffsets, headerOff)
 		}
-		// Insertion sort for deterministic output (critical for self-hosting)
-		si := 1
-		for si < len(relocOffsets) {
-			sj := si
-			for sj > 0 && relocOffsets[sj] < relocOffsets[sj-1] {
-				tmp := relocOffsets[sj]
-				relocOffsets[sj] = relocOffsets[sj-1]
-				relocOffsets[sj-1] = tmp
-				sj = sj - 1
-			}
-			si = si + 1
-		}
+		sortRelocOffsets(relocOffsets)
 		relocContent = buildBaseRelocations(g, dataRVA, relocOffsets)
 		relocRVA = idataRVA + aarch64.SectionSpan(len(idataContent), sectionAlignment)
 		relocRawSize = aarch64.AlignUp(len(relocContent), fileAlignment)
 	}
 
 	// Build DWARF debug sections with 8-byte addresses
-	textVA := imageBase + textRVA
+	textVA := imageBase + uint64(textRVA)
+	textVAInt := int(textVA)
 	debugAbbrev := []byte{}
 	debugInfo := []byte{}
 	debugAbbrevRawSize := 0
 	debugInfoRawSize := 0
 	if !g.Target().StripBinary {
-		debugAbbrev, debugInfo = buildDWARF64(g, irmod, textVA, len(g.Code()))
+		debugAbbrev, debugInfo = buildDWARF64(g, irmod, textVAInt, len(g.Code()))
 		debugAbbrevRawSize = aarch64.AlignUp(len(debugAbbrev), fileAlignment)
 		debugInfoRawSize = aarch64.AlignUp(len(debugInfo), fileAlignment)
 	}
 
 	debugAbbrevRVA := idataRVA + aarch64.SectionSpan(len(idataContent), sectionAlignment)
-	if g.IsArm64() {
+	if hasReloc {
 		debugAbbrevRVA = relocRVA + aarch64.SectionSpan(len(relocContent), sectionAlignment)
 	}
 	debugInfoRVA := debugAbbrevRVA + aarch64.SectionSpan(len(debugAbbrev), sectionAlignment)
@@ -249,7 +241,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	idataFileOff := dataFileOff + dataRawSize
 	relocFileOff := idataFileOff + idataRawSize
 	debugAbbrevFileOff := idataFileOff + idataRawSize
-	if g.IsArm64() {
+	if hasReloc {
 		debugAbbrevFileOff = relocFileOff + relocRawSize
 	}
 	debugInfoFileOff := debugAbbrevFileOff + debugAbbrevRawSize
@@ -278,7 +270,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	strtabFileOff := symtabFileOff + len(coffSyms)
 	totalFileSize := strtabFileOff + len(coffStrtab)
 	if g.Target().StripBinary {
-		if g.IsArm64() {
+		if hasReloc {
 			totalFileSize = relocFileOff + relocRawSize
 		} else {
 			totalFileSize = idataFileOff + idataRawSize
@@ -287,7 +279,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 
 	imageSize := debugInfoRVA + aarch64.SectionSpan(len(debugInfo), sectionAlignment)
 	if g.Target().StripBinary {
-		if g.IsArm64() {
+		if hasReloc {
 			imageSize = relocRVA + aarch64.SectionSpan(len(relocContent), sectionAlignment)
 		} else {
 			imageSize = idataRVA + aarch64.SectionSpan(len(idataContent), sectionAlignment)
@@ -298,37 +290,37 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	iatOffsets := buildIATOffsets64(g, imports)
 	if g.IsArm64() {
 		// ARM64: string headers are in .data section
-		for _, headerOff := range g.StringMap() {
+		for _, headerOff := range g.StringHeaderOffsets() {
 			rodataOff := g.StringRodataMap()[headerOff]
-			aarch64.PutU64(g.Data()[headerOff:headerOff+8], uint64(imageBase+rdataRVA+rodataOff))
+			aarch64.PutU64(g.Data()[headerOff:headerOff+8], imageBase+uint64(rdataRVA+rodataOff))
 		}
 
 		// Fix up code references (ADRP+ADD/LDR pairs)
 		for i := 0; i < g.CallFixupCount(); i++ {
 			codeOffset, targetName, value := g.CallFixupAt(i)
 			if targetName == "$rodata_header$" {
-				pcAddr := uint64(imageBase + textRVA + codeOffset)
-				targetAddr := uint64(imageBase+rdataRVA) + value
+				pcAddr := imageBase + uint64(textRVA+codeOffset)
+				targetAddr := imageBase + uint64(rdataRVA) + value
 				g.PatchAdrpAddOrLdr(codeOffset, pcAddr, targetAddr)
 			} else if targetName == "$data_addr$" {
-				pcAddr := uint64(imageBase + textRVA + codeOffset)
-				targetAddr := uint64(imageBase+dataRVA) + value
+				pcAddr := imageBase + uint64(textRVA+codeOffset)
+				targetAddr := imageBase + uint64(dataRVA) + value
 				g.PatchAdrpAddOrLdr(codeOffset, pcAddr, targetAddr)
 			} else if len(targetName) > 5 && targetName[0:5] == "$iat$" {
 				funcName := targetName[5:]
 				iatOff, ok := iatOffsets[funcName]
 				if ok {
-					pcAddr := uint64(imageBase + textRVA + codeOffset)
-					targetAddr := uint64(imageBase+idataRVA) + uint64(iatOff)
+					pcAddr := imageBase + uint64(textRVA+codeOffset)
+					targetAddr := imageBase + uint64(idataRVA) + uint64(iatOff)
 					g.PatchAdrpLdr(codeOffset, pcAddr, targetAddr)
 				}
 			}
 		}
 	} else {
 		// x64: string headers are in .rodata section
-		for _, headerOff := range g.StringMap() {
+		for _, headerOff := range g.StringHeaderOffsets() {
 			dataOff := aarch64.GetU64(g.Rodata()[headerOff : headerOff+8])
-			aarch64.PutU64(g.Rodata()[headerOff:headerOff+8], uint64(imageBase+rdataRVA)+dataOff)
+			aarch64.PutU64(g.Rodata()[headerOff:headerOff+8], imageBase+uint64(rdataRVA)+dataOff)
 		}
 
 		// Fix up code references (movabs imm64 and RIP-relative call)
@@ -337,18 +329,18 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 			if targetName == "$rodata_header$" {
 				// Patch 8-byte movabs immediate with rodata VA
 				headerOff := aarch64.GetU64(g.Code()[codeOffset : codeOffset+8])
-				aarch64.PutU64(g.Code()[codeOffset:codeOffset+8], uint64(imageBase+rdataRVA)+headerOff)
+				aarch64.PutU64(g.Code()[codeOffset:codeOffset+8], imageBase+uint64(rdataRVA)+headerOff)
 			} else if targetName == "$data_addr$" {
 				// Patch 8-byte movabs immediate with data VA
 				dataOff := aarch64.GetU64(g.Code()[codeOffset : codeOffset+8])
-				aarch64.PutU64(g.Code()[codeOffset:codeOffset+8], uint64(imageBase+dataRVA)+dataOff)
+				aarch64.PutU64(g.Code()[codeOffset:codeOffset+8], imageBase+uint64(dataRVA)+dataOff)
 			} else if len(targetName) > 5 && targetName[0:5] == "$iat$" {
 				funcName := targetName[5:]
 				iatOff, ok := iatOffsets[funcName]
 				if ok {
 					// Patch RIP-relative disp32: target = iatVA, rip = textVA + codeOffset + 4
-					iatVA := uint64(imageBase+idataRVA) + uint64(iatOff)
-					rip := uint64(imageBase+textRVA) + uint64(codeOffset) + 4
+					iatVA := imageBase + uint64(idataRVA) + uint64(iatOff)
+					rip := imageBase + uint64(textRVA) + uint64(codeOffset) + 4
 					disp32 := int32(int64(iatVA) - int64(rip))
 					aarch64.PutU32(g.Code()[codeOffset:codeOffset+4], uint32(disp32))
 				}
@@ -413,7 +405,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	aarch64.PutU32(opt[16:], uint32(textRVA))                                             // AddressOfEntryPoint
 	aarch64.PutU32(opt[20:], uint32(textRVA))                                             // BaseOfCode
 	// PE32+ has NO BaseOfData field — ImageBase is at offset 24
-	aarch64.PutU64(opt[24:], uint64(imageBase))        // ImageBase (8 bytes)
+	aarch64.PutU64(opt[24:], imageBase)               // ImageBase (8 bytes)
 	aarch64.PutU32(opt[32:], uint32(sectionAlignment)) // SectionAlignment
 	aarch64.PutU32(opt[36:], uint32(fileAlignment))    // FileAlignment
 	aarch64.PutU16(opt[40:], 6)                        // MajorOperatingSystemVersion
@@ -427,9 +419,9 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	aarch64.PutU32(opt[60:], uint32(headersAligned))   // SizeOfHeaders
 	aarch64.PutU32(opt[64:], 0)                        // CheckSum
 	aarch64.PutU16(opt[68:], 3)                        // Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI
-	dllChars := uint16(0x0100)                         // NX_COMPAT
-	if g.IsArm64() {
-		dllChars = 0x0160 // HIGH_ENTROPY_VA | DYNAMIC_BASE | NX_COMPAT
+	dllChars := uint16(0x0100) // NX_COMPAT
+	if hasReloc {
+		dllChars = 0x0140 // DYNAMIC_BASE | NX_COMPAT
 	}
 	aarch64.PutU16(opt[70:], dllChars) // DllCharacteristics
 	// PE32+: Stack/Heap sizes are 8 bytes each
@@ -446,8 +438,8 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	aarch64.PutU32(opt[112+1*8:], uint32(importDirRVA))
 	aarch64.PutU32(opt[112+1*8+4:], uint32(importDirSize))
 
-	// [5] Base Relocation Table (ARM64 only — required for ASLR)
-	if g.IsArm64() {
+	// [5] Base Relocation Table
+	if hasReloc {
 		aarch64.PutU32(opt[112+5*8:], uint32(relocRVA))
 		aarch64.PutU32(opt[112+5*8+4:], uint32(len(relocContent)))
 	}
@@ -481,7 +473,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 		0xC0000040) // INITIALIZED_DATA | READ | WRITE
 
 	nextSect := sectBase + 160
-	if g.IsArm64() {
+	if hasReloc {
 		// .reloc
 		writeSection(pe[nextSect:], ".reloc",
 			len(relocContent), relocRVA, relocRawSize, relocFileOff,
@@ -506,7 +498,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule, imports []string) []byte 
 	copy(pe[rdataFileOff:], rdataContent)
 	copy(pe[dataFileOff:], dataContent)
 	copy(pe[idataFileOff:], idataContent)
-	if g.IsArm64() {
+	if hasReloc {
 		copy(pe[relocFileOff:], relocContent)
 	}
 	if !g.Target().StripBinary {
@@ -722,6 +714,21 @@ func buildDWARF64(g *aarch64.CodeGen, irmod *ir.IRModule, textVA int, textSize i
 	aarch64.PutU32(info[0:], uint32(unitLen))
 
 	return abbrev, info
+}
+
+func sortRelocOffsets(offsets []int) {
+	// Insertion sort for deterministic output (critical for self-hosting)
+	i := 1
+	for i < len(offsets) {
+		j := i
+		for j > 0 && offsets[j] < offsets[j-1] {
+			tmp := offsets[j]
+			offsets[j] = offsets[j-1]
+			offsets[j-1] = tmp
+			j = j - 1
+		}
+		i = i + 1
+	}
 }
 
 // buildBaseRelocations builds a .reloc section for 64-bit PE base relocations.

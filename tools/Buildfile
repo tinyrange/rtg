@@ -72,11 +72,7 @@ selfhost-wasm: build
   sh cmp build/stage2.wasm build/stage3.wasm && echo "PASS: wasm self-hosting OK"
 
 selfhost-winarm64: build
-  sh ./build/rtg -T windows/arm64 -o build/stage1_winarm64.exe ./std/compiler/
-  sh ./build/stage1_winarm64.exe -T windows/arm64 -o build/stage2_winarm64.exe ./std/compiler/
-  sh chmod +x build/stage2_winarm64.exe
-  sh ./build/stage2_winarm64.exe -T windows/arm64 -o build/stage3_winarm64.exe ./std/compiler/
-  sh cmp build/stage2_winarm64.exe build/stage3_winarm64.exe && echo "PASS: windows/arm64 self-hosting OK"
+  sh set -eu; rtg=./build/rtg; if [ -x ./build/rtg.exe ]; then rtg=./build/rtg.exe; fi; stage1=build/stage1_winarm64.exe; stage2=build/stage2_winarm64.exe; stage3=build/stage3_winarm64.exe; if grep -qi microsoft /proc/version 2>/dev/null; then $rtg -T windows/arm64 -s -o $stage1 ./std/compiler/; root=$(pwd); wroot=$(wslpath -m $root); wstage1=$(wslpath -m $root/$stage1); wstage2=$(wslpath -m $root/$stage2); wstage3=$(wslpath -m $root/$stage3); wcompiler=$wroot/std/compiler/; cmd.exe /c $wstage1 -T windows/arm64 -s -o $wstage2 $wcompiler; cmd.exe /c $wstage2 -T windows/arm64 -s -o $wstage3 $wcompiler; else $rtg -T windows/arm64 -s -o $stage1 ./std/compiler/; $stage1 -T windows/arm64 -s -o $stage2 ./std/compiler/; chmod +x $stage2; $stage2 -T windows/arm64 -s -o $stage3 ./std/compiler/; fi; cmp $stage2 $stage3 && echo "PASS: windows/arm64 self-hosting OK"
 
 selfhost-winamd64: build
   sh ./build/rtg -T windows/amd64 -o build/stage1_winamd64.exe ./std/compiler/
@@ -173,6 +169,9 @@ test-fullcompiler-rtg-i386: build
 
 test-fullcompiler-rtg-win386: build
   fullcompiler rtg windows/386
+
+test-fullcompiler-rtg-winarm64: build
+  fullcompiler rtg windows/arm64
 
 test-fullcompiler-c: build
   fullcompiler c

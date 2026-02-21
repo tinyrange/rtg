@@ -644,6 +644,22 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 
 // dirOfPath returns the directory portion of a file path.
 func dirOfPath(path string) string {
+	hasSep := false
+	j := 0
+	for j < len(path) {
+		if path[j] == '/' || path[j] == '\\' {
+			hasSep = true
+			break
+		}
+		j = j + 1
+	}
+	if !isGoFile(path) && hasSep {
+		trimmed := strings.TrimRight(path, "/\\")
+		if trimmed == "" {
+			return path
+		}
+		return trimmed
+	}
 	i := len(path) - 1
 	for i >= 0 {
 		if path[i] == '/' || path[i] == '\\' {
