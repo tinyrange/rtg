@@ -1,13 +1,14 @@
-//go:build !no_backend_arm64
+//go:build no_backend_arm64
 
-package macos
+package windows
 
 import (
+	"fmt"
+
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
-// Generate compiles an IRModule to a macOS ARM64 Mach-O binary.
 func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
-	return GenerateDarwin(target, irmod, outputPath)
+	return fmt.Errorf("windows/arm64 backend disabled (built with no_backend_arm64 tag)")
 }
