@@ -270,51 +270,12 @@ func (g *CodeGen) emitWinApiReturnArm64(successReg int) {
 
 func (g *CodeGen) compileCallIntrinsicArm64Windows(inst ir.Inst) {
 	g.Flush()
+	if g.compileLinkStaticIntrinsicArm64Windows(inst) {
+		return
+	}
 	switch inst.Name {
-	case "SysRead":
-		g.compileSyscallRead_winarm64()
-	case "SysWrite":
-		g.compileSyscallWrite_winarm64()
-	case "SysOpen":
-		g.compileSyscallOpen_winarm64()
-	case "SysClose":
-		g.compileSyscallClose_winarm64()
-	case "SysExit":
-		g.compileSyscallExit_winarm64()
-	case "SysMmap":
-		g.compileSyscallMmap_winarm64()
-	case "SysMkdir":
-		g.compileSyscallMkdir_winarm64()
-	case "SysRmdir":
-		g.compileSyscallRmdir_winarm64()
-	case "SysUnlink":
-		g.compileSyscallUnlink_winarm64()
-	case "SysGetcwd":
-		g.compileSyscallGetcwd_winarm64()
 	case "SysGetdents64":
 		g.compileSyscallGetdents_winarm64()
-	case "SysStat":
-		g.compileSyscallStat_winarm64()
-	case "SysGetCommandLine":
-		g.compileSyscallGetCommandLine_winarm64()
-	case "SysGetEnvStrings":
-		g.compileSyscallGetEnvStrings_winarm64()
-	case "SysFindFirstFile":
-		g.compileSyscallFindFirstFile_winarm64()
-	case "SysFindNextFile":
-		g.compileSyscallFindNextFile_winarm64()
-	case "SysFindClose":
-		g.compileSyscallFindClose_winarm64()
-	case "SysCreateProcess":
-		g.compileSyscallCreateProcess_winarm64()
-	case "SysWaitProcess":
-		g.compileSyscallWaitProcess_winarm64()
-	case "SysCreatePipe":
-		g.compileSyscallCreatePipe_winarm64()
-	case "SysSetStdHandle":
-		g.compileSyscallSetStdHandle_winarm64()
-	case "SysGetpid":
-		g.compileSyscallGetpid_winarm64()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsicArm64()
 	case "Makeslice":
