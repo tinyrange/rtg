@@ -680,13 +680,11 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 
 	// Test: check if [eax] < 256
 	g.loadMem32(REG32_ECX, REG32_EAX, 0)
-	g.emitBytes(0x81, 0xf9) // cmp ecx, 256
-	g.emitU32(256)
+	g.cmpRI32(REG32_ECX, 256)
 	stringCaseFixup := g.jccRel32(CC32_AE)
 
 	// Interface case: ecx = type_id, [eax+ptr] = concrete value
 	g.loadMem32(REG32_EDX, REG32_EAX, g.slotBytes_i386())
-	g.opPush(REG32_EDX)
 
 	// Save type_id (ecx) on call stack
 	g.pushR32(REG32_ECX)
@@ -709,41 +707,38 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 
 	g.popR32(REG32_ECX) // type_id
 
-	endFixups := make([]int, 0)
+	doneFixups := make([]int, 0)
 
 	// type_id 1 = int: call runtime.IntToString
 	g.cmpRI32(REG32_ECX, 1)
 	nextFixup := g.jccRel32(CC32_NE)
+	g.opPush(REG32_EDX)
 	g.emitCallPlaceholder("runtime.IntToString")
-	endFixups = append(endFixups, g.jmpRel32())
+	doneFixups = append(doneFixups, g.jmpRel32())
 	g.patchRel32(nextFixup)
 
-	// type_id 2 = string: value is already a string ptr
+	// type_id 2 = string: concrete value is already a string header pointer
 	g.cmpRI32(REG32_ECX, 2)
 	nextFixup = g.jccRel32(CC32_NE)
-	endFixups = append(endFixups, g.jmpRel32())
+	g.opPush(REG32_EDX)
+	g.flush()
+	doneFixups = append(doneFixups, g.jmpRel32())
 	g.patchRel32(nextFixup)
 
 	// User-defined type dispatch
 	for _, entry := range entries {
 		g.cmpRI32(REG32_ECX, int32(entry.TypeID))
 		nextFixup = g.jccRel32(CC32_NE)
+		g.opPush(REG32_EDX)
 		g.emitCallPlaceholder(entry.FuncName)
-		endFixups = append(endFixups, g.jmpRel32())
+		doneFixups = append(doneFixups, g.jmpRel32())
 		g.patchRel32(nextFixup)
 	}
 
 	// Default: push empty string
-	g.opDrop()
 	g.compileConstI32(0)
 	g.flush()
-
-	endAddr := len(g.code)
-	for _, fixup := range endFixups {
-		g.patchRel32At(fixup, endAddr)
-	}
-
-	finalEndFixup := g.jmpRel32()
+	doneFixups = append(doneFixups, g.jmpRel32())
 
 	// string_case: just pass through the value
 	g.patchRel32(stringCaseFixup)
@@ -751,7 +746,10 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 	g.opPush(REG32_EAX)
 	g.flush()
 
-	g.patchRel32(finalEndFixup)
+	doneAddr := len(g.code)
+	for _, fixup := range doneFixups {
+		g.patchRel32At(fixup, doneAddr)
+	}
 }
 
 func (g *CodeGen) compileReadPtrIntrinsic_i386() {
