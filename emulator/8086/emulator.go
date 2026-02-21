@@ -524,21 +524,26 @@ decoded:
 		c.ip += 2
 		c.ip = uint16(int32(c.ip) + int32(rel))
 		return nil
-	case 0xc0, 0xc2:
+	case 0xc2:
 		imm := c.u16(csip + 1)
 		c.ip = c.pop16()
 		c.sp += imm
 		return nil
-	case 0xc1, 0xc3:
+	case 0xc3:
 		c.ip = c.pop16()
 		return nil
-	case 0xc8, 0xca:
+	case 0xca:
 		imm := c.u16(csip + 1)
 		c.ip = c.pop16()
 		c.cs = c.pop16()
 		c.sp += imm
 		return nil
-	case 0xc9, 0xcb:
+	case 0xc9:
+		c.sp = c.bp
+		c.bp = c.pop16()
+		c.ip++
+		return nil
+	case 0xcb:
 		c.ip = c.pop16()
 		c.cs = c.pop16()
 		return nil

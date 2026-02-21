@@ -28,7 +28,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		return irprint.Generate(irmod, outputPath)
 	}
 	switch target.GOARCH {
-	case "8086":
+	case "8086", "dos16":
 		if target.GOOS == "dos" {
 			return i386.GenerateDOSCOM(target, irmod, outputPath)
 		}
