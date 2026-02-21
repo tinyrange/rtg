@@ -8,10 +8,7 @@ import (
 )
 
 func (g *CodeGen) slotBytes_i386() int {
-	if g.wordSize <= 0 {
-		return 4
-	}
-	return g.wordSize
+	return 4
 }
 
 func (g *CodeGen) ptrBytes_i386() int {
@@ -19,11 +16,7 @@ func (g *CodeGen) ptrBytes_i386() int {
 }
 
 func (g *CodeGen) initOperandCache_i386() {
-	if g.target.GOOS != "dos" && g.wordSize == 4 {
-		g.configureOperandCache(REG32_EBX, REG32_ESI)
-	} else {
-		g.clearOperandCache()
-	}
+	g.configureOperandCache(REG32_EBX, REG32_ESI)
 }
 
 // compileFunc_i386 generates i386 code for a single IR function.
@@ -64,9 +57,7 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 	}
 
 	// Resolve jump fixups within this function
-	if g.target.GOOS != "dos" {
-		g.relaxCurrentFuncJumps()
-	}
+	g.relaxCurrentFuncJumps()
 	for _, fix := range g.jumpFixups {
 		labelOff, ok := g.labelOffsets[fix.LabelID]
 		if !ok {
@@ -256,16 +247,6 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 
 func (g *CodeGen) compileConstI32(val int64) {
 	g.prepareForClobber(REG32_EAX)
-	if g.wordSize == 2 {
-		v16 := uint16(val)
-		if v16 == 0 {
-			g.xorRR32(REG32_EAX, REG32_EAX)
-		} else {
-			g.emitMovRegImm32(REG32_EAX, uint32(v16))
-		}
-		g.opPush(REG32_EAX)
-		return
-	}
 	v32 := uint32(val)
 	if v32 == 0 {
 		g.xorRR32(REG32_EAX, REG32_EAX)
@@ -285,29 +266,20 @@ func (g *CodeGen) compileConstStr_i386(s string) {
 		dataOff := len(g.rodata)
 		g.rodata = append(g.rodata, []byte(decoded)...)
 
-		// Store header {data_ptr, len} in rodata (word-sized fields)
+		// Store header {data_ptr, len} in rodata.
 		headerOff = len(g.rodata)
-		if g.wordSize == 2 {
-			g.rodata = append(g.rodata, 0, 0)
-			g.rodata = append(g.rodata, byte(len(decoded)), byte(len(decoded)>>8))
-		} else {
-			g.emitRodataU32(0)                    // data_ptr placeholder (4 bytes)
-			g.emitRodataU32(uint32(len(decoded))) // len (4 bytes)
-		}
+		g.emitRodataU32(0)                    // data_ptr placeholder (4 bytes)
+		g.emitRodataU32(uint32(len(decoded))) // len (4 bytes)
 
 		g.stringMap[decoded] = headerOff
 		// Store dataOff in the placeholder temporarily
-		if g.wordSize == 2 {
-			putU16(g.rodata[headerOff:headerOff+2], uint16(dataOff))
-		} else {
-			putU32(g.rodata[headerOff:headerOff+4], uint32(dataOff))
-		}
+		putU32(g.rodata[headerOff:headerOff+4], uint32(dataOff))
 	}
 
 	// Push header address onto operand stack: mov eax, imm32
 	g.emitMovRegImm32(REG32_EAX, uint32(headerOff))
 	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - g.wordSize,
+		CodeOffset: len(g.code) - 4,
 		Target:     "$rodata_header$",
 	})
 	g.opPush(REG32_EAX)
@@ -348,7 +320,7 @@ func (g *CodeGen) compileGlobalGet_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX, REG32_ECX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - g.wordSize,
+		CodeOffset: len(g.code) - 4,
 		Target:     "$data_addr$",
 	})
 	g.loadMem32(REG32_EAX, REG32_ECX, 0)
@@ -359,7 +331,7 @@ func (g *CodeGen) compileGlobalSet_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - g.wordSize,
+		CodeOffset: len(g.code) - 4,
 		Target:     "$data_addr$",
 	})
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
@@ -369,7 +341,7 @@ func (g *CodeGen) compileGlobalAddr_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX)
 	g.emitMovRegImm32(REG32_EAX, uint32(inst.Arg*g.slotBytes_i386()))
 	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - g.wordSize,
+		CodeOffset: len(g.code) - 4,
 		Target:     "$data_addr$",
 	})
 	g.opPush(REG32_EAX)
@@ -387,15 +359,7 @@ func (g *CodeGen) compileBinOP_i386(op ir.Opcode) {
 	case ir.OP_SUB:
 		g.subRR32(REG32_ECX, REG32_EAX)
 	case ir.OP_MUL:
-		if g.wordSize == 2 {
-			// 8086-safe signed multiply: AX = ECX * EAX (low 16 bits kept).
-			g.movRR32(REG32_EDX, REG32_EAX)
-			g.movRR32(REG32_EAX, REG32_ECX)
-			g.imulR32(REG32_EDX)
-			g.movRR32(REG32_ECX, REG32_EAX)
-		} else {
-			g.imulRR32(REG32_ECX, REG32_EAX)
-		}
+		g.imulRR32(REG32_ECX, REG32_EAX)
 	case ir.OP_DIV:
 		g.movRR32(REG32_EDX, REG32_EAX)
 		g.movRR32(REG32_EAX, REG32_ECX)
@@ -437,16 +401,6 @@ func (g *CodeGen) compileCompare_i386(setccOpcode byte) {
 	g.opPop(REG32_EAX)
 	g.opPop(REG32_ECX)
 	g.cmpRR32(REG32_ECX, REG32_EAX)
-	if g.wordSize == 2 {
-		g.emitMovRegImm32(REG32_ECX, 0)
-		fixTrue := g.jccRel32(byte(0x80 | (setccOpcode & 0x0f)))
-		fixDone := g.jmpRel32()
-		g.patchRel32(fixTrue)
-		g.emitMovRegImm32(REG32_ECX, 1)
-		g.patchRel32(fixDone)
-		g.opPush(REG32_ECX)
-		return
-	}
 	g.emitBytes(0x0f, setccOpcode, 0xc1) // setCC cl
 	g.emitBytes(0x0f, 0xb6, 0xc9)        // movzx ecx, cl
 	g.opPush(REG32_ECX)
@@ -960,21 +914,6 @@ func (g *CodeGen) compileCap_i386() {
 // === Type conversions (i386) ===
 
 func (g *CodeGen) compileConvert_i386(typeName string) {
-	if g.wordSize == 2 {
-		switch typeName {
-		case "string":
-			g.emitCallPlaceholder("runtime.BytesToString")
-		case "[]byte":
-			g.emitCallPlaceholder("runtime.StringToBytes")
-		case "byte":
-			g.opPop(REG32_EAX)
-			g.emitBytes(0x25, 0xff, 0x00) // and ax, 0x00ff
-			g.opPush(REG32_EAX)
-		case "uint16", "int16", "int", "uintptr", "uint", "int32", "uint32", "int64", "uint64":
-			// No-op on 16-bit target: values are represented in one 16-bit word.
-		}
-		return
-	}
 	switch typeName {
 	case "string":
 		g.emitCallPlaceholder("runtime.BytesToString")

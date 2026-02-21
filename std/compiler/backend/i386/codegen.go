@@ -169,63 +169,36 @@ func getU32(b []byte) uint32 {
 // emitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
 func (g *CodeGen) emitCallPlaceholder(target string) {
 	g.flush()
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		g.emitBytes(0xe8) // call rel16
-		g.callFixups = append(g.callFixups, CallFixup{
-			CodeOffset: len(g.code),
-			Target:     target,
-		})
-		g.emitU16(0)
-	} else {
-		g.emitBytes(0xe8) // call rel32
-		g.callFixups = append(g.callFixups, CallFixup{
-			CodeOffset: len(g.code),
-			Target:     target,
-		})
-		g.emitU32(0) // placeholder
-	}
+	g.emitBytes(0xe8) // call rel32
+	g.callFixups = append(g.callFixups, CallFixup{
+		CodeOffset: len(g.code),
+		Target:     target,
+	})
+	g.emitU32(0) // placeholder
 }
 
 // patchRel32At patches the rel32 at fixupOff to jump to targetOff.
 func (g *CodeGen) patchRel32At(fixupOff int, targetOff int) {
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		rel := int16(targetOff - (fixupOff + 2))
-		g.code[fixupOff] = byte(rel)
-		g.code[fixupOff+1] = byte(rel >> 8)
-	} else {
-		rel := int32(targetOff - (fixupOff + 4))
-		g.code[fixupOff] = byte(rel)
-		g.code[fixupOff+1] = byte(rel >> 8)
-		g.code[fixupOff+2] = byte(rel >> 16)
-		g.code[fixupOff+3] = byte(rel >> 24)
-	}
+	rel := int32(targetOff - (fixupOff + 4))
+	g.code[fixupOff] = byte(rel)
+	g.code[fixupOff+1] = byte(rel >> 8)
+	g.code[fixupOff+2] = byte(rel >> 16)
+	g.code[fixupOff+3] = byte(rel >> 24)
 }
 
 // patchRel32 patches the rel32 at fixupOff to jump to the current code position.
 func (g *CodeGen) patchRel32(fixupOff int) {
 	target := len(g.code)
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		rel := int16(target - (fixupOff + 2))
-		g.code[fixupOff] = byte(rel)
-		g.code[fixupOff+1] = byte(rel >> 8)
-	} else {
-		rel := int32(target - (fixupOff + 4))
-		g.code[fixupOff] = byte(rel)
-		g.code[fixupOff+1] = byte(rel >> 8)
-		g.code[fixupOff+2] = byte(rel >> 16)
-		g.code[fixupOff+3] = byte(rel >> 24)
-	}
+	rel := int32(target - (fixupOff + 4))
+	g.code[fixupOff] = byte(rel)
+	g.code[fixupOff+1] = byte(rel >> 8)
+	g.code[fixupOff+2] = byte(rel >> 16)
+	g.code[fixupOff+3] = byte(rel >> 24)
 }
 
 // jmpRel32 emits `jmp rel32` and returns the offset of the rel32 for fixup.
 func (g *CodeGen) jmpRel32() int {
 	g.flush()
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		g.emitByte(0xe9) // jmp rel16
-		off := len(g.code)
-		g.emitU16(0)
-		return off
-	}
 	g.emitByte(0xe9)
 	off := len(g.code)
 	g.emitU32(0) // placeholder
@@ -235,20 +208,6 @@ func (g *CodeGen) jmpRel32() int {
 // jccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
 func (g *CodeGen) jccRel32(cc byte) int {
 	g.flush()
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		// 8086 has only short conditional branches.
-		// Lower near Jcc as:
-		//   j!cc +3
-		//   jmp  rel16
-		inv := (cc & 0x0f) ^ 0x01
-		g.emitBytes(byte(0x70|inv), 0x03, 0xe9)
-		off := len(g.code)
-		g.emitU16(0)
-		return off
-	}
-	if g.target.GOOS == "dos" && g.wordSize == 4 {
-		g.emitByte(0x66) // jcc rel32 in 16-bit mode
-	}
 	g.emitBytes(0x0f, cc)
 	off := len(g.code)
 	g.emitU32(0) // placeholder
@@ -350,9 +309,6 @@ func (g *CodeGen) relaxCurrentFuncJumps() {
 
 // ret emits `ret`.
 func (g *CodeGen) ret() {
-	if g.target.GOOS == "dos" && g.wordSize == 4 {
-		g.emitByte(0x66)
-	}
 	g.emitByte(0xc3)
 }
 
@@ -408,26 +364,7 @@ func (g *CodeGen) moveReg(dst, src int) {
 	if dst == src {
 		return
 	}
-	if g.wordSize == 2 {
-		g.emitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
-		return
-	}
-	if g.wordSize == 4 {
-		if g.target.GOOS == "dos" {
-			g.emitBytes(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
-		} else {
-			g.emitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
-		}
-		return
-	}
-	rex := byte(0x48)
-	if src >= 8 {
-		rex |= 0x04
-	}
-	if dst >= 8 {
-		rex |= 0x01
-	}
-	g.emitBytes(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+	g.emitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 }
 
 func (g *CodeGen) prepareForClobber(regs ...int) {
@@ -463,79 +400,21 @@ func (g *CodeGen) prepareForClobber(regs ...int) {
 }
 
 func (g *CodeGen) rawPush(reg int) {
-	if g.wordSize == 4 {
-		if g.target.GOOS == "dos" {
-			g.emitBytes(0x66, 0x67, 0x8d, 0x7f, 0xfc)          // lea edi, [edi-4]
-			g.emitBytes(0x66, 0x67, 0x89, byte(0x07|(reg<<3))) // mov [edi], reg
-		} else {
-			g.emitBytes(0x8d, 0x7f, 0xfc)          // lea edi, [edi-4] (preserves flags)
-			g.emitBytes(0x89, byte(0x07|(reg<<3))) // mov [edi], reg
-		}
-	} else if g.wordSize == 2 {
-		g.emitBytes(0x8d, 0x7d, 0xfe)          // lea di, [di-2]
-		g.emitBytes(0x89, byte(0x05|(reg<<3))) // mov [di], reg16
-	} else {
-		g.emitBytes(0x4d, 0x8d, 0x7f, 0xf8) // lea r15, [r15-8] (preserves flags)
-		rex := byte(0x49)
-		if reg >= 8 {
-			rex = 0x4d
-		}
-		g.emitBytes(rex, 0x89, byte(0x07|((reg&7)<<3)))
-	}
+	g.emitBytes(0x8d, 0x7f, 0xfc)          // lea edi, [edi-4] (preserves flags)
+	g.emitBytes(0x89, byte(0x07|(reg<<3))) // mov [edi], reg
 }
 
 func (g *CodeGen) rawPop(reg int) {
-	if g.wordSize == 4 {
-		if g.target.GOOS == "dos" {
-			g.emitBytes(0x66, 0x67, 0x8b, byte(0x07|(reg<<3))) // mov reg, [edi]
-			g.emitBytes(0x66, 0x67, 0x8d, 0x7f, 0x04)          // lea edi, [edi+4]
-		} else {
-			g.emitBytes(0x8b, byte(0x07|(reg<<3))) // mov reg, [edi]
-			g.emitBytes(0x8d, 0x7f, 0x04)          // lea edi, [edi+4] (preserves flags)
-		}
-	} else if g.wordSize == 2 {
-		g.emitBytes(0x8b, byte(0x05|(reg<<3))) // mov reg16, [di]
-		g.emitBytes(0x8d, 0x7d, 0x02)          // lea di, [di+2]
-	} else {
-		rex := byte(0x49)
-		if reg >= 8 {
-			rex = 0x4d
-		}
-		g.emitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
-		g.emitBytes(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8] (preserves flags)
-	}
+	g.emitBytes(0x8b, byte(0x07|(reg<<3))) // mov reg, [edi]
+	g.emitBytes(0x8d, 0x7f, 0x04)          // lea edi, [edi+4] (preserves flags)
 }
 
 func (g *CodeGen) rawLoad(reg int) {
-	if g.wordSize == 4 {
-		if g.target.GOOS == "dos" {
-			g.emitBytes(0x66, 0x67, 0x8b, byte(0x07|(reg<<3)))
-		} else {
-			g.emitBytes(0x8b, byte(0x07|(reg<<3)))
-		}
-	} else if g.wordSize == 2 {
-		g.emitBytes(0x8b, byte(0x05|(reg<<3)))
-	} else {
-		rex := byte(0x49)
-		if reg >= 8 {
-			rex = 0x4d
-		}
-		g.emitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
-	}
+	g.emitBytes(0x8b, byte(0x07|(reg<<3)))
 }
 
 func (g *CodeGen) rawDrop() {
-	if g.wordSize == 4 {
-		if g.target.GOOS == "dos" {
-			g.emitBytes(0x66, 0x67, 0x83, 0xc7, 0x04)
-		} else {
-			g.emitBytes(0x83, 0xc7, 0x04)
-		}
-	} else if g.wordSize == 2 {
-		g.emitBytes(0x83, 0xc7, 0x02)
-	} else {
-		g.emitBytes(0x49, 0x83, 0xc7, 0x08)
-	}
+	g.emitBytes(0x83, 0xc7, 0x04)
 }
 
 func (g *CodeGen) opPush(reg int) {
@@ -611,21 +490,7 @@ func (g *CodeGen) opLoad(reg int) {
 
 func (g *CodeGen) opStore(reg int) {
 	g.flush()
-	if g.wordSize == 4 {
-		if g.target.GOOS == "dos" {
-			g.emitBytes(0x66, 0x67, 0x89, byte(0x07|(reg<<3)))
-		} else {
-			g.emitBytes(0x89, byte(0x07|(reg<<3)))
-		}
-	} else if g.wordSize == 2 {
-		g.emitBytes(0x89, byte(0x05|(reg<<3)))
-	} else {
-		rex := byte(0x49)
-		if reg >= 8 {
-			rex = 0x4d
-		}
-		g.emitBytes(rex, 0x89, byte(0x07|((reg&7)<<3)))
-	}
+	g.emitBytes(0x89, byte(0x07|(reg<<3)))
 }
 
 func (g *CodeGen) opDrop() {
