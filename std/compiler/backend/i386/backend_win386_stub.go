@@ -39,4 +39,7 @@ func (g *CodeGen) compileSyscallWaitProcess_win386()    { panic("windows/386 bac
 func (g *CodeGen) compileSyscallCreatePipe_win386()     { panic("windows/386 backend disabled") }
 func (g *CodeGen) compileSyscallSetStdHandle_win386()   { panic("windows/386 backend disabled") }
 func (g *CodeGen) compileSyscallStat_win386()           { panic("windows/386 backend disabled") }
-func (g *CodeGen) compilePanic_win386()                 { panic("windows/386 backend disabled") }
+func (g *CodeGen) compileLinkStaticIntrinsicWin386(inst ir.Inst) bool {
+	return false
+}
+func (g *CodeGen) compilePanic_win386() { panic("windows/386 backend disabled") }
