@@ -97,6 +97,38 @@ func readStdinSourceToTemp() error {
 	return os.WriteFile(runTmpSrc, src, 0644)
 }
 
+func traceExit(code int) {
+	if runtime.GOOS != "windows" || runtime.GOARCH != "arm64" {
+		return
+	}
+	want := os.Getenv("RTG_TRACE_EXIT")
+	if want == "" {
+		return
+	}
+	switch want {
+	case "10":
+		if code == 10 {
+			os.Exit(code)
+		}
+	case "20":
+		if code == 20 {
+			os.Exit(code)
+		}
+	case "30":
+		if code == 30 {
+			os.Exit(code)
+		}
+	case "40":
+		if code == 40 {
+			os.Exit(code)
+		}
+	case "50":
+		if code == 50 {
+			os.Exit(code)
+		}
+	}
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printHelp(os.Args[0], os.Stderr)
@@ -335,6 +367,7 @@ func main() {
 	if ir.SizeAnalysisPath != "" {
 		compileTarget.StripBinary = true
 	}
+	traceExit(10)
 
 	if extractStdlibDest != "" {
 		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || stdinInput || parseOnly || emitIRBinaryPath != "" || buildTagsPath != "" {
@@ -412,6 +445,7 @@ func main() {
 		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
 		}
+		traceExit(20)
 
 		if buildTagsPath != "" {
 			tags := frontend.GetDiscoveredBuildTags()
@@ -462,10 +496,12 @@ func main() {
 		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
+		traceExit(30)
 		ir.EliminateDeadFunctions(irmod)
 		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
 		}
+		traceExit(40)
 		if emitIRBinaryPath != "" {
 			err := binary.WriteIRBinary(irmod, emitIRBinaryPath)
 			if err != nil {
@@ -509,6 +545,7 @@ func main() {
 	if compileTarget.CompilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: output generated successfully\n")
 	}
+	traceExit(50)
 
 	ir.WriteSizeAnalysis(compileTarget)
 

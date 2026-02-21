@@ -64,7 +64,7 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 		}
 	} else {
 		// x86-64: fix up string headers in rodata with absolute virtual addresses
-		for _, headerOff := range g.StringMap() {
+		for _, headerOff := range g.StringHeaderOffsets() {
 			dataOff := aarch64.GetU64(g.Rodata()[headerOff : headerOff+8])
 			aarch64.PutU64(g.Rodata()[headerOff:headerOff+8], rodataVAddr+dataOff)
 		}

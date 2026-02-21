@@ -545,6 +545,44 @@ func parseTarget(target string) (string, string, error) {
 	return parts[0], parts[1], nil
 }
 
+func isWSL() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if os.Getenv("WSL_INTEROP") != "" || os.Getenv("WSL_DISTRO_NAME") != "" {
+		return true
+	}
+	paths := []string{"/proc/version", "/proc/sys/kernel/osrelease"}
+	for _, p := range paths {
+		if b, err := os.ReadFile(p); err == nil {
+			if strings.Contains(strings.ToLower(string(b)), "microsoft") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func wslPathToWindows(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		if cwd, err := os.Getwd(); err == nil {
+			path = filepath.Join(cwd, path)
+		}
+	}
+	out, err := exec.Command("wslpath", "-m", path).Output()
+	if err != nil {
+		return "", fmt.Errorf("wslpath -m %s failed: %w", path, err)
+	}
+	return trimCommandOutput(out), nil
+}
+
+func quoteForCmd(arg string) string {
+	if strings.ContainsAny(arg, " \t") {
+		return `"` + arg + `"`
+	}
+	return arg
+}
+
 func trimCommandOutput(out []byte) string {
 	return strings.TrimRight(string(out), "\r\n")
 }
@@ -719,6 +757,16 @@ func (e *Executor) handleFullCompiler(args []string) error {
 			case runtime.GOOS == "linux" && targetOS == "windows" && targetArch == "386":
 				runBin = "wine"
 				runArgs = append(runArgs, out)
+			case runtime.GOOS == "linux" && targetOS == "windows" && targetArch == "arm64":
+				if !isWSL() {
+					return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
+				}
+				winOut, err := wslPathToWindows(out)
+				if err != nil {
+					return err
+				}
+				runBin = "cmd.exe"
+				runArgs = []string{"/c", quoteForCmd(winOut)}
 			default:
 				return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
 			}

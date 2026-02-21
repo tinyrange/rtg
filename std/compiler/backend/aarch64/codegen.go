@@ -29,6 +29,8 @@ type CodeGen struct {
 
 	// String literal deduplication: string content → rodata offset of header
 	stringMap map[string]int
+	// Ordered list of string header offsets in .data
+	stringHeaderOff []int
 
 	// Global variable info: global index → offset in .data
 	globalOffsets []int
@@ -223,6 +225,9 @@ func (g *CodeGen) AddCallFixup(codeOffset int, target string, value uint64) {
 
 // StringMap returns deduplicated string-header offsets by string content.
 func (g *CodeGen) StringMap() map[string]int { return g.stringMap }
+
+// StringHeaderOffsets returns the ordered offsets of string headers in .data.
+func (g *CodeGen) StringHeaderOffsets() []int { return g.stringHeaderOff }
 
 // StringRodataMap returns mapping from string header offsets to rodata byte offsets.
 func (g *CodeGen) StringRodataMap() map[int]int { return g.stringRodataMap }
