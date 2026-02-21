@@ -3,7 +3,9 @@ package backend
 import (
 	"fmt"
 
-	"j5.nz/rtg/std/compiler/backend/aarch64"
+	aarch64linux "j5.nz/rtg/std/compiler/backend/aarch64/linux"
+	aarch64macos "j5.nz/rtg/std/compiler/backend/aarch64/macos"
+	aarch64windows "j5.nz/rtg/std/compiler/backend/aarch64/windows"
 	"j5.nz/rtg/std/compiler/backend/c"
 	"j5.nz/rtg/std/compiler/backend/i386"
 	"j5.nz/rtg/std/compiler/backend/irprint"
@@ -49,11 +51,11 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		return wasm32.Generate(target, irmod, outputPath)
 	case "arm64":
 		if target.GOOS == "darwin" {
-			return aarch64.GenerateDarwin(target, irmod, outputPath)
+			return aarch64macos.Generate(target, irmod, outputPath)
 		} else if target.GOOS == "linux" {
-			return aarch64.GenerateLinuxELF(target, irmod, outputPath)
+			return aarch64linux.Generate(target, irmod, outputPath)
 		} else if target.GOOS == "windows" {
-			return aarch64.GenerateWinPE(target, irmod, outputPath)
+			return aarch64windows.Generate(target, irmod, outputPath)
 		}
 		return fmt.Errorf("unsupported OS for arm64: %s", target.GOOS)
 	default:

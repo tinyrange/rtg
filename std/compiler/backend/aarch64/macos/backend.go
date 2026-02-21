@@ -1,0 +1,11 @@
+package macos
+
+import (
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
+)
+
+// Generate compiles an IRModule to a macOS ARM64 Mach-O binary.
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return GenerateDarwin(target, irmod, outputPath)
+}
