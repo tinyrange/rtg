@@ -30,6 +30,13 @@ func (g *CodeGen) emitGenericLinkStaticCallWin64(paramCount int, lib string, sym
 	if paramCount > 4 {
 		extra = paramCount - 4
 	}
+	alignPad := 0
+	if extra&1 != 0 {
+		// Keep RSP 16-byte aligned at external call boundaries on Win64
+		// while preserving the required [rsp+32] first stack argument slot.
+		g.subRI(REG_RSP, 8)
+		alignPad = 8
+	}
 	for i := paramCount; i > 4; i-- {
 		g.emitLoadLocal(i*8, REG_RAX)
 		g.pushR(REG_RAX)
@@ -48,7 +55,7 @@ func (g *CodeGen) emitGenericLinkStaticCallWin64(paramCount int, lib string, sym
 		g.emitLoadLocal(4*8, REG_R9)
 	}
 	g.emitCallIATInLib(lib, sym)
-	g.addRI(REG_RSP, int32(32+extra*8))
+	g.addRI(REG_RSP, int32(32+extra*8+alignPad))
 }
 
 func (g *CodeGen) emitLinkStaticPtrReturnWin64() {
