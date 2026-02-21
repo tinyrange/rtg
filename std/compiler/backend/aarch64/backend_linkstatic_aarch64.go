@@ -9,11 +9,12 @@ import (
 )
 
 func (g *CodeGen) loadLinkStaticArgsArm64(paramCount int) {
-	if paramCount > 8 {
-		panic("ICE: linkstatic intrinsic has too many args for arm64")
+	maxRegs := paramCount
+	if maxRegs > 8 {
+		maxRegs = 8
 	}
 	i := 0
-	for i < paramCount {
+	for i < maxRegs {
 		g.emitLoadLocalArm64((i+1)*8, REG_X0+i)
 		i++
 	}
