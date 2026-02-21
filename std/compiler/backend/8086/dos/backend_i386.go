@@ -1,6 +1,6 @@
-//go:build !no_backend_linux_i386 || !no_backend_windows_i386
+//go:build !no_backend_dos_i386
 
-package i386
+package dos
 
 import (
 	"j5.nz/rtg/std/compiler/backend/becommon"
@@ -238,11 +238,7 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	case ir.OP_IFACE_CALL:
 		g.compileIfaceCall_i386(inst)
 	case ir.OP_PANIC:
-		if g.target.GOOS == "windows" {
-			g.compilePanic_win386()
-		} else {
-			g.compilePanic_linux386()
-		}
+		g.int3()
 
 	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// Handled by intrinsics or builtins
@@ -521,52 +517,7 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	g.flush()
 	switch inst.Name {
 	case "Syscall":
-		// Linux i386 syscall lowering.
-		g.compileSyscallIntrinsic_linux386(inst.Arg)
-	case "SysRead":
-		g.compileSyscallRead_win386()
-	case "SysWrite":
-		g.compileSyscallWrite_win386()
-	case "SysOpen":
-		g.compileSyscallOpen_win386()
-	case "SysClose":
-		g.compileSyscallClose_win386()
-	case "SysExit":
-		g.compileSyscallExit_win386()
-	case "SysMmap":
-		g.compileSyscallMmap_win386()
-	case "SysMkdir":
-		g.compileSyscallMkdir_win386()
-	case "SysRmdir":
-		g.compileSyscallRmdir_win386()
-	case "SysUnlink":
-		g.compileSyscallUnlink_win386()
-	case "SysGetcwd":
-		g.compileSyscallGetcwd_win386()
-	case "SysGetdents64":
-		g.compileSyscallGetdents_win386()
-	case "SysStat":
-		g.compileSyscallStat_win386()
-	case "SysGetCommandLine":
-		g.compileSyscallGetCommandLine_win386()
-	case "SysGetEnvStrings":
-		g.compileSyscallGetEnvStrings_win386()
-	case "SysFindFirstFile":
-		g.compileSyscallFindFirstFile_win386()
-	case "SysFindNextFile":
-		g.compileSyscallFindNextFile_win386()
-	case "SysFindClose":
-		g.compileSyscallFindClose_win386()
-	case "SysCreateProcess":
-		g.compileSyscallCreateProcess_win386()
-	case "SysWaitProcess":
-		g.compileSyscallWaitProcess_win386()
-	case "SysCreatePipe":
-		g.compileSyscallCreatePipe_win386()
-	case "SysSetStdHandle":
-		g.compileSyscallSetStdHandle_win386()
-	case "SysGetpid":
-		g.compileSyscallGetpid_win386()
+		g.compileSyscallIntrinsic_dos386(inst.Arg)
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic_i386()
 	case "Makeslice":

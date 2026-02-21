@@ -3,6 +3,7 @@ package backend
 import (
 	"fmt"
 
+	x8086 "j5.nz/rtg/std/compiler/backend/8086"
 	aarch64linux "j5.nz/rtg/std/compiler/backend/aarch64/linux"
 	aarch64macos "j5.nz/rtg/std/compiler/backend/aarch64/macos"
 	aarch64windows "j5.nz/rtg/std/compiler/backend/aarch64/windows"
@@ -30,7 +31,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	switch target.GOARCH {
 	case "8086", "dos16":
 		if target.GOOS == "dos" {
-			return i386.GenerateDOSCOM(target, irmod, outputPath)
+			return x8086.GenerateDOSCOM(target, irmod, outputPath)
 		}
 		return fmt.Errorf("unsupported OS for dos16: %s", target.GOOS)
 	case "amd64":

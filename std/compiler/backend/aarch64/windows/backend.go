@@ -1,3 +1,5 @@
+//go:build !no_backend_arm64
+
 package windows
 
 import (
