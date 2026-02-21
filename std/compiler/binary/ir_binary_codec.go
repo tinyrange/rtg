@@ -263,6 +263,12 @@ func WriteIRBinary(irmod *IRModule, path string) error {
 		}
 	}
 
+	w.writeU32(uint32(len(irmod.LinkStaticFuncs)))
+	for k := range irmod.LinkStaticFuncs {
+		w.writeString(k)
+		w.writeString(irmod.LinkStaticFuncs[k])
+	}
+
 	w.writeU32(uint32(len(irmod.TypeIDs)))
 	for k := range irmod.TypeIDs {
 		w.writeString(k)
@@ -654,6 +660,10 @@ func ReadIRBinary(path string) (*IRModule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read funcs at %d: %w", r.off, err)
 	}
+	linkStaticFuncs, err := readStringStringMap(r)
+	if err != nil {
+		return nil, fmt.Errorf("read linkstatic funcs at %d: %w", r.off, err)
+	}
 	typeIDs, err := readStringIntMap(r)
 	if err != nil {
 		return nil, fmt.Errorf("read typeIDs at %d: %w", r.off, err)
@@ -674,6 +684,7 @@ func ReadIRBinary(path string) (*IRModule, error) {
 		Funcs:           funcs,
 		Globals:         globals,
 		Types:           rootTypes,
+		LinkStaticFuncs: linkStaticFuncs,
 		TypeIDs:         typeIDs,
 		MethodTable:     methodTable,
 		IfaceMethods:    ifaceMethods,

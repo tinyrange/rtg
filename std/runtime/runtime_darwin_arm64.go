@@ -18,64 +18,64 @@ const (
 var GOOS string = "darwin"
 var GOARCH string = "arm64"
 
-//rtg:internal SysRead
+//rtg:linkstatic libSystem.dylib,_read
 func SysRead(fd, buf, count uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysWrite
+//rtg:linkstatic libSystem.dylib,_write
 func SysWrite(fd, buf, count uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysOpen
+//rtg:linkstatic libSystem.dylib,_open
 func SysOpen(path, flags, mode uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysClose
+//rtg:linkstatic libSystem.dylib,_close
 func SysClose(fd uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysStat
+//rtg:linkstatic libSystem.dylib,_stat
 func SysStat(path, buf uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysMkdir
+//rtg:linkstatic libSystem.dylib,_mkdir
 func SysMkdir(path, mode uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysRmdir
+//rtg:linkstatic libSystem.dylib,_rmdir
 func SysRmdir(path uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysUnlink
+//rtg:linkstatic libSystem.dylib,_unlink
 func SysUnlink(path uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysGetcwd
+//rtg:linkstatic libSystem.dylib,_getcwd,ptr
 func SysGetcwd(buf, size uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysExit
+//rtg:linkstatic libSystem.dylib,_exit,noreturn
 func SysExit(code uintptr)
 
-//rtg:internal SysMmap
+//rtg:linkstatic libSystem.dylib,_mmap,ptr
 func SysMmap(addr, length, prot, flags, fd, offset uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysChmod
+//rtg:linkstatic libSystem.dylib,_chmod
 func SysChmod(path, mode uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysDup2
+//rtg:linkstatic libSystem.dylib,_dup2
 func SysDup2(old, new_ uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysFork
+//rtg:linkstatic libSystem.dylib,_fork
 func SysFork() (uintptr, uintptr, int32)
 
-//rtg:internal SysExecve
+//rtg:linkstatic libSystem.dylib,_execve
 func SysExecve(path, argv, envp uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysWait4
+//rtg:linkstatic libSystem.dylib,_wait4
 func SysWait4(pid, status, opts, rusage uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysPipe
+//rtg:linkstatic libSystem.dylib,_pipe
 func SysPipe(fds uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysOpendir
+//rtg:linkstatic libSystem.dylib,_opendir,ptr
 func SysOpendir(path uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysReaddir
+//rtg:linkstatic libSystem.dylib,_readdir,rawptr
 func SysReaddir(dirp uintptr) (uintptr, uintptr, int32)
 
-//rtg:internal SysClosedir
+//rtg:linkstatic libSystem.dylib,_closedir
 func SysClosedir(dirp uintptr) (uintptr, uintptr, int32)
 
 //rtg:internal SysGetargc
@@ -87,5 +87,5 @@ func SysGetargv() (uintptr, uintptr, int32)
 //rtg:internal SysGetenvp
 func SysGetenvp() (uintptr, uintptr, int32)
 
-//rtg:internal SysGetpid
+//rtg:linkstatic libSystem.dylib,_getpid
 func SysGetpid() (uintptr, uintptr, int32)
