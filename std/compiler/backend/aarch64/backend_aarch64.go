@@ -12,10 +12,10 @@ import (
 // Uses X0-X3 as working registers, X28 as operand stack pointer,
 // X29 (FP) as frame pointer, X30 (LR) as link register.
 
-// compileFuncArm64 generates ARM64 code for a single IR function.
-func (g *CodeGen) compileFuncArm64(f *ir.IRFunc) {
+// CompileFuncArm64 generates ARM64 code for a single IR function.
+func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	g.curFunc = f
-	g.clearOperandCache()
+	g.ClearOperandCache()
 	g.curFrameSize = len(f.Locals)
 	if f.Params > g.curFrameSize {
 		g.curFrameSize = f.Params
@@ -24,8 +24,8 @@ func (g *CodeGen) compileFuncArm64(f *ir.IRFunc) {
 	g.jumpFixups = nil
 
 	// Prologue: STP X29, X30, [SP, #-16]!; MOV X29, SP; SUB SP, SP, #frameBytes
-	g.emitStp(REG_FP, REG_LR, REG_SP, -16)
-	g.emitMovRRArm64(REG_FP, REG_SP)
+	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
+	g.EmitMovRRArm64(REG_FP, REG_SP)
 
 	frameBytes := g.curFrameSize * 8
 	// Align to 16 bytes (ARM64 SP must be 16-byte aligned)
@@ -36,7 +36,7 @@ func (g *CodeGen) compileFuncArm64(f *ir.IRFunc) {
 		if frameBytes < 4096 {
 			g.emitSubImm(REG_SP, REG_SP, uint32(frameBytes))
 		} else {
-			g.emitLoadImm64Compact(REG_X16, uint64(frameBytes))
+			g.EmitLoadImm64Compact(REG_X16, uint64(frameBytes))
 			g.emitSubRR(REG_SP, REG_SP, REG_X16)
 		}
 	}
@@ -70,7 +70,7 @@ func (g *CodeGen) compileFuncArm64(f *ir.IRFunc) {
 			g.patchArm64BCondAt(fix.CodeOffset, labelOff)
 		} else {
 			// B
-			g.patchArm64BAt(fix.CodeOffset, labelOff)
+			g.PatchArm64BAt(fix.CodeOffset, labelOff)
 		}
 	}
 
@@ -144,10 +144,10 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 		g.opPush(REG_X0)
 
 	case ir.OP_LABEL:
-		g.flush()
+		g.Flush()
 		g.labelOffsets[inst.Arg] = len(g.code)
 	case ir.OP_JMP:
-		g.flush()
+		g.Flush()
 		fixup := g.emitB()
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
 			CodeOffset: fixup,
@@ -230,7 +230,7 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 
 func (g *CodeGen) compileConstI64Arm64(val int64) {
 	g.prepareForClobber(REG_X0)
-	g.emitLoadImm64Compact(REG_X0, uint64(val))
+	g.EmitLoadImm64Compact(REG_X0, uint64(val))
 	g.opPush(REG_X0)
 }
 
@@ -265,9 +265,9 @@ func (g *CodeGen) compileConstStrArm64(s string) {
 
 	// Compute string data address at runtime (PC-relative ADRP+ADD, works with ASLR)
 	// and store it into the header's data_ptr field in __DATA (writable)
-	g.emitAdrpAdd(REG_X1, "$rodata_header$", uint64(rodataOff)) // X1 = actual string data addr
-	g.emitAdrpAdd(REG_X0, "$data_addr$", uint64(headerOff))     // X0 = header addr in __DATA
-	g.emitStr(REG_X1, REG_X0, 0)                                // [header+0] = data addr
+	g.EmitAdrpAdd(REG_X1, "$rodata_header$", uint64(rodataOff)) // X1 = actual string data addr
+	g.EmitAdrpAdd(REG_X0, "$data_addr$", uint64(headerOff))     // X0 = header addr in __DATA
+	g.EmitStr(REG_X1, REG_X0, 0)                                // [header+0] = data addr
 
 	// Push header address onto operand stack
 	g.opPush(REG_X0)
@@ -296,8 +296,8 @@ func (g *CodeGen) compileLocalAddImmArm64(idx int, imm int32) {
 	} else if imm < 0 && imm > -4096 {
 		g.emitSubImm(REG_X0, REG_X0, uint32(-imm))
 	} else {
-		g.emitLoadImm64Compact(REG_X1, uint64(int64(imm)))
-		g.emitAddRR(REG_X0, REG_X0, REG_X1)
+		g.EmitLoadImm64Compact(REG_X1, uint64(int64(imm)))
+		g.EmitAddRR(REG_X0, REG_X0, REG_X1)
 	}
 	g.emitStoreLocalArm64(offset, REG_X0)
 }
@@ -319,13 +319,13 @@ func (g *CodeGen) compileGlobalGetArm64(inst ir.Inst) {
 
 func (g *CodeGen) compileGlobalSetArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
-	g.emitAdrpAdd(REG_X1, "$data_addr$", uint64(inst.Arg*8))
-	g.emitStr(REG_X0, REG_X1, 0)
+	g.EmitAdrpAdd(REG_X1, "$data_addr$", uint64(inst.Arg*8))
+	g.EmitStr(REG_X0, REG_X1, 0)
 }
 
 func (g *CodeGen) compileGlobalAddrArm64(inst ir.Inst) {
 	g.prepareForClobber(REG_X0)
-	g.emitAdrpAdd(REG_X0, "$data_addr$", uint64(inst.Arg*8))
+	g.EmitAdrpAdd(REG_X0, "$data_addr$", uint64(inst.Arg*8))
 	g.opPush(REG_X0)
 }
 
@@ -337,7 +337,7 @@ func (g *CodeGen) compileBinOpArm64(op ir.Opcode) {
 
 	switch op {
 	case ir.OP_ADD:
-		g.emitAddRR(REG_X1, REG_X1, REG_X0)
+		g.EmitAddRR(REG_X1, REG_X1, REG_X0)
 	case ir.OP_SUB:
 		g.emitSubRR(REG_X1, REG_X1, REG_X0)
 	case ir.OP_MUL:
@@ -391,7 +391,7 @@ func (g *CodeGen) compileCallArm64(inst ir.Inst) {
 		g.compileCompositeLitCallArm64(inst)
 		return
 	}
-	g.emitCallPlaceholderArm64(inst.Name)
+	g.EmitCallPlaceholderArm64(inst.Name)
 }
 
 func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
@@ -409,13 +409,13 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 		g.opPop(REG_X0)
 		// STP-style push: SUB SP, SP, #16; STR X0, [SP]
 		g.emitSubImm(REG_SP, REG_SP, 16)
-		g.emitStr(REG_X0, REG_SP, 0)
+		g.EmitStr(REG_X0, REG_SP, 0)
 		i++
 	}
 
 	// Allocate struct: push size, call Alloc
 	g.compileConstI64Arm64(int64(structSize))
-	g.emitCallPlaceholderArm64("runtime.Alloc")
+	g.EmitCallPlaceholderArm64("runtime.Alloc")
 	g.opPop(REG_X1) // struct ptr
 
 	// Pop fields from hardware stack and store into struct
@@ -424,7 +424,7 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 		g.emitLdr(REG_X0, REG_SP, 0)
 		g.emitAddImm(REG_SP, REG_SP, 16)
 		offset := i * 8
-		g.emitStr(REG_X0, REG_X1, offset)
+		g.EmitStr(REG_X0, REG_X1, offset)
 		i++
 	}
 
@@ -432,17 +432,17 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 }
 
 func (g *CodeGen) compileReturnArm64(inst ir.Inst) {
-	g.flush()
+	g.Flush()
 	// Epilogue: MOV SP, FP; LDP FP, LR, [SP], #16; RET
-	g.emitMovRRArm64(REG_SP, REG_FP)
-	g.emitLdp(REG_FP, REG_LR, REG_SP, 16)
-	g.emitRet()
+	g.EmitMovRRArm64(REG_SP, REG_FP)
+	g.EmitLdp(REG_FP, REG_LR, REG_SP, 16)
+	g.EmitRet()
 }
 
 // === Intrinsics ===
 
 func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
-	g.flush()
+	g.Flush()
 	if g.target.GOOS == "windows" {
 		g.compileCallIntrinsicArm64Windows(inst)
 		return
@@ -452,50 +452,50 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.emitLoadLocalArm64(1*8, REG_X0) // fd
 		g.emitLoadLocalArm64(2*8, REG_X1) // buf
 		g.emitLoadLocalArm64(3*8, REG_X2) // count
-		g.emitCallGOT("_read")
+		g.EmitCallGOT("_read")
 		g.emitSyscallReturnArm64()
 	case "SysWrite":
 		g.emitLoadLocalArm64(1*8, REG_X0) // fd
 		g.emitLoadLocalArm64(2*8, REG_X1) // buf
 		g.emitLoadLocalArm64(3*8, REG_X2) // count
-		g.emitCallGOT("_write")
+		g.EmitCallGOT("_write")
 		g.emitSyscallReturnArm64()
 	case "SysOpen":
 		g.emitLoadLocalArm64(1*8, REG_X0) // path
 		g.emitLoadLocalArm64(2*8, REG_X1) // flags
 		g.emitLoadLocalArm64(3*8, REG_X2) // mode
-		g.emitCallGOT("_open")
+		g.EmitCallGOT("_open")
 		g.emitSyscallReturnArm64()
 	case "SysClose":
 		g.emitLoadLocalArm64(1*8, REG_X0) // fd
-		g.emitCallGOT("_close")
+		g.EmitCallGOT("_close")
 		g.emitSyscallReturnArm64()
 	case "SysStat":
 		g.emitLoadLocalArm64(1*8, REG_X0) // path
 		g.emitLoadLocalArm64(2*8, REG_X1) // buf
-		g.emitCallGOT("_stat")
+		g.EmitCallGOT("_stat")
 		g.emitSyscallReturnArm64()
 	case "SysMkdir":
 		g.emitLoadLocalArm64(1*8, REG_X0) // path
 		g.emitLoadLocalArm64(2*8, REG_X1) // mode
-		g.emitCallGOT("_mkdir")
+		g.EmitCallGOT("_mkdir")
 		g.emitSyscallReturnArm64()
 	case "SysRmdir":
 		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.emitCallGOT("_rmdir")
+		g.EmitCallGOT("_rmdir")
 		g.emitSyscallReturnArm64()
 	case "SysUnlink":
 		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.emitCallGOT("_unlink")
+		g.EmitCallGOT("_unlink")
 		g.emitSyscallReturnArm64()
 	case "SysGetcwd":
 		g.emitLoadLocalArm64(1*8, REG_X0) // buf
 		g.emitLoadLocalArm64(2*8, REG_X1) // size
-		g.emitCallGOT("_getcwd")
+		g.EmitCallGOT("_getcwd")
 		g.emitSyscallReturnPtrArm64()
 	case "SysExit":
 		g.emitLoadLocalArm64(1*8, REG_X0) // code
-		g.emitCallGOT("_exit")
+		g.EmitCallGOT("_exit")
 	case "SysMmap":
 		g.emitLoadLocalArm64(1*8, REG_X0) // addr
 		g.emitLoadLocalArm64(2*8, REG_X1) // len
@@ -503,80 +503,80 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.emitLoadLocalArm64(4*8, REG_X3) // flags
 		g.emitLoadLocalArm64(5*8, REG_X4) // fd
 		g.emitLoadLocalArm64(6*8, REG_X5) // offset
-		g.emitCallGOT("_mmap")
+		g.EmitCallGOT("_mmap")
 		g.emitSyscallReturnPtrArm64()
 	case "SysOpendir":
 		g.emitLoadLocalArm64(1*8, REG_X0) // path
-		g.emitCallGOT("_opendir")
+		g.EmitCallGOT("_opendir")
 		g.emitSyscallReturnPtrArm64()
 	case "SysReaddir":
 		g.emitLoadLocalArm64(1*8, REG_X0) // dirp
-		g.emitCallGOT("_readdir")
+		g.EmitCallGOT("_readdir")
 		g.rawPush(REG_X0) // r1 = dirent* or 0
-		g.emitMovZ(REG_X0, 0, 0)
+		g.EmitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
-		g.clearOperandCache()
+		g.ClearOperandCache()
 	case "SysClosedir":
 		g.emitLoadLocalArm64(1*8, REG_X0) // dirp
-		g.emitCallGOT("_closedir")
+		g.EmitCallGOT("_closedir")
 		g.emitSyscallReturnArm64()
 	case "SysDup2":
 		g.emitLoadLocalArm64(1*8, REG_X0) // oldfd
 		g.emitLoadLocalArm64(2*8, REG_X1) // newfd
-		g.emitCallGOT("_dup2")
+		g.EmitCallGOT("_dup2")
 		g.emitSyscallReturnArm64()
 	case "SysFork":
-		g.emitCallGOT("_fork")
+		g.EmitCallGOT("_fork")
 		g.emitSyscallReturnArm64()
 	case "SysExecve":
 		g.emitLoadLocalArm64(1*8, REG_X0) // path
 		g.emitLoadLocalArm64(2*8, REG_X1) // argv
 		g.emitLoadLocalArm64(3*8, REG_X2) // envp
-		g.emitCallGOT("_execve")
+		g.EmitCallGOT("_execve")
 		g.emitSyscallReturnArm64()
 	case "SysWait4":
 		g.emitLoadLocalArm64(1*8, REG_X0) // pid
 		g.emitLoadLocalArm64(2*8, REG_X1) // status
 		g.emitLoadLocalArm64(3*8, REG_X2) // options
 		g.emitLoadLocalArm64(4*8, REG_X3) // rusage
-		g.emitCallGOT("_wait4")
+		g.EmitCallGOT("_wait4")
 		g.emitSyscallReturnArm64()
 	case "SysPipe":
 		g.emitLoadLocalArm64(1*8, REG_X0) // fds
-		g.emitCallGOT("_pipe")
+		g.EmitCallGOT("_pipe")
 		g.emitSyscallReturnArm64()
 	case "SysChmod":
 		g.emitLoadLocalArm64(1*8, REG_X0) // path
 		g.emitLoadLocalArm64(2*8, REG_X1) // mode
-		g.emitCallGOT("_chmod")
+		g.EmitCallGOT("_chmod")
 		g.emitSyscallReturnArm64()
 	case "SysGetargc":
 		argcOff := len(g.irmod.Globals) * 8
 		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argcOff))
 		g.rawPush(REG_X0) // r1=argc
-		g.emitMovZ(REG_X0, 0, 0)
+		g.EmitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
-		g.clearOperandCache()
+		g.ClearOperandCache()
 	case "SysGetargv":
 		argvOff := (len(g.irmod.Globals) + 1) * 8
 		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argvOff))
 		g.rawPush(REG_X0) // r1=argv
-		g.emitMovZ(REG_X0, 0, 0)
+		g.EmitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
-		g.clearOperandCache()
+		g.ClearOperandCache()
 	case "SysGetenvp":
 		envpOff := (len(g.irmod.Globals) + 2) * 8
 		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(envpOff))
 		g.rawPush(REG_X0) // r1=envp
-		g.emitMovZ(REG_X0, 0, 0)
+		g.EmitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
-		g.clearOperandCache()
+		g.ClearOperandCache()
 	case "SysGetpid":
-		g.emitCallGOT("_getpid")
+		g.EmitCallGOT("_getpid")
 		g.emitSyscallReturnArm64()
 	case "Syscall":
 		g.compileSyscallIntrinsicArm64(inst.Arg)
@@ -610,17 +610,17 @@ func (g *CodeGen) compileSliceptrIntrinsicArm64() {
 func (g *CodeGen) compileMakesliceIntrinsicArm64() {
 	// Params: ptr (local 0), len (local 1), cap (local 2)
 	g.compileConstI64Arm64(32)
-	g.emitCallPlaceholderArm64("runtime.Alloc")
+	g.EmitCallPlaceholderArm64("runtime.Alloc")
 	g.opPop(REG_X1) // header ptr
 
 	g.emitLoadLocalArm64(1*8, REG_X0) // ptr
-	g.emitStr(REG_X0, REG_X1, 0)
+	g.EmitStr(REG_X0, REG_X1, 0)
 	g.emitLoadLocalArm64(2*8, REG_X0) // len
-	g.emitStr(REG_X0, REG_X1, 8)
+	g.EmitStr(REG_X0, REG_X1, 8)
 	g.emitLoadLocalArm64(3*8, REG_X0) // cap
-	g.emitStr(REG_X0, REG_X1, 16)
-	g.emitLoadImm64Compact(REG_X0, 1) // elem_size = 1
-	g.emitStr(REG_X0, REG_X1, 24)
+	g.EmitStr(REG_X0, REG_X1, 16)
+	g.EmitLoadImm64Compact(REG_X0, 1) // elem_size = 1
+	g.EmitStr(REG_X0, REG_X1, 24)
 
 	g.opPush(REG_X1)
 }
@@ -634,13 +634,13 @@ func (g *CodeGen) compileStringptrIntrinsicArm64() {
 func (g *CodeGen) compileMakestringIntrinsicArm64() {
 	// Params: ptr (local 0), len (local 1)
 	g.compileConstI64Arm64(16)
-	g.emitCallPlaceholderArm64("runtime.Alloc")
+	g.EmitCallPlaceholderArm64("runtime.Alloc")
 	g.opPop(REG_X1) // header ptr
 
 	g.emitLoadLocalArm64(1*8, REG_X0) // ptr
-	g.emitStr(REG_X0, REG_X1, 0)
+	g.EmitStr(REG_X0, REG_X1, 0)
 	g.emitLoadLocalArm64(2*8, REG_X0) // len
-	g.emitStr(REG_X0, REG_X1, 8)
+	g.EmitStr(REG_X0, REG_X1, 8)
 
 	g.opPush(REG_X1)
 }
@@ -652,16 +652,16 @@ func (g *CodeGen) compileTostringIntrinsicArm64() {
 	g.compileTostringIntrinsicBodyArm64()
 }
 
-func (g *CodeGen) emitTostringHelperArm64() {
+func (g *CodeGen) EmitTostringHelperArm64() {
 	if g.hasTostringHelper {
 		return
 	}
 	g.hasTostringHelper = true
 	g.funcOffsets[outlinedTostringHelper] = len(g.code)
-	g.clearOperandCache()
+	g.ClearOperandCache()
 
-	g.emitStp(REG_FP, REG_LR, REG_SP, -16)
-	g.emitMovRRArm64(REG_FP, REG_SP)
+	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
+	g.EmitMovRRArm64(REG_FP, REG_SP)
 
 	frameBytes := 16
 	g.emitSubImm(REG_SP, REG_SP, uint32(frameBytes))
@@ -684,13 +684,13 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	// Interface case: X1 = type_id, [X0+8] = concrete value
 	g.emitLdr(REG_X2, REG_X0, 8) // concrete value
 	g.opPush(REG_X2)
-	g.flush() // Must flush before dispatch chain — otherwise the pending push
-	// only materializes inside the type_id=1 branch (via emitCallPlaceholder's flush)
+	g.Flush() // Must Flush before dispatch chain — otherwise the pending push
+	// only materializes inside the type_id=1 branch (via emitCallPlaceholder's Flush)
 	// and other branches (type_id=2 string passthrough) never see it.
 
 	// Save type_id on hardware stack
 	g.emitSubImm(REG_SP, REG_SP, 16)
-	g.emitStr(REG_X1, REG_SP, 0)
+	g.EmitStr(REG_X1, REG_SP, 0)
 
 	// Dispatch chain for Error/String
 	var entries []becommon.DispatchEntry
@@ -707,6 +707,15 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 			}
 		}
 	}
+	// Keep dispatch deterministic for self-hosting stability.
+	for i := 1; i < len(entries); i++ {
+		j := i
+		for j > 0 && (entries[j].TypeID < entries[j-1].TypeID ||
+			(entries[j].TypeID == entries[j-1].TypeID && entries[j].FuncName < entries[j-1].FuncName)) {
+			entries[j], entries[j-1] = entries[j-1], entries[j]
+			j--
+		}
+	}
 
 	// Restore type_id
 	g.emitLdr(REG_X1, REG_SP, 0)
@@ -717,7 +726,7 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	// type_id 1 = int
 	g.emitCmpImm(REG_X1, 1)
 	nextFixup := g.emitBCond(COND_NE)
-	g.emitCallPlaceholderArm64("runtime.IntToString")
+	g.EmitCallPlaceholderArm64("runtime.IntToString")
 	endFixups = append(endFixups, g.emitB())
 	g.patchArm64BCondAt(nextFixup, len(g.code))
 
@@ -731,7 +740,7 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	for _, entry := range entries {
 		g.emitCmpImm(REG_X1, uint32(entry.TypeID))
 		nextFixup = g.emitBCond(COND_NE)
-		g.emitCallPlaceholderArm64(entry.FuncName)
+		g.EmitCallPlaceholderArm64(entry.FuncName)
 		endFixups = append(endFixups, g.emitB())
 		g.patchArm64BCondAt(nextFixup, len(g.code))
 	}
@@ -739,11 +748,11 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	// Default: drop receiver, push 0
 	g.opDrop()
 	g.compileConstI64Arm64(0)
-	g.flush()
+	g.Flush()
 
 	endAddr := len(g.code)
 	for _, fixup := range endFixups {
-		g.patchArm64BAt(fixup, endAddr)
+		g.PatchArm64BAt(fixup, endAddr)
 	}
 
 	finalEndFixup := g.emitB()
@@ -752,9 +761,9 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	g.patchArm64BCondAt(stringCaseFixup, len(g.code))
 	g.emitLoadLocalArm64(1*8, REG_X0)
 	g.opPush(REG_X0)
-	g.flush()
+	g.Flush()
 
-	g.patchArm64BAt(finalEndFixup, len(g.code))
+	g.PatchArm64BAt(finalEndFixup, len(g.code))
 }
 
 func (g *CodeGen) compileReadPtrIntrinsicArm64() {
@@ -766,7 +775,7 @@ func (g *CodeGen) compileReadPtrIntrinsicArm64() {
 func (g *CodeGen) compileWritePtrIntrinsicArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // addr
 	g.emitLoadLocalArm64(2*8, REG_X1) // val
-	g.emitStr(REG_X1, REG_X0, 0)
+	g.EmitStr(REG_X1, REG_X0, 0)
 }
 
 func (g *CodeGen) compileWriteByteIntrinsicArm64() {
@@ -783,21 +792,21 @@ func (g *CodeGen) compileIfaceBoxArm64(inst ir.Inst) {
 	g.opPop(REG_X0) // concrete value
 	// Save on hardware stack
 	g.emitSubImm(REG_SP, REG_SP, 16)
-	g.emitStr(REG_X0, REG_SP, 0)
+	g.EmitStr(REG_X0, REG_SP, 0)
 
 	// Allocate 16 bytes
 	g.compileConstI64Arm64(16)
-	g.emitCallPlaceholderArm64("runtime.Alloc")
+	g.EmitCallPlaceholderArm64("runtime.Alloc")
 	g.opPop(REG_X1) // box ptr
 
 	// Store type_id
-	g.emitLoadImm64Compact(REG_X0, uint64(typeID))
-	g.emitStr(REG_X0, REG_X1, 0)
+	g.EmitLoadImm64Compact(REG_X0, uint64(typeID))
+	g.EmitStr(REG_X0, REG_X1, 0)
 
 	// Restore concrete value and store
 	g.emitLdr(REG_X0, REG_SP, 0)
 	g.emitAddImm(REG_SP, REG_SP, 16)
-	g.emitStr(REG_X0, REG_X1, 8)
+	g.EmitStr(REG_X0, REG_X1, 8)
 
 	g.opPush(REG_X1)
 }
@@ -811,7 +820,7 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 	for i < argCount {
 		g.opPop(REG_X0)
 		g.emitSubImm(REG_SP, REG_SP, 16)
-		g.emitStr(REG_X0, REG_SP, 0)
+		g.EmitStr(REG_X0, REG_SP, 0)
 		i++
 	}
 
@@ -834,11 +843,11 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 		i = i - 1
 	}
 	// Ensure restored args are materialized for all dispatch branches.
-	g.flush()
+	g.Flush()
 
 	// Save type_id on hardware stack
 	g.emitSubImm(REG_SP, REG_SP, 16)
-	g.emitStr(REG_X1, REG_SP, 0)
+	g.EmitStr(REG_X1, REG_SP, 0)
 
 	// Extract method name
 	dotIdx := 0
@@ -863,6 +872,15 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 			}
 		}
 	}
+	// Keep dispatch deterministic for self-hosting stability.
+	for i := 1; i < len(entries); i++ {
+		j := i
+		for j > 0 && (entries[j].TypeID < entries[j-1].TypeID ||
+			(entries[j].TypeID == entries[j-1].TypeID && entries[j].FuncName < entries[j-1].FuncName)) {
+			entries[j], entries[j-1] = entries[j-1], entries[j]
+			j--
+		}
+	}
 
 	// Restore type_id
 	g.emitLdr(REG_X1, REG_SP, 0)
@@ -875,7 +893,7 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 		for _, entry := range entries {
 			g.emitCmpImm(REG_X1, uint32(entry.TypeID))
 			nextFixup := g.emitBCond(COND_NE)
-			g.emitCallPlaceholderArm64(entry.FuncName)
+			g.EmitCallPlaceholderArm64(entry.FuncName)
 			endFixups = append(endFixups, g.emitB())
 			g.patchArm64BCondAt(nextFixup, len(g.code))
 		}
@@ -883,7 +901,7 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 
 		endAddr := len(g.code)
 		for _, fixup := range endFixups {
-			g.patchArm64BAt(fixup, endAddr)
+			g.PatchArm64BAt(fixup, endAddr)
 		}
 	}
 }
@@ -895,7 +913,7 @@ func (g *CodeGen) compileLoadArm64(size int) {
 	g.emitCmpImm(REG_X1, 0)
 	loadFixup := g.emitBCond(COND_NE) // branch to load if non-nil
 	// nil case: X0 = 0
-	g.emitMovZ(REG_X0, 0, 0)
+	g.EmitMovZ(REG_X0, 0, 0)
 	doneFixup := g.emitB()
 	// load case:
 	g.patchArm64BCondAt(loadFixup, len(g.code))
@@ -904,7 +922,7 @@ func (g *CodeGen) compileLoadArm64(size int) {
 	} else {
 		g.emitLdr(REG_X0, REG_X1, 0)
 	}
-	g.patchArm64BAt(doneFixup, len(g.code))
+	g.PatchArm64BAt(doneFixup, len(g.code))
 	g.opPush(REG_X0)
 }
 
@@ -914,7 +932,7 @@ func (g *CodeGen) compileStoreArm64(size int) {
 	if size == 1 {
 		g.emitStrb(REG_X0, REG_X1, 0)
 	} else {
-		g.emitStr(REG_X0, REG_X1, 0)
+		g.EmitStr(REG_X0, REG_X1, 0)
 	}
 }
 
@@ -924,8 +942,8 @@ func (g *CodeGen) compileOffsetArm64(inst ir.Inst) {
 		if inst.Arg > 0 && inst.Arg < 4096 {
 			g.emitAddImm(REG_X0, REG_X0, uint32(inst.Arg))
 		} else {
-			g.emitLoadImm64Compact(REG_X1, uint64(int64(inst.Arg)))
-			g.emitAddRR(REG_X0, REG_X0, REG_X1)
+			g.EmitLoadImm64Compact(REG_X1, uint64(int64(inst.Arg)))
+			g.EmitAddRR(REG_X0, REG_X0, REG_X1)
 		}
 	}
 	g.opPush(REG_X0)
@@ -940,14 +958,14 @@ func (g *CodeGen) compileIndexAddrArm64(elemSize int) {
 
 	// Compute address: data_ptr + index * elemSize
 	if elemSize == 1 {
-		g.emitAddRR(REG_X1, REG_X1, REG_X0)
+		g.EmitAddRR(REG_X1, REG_X1, REG_X0)
 	} else if elemSize == 8 {
 		g.emitLslImm(REG_X0, REG_X0, 3)
-		g.emitAddRR(REG_X1, REG_X1, REG_X0)
+		g.EmitAddRR(REG_X1, REG_X1, REG_X0)
 	} else {
-		g.emitLoadImm64Compact(REG_X2, uint64(elemSize))
+		g.EmitLoadImm64Compact(REG_X2, uint64(elemSize))
 		g.emitMul(REG_X0, REG_X0, REG_X2)
-		g.emitAddRR(REG_X1, REG_X1, REG_X0)
+		g.EmitAddRR(REG_X1, REG_X1, REG_X0)
 	}
 
 	g.opPush(REG_X1)
@@ -958,11 +976,11 @@ func (g *CodeGen) compileLenArm64() {
 	g.emitCmpImm(REG_X0, 0)
 	nonNilFixup := g.emitBCond(COND_NE)
 	// nil: len = 0
-	g.emitMovZ(REG_X0, 0, 0)
+	g.EmitMovZ(REG_X0, 0, 0)
 	doneFixup := g.emitB()
 	g.patchArm64BCondAt(nonNilFixup, len(g.code))
 	g.emitLdr(REG_X0, REG_X0, 8) // [header+8] = len
-	g.patchArm64BAt(doneFixup, len(g.code))
+	g.PatchArm64BAt(doneFixup, len(g.code))
 	g.opPush(REG_X0)
 }
 
@@ -971,11 +989,11 @@ func (g *CodeGen) compileCapArm64() {
 	g.emitCmpImm(REG_X0, 0)
 	nonNilFixup := g.emitBCond(COND_NE)
 	// nil: cap = 0
-	g.emitMovZ(REG_X0, 0, 0)
+	g.EmitMovZ(REG_X0, 0, 0)
 	doneFixup := g.emitB()
 	g.patchArm64BCondAt(nonNilFixup, len(g.code))
 	g.emitLdr(REG_X0, REG_X0, 16) // [header+16] = cap
-	g.patchArm64BAt(doneFixup, len(g.code))
+	g.PatchArm64BAt(doneFixup, len(g.code))
 	g.opPush(REG_X0)
 }
 
@@ -984,9 +1002,9 @@ func (g *CodeGen) compileCapArm64() {
 func (g *CodeGen) compileConvertArm64(typeName string) {
 	switch typeName {
 	case "string":
-		g.emitCallPlaceholderArm64("runtime.BytesToString")
+		g.EmitCallPlaceholderArm64("runtime.BytesToString")
 	case "[]byte":
-		g.emitCallPlaceholderArm64("runtime.StringToBytes")
+		g.EmitCallPlaceholderArm64("runtime.StringToBytes")
 	case "int", "uintptr", "uint", "int64", "uint64":
 		// No-op
 	case "byte":

@@ -106,6 +106,133 @@ type machoSymEntry struct {
 	ntype   byte
 }
 
+// NewCodeGen creates an ARM64 code generator with initialized global/data layout.
+func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64, extraGlobals int, withGOT bool) *CodeGen {
+	g := &CodeGen{
+		target:        target,
+		funcOffsets:   make(map[string]int),
+		labelOffsets:  make(map[int]int),
+		stringMap:     make(map[string]int),
+		globalOffsets: make([]int, len(irmod.Globals)),
+		baseAddr:      baseAddr,
+		irmod:         irmod,
+		wordSize:      8,
+		isArm64:       true,
+	}
+	if withGOT {
+		g.gotEntries = make(map[string]int)
+	}
+	for i := range irmod.Globals {
+		g.globalOffsets[i] = i * 8
+	}
+	g.data = make([]byte, (len(irmod.Globals)+extraGlobals)*8)
+	return g
+}
+
+// Target returns the selected compilation target.
+func (g *CodeGen) Target() *common.Target { return g.target }
+
+// BaseAddr returns the image base virtual address used by the output format.
+func (g *CodeGen) BaseAddr() uint64 { return g.baseAddr }
+
+// IsArm64 reports whether this code generator is configured for AArch64 output.
+func (g *CodeGen) IsArm64() bool { return g.isArm64 }
+
+// Code returns the mutable .text section buffer.
+func (g *CodeGen) Code() []byte { return g.code }
+
+// CodeLen returns the current .text section size.
+func (g *CodeGen) CodeLen() int { return len(g.code) }
+
+// Rodata returns the mutable .rodata section buffer.
+func (g *CodeGen) Rodata() []byte { return g.rodata }
+
+// Data returns the mutable .data section buffer.
+func (g *CodeGen) Data() []byte { return g.data }
+
+// SetFuncOffset records the function start offset in .text.
+func (g *CodeGen) SetFuncOffset(name string, off int) {
+	g.funcOffsets[name] = off
+}
+
+// LookupFuncOffset resolves a function start offset in .text.
+func (g *CodeGen) LookupFuncOffset(name string) (int, bool) {
+	v, ok := g.funcOffsets[name]
+	return v, ok
+}
+
+// CompileModuleFuncs compiles all IR functions and records deterministic function offsets.
+func (g *CodeGen) CompileModuleFuncs(irmod *ir.IRModule) {
+	for _, f := range irmod.Funcs {
+		g.funcOffsets[f.Name] = len(g.code)
+		g.CompileFuncArm64(f)
+	}
+}
+
+// CollectNativeFuncSizes records final native function sizes into IR metadata.
+func (g *CodeGen) CollectNativeFuncSizes(irmod *ir.IRModule) {
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+}
+
+const (
+	FixupSkipRodataHeader = 1 << iota
+	FixupSkipDataAddr
+	FixupSkipGotAddr
+	FixupSkipIAT
+)
+
+// ResolveCallFixups patches direct call placeholders against known function offsets.
+func (g *CodeGen) ResolveCallFixups(skipMask int) []string {
+	var unresolved []string
+	for _, fix := range g.callFixups {
+		if fix.Target == "$rodata_header$" && (skipMask&FixupSkipRodataHeader) != 0 {
+			continue
+		}
+		if fix.Target == "$data_addr$" && (skipMask&FixupSkipDataAddr) != 0 {
+			continue
+		}
+		if fix.Target == "$got_addr$" && (skipMask&FixupSkipGotAddr) != 0 {
+			continue
+		}
+		if (skipMask&FixupSkipIAT) != 0 && len(fix.Target) > 5 && fix.Target[0:5] == "$iat$" {
+			continue
+		}
+		targetOff, ok := g.funcOffsets[fix.Target]
+		if !ok {
+			unresolved = append(unresolved, fix.Target)
+			continue
+		}
+		g.PatchArm64BAt(fix.CodeOffset, targetOff)
+	}
+	return unresolved
+}
+
+// CallFixupCount returns number of recorded call fixups.
+func (g *CodeGen) CallFixupCount() int { return len(g.callFixups) }
+
+// CallFixupAt returns the code offset, symbolic target and raw value for fixup i.
+func (g *CodeGen) CallFixupAt(i int) (int, string, uint64) {
+	fix := g.callFixups[i]
+	return fix.CodeOffset, fix.Target, fix.Value
+}
+
+// AddCallFixup records a call fixup entry.
+func (g *CodeGen) AddCallFixup(codeOffset int, target string, value uint64) {
+	g.callFixups = append(g.callFixups, CallFixup{CodeOffset: codeOffset, Target: target, Value: value})
+}
+
+// StringMap returns deduplicated string-header offsets by string content.
+func (g *CodeGen) StringMap() map[string]int { return g.stringMap }
+
+// StringRodataMap returns mapping from string header offsets to rodata byte offsets.
+func (g *CodeGen) StringRodataMap() map[int]int { return g.stringRodataMap }
+
+// GotSymbols returns imported symbol order for GOT emission.
+func (g *CodeGen) GotSymbols() []string { return g.gotSymbols }
+
+// NeedTostringHelper reports whether the outlined tostring helper must be emitted.
+func (g *CodeGen) NeedTostringHelper() bool { return g.needTostringHelper }
+
 // === Shared byte emission ===
 
 func (g *CodeGen) emitByte(b byte) {
@@ -170,11 +297,17 @@ func getU32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
 
+func PutU64(buf []byte, v uint64) { putU64(buf, v) }
+func GetU64(b []byte) uint64      { return getU64(b) }
+func PutU16(b []byte, v uint16)   { putU16(b, v) }
+func PutU32(b []byte, v uint32)   { putU32(b, v) }
+func GetU32(b []byte) uint32      { return getU32(b) }
+
 // === Shared code emission helpers ===
 
 // emitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
 func (g *CodeGen) emitCallPlaceholder(target string) {
-	g.flush()
+	g.Flush()
 	if g.target.GOOS == "dos" && g.wordSize == 2 {
 		g.emitBytes(0xe8) // call rel16
 		g.callFixups = append(g.callFixups, CallFixup{
@@ -225,7 +358,7 @@ func (g *CodeGen) patchRel32(fixupOff int) {
 
 // jmpRel32 emits `jmp rel32` and returns the offset of the rel32 for fixup.
 func (g *CodeGen) jmpRel32() int {
-	g.flush()
+	g.Flush()
 	if g.target.GOOS == "dos" && g.wordSize == 2 {
 		g.emitByte(0xe9) // jmp rel16
 		off := len(g.code)
@@ -240,7 +373,7 @@ func (g *CodeGen) jmpRel32() int {
 
 // jccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
 func (g *CodeGen) jccRel32(cc byte) int {
-	g.flush()
+	g.Flush()
 	if g.target.GOOS == "dos" && g.wordSize == 2 {
 		// 8086 has only short conditional branches.
 		// Lower near Jcc as:
@@ -263,7 +396,7 @@ func (g *CodeGen) jccRel32(cc byte) int {
 
 // jmpRel8 emits `jmp rel8`.
 func (g *CodeGen) jmpRel8(off int8) {
-	g.flush()
+	g.Flush()
 	g.emitBytes(0xeb, byte(off))
 }
 
@@ -376,7 +509,7 @@ func (g *CodeGen) int3() {
 // These methods work for both amd64 (R15-based, 8-byte slots)
 // and i386 (EDI-based, 4-byte slots).
 
-func (g *CodeGen) flush() {
+func (g *CodeGen) Flush() {
 	if len(g.cacheRegs) > 0 {
 		if len(g.cacheStack) == 0 && !g.hasPending {
 			return
@@ -401,10 +534,10 @@ func (g *CodeGen) flush() {
 
 func (g *CodeGen) configureOperandCache(regs ...int) {
 	g.cacheRegs = append(g.cacheRegs[:0], regs...)
-	g.clearOperandCache()
+	g.ClearOperandCache()
 }
 
-func (g *CodeGen) clearOperandCache() {
+func (g *CodeGen) ClearOperandCache() {
 	g.hasPending = false
 	g.cacheStack = g.cacheStack[:0]
 	g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
@@ -415,7 +548,7 @@ func (g *CodeGen) moveReg(dst, src int) {
 		return
 	}
 	if g.isArm64 {
-		g.emitMovRRArm64(dst, src)
+		g.EmitMovRRArm64(dst, src)
 		return
 	}
 	if g.wordSize == 2 {
@@ -469,14 +602,14 @@ func (g *CodeGen) prepareForClobber(regs ...int) {
 		g.hasPending = false
 		return
 	}
-	g.flush()
+	g.Flush()
 }
 
 func (g *CodeGen) rawPush(reg int) {
 	if g.isArm64 {
 		// SUB X28, X28, #8; STR Xreg, [X28]
 		g.emitSubImm(REG_X28, REG_X28, 8)
-		g.emitStr(reg, REG_X28, 0)
+		g.EmitStr(reg, REG_X28, 0)
 		return
 	}
 	if g.wordSize == 4 {
@@ -587,7 +720,7 @@ func (g *CodeGen) opPush(reg int) {
 		g.pendingReg = reg
 		return
 	}
-	g.flush()
+	g.Flush()
 	g.hasPending = true
 	g.pendingReg = reg
 }
@@ -633,16 +766,16 @@ func (g *CodeGen) opLoad(reg int) {
 	}
 	if g.hasPending {
 		g.moveReg(reg, g.pendingReg)
-		g.flush()
+		g.Flush()
 		return
 	}
 	g.rawLoad(reg)
 }
 
 func (g *CodeGen) opStore(reg int) {
-	g.flush()
+	g.Flush()
 	if g.isArm64 {
-		g.emitStr(reg, REG_X28, 0)
+		g.EmitStr(reg, REG_X28, 0)
 		return
 	}
 	if g.wordSize == 4 {
@@ -697,30 +830,30 @@ func (g *CodeGen) gotSlot(name string) int {
 	return idx
 }
 
-// emitCallGOT emits a GOT-indirect call: load address from GOT, branch via BLR.
+// EmitCallGOT emits a GOT-indirect call: load address from GOT, branch via BLR.
 // Uses X16 as scratch (IP0, caller-saved).
-func (g *CodeGen) emitCallGOT(funcName string) {
-	g.flush()
+func (g *CodeGen) EmitCallGOT(funcName string) {
+	g.Flush()
 	slot := g.gotSlot(funcName)
 	// ADRP+LDR loads the function pointer from the GOT entry
 	g.emitAdrpLdr(REG_X16, "$got_addr$", uint64(slot*8))
 	// BLR X16
-	g.emitBlr(REG_X16)
+	g.EmitBlr(REG_X16)
 }
 
-// emitCallPlaceholderArm64 emits a BL with placeholder for later fixup.
-func (g *CodeGen) emitCallPlaceholderArm64(target string) {
-	g.flush()
+// EmitCallPlaceholderArm64 emits a BL with placeholder for later fixup.
+func (g *CodeGen) EmitCallPlaceholderArm64(target string) {
+	g.Flush()
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code),
 		Target:     target,
 	})
-	g.emitArm64(0x94000000) // BL #0 (placeholder)
+	g.EmitArm64(0x94000000) // BL #0 (placeholder)
 }
 
 // emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.
 func (g *CodeGen) emitCallIAT(funcName string) {
-	g.flush()
+	g.Flush()
 	g.emitBytes(0xFF, 0x15) // call dword ptr [abs32]
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code),
@@ -731,7 +864,7 @@ func (g *CodeGen) emitCallIAT(funcName string) {
 
 // emitJmpIAT emits `jmp dword ptr [abs32]` for jumping to Windows IAT entries.
 func (g *CodeGen) emitJmpIAT(funcName string) {
-	g.flush()
+	g.Flush()
 	g.emitBytes(0xFF, 0x25) // jmp dword ptr [abs32]
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code),
@@ -753,3 +886,7 @@ func sectionSpan(size, align int) int {
 	}
 	return alignUp(size, align)
 }
+
+func AlignUp(v, align int) int { return alignUp(v, align) }
+
+func SectionSpan(size, align int) int { return sectionSpan(size, align) }

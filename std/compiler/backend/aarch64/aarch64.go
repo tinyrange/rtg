@@ -50,49 +50,49 @@ const (
 	COND_LE = 0xD // signed <=
 )
 
-// emitArm64 appends a 32-bit ARM64 instruction (little-endian).
-func (g *CodeGen) emitArm64(inst uint32) {
+// EmitArm64 appends a 32-bit ARM64 instruction (little-endian).
+func (g *CodeGen) EmitArm64(inst uint32) {
 	g.code = append(g.code, byte(inst), byte(inst>>8), byte(inst>>16), byte(inst>>24))
 }
 
 // === Immediate loading ===
 
-// emitMovZ emits MOVZ Xd, #imm16, LSL #shift (shift=0,16,32,48)
-func (g *CodeGen) emitMovZ(rd int, imm16 uint16, shift int) {
+// EmitMovZ emits MOVZ Xd, #imm16, LSL #shift (shift=0,16,32,48)
+func (g *CodeGen) EmitMovZ(rd int, imm16 uint16, shift int) {
 	hw := uint32(shift / 16)
 	inst := uint32(0xD2800000) | (hw << 21) | (uint32(imm16) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitMovK emits MOVK Xd, #imm16, LSL #shift (shift=0,16,32,48)
 func (g *CodeGen) emitMovK(rd int, imm16 uint16, shift int) {
 	hw := uint32(shift / 16)
 	inst := uint32(0xF2800000) | (hw << 21) | (uint32(imm16) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitMovN emits MOVN Xd, #imm16, LSL #shift (move wide with NOT)
 func (g *CodeGen) emitMovN(rd int, imm16 uint16, shift int) {
 	hw := uint32(shift / 16)
 	inst := uint32(0x92800000) | (hw << 21) | (uint32(imm16) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitLoadImm64 loads a full 64-bit value into rd using MOVZ/MOVK sequence.
 // Always emits exactly 4 instructions (16 bytes) so it can be patched.
 func (g *CodeGen) emitLoadImm64(rd int, val uint64) {
-	g.emitMovZ(rd, uint16(val&0xFFFF), 0)
+	g.EmitMovZ(rd, uint16(val&0xFFFF), 0)
 	g.emitMovK(rd, uint16((val>>16)&0xFFFF), 16)
 	g.emitMovK(rd, uint16((val>>32)&0xFFFF), 32)
 	g.emitMovK(rd, uint16((val>>48)&0xFFFF), 48)
 }
 
-// emitLoadImm64Compact loads a 64-bit value, using fewer instructions when possible.
+// EmitLoadImm64Compact loads a 64-bit value, using fewer instructions when possible.
 // NOT patchable (variable length). Use for constants that don't need fixup.
-func (g *CodeGen) emitLoadImm64Compact(rd int, val uint64) {
+func (g *CodeGen) EmitLoadImm64Compact(rd int, val uint64) {
 	if val == 0 {
 		// MOVZ Xd, #0
-		g.emitMovZ(rd, 0, 0)
+		g.EmitMovZ(rd, 0, 0)
 		return
 	}
 
@@ -109,7 +109,7 @@ func (g *CodeGen) emitLoadImm64Compact(rd int, val uint64) {
 		chunk := uint16((val >> uint(shift)) & 0xFFFF)
 		if chunk != 0 || shift == 0 {
 			if first {
-				g.emitMovZ(rd, chunk, shift)
+				g.EmitMovZ(rd, chunk, shift)
 				first = false
 			} else {
 				g.emitMovK(rd, chunk, shift)
@@ -120,46 +120,46 @@ func (g *CodeGen) emitLoadImm64Compact(rd int, val uint64) {
 
 // === Arithmetic ===
 
-// emitAddRR emits ADD Xd, Xn, Xm
-func (g *CodeGen) emitAddRR(rd, rn, rm int) {
+// EmitAddRR emits ADD Xd, Xn, Xm
+func (g *CodeGen) EmitAddRR(rd, rn, rm int) {
 	inst := uint32(0x8B000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitSubRR emits SUB Xd, Xn, Xm
 func (g *CodeGen) emitSubRR(rd, rn, rm int) {
 	inst := uint32(0xCB000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitAddImm emits ADD Xd, Xn, #imm12
 func (g *CodeGen) emitAddImm(rd, rn int, imm12 uint32) {
 	inst := uint32(0x91000000) | ((imm12 & 0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitSubImm emits SUB Xd, Xn, #imm12
 func (g *CodeGen) emitSubImm(rd, rn int, imm12 uint32) {
 	inst := uint32(0xD1000000) | ((imm12 & 0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitMul emits MUL Xd, Xn, Xm (alias for MADD Xd, Xn, Xm, XZR)
 func (g *CodeGen) emitMul(rd, rn, rm int) {
 	inst := uint32(0x9B007C00) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitSdiv emits SDIV Xd, Xn, Xm
 func (g *CodeGen) emitSdiv(rd, rn, rm int) {
 	inst := uint32(0x9AC00C00) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitMsub emits MSUB Xd, Xn, Xm, Xa  (Xd = Xa - Xn*Xm)
 func (g *CodeGen) emitMsub(rd, rn, rm, ra int) {
 	inst := uint32(0x9B008000) | (uint32(rm&0x1f) << 16) | (uint32(ra&0x1f) << 10) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitNeg emits NEG Xd, Xm (alias for SUB Xd, XZR, Xm)
@@ -172,31 +172,31 @@ func (g *CodeGen) emitNeg(rd, rm int) {
 // emitAndRR emits AND Xd, Xn, Xm
 func (g *CodeGen) emitAndRR(rd, rn, rm int) {
 	inst := uint32(0x8A000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitOrrRR emits ORR Xd, Xn, Xm
 func (g *CodeGen) emitOrrRR(rd, rn, rm int) {
 	inst := uint32(0xAA000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitEorRR emits EOR Xd, Xn, Xm (exclusive or)
 func (g *CodeGen) emitEorRR(rd, rn, rm int) {
 	inst := uint32(0xCA000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitLslRR emits LSLV Xd, Xn, Xm
 func (g *CodeGen) emitLslRR(rd, rn, rm int) {
 	inst := uint32(0x9AC02000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitAsrRR emits ASRV Xd, Xn, Xm (arithmetic shift right)
 func (g *CodeGen) emitAsrRR(rd, rn, rm int) {
 	inst := uint32(0x9AC02800) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitLslImm emits LSL Xd, Xn, #shift (alias for UBFM)
@@ -205,7 +205,7 @@ func (g *CodeGen) emitLslImm(rd, rn int, shift uint32) {
 	immr := (64 - shift) & 0x3F
 	imms := (63 - shift) & 0x3F
 	inst := uint32(0xD3400000) | (immr << 16) | (imms << 10) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // === Compare ===
@@ -213,19 +213,19 @@ func (g *CodeGen) emitLslImm(rd, rn int, shift uint32) {
 // emitCmpRR emits CMP Xn, Xm (alias for SUBS XZR, Xn, Xm)
 func (g *CodeGen) emitCmpRR(rn, rm int) {
 	inst := uint32(0xEB000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(REG_XZR&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitCmpImm emits CMP Xn, #imm12 (alias for SUBS XZR, Xn, #imm12)
 func (g *CodeGen) emitCmpImm(rn int, imm12 uint32) {
 	inst := uint32(0xF1000000) | ((imm12 & 0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(REG_XZR&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitTstRR emits TST Xn, Xm (alias for ANDS XZR, Xn, Xm)
 func (g *CodeGen) emitTstRR(rn, rm int) {
 	inst := uint32(0xEA000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(REG_XZR&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitCset emits CSET Xd, cond (alias for CSINC Xd, XZR, XZR, invert(cond))
@@ -234,7 +234,7 @@ func (g *CodeGen) emitCset(rd int, cond int) {
 	// invert = cond ^ 1
 	inv := uint32(cond ^ 1)
 	inst := uint32(0x9A9F07E0) | (inv << 12) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // === Memory: LDR/STR ===
@@ -244,44 +244,44 @@ func (g *CodeGen) emitLdr(rt, rn int, offset int) {
 	if offset == 0 {
 		// LDR Xt, [Xn]
 		inst := uint32(0xF9400000) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else if offset > 0 && offset%8 == 0 && offset/8 < 4096 {
 		// LDR Xt, [Xn, #uimm] (scaled unsigned offset)
 		uimm := uint32(offset / 8)
 		inst := uint32(0xF9400000) | (uimm << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else if offset >= -256 && offset <= 255 {
 		// LDUR Xt, [Xn, #simm9]
 		simm9 := uint32(offset) & 0x1FF
 		inst := uint32(0xF8400000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else {
 		// Offset too large — use scratch register X16
-		g.emitLoadImm64Compact(REG_X16, uint64(int64(offset)))
-		g.emitAddRR(REG_X16, rn, REG_X16)
+		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
+		g.EmitAddRR(REG_X16, rn, REG_X16)
 		inst := uint32(0xF9400000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	}
 }
 
-// emitStr emits STR Xt, [Xn, #offset] (unsigned offset, scaled by 8)
-func (g *CodeGen) emitStr(rt, rn int, offset int) {
+// EmitStr emits STR Xt, [Xn, #offset] (unsigned offset, scaled by 8)
+func (g *CodeGen) EmitStr(rt, rn int, offset int) {
 	if offset == 0 {
 		inst := uint32(0xF9000000) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else if offset > 0 && offset%8 == 0 && offset/8 < 4096 {
 		uimm := uint32(offset / 8)
 		inst := uint32(0xF9000000) | (uimm << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else if offset >= -256 && offset <= 255 {
 		simm9 := uint32(offset) & 0x1FF
 		inst := uint32(0xF8000000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else {
-		g.emitLoadImm64Compact(REG_X16, uint64(int64(offset)))
-		g.emitAddRR(REG_X16, rn, REG_X16)
+		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
+		g.EmitAddRR(REG_X16, rn, REG_X16)
 		inst := uint32(0xF9000000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	}
 }
 
@@ -289,16 +289,16 @@ func (g *CodeGen) emitStr(rt, rn int, offset int) {
 func (g *CodeGen) emitLdrb(rt, rn int, offset int) {
 	if offset >= 0 && offset < 4096 {
 		inst := uint32(0x39400000) | (uint32(offset&0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else if offset >= -256 && offset <= 255 {
 		simm9 := uint32(offset) & 0x1FF
 		inst := uint32(0x38400000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else {
-		g.emitLoadImm64Compact(REG_X16, uint64(int64(offset)))
-		g.emitAddRR(REG_X16, rn, REG_X16)
+		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
+		g.EmitAddRR(REG_X16, rn, REG_X16)
 		inst := uint32(0x39400000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	}
 }
 
@@ -306,33 +306,33 @@ func (g *CodeGen) emitLdrb(rt, rn int, offset int) {
 func (g *CodeGen) emitStrb(rt, rn int, offset int) {
 	if offset >= 0 && offset < 4096 {
 		inst := uint32(0x39000000) | (uint32(offset&0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else if offset >= -256 && offset <= 255 {
 		simm9 := uint32(offset) & 0x1FF
 		inst := uint32(0x38000000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	} else {
-		g.emitLoadImm64Compact(REG_X16, uint64(int64(offset)))
-		g.emitAddRR(REG_X16, rn, REG_X16)
+		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
+		g.EmitAddRR(REG_X16, rn, REG_X16)
 		inst := uint32(0x39000000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
-		g.emitArm64(inst)
+		g.EmitArm64(inst)
 	}
 }
 
-// emitStp emits STP Xt1, Xt2, [Xn, #offset]! (pre-index)
-func (g *CodeGen) emitStp(rt1, rt2, rn int, offset int) {
+// EmitStp emits STP Xt1, Xt2, [Xn, #offset]! (pre-index)
+func (g *CodeGen) EmitStp(rt1, rt2, rn int, offset int) {
 	// STP (pre-index): [Xn, #imm7*8]!
 	imm7 := uint32(offset/8) & 0x7F
 	inst := uint32(0xA9800000) | (imm7 << 15) | (uint32(rt2&0x1f) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt1&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
-// emitLdp emits LDP Xt1, Xt2, [Xn], #offset (post-index)
-func (g *CodeGen) emitLdp(rt1, rt2, rn int, offset int) {
+// EmitLdp emits LDP Xt1, Xt2, [Xn], #offset (post-index)
+func (g *CodeGen) EmitLdp(rt1, rt2, rn int, offset int) {
 	// LDP (post-index): [Xn], #imm7*8
 	imm7 := uint32(offset/8) & 0x7F
 	inst := uint32(0xA8C00000) | (imm7 << 15) | (uint32(rt2&0x1f) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt1&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // === Branch ===
@@ -341,7 +341,7 @@ func (g *CodeGen) emitLdp(rt1, rt2, rn int, offset int) {
 // Returns the code offset of the instruction for later fixup.
 func (g *CodeGen) emitB() int {
 	off := len(g.code)
-	g.emitArm64(0x14000000) // B #0 (placeholder)
+	g.EmitArm64(0x14000000) // B #0 (placeholder)
 	return off
 }
 
@@ -349,7 +349,7 @@ func (g *CodeGen) emitB() int {
 // Returns the code offset of the instruction for later fixup.
 func (g *CodeGen) emitBL() int {
 	off := len(g.code)
-	g.emitArm64(0x94000000) // BL #0 (placeholder)
+	g.EmitArm64(0x94000000) // BL #0 (placeholder)
 	return off
 }
 
@@ -358,42 +358,42 @@ func (g *CodeGen) emitBL() int {
 func (g *CodeGen) emitBCond(cond int) int {
 	off := len(g.code)
 	inst := uint32(0x54000000) | uint32(cond&0xF)
-	g.emitArm64(inst) // B.cond #0 (placeholder)
+	g.EmitArm64(inst) // B.cond #0 (placeholder)
 	return off
 }
 
-// emitBlr emits BLR Xn (branch to register with link)
-func (g *CodeGen) emitBlr(rn int) {
+// EmitBlr emits BLR Xn (branch to register with link)
+func (g *CodeGen) EmitBlr(rn int) {
 	inst := uint32(0xD63F0000) | (uint32(rn&0x1f) << 5)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
-// emitRet emits RET (return via LR, X30)
-func (g *CodeGen) emitRet() {
-	g.emitArm64(0xD65F03C0) // RET
+// EmitRet emits RET (return via LR, X30)
+func (g *CodeGen) EmitRet() {
+	g.EmitArm64(0xD65F03C0) // RET
 }
 
 // emitBrk emits BRK #0 (breakpoint)
 func (g *CodeGen) emitBrk() {
-	g.emitArm64(0xD4200000)
+	g.EmitArm64(0xD4200000)
 }
 
 // emitNop emits NOP
 func (g *CodeGen) emitNop() {
-	g.emitArm64(0xD503201F)
+	g.EmitArm64(0xD503201F)
 }
 
-// emitSvc emits SVC #0 (supervisor call for Linux syscalls)
-func (g *CodeGen) emitSvc() {
-	g.emitArm64(0xD4000001)
+// EmitSvc emits SVC #0 (supervisor call for Linux syscalls)
+func (g *CodeGen) EmitSvc() {
+	g.EmitArm64(0xD4000001)
 }
 
 // === Move ===
 
-// emitMovRRArm64 emits MOV Xd, Xm.
+// EmitMovRRArm64 emits MOV Xd, Xm.
 // For SP-involving moves, uses ADD Xd, Xn, #0 (SP is only valid in ADD/SUB, not ORR).
 // For all other registers, uses ORR Xd, XZR, Xm.
-func (g *CodeGen) emitMovRRArm64(rd, rm int) {
+func (g *CodeGen) EmitMovRRArm64(rd, rm int) {
 	if rd == REG_SP || rm == REG_SP {
 		// ADD Xd, Xn, #0 — handles SP correctly
 		g.emitAddImm(rd, rm, 0)
@@ -408,28 +408,28 @@ func (g *CodeGen) emitMovRRArm64(rd, rm int) {
 func (g *CodeGen) emitUxtb(rd, rn int) {
 	// Use 32-bit form: UXTB Wd, Wn = AND Wd, Wn, #0xFF = UBFM Wd, Wn, #0, #7
 	inst := uint32(0x53001C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitUxth emits UXTH Xd, Xn (zero-extend halfword)
 func (g *CodeGen) emitUxth(rd, rn int) {
 	// UXTH Wd, Wn = UBFM Wd, Wn, #0, #15
 	inst := uint32(0x53003C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitSxth emits SXTH Xd, Xn (sign-extend halfword)
 func (g *CodeGen) emitSxth(rd, rn int) {
 	// SXTH Xd, Wn = SBFM Xd, Xn, #0, #15
 	inst := uint32(0x93403C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitSxtw emits SXTW Xd, Wn (sign-extend 32→64)
 func (g *CodeGen) emitSxtw(rd, rn int) {
 	// SXTW Xd, Wn = SBFM Xd, Xn, #0, #31
 	inst := uint32(0x93407C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitUxtw emits UXTW Xd, Wn (zero-extend 32→64, alias for UBFM Xd, Xn, #0, #31)
@@ -437,7 +437,7 @@ func (g *CodeGen) emitSxtw(rd, rn int) {
 func (g *CodeGen) emitUxtw(rd, rn int) {
 	// Use 32-bit ORR: MOV Wd, Wn = ORR Wd, WZR, Wn (zero-extends)
 	inst := uint32(0x2A0003E0) | (uint32(rn&0x1f) << 16) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // emitEorImm emits EOR Xd, Xn, #1 (for boolean NOT: XOR with 1)
@@ -445,7 +445,7 @@ func (g *CodeGen) emitEorImm1(rd, rn int) {
 	// EOR Xd, Xn, #1 — bitmask immediate encoding for 1:
 	// N=1, immr=0, imms=0 → encodes the value 1 for 64-bit
 	inst := uint32(0xD2400000) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 }
 
 // === Frame access (FP-relative) ===
@@ -457,7 +457,7 @@ func (g *CodeGen) emitLoadLocalArm64(offset int, rd int) {
 
 // emitStoreLocalArm64 emits STR Xt, [FP, #-offset]
 func (g *CodeGen) emitStoreLocalArm64(offset int, rd int) {
-	g.emitStr(rd, REG_FP, -offset)
+	g.EmitStr(rd, REG_FP, -offset)
 }
 
 // emitLeaLocalArm64 emits SUB Xd, FP, #offset (compute address of local)
@@ -465,26 +465,26 @@ func (g *CodeGen) emitLeaLocalArm64(offset int, rd int) {
 	if offset > 0 && offset < 4096 {
 		g.emitSubImm(rd, REG_FP, uint32(offset))
 	} else {
-		g.emitLoadImm64Compact(rd, uint64(int64(offset)))
+		g.EmitLoadImm64Compact(rd, uint64(int64(offset)))
 		g.emitSubRR(rd, REG_FP, rd)
 	}
 }
 
 // === PC-relative addressing (ADRP + ADD/LDR) ===
 
-// emitAdrp emits ADRP Xd, #0 (placeholder). Returns the code offset for later fixup.
-func (g *CodeGen) emitAdrp(rd int) int {
+// EmitAdrp emits ADRP Xd, #0 (placeholder). Returns the code offset for later fixup.
+func (g *CodeGen) EmitAdrp(rd int) int {
 	off := len(g.code)
 	// ADRP: 1 immlo(2) 10000 immhi(19) Rd(5) — base = 0x90000000
 	inst := uint32(0x90000000) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 	return off
 }
 
-// emitAdrpAdd emits ADRP+ADD pair for loading an address (PC-relative).
+// EmitAdrpAdd emits ADRP+ADD pair for loading an address (PC-relative).
 // Records a fixup with the given target and raw section-relative offset.
-func (g *CodeGen) emitAdrpAdd(rd int, target string, rawOff uint64) {
-	off := g.emitAdrp(rd)
+func (g *CodeGen) EmitAdrpAdd(rd int, target string, rawOff uint64) {
+	off := g.EmitAdrp(rd)
 	g.emitAddImm(rd, rd, 0) // placeholder pageoff
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: off,
@@ -496,10 +496,10 @@ func (g *CodeGen) emitAdrpAdd(rd int, target string, rawOff uint64) {
 // emitAdrpLdr emits ADRP+LDR pair for loading a 64-bit value from a PC-relative address.
 // The LDR uses unsigned scaled offset (divided by 8). Records a fixup.
 func (g *CodeGen) emitAdrpLdr(rd int, target string, rawOff uint64) {
-	off := g.emitAdrp(rd)
+	off := g.EmitAdrp(rd)
 	// LDR Xt, [Xn, #0] — unsigned offset scaled by 8, placeholder
 	inst := uint32(0xF9400000) | (uint32(rd&0x1f) << 5) | uint32(rd&0x1f)
-	g.emitArm64(inst)
+	g.EmitArm64(inst)
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: off,
 		Target:     target,
@@ -509,8 +509,8 @@ func (g *CodeGen) emitAdrpLdr(rd int, target string, rawOff uint64) {
 
 // === Fixup helpers ===
 
-// patchArm64BAt patches a B or BL instruction at codeOffset to branch to target.
-func (g *CodeGen) patchArm64BAt(codeOffset int, target int) {
+// PatchArm64BAt patches a B or BL instruction at codeOffset to branch to target.
+func (g *CodeGen) PatchArm64BAt(codeOffset int, target int) {
 	delta := (target - codeOffset) / 4 // offset in instructions
 	existing := getU32(g.code[codeOffset : codeOffset+4])
 	opcode := existing & 0xFC000000 // preserve opcode bits
@@ -544,21 +544,21 @@ func (g *CodeGen) patchArm64Imm64At(codeOffset int, val uint64) {
 	}
 }
 
-// patchAdrpAddOrLdr dispatches to patchAdrpAdd or patchAdrpLdr based on the second instruction.
-func (g *CodeGen) patchAdrpAddOrLdr(codeOffset int, pcAddr, targetAddr uint64) {
+// PatchAdrpAddOrLdr dispatches to PatchAdrpAdd or PatchAdrpLdr based on the second instruction.
+func (g *CodeGen) PatchAdrpAddOrLdr(codeOffset int, pcAddr, targetAddr uint64) {
 	secondInst := getU32(g.code[codeOffset+4:])
 	if secondInst&0xFFC00000 == 0xF9400000 {
 		// LDR (unsigned offset, 64-bit): top bits = 1111 1001 01xx xxxx
-		g.patchAdrpLdr(codeOffset, pcAddr, targetAddr)
+		g.PatchAdrpLdr(codeOffset, pcAddr, targetAddr)
 	} else {
 		// ADD (immediate): top bits = 1001 0001 00xx xxxx
-		g.patchAdrpAdd(codeOffset, pcAddr, targetAddr)
+		g.PatchAdrpAdd(codeOffset, pcAddr, targetAddr)
 	}
 }
 
-// patchAdrpAdd patches an ADRP+ADD pair at codeOffset to address targetAddr,
+// PatchAdrpAdd patches an ADRP+ADD pair at codeOffset to address targetAddr,
 // given the PC (virtual address of the ADRP instruction).
-func (g *CodeGen) patchAdrpAdd(codeOffset int, pcAddr, targetAddr uint64) {
+func (g *CodeGen) PatchAdrpAdd(codeOffset int, pcAddr, targetAddr uint64) {
 	pageDelta := int64(targetAddr>>12) - int64(pcAddr>>12)
 	pageOff := targetAddr & 0xFFF
 
@@ -576,10 +576,10 @@ func (g *CodeGen) patchAdrpAdd(codeOffset int, pcAddr, targetAddr uint64) {
 	putU32(g.code[addOff:], add)
 }
 
-// patchAdrpLdr patches an ADRP+LDR pair at codeOffset to load from targetAddr,
+// PatchAdrpLdr patches an ADRP+LDR pair at codeOffset to load from targetAddr,
 // given the PC (virtual address of the ADRP instruction).
 // The LDR uses unsigned offset scaled by 8 (for 64-bit loads).
-func (g *CodeGen) patchAdrpLdr(codeOffset int, pcAddr, targetAddr uint64) {
+func (g *CodeGen) PatchAdrpLdr(codeOffset int, pcAddr, targetAddr uint64) {
 	pageDelta := int64(targetAddr>>12) - int64(pcAddr>>12)
 	pageOff := targetAddr & 0xFFF
 
