@@ -34,16 +34,9 @@ func (g *CodeGen) compileLinkStaticIntrinsicWin64(inst ir.Inst) bool {
 	if !ok {
 		panic("ICE: invalid windows linkstatic metadata for '" + inst.Name + "'")
 	}
-	lib = canonicalWinImportLibrary(lib)
-
-	prevActive := g.linkStaticImportActive
-	prevLib := g.linkStaticImportLib
-	prevSym := g.linkStaticImportSymbol
-	g.linkStaticImportActive = true
-	g.linkStaticImportLib = lib
-	g.linkStaticImportSymbol = sym
-
-	knownSymbol := true
+	if lib != "kernel32.dll" {
+		panic("ICE: unsupported windows linkstatic library '" + lib + "'")
+	}
 
 	switch sym {
 	case "ReadFile":
@@ -89,12 +82,6 @@ func (g *CodeGen) compileLinkStaticIntrinsicWin64(inst ir.Inst) bool {
 	case "GetCurrentProcessId":
 		g.compileSyscallGetpid_win64()
 	default:
-		knownSymbol = false
-	}
-	g.linkStaticImportActive = prevActive
-	g.linkStaticImportLib = prevLib
-	g.linkStaticImportSymbol = prevSym
-	if !knownSymbol {
 		panic("ICE: unknown windows linkstatic symbol '" + sym + "'")
 	}
 	return true
