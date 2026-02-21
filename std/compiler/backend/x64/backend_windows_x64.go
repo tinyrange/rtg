@@ -10,36 +10,6 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
-// winAmd64Imports lists all kernel32.dll functions needed by the Windows amd64 backend.
-var winAmd64Imports = []string{
-	"VirtualAlloc",
-	"ExitProcess",
-	"GetStdHandle",
-	"WriteFile",
-	"ReadFile",
-	"CreateFileA",
-	"CloseHandle",
-	"GetCommandLineA",
-	"GetEnvironmentStringsA",
-	"FreeEnvironmentStringsA",
-	"GetCurrentDirectoryA",
-	"CreateDirectoryA",
-	"RemoveDirectoryA",
-	"DeleteFileA",
-	"FindFirstFileA",
-	"FindNextFileA",
-	"FindClose",
-	"GetFileAttributesExA",
-	"CreateProcessA",
-	"WaitForSingleObject",
-	"GetExitCodeProcess",
-	"CreatePipe",
-	"SetStdHandle",
-	"SetHandleInformation",
-	"GetLastError",
-	"GetCurrentProcessId",
-}
-
 // generateWinAmd64PE compiles an IRModule to a Windows PE32+ (x86-64) executable.
 func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
@@ -102,7 +72,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 	}
 
 	// Build PE32+
-	pe := g.buildPE64(irmod, winAmd64Imports)
+	pe := g.buildPE64(irmod)
 	err := os.WriteFile(outputPath, pe, 0755)
 	if err != nil {
 		return fmt.Errorf("write output: %v", err)

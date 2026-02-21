@@ -68,8 +68,12 @@ func formatSlashOffset(n int) []byte {
 }
 
 // getImportDirInfo returns the RVA and size of the Import Directory Table.
-func (g *CodeGen) getImportDirInfo(imports []string, idataRVA int) (int, int) {
-	return idataRVA, 40 // 1 entry + null terminator = 40 bytes
+func (g *CodeGen) getImportDirInfo(imports []winImport, idataRVA int) (int, int) {
+	groups := groupWinImports(imports)
+	if len(groups) == 0 {
+		return 0, 0
+	}
+	return idataRVA, (len(groups) + 1) * 20
 }
 
 // makeCOFFSym creates an 18-byte COFF symbol entry.
@@ -132,8 +136,8 @@ func (g *CodeGen) buildCOFFSymbols(irmod *ir.IRModule) ([]byte, []byte, int) {
 }
 
 // buildPE64 assembles a PE32+ (64-bit) executable from the compiled code, rodata, data,
-// and a list of kernel32.dll imports. Used for windows/arm64.
-func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
+// and Windows import fixups.
+func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	// PE32+ Layout:
 	// 0x000  DOS Header (64 bytes)
 	// 0x040  DOS Stub (64 bytes)
@@ -179,6 +183,8 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 	textRawSize := alignUp(len(g.code), fileAlignment)
 	rdataRawSize := alignUp(len(rdataContent), fileAlignment)
 	dataRawSize := alignUp(len(dataContent), fileAlignment)
+
+	imports := collectWinImportsFromFixups(g.callFixups)
 
 	// Build .idata section with 8-byte ILT/IAT entries
 	idataContent := g.buildIData64(imports)
@@ -267,16 +273,16 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 			// Patch 8-byte movabs immediate with data VA
 			dataOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
 			putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], uint64(imageBase+dataRVA)+dataOff)
-		} else if len(fix.Target) > 5 && fix.Target[0:5] == "$iat$" {
-			funcName := fix.Target[5:]
-			iatOff, ok := iatOffsets[funcName]
-			if ok {
-				// Patch RIP-relative disp32: target = iatVA, rip = textVA + codeOffset + 4
-				iatVA := uint64(imageBase+idataRVA) + uint64(iatOff)
-				rip := uint64(imageBase+textRVA) + uint64(fix.CodeOffset) + 4
-				disp32 := int32(int64(iatVA) - int64(rip))
-				putU32(g.code[fix.CodeOffset:fix.CodeOffset+4], uint32(disp32))
+		} else if libName, funcName, ok := decodeIATFixupTarget(fix.Target); ok {
+			iatOff, ok := iatOffsets[winImportKey(libName, funcName)]
+			if !ok {
+				continue
 			}
+			// Patch RIP-relative disp32: target = iatVA, rip = textVA + codeOffset + 4
+			iatVA := uint64(imageBase+idataRVA) + uint64(iatOff)
+			rip := uint64(imageBase+textRVA) + uint64(fix.CodeOffset) + 4
+			disp32 := int32(int64(iatVA) - int64(rip))
+			putU32(g.code[fix.CodeOffset:fix.CodeOffset+4], uint32(disp32))
 		}
 	}
 
@@ -420,116 +426,166 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule, imports []string) []byte {
 }
 
 // buildIData64 builds the .idata section with 8-byte ILT/IAT entries for PE32+.
-func (g *CodeGen) buildIData64(imports []string) []byte {
-	numImports := len(imports)
+func (g *CodeGen) buildIData64(imports []winImport) []byte {
+	groups := groupWinImports(imports)
+	numLibs := len(groups)
 
-	// Import Directory Table: 1 real entry + 1 null terminator = 40 bytes
-	idtSize := 40
+	// Import Directory Table: one descriptor per DLL, plus null terminator.
+	idtSize := (numLibs + 1) * 20
 
-	// ILT: (numImports + 1) * 8 bytes (null-terminated, 8 bytes per entry for PE32+)
-	iltSize := (numImports + 1) * 8
+	// Compute ILT and IAT block offsets.
+	iltOffsets := make([]int, numLibs)
+	iatOffsets := make([]int, numLibs)
+	iltSize := 0
+	for i, grp := range groups {
+		iltOffsets[i] = idtSize + iltSize
+		iltSize += (len(grp.Symbols) + 1) * 8
+	}
+	iatBase := idtSize + iltSize
+	iatSize := 0
+	for i, grp := range groups {
+		iatOffsets[i] = iatBase + iatSize
+		iatSize += (len(grp.Symbols) + 1) * 8
+	}
 
-	// IAT: identical to ILT
-	iatSize := (numImports + 1) * 8
-
-	// Hint/Name Table
-	hntOffset := idtSize + iltSize + iatSize
+	// Hint/Name table entries.
+	hntOffset := idataOffsetAfterIAT64(imports)
 	var hntEntries []byte
-	var hntOffsets []int
-	for _, name := range imports {
-		hntOffsets = append(hntOffsets, hntOffset+len(hntEntries))
-		hntEntries = append(hntEntries, 0, 0) // Hint = 0
-		hntEntries = append(hntEntries, []byte(name)...)
-		hntEntries = append(hntEntries, 0)
-		if len(hntEntries)%2 != 0 {
+	hntOffsets := make(map[string]int)
+	for _, grp := range groups {
+		for _, sym := range grp.Symbols {
+			off := hntOffset + len(hntEntries)
+			hntOffsets[winImportKey(grp.Library, sym)] = off
+			hntEntries = append(hntEntries, 0, 0) // Hint = 0
+			hntEntries = append(hntEntries, []byte(sym)...)
 			hntEntries = append(hntEntries, 0)
+			if len(hntEntries)%2 != 0 {
+				hntEntries = append(hntEntries, 0)
+			}
 		}
 	}
 
-	// DLL name
+	// DLL names.
 	dllNameOffset := hntOffset + len(hntEntries)
-	dllName := []byte("kernel32.dll\x00")
+	dllOffsets := make([]int, numLibs)
+	var dllEntries []byte
+	for i, grp := range groups {
+		dllOffsets[i] = dllNameOffset + len(dllEntries)
+		dllEntries = append(dllEntries, []byte(grp.Library)...)
+		dllEntries = append(dllEntries, 0)
+	}
 
-	totalSize := dllNameOffset + len(dllName)
+	totalSize := dllNameOffset + len(dllEntries)
 	idata := make([]byte, totalSize)
 
-	// Import Directory Table entry (20 bytes)
-	iltRVAOffset := idtSize
-	iatRVAOffset := idtSize + iltSize
+	// Import directory descriptors.
+	for i, grp := range groups {
+		base := i * 20
+		putU32(idata[base+0:], uint32(iltOffsets[i]))  // OriginalFirstThunk
+		putU32(idata[base+4:], 0)                      // TimeDateStamp
+		putU32(idata[base+8:], 0)                      // ForwarderChain
+		putU32(idata[base+12:], uint32(dllOffsets[i])) // Name
+		putU32(idata[base+16:], uint32(iatOffsets[i])) // FirstThunk
 
-	putU32(idata[0:], uint32(iltRVAOffset))   // OriginalFirstThunk — placeholder
-	putU32(idata[4:], 0)                      // TimeDateStamp
-	putU32(idata[8:], 0)                      // ForwarderChain
-	putU32(idata[12:], uint32(dllNameOffset)) // Name — placeholder
-	putU32(idata[16:], uint32(iatRVAOffset))  // FirstThunk — placeholder
-
-	// ILT entries (8 bytes each for PE32+)
-	for i := 0; i < numImports; i++ {
-		off := iltRVAOffset + i*8
-		putU64(idata[off:], uint64(hntOffsets[i])) // RVA of Hint/Name — placeholder
+		for j, sym := range grp.Symbols {
+			key := winImportKey(grp.Library, sym)
+			hnt := uint64(hntOffsets[key])
+			putU64(idata[iltOffsets[i]+j*8:], hnt)
+			putU64(idata[iatOffsets[i]+j*8:], hnt)
+		}
 	}
 
-	// IAT entries (8 bytes each, identical to ILT on disk)
-	for i := 0; i < numImports; i++ {
-		off := iatRVAOffset + i*8
-		putU64(idata[off:], uint64(hntOffsets[i])) // RVA of Hint/Name — placeholder
-	}
-
-	// Hint/Name Table
 	copy(idata[hntOffset:], hntEntries)
-
-	// DLL name
-	copy(idata[dllNameOffset:], dllName)
-
+	copy(idata[dllNameOffset:], dllEntries)
 	return idata
 }
 
+func idataOffsetAfterIAT64(imports []winImport) int {
+	groups := groupWinImports(imports)
+	idtSize := (len(groups) + 1) * 20
+	iltSize := 0
+	iatSize := 0
+	for _, grp := range groups {
+		iltSize += (len(grp.Symbols) + 1) * 8
+		iatSize += (len(grp.Symbols) + 1) * 8
+	}
+	return idtSize + iltSize + iatSize
+}
+
 // fixupIData64 adjusts RVA fields in the .idata content to be actual RVAs.
-func (g *CodeGen) fixupIData64(idata []byte, idataRVA int, imports []string) {
-	numImports := len(imports)
-	idtSize := 40
-	iltSize := (numImports + 1) * 8
-	iltOff := idtSize
-	iatOff := idtSize + iltSize
+func (g *CodeGen) fixupIData64(idata []byte, idataRVA int, imports []winImport) {
+	groups := groupWinImports(imports)
+	numLibs := len(groups)
+	idtSize := (numLibs + 1) * 20
 
-	// Fix Import Directory Table
-	putU32(idata[0:], uint32(idataRVA)+getU32(idata[0:4]))    // OriginalFirstThunk
-	putU32(idata[12:], uint32(idataRVA)+getU32(idata[12:16])) // Name
-	putU32(idata[16:], uint32(idataRVA)+getU32(idata[16:20])) // FirstThunk
+	iltSize := 0
+	for _, grp := range groups {
+		iltSize += (len(grp.Symbols) + 1) * 8
+	}
+	iatBase := idtSize + iltSize
 
-	// Fix ILT entries (8-byte)
-	for i := 0; i < numImports; i++ {
-		off := iltOff + i*8
-		putU64(idata[off:], uint64(idataRVA)+getU64(idata[off:off+8]))
+	// Fix Import Directory descriptors.
+	for i := 0; i < numLibs; i++ {
+		base := i * 20
+		putU32(idata[base+0:], uint32(idataRVA)+getU32(idata[base+0:base+4]))    // OriginalFirstThunk
+		putU32(idata[base+12:], uint32(idataRVA)+getU32(idata[base+12:base+16])) // Name
+		putU32(idata[base+16:], uint32(idataRVA)+getU32(idata[base+16:base+20])) // FirstThunk
 	}
 
-	// Fix IAT entries (8-byte)
-	for i := 0; i < numImports; i++ {
-		off := iatOff + i*8
-		putU64(idata[off:], uint64(idataRVA)+getU64(idata[off:off+8]))
+	iltOff := idtSize
+	for _, grp := range groups {
+		for i := 0; i < len(grp.Symbols); i++ {
+			off := iltOff + i*8
+			putU64(idata[off:], uint64(idataRVA)+getU64(idata[off:off+8]))
+		}
+		iltOff += (len(grp.Symbols) + 1) * 8
+	}
+
+	iatOff := iatBase
+	for _, grp := range groups {
+		for i := 0; i < len(grp.Symbols); i++ {
+			off := iatOff + i*8
+			putU64(idata[off:], uint64(idataRVA)+getU64(idata[off:off+8]))
+		}
+		iatOff += (len(grp.Symbols) + 1) * 8
 	}
 }
 
-// buildIATOffsets64 returns func name → offset within .idata of the IAT entry (8-byte entries).
-func (g *CodeGen) buildIATOffsets64(imports []string) map[string]int {
-	idtSize := 40
-	iltSize := (len(imports) + 1) * 8
-	iatBaseOffset := idtSize + iltSize
+// buildIATOffsets64 returns import key → offset within .idata of the IAT entry.
+func (g *CodeGen) buildIATOffsets64(imports []winImport) map[string]int {
+	groups := groupWinImports(imports)
+	idtSize := (len(groups) + 1) * 20
+	iltSize := 0
+	for _, grp := range groups {
+		iltSize += (len(grp.Symbols) + 1) * 8
+	}
+	iatBase := idtSize + iltSize
 
 	offsets := make(map[string]int)
-	for i, name := range imports {
-		offsets[name] = iatBaseOffset + i*8
+	cur := iatBase
+	for _, grp := range groups {
+		for i, sym := range grp.Symbols {
+			offsets[winImportKey(grp.Library, sym)] = cur + i*8
+		}
+		cur += (len(grp.Symbols) + 1) * 8
 	}
 	return offsets
 }
 
 // getIATInfo64 returns the RVA and size of the IAT (8-byte entries).
-func (g *CodeGen) getIATInfo64(imports []string, idataRVA int) (int, int) {
-	idtSize := 40
-	iltSize := (len(imports) + 1) * 8
-	iatOffset := idtSize + iltSize
-	iatSize := (len(imports) + 1) * 8
-	return idataRVA + iatOffset, iatSize
+func (g *CodeGen) getIATInfo64(imports []winImport, idataRVA int) (int, int) {
+	groups := groupWinImports(imports)
+	if len(groups) == 0 {
+		return 0, 0
+	}
+	idtSize := (len(groups) + 1) * 20
+	iltSize := 0
+	iatSize := 0
+	for _, grp := range groups {
+		iltSize += (len(grp.Symbols) + 1) * 8
+		iatSize += (len(grp.Symbols) + 1) * 8
+	}
+	return idataRVA + idtSize + iltSize, iatSize
 }
 
 // buildDWARF64 generates DWARF2 sections with 8-byte addresses for PE32+.

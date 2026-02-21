@@ -59,6 +59,12 @@ type CodeGen struct {
 	// Outlined intrinsic helpers
 	needTostringHelper bool
 	hasTostringHelper  bool
+
+	// Windows linkstatic wrapper state: route the primary import call in a
+	// syscall helper to the library declared on the current linkstatic intrinsic.
+	linkStaticImportLib    string
+	linkStaticImportSymbol string
+	linkStaticImportActive bool
 }
 
 const outlinedTostringHelper = "$rtg.tostring$"
@@ -517,22 +523,34 @@ func (g *CodeGen) opDrop() {
 
 // emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.
 func (g *CodeGen) emitCallIAT(funcName string) {
+	libName := winDefaultImportLibrary
+	if g.linkStaticImportActive && g.linkStaticImportSymbol == funcName && g.linkStaticImportLib != "" {
+		libName = g.linkStaticImportLib
+	}
+	g.emitCallIATInLib(libName, funcName)
+}
+
+func (g *CodeGen) emitCallIATInLib(libName string, funcName string) {
 	g.flush()
 	g.emitBytes(0xFF, 0x15) // call dword ptr [abs32]
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code),
-		Target:     "$iat$" + funcName,
+		Target:     encodeIATFixupTarget(libName, funcName),
 	})
 	g.emitU32(0) // placeholder
 }
 
 // emitJmpIAT emits `jmp dword ptr [abs32]` for jumping to Windows IAT entries.
 func (g *CodeGen) emitJmpIAT(funcName string) {
+	g.emitJmpIATInLib(winDefaultImportLibrary, funcName)
+}
+
+func (g *CodeGen) emitJmpIATInLib(libName string, funcName string) {
 	g.flush()
 	g.emitBytes(0xFF, 0x25) // jmp dword ptr [abs32]
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.code),
-		Target:     "$iat$" + funcName,
+		Target:     encodeIATFixupTarget(libName, funcName),
 	})
 	g.emitU32(0) // placeholder
 }

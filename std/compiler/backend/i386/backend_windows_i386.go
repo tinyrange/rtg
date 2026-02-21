@@ -10,36 +10,6 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
-// win386Imports lists all kernel32.dll functions needed by the backend.
-var win386Imports = []string{
-	"VirtualAlloc",
-	"ExitProcess",
-	"GetStdHandle",
-	"WriteFile",
-	"ReadFile",
-	"CreateFileA",
-	"CloseHandle",
-	"GetCommandLineA",
-	"GetEnvironmentStringsA",
-	"FreeEnvironmentStringsA",
-	"GetCurrentDirectoryA",
-	"CreateDirectoryA",
-	"RemoveDirectoryA",
-	"DeleteFileA",
-	"FindFirstFileA",
-	"FindNextFileA",
-	"FindClose",
-	"GetFileAttributesExA",
-	"CreateProcessA",
-	"WaitForSingleObject",
-	"GetExitCodeProcess",
-	"CreatePipe",
-	"SetStdHandle",
-	"SetHandleInformation",
-	"GetLastError",
-	"GetCurrentProcessId",
-}
-
 // GenerateWinPE compiles an IRModule to a Windows PE32 executable.
 func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
@@ -102,7 +72,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 	}
 
 	// Build PE32
-	pe := g.buildPE32(irmod, win386Imports)
+	pe := g.buildPE32(irmod)
 	err := os.WriteFile(outputPath, pe, 0755)
 	if err != nil {
 		return fmt.Errorf("write output: %v", err)
@@ -244,9 +214,9 @@ func (g *CodeGen) compileSyscallWrite_win386() {
 	// Failed: get error
 	g.emitCallIAT("GetLastError")
 	g.movRR32(REG32_ECX, REG32_EAX) // save GetLastError result
-	g.compileConstI32(0)              // r1 = 0
-	g.compileConstI32(0)              // r2 = 0
-	g.opPush(REG32_ECX)               // err
+	g.compileConstI32(0)            // r1 = 0
+	g.compileConstI32(0)            // r2 = 0
+	g.opPush(REG32_ECX)             // err
 	fixDone := g.jmpRel32()
 
 	g.patchRel32(fixOk)
