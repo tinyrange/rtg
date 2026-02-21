@@ -45,6 +45,11 @@ jobs:
             target_id: windows-amd64
             cc: gcc
             suffix: .exe
+          - runner: windows-11-arm
+            target: windows/arm64
+            target_id: windows-arm64
+            cc: gcc
+            suffix: .exe
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -74,7 +79,7 @@ jobs:
         run: RTG_TARGET=${{ matrix.target }} ./build/build${{ matrix.suffix }} test-fullcompiler-rtg
 
       - name: C self-hosting (3-stage)
-        if: matrix.runner != 'windows-latest'
+        if: matrix.suffix != '.exe'
         run: |
           set -euo pipefail
           mkdir -p build/selfhost-c-artifacts
@@ -89,7 +94,7 @@ jobs:
           } 2>&1 | tee build/selfhost-c-artifacts/c-selfhost.log
 
       - name: Upload C self-hosting failure artifacts
-        if: matrix.runner != 'windows-latest' && failure()
+        if: matrix.suffix != '.exe' && failure()
         uses: actions/upload-artifact@v4
         with:
           name: c-selfhost-failure-${{ matrix.target_id }}
@@ -103,7 +108,7 @@ jobs:
             build/stage2_c${{ matrix.suffix }}
 
       - name: Fullcompiler suite (C backend)
-        if: matrix.runner != 'windows-latest'
+        if: matrix.suffix != '.exe'
         run: ./build/build${{ matrix.suffix }} test-fullcompiler-c
 
   selfhost-wasm:
