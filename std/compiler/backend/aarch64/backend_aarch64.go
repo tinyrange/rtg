@@ -255,6 +255,7 @@ func (g *CodeGen) compileConstStrArm64(s string) {
 		g.data = append(g.data, lenBytes...)
 
 		g.stringMap[decoded] = headerOff
+		g.stringHeaderOff = append(g.stringHeaderOff, headerOff)
 		if g.stringRodataMap == nil {
 			g.stringRodataMap = make(map[int]int)
 		}

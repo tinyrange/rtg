@@ -48,7 +48,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 		labelOffsets:  make(map[int]int),
 		stringMap:     make(map[string]int),
 		globalOffsets: make([]int, len(irmod.Globals)),
-		baseAddr:      0x400000,
+		baseAddr:      0x140000000,
 		irmod:         irmod,
 		wordSize:      8,
 		isArm64:       true,
@@ -118,6 +118,8 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
 	g.EmitMovRRArm64(REG_FP, REG_SP)
 
+	emitDebugMarkerArm64(g, 'A')
+
 	// Allocate 16MB operand stack via VirtualAlloc
 	// VirtualAlloc(NULL, 16*1048576, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
 	g.EmitMovZ(REG_X0, 0, 0)                   // lpAddress = NULL
@@ -125,6 +127,8 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 	g.EmitLoadImm64Compact(REG_X2, 0x3000)     // MEM_COMMIT | MEM_RESERVE
 	g.EmitLoadImm64Compact(REG_X3, 0x04)       // PAGE_READWRITE
 	g.emitCallIATArm64("VirtualAlloc")
+
+	emitDebugMarkerArm64(g, 'B')
 
 	// X28 = result + 16MB (operand stack top, grows down)
 	g.EmitLoadImm64Compact(REG_X1, 16*1048576)
@@ -137,8 +141,12 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 		}
 	}
 
+	emitDebugMarkerArm64(g, 'C')
+
 	// Call main.main
 	g.EmitCallPlaceholderArm64("main.main")
+
+	emitDebugMarkerArm64(g, 'D')
 
 	// ExitProcess(0)
 	g.EmitMovZ(REG_X0, 0, 0)
@@ -154,6 +162,8 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 // a Windows IAT entry. Creates a $iat$funcName callFixup.
 func (g *CodeGen) emitCallIATArm64(funcName string) {
 	g.Flush()
+	// Windows ARM64 ABI requires 32 bytes of home space for callees.
+	g.emitSubImm(REG_SP, REG_SP, 32)
 	off := g.EmitAdrp(REG_X16)
 	// LDR X16, [X16, #0] — placeholder
 	inst := uint32(0xF9400000) | (uint32(REG_X16&0x1f) << 5) | uint32(REG_X16&0x1f)
@@ -163,6 +173,30 @@ func (g *CodeGen) emitCallIATArm64(funcName string) {
 		Target:     "$iat$" + funcName,
 	})
 	g.EmitBlr(REG_X16)
+	g.emitAddImm(REG_SP, REG_SP, 32)
+}
+
+func emitDebugMarkerArm64(g *CodeGen, marker byte) {
+	if !g.target.CompilerDebug {
+		return
+	}
+
+	// WriteFile(GetStdHandle(STD_ERROR_HANDLE), &marker, 2, &nwritten, NULL)
+	g.emitSubImm(REG_SP, REG_SP, 32)
+	val := uint64(marker) | (uint64('\n') << 8)
+	g.EmitLoadImm64Compact(REG_X1, val)
+	g.EmitStr(REG_X1, REG_SP, 0)
+
+	g.EmitLoadImm64Compact(REG_X0, 0xFFFFFFFFFFFFFFF4) // -12
+	g.emitCallIATArm64("GetStdHandle")
+
+	g.EmitMovRRArm64(REG_X1, REG_SP)
+	g.EmitLoadImm64Compact(REG_X2, 2)
+	g.emitAddImm(REG_X3, REG_SP, 16)
+	g.EmitMovZ(REG_X4, 0, 0)
+	g.emitCallIATArm64("WriteFile")
+
+	g.emitAddImm(REG_SP, REG_SP, 32)
 }
 
 // loadFdAsHandleArm64 loads fd from local, converts 0/1/2 to std handles via GetStdHandle.

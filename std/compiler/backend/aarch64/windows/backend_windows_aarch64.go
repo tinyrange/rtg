@@ -43,7 +43,7 @@ var winArm64Imports = []string{
 
 // GenerateWinPE compiles an IRModule to a Windows ARM64 PE32+ executable.
 func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
-	g := aarch64.NewCodeGen(target, irmod, 0x400000, 0, false)
+	g := aarch64.NewCodeGen(target, irmod, 0x140000000, 0, false)
 
 	// Emit entry point
 	emitStartArm64Windows(g, irmod)
@@ -101,6 +101,7 @@ func emitStartArm64Windows(g *aarch64.CodeGen, irmod *ir.IRModule) {
 			g.EmitCallPlaceholderArm64(f.Name)
 		}
 	}
+
 	g.EmitCallPlaceholderArm64("main.main")
 
 	g.EmitMovZ(aarch64.REG_X0, 0, 0)
@@ -114,9 +115,17 @@ func emitStartArm64Windows(g *aarch64.CodeGen, irmod *ir.IRModule) {
 // emitCallIATArm64 emits ADRP+LDR X16 (placeholder) then BLR X16 for calling a Windows IAT entry.
 func emitCallIATArm64(g *aarch64.CodeGen, funcName string) {
 	g.Flush()
+	// Windows ARM64 ABI requires 32 bytes of home space for callees.
+	emitAddImm64Arm64(g, aarch64.REG_SP, aarch64.REG_SP, -32)
 	off := g.EmitAdrp(aarch64.REG_X16)
 	inst := uint32(0xF9400000) | (uint32(aarch64.REG_X16&0x1f) << 5) | uint32(aarch64.REG_X16&0x1f)
 	g.EmitArm64(inst)
 	g.AddCallFixup(off, "$iat$"+funcName, 0)
 	g.EmitBlr(aarch64.REG_X16)
+	emitAddImm64Arm64(g, aarch64.REG_SP, aarch64.REG_SP, 32)
+}
+
+func emitAddImm64Arm64(g *aarch64.CodeGen, rd, rn int, imm int64) {
+	g.EmitLoadImm64Compact(aarch64.REG_X16, uint64(imm))
+	g.EmitAddRR(rd, rn, aarch64.REG_X16)
 }
