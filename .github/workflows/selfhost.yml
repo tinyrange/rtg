@@ -349,7 +349,7 @@ jobs:
               return `${d > 0 ? "+" : ""}${d.toLocaleString("en-US")} B`;
             };
 
-            const listResp = await github.rest.issues.listComments({
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
@@ -357,7 +357,7 @@ jobs:
             });
 
             let existing = null;
-            for (const c of listResp.data) {
+            for (const c of comments) {
               if (typeof c.body === "string" && c.body.includes(marker)) {
                 existing = c;
               }
@@ -409,9 +409,18 @@ jobs:
 
             const payload = `${marker}\n${lines.join("\n")}\n\n${dataPrefix}${JSON.stringify(data)}-->`;
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issueNumber,
-              body: payload,
-            });
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: payload,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: payload,
+              });
+            }
