@@ -409,18 +409,9 @@ jobs:
 
             const payload = `${marker}\n${lines.join("\n")}\n\n${dataPrefix}${JSON.stringify(data)}-->`;
 
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body: payload,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                body: payload,
-              });
-            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: payload,
+            });
