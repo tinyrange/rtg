@@ -4,14 +4,7 @@ package comptime
 
 import "os"
 
-type hostContext struct{}
-
-func Host() Context {
-	return hostContext{}
-}
-
-func (h hostContext) ReadFile(path string) (string, bool) {
-	_ = h
+func ReadFile(path string) (string, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", false
