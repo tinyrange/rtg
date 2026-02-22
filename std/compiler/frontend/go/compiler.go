@@ -4190,6 +4190,9 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 		c.compileExpr(node.X)
 		c.emit(ir.Inst{Op: ir.OP_NEG, Width: w})
 	case "*":
+		if c.isDefinitelyNonPointerExpr(node.X) {
+			c.errorf("%s: cannot indirect non-pointer expression", c.curFunc.Name)
+		}
 		c.compileExpr(node.X)
 		if !c.isPointerToStructDeref(node.X) {
 			c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
@@ -4336,6 +4339,31 @@ func (c *Compiler) isPointerToStructDeref(node *Node) bool {
 		return true
 	}
 	return typeNode.Kind == NStructType
+}
+
+func (c *Compiler) isDefinitelyNonPointerExpr(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case NIntLit, NRuneLit, NStringLit:
+		return true
+	case NUnaryExpr:
+		if node.Name == "&" {
+			return false
+		}
+	}
+	if node.Kind == NIdent && c.localAddrOf[node.Name] {
+		return false
+	}
+	t := c.resolveExprType(node)
+	if t == "" {
+		return false
+	}
+	if strings.HasPrefix(t, "*") || strings.Contains(t, ".*") {
+		return false
+	}
+	return true
 }
 
 func (c *Compiler) compileAddrOf(node *Node) {
