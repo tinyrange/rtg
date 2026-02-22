@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-
 	"j5.nz/rtg/std/compiler/backend/8086/dos"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
@@ -132,17 +130,46 @@ func decodeTinyIR(data []byte) (*ir.IRModule, bool) {
 }
 
 func main() {
-	tir, err := os.ReadFile("PROG.TIR")
-	if err != nil {
-		os.Exit(2)
+	path := [...]byte{'P', 'R', 'O', 'G', '.', 'T', 'I', 'R', 0}
+	buf := make([]byte, 4096)
+	fd, _, errn := Syscall(5, Sliceptr(path[:]), 0, 0, 0, 0, 0)
+	if errn != 0 {
+		exitDOS(2)
 	}
-	mod, ok := decodeTinyIR(tir)
+	n, _, rerr := Syscall(3, fd, Sliceptr(buf), uintptr(len(buf)), 0, 0, 0)
+	Syscall(6, fd, 0, 0, 0, 0, 0)
+	if rerr != 0 || int(n) <= 0 {
+		exitDOS(2)
+	}
+	mod, ok := decodeTinyIR(buf[:int(n)])
 	if !ok || mod == nil {
-		os.Exit(2)
+		exitDOS(4)
 	}
 	target := &common.Target{GOOS: "dos", GOARCH: "dos16", PtrSize: 2, Backend: "native"}
-	if dos.GenerateDOSCOM(target, mod, "CHILD.COM") != nil {
-		os.Exit(3)
+	if err := dos.GenerateDOSCOM(target, mod, "CHILD.EXE"); err != nil {
+		msg := err.Error()
+		if msg == "dos backend: COM image too large" {
+			exitDOS(31)
+		}
+		if msg == "dos backend: unresolved calls" {
+			exitDOS(32)
+		}
+		if msg == "dos backend: write output failed" {
+			exitDOS(33)
+		}
+		exitDOS(34)
 	}
-	os.Exit(0)
+	exitDOS(0)
+}
+
+//rtg:internal Syscall
+func Syscall(num, a0, a1, a2, a3, a4, a5 uintptr) (r1 uintptr, r2 uintptr, err uintptr)
+
+//rtg:internal Sliceptr
+func Sliceptr(b []byte) uintptr
+
+func exitDOS(code int) {
+	Syscall(252, uintptr(code), 0, 0, 0, 0, 0)
+	for {
+	}
 }

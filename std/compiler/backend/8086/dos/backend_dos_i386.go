@@ -1,11 +1,11 @@
 //go:build !no_backend_dos_i386
 
-// Package dos: minimal IR → DOS .COM backend for 8086 real mode.
-// Major refactor: single file, 16-bit only, COM-only, no ELF/Mach-O/PE, no i386/amd64,
+// Package dos: minimal IR → DOS MZ .EXE backend for 8086 real mode.
+// Major refactor: single file, 16-bit only, DOS EXE small-model, no ELF/Mach-O/PE, no i386/amd64,
 // no operand-cache optimizer, no jump relaxation, no Windows IAT.
 //
 // Assumptions (match your existing backend conventions):
-// - Near pointers are 16-bit offsets inside the COM segment (DS=CS at load).
+// - Near pointers are 16-bit offsets inside the data segment (DS).
 // - Operand stack lives in DI and grows downward in memory (DI -= 2 on push).
 // - Frame uses BP-based locals. Locals are 1-word slots. Slot 0 is at [BP-2].
 // - Params are passed on the operand stack; function prologue pops params into locals.
@@ -33,8 +33,9 @@ import (
 )
 
 const (
-	comLoadAddr = 0x0100
-	comMaxImage = 0x10000 - comLoadAddr
+	segLimitU32   = uint32(0x10000)
+	mzHeaderParas = 4
+	mzHeaderBytes = mzHeaderParas * 16
 )
 
 const outlinedTostringHelper = "$rtg.tostring$"
@@ -55,6 +56,7 @@ type CodeGen struct {
 	jumpFixups    []JumpFixup
 	stringMap     map[string]int // decoded string -> header offset in rodata
 	globalOffsets []int
+	dataSegFixups []int
 
 	curFrameWords int // locals/params frame size in words (not bytes)
 
@@ -118,7 +120,7 @@ const (
 
 // ===== Public entry =====
 
-// GenerateDOSCOM compiles an IRModule to a DOS .COM image (8086 real-mode).
+// GenerateDOSCOM compiles an IRModule to a DOS MZ .EXE image (8086 real-mode).
 func GenerateDOSCOM(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &CodeGen{
 		target:        target,
@@ -135,7 +137,7 @@ func GenerateDOSCOM(target *common.Target, irmod *ir.IRModule, outputPath string
 	}
 	g.data = make([]byte, len(irmod.Globals)*2)
 
-	g.emitCOMStart(irmod)
+	g.emitEXEStart(irmod)
 
 	for _, f := range irmod.Funcs {
 		g.funcOffsets[f.Name] = len(g.code)
@@ -164,62 +166,108 @@ func GenerateDOSCOM(target *common.Target, irmod *ir.IRModule, outputPath string
 		return errUnresolvedCalls(len(unresolved))
 	}
 
-	com, err := g.buildCOM()
+	exe, err := g.buildEXE()
 	if err != nil {
 		writeSizeAnalysisTarget(*target)
 		return err
 	}
-	if err := os.WriteFile(outputPath, com, 0755); err != nil {
+	if err := os.WriteFile(outputPath, exe, 0755); err != nil {
 		return errWriteOutput(err)
 	}
 	return nil
 }
 
-// ===== COM layout / patching =====
+// ===== EXE layout / patching =====
 
-func (g *CodeGen) buildCOM() ([]byte, error) {
-	textSize := len(g.code)
-	rodataSize := len(g.rodata)
-	dataSize := len(g.data)
-	total := textSize + rodataSize + dataSize
-	if total > comMaxImage {
-		return nil, errCOMTooLarge(total, comMaxImage, textSize, rodataSize, dataSize)
+func (g *CodeGen) buildEXE() ([]byte, error) {
+	textSize := uint32(len(g.code))
+	rodataSize := uint32(len(g.rodata))
+	dataSize := uint32(len(g.data))
+
+	if exeSegmentTooLarge(textSize, rodataSize+dataSize) {
+		total := int(textSize + rodataSize + dataSize)
+		return nil, errCOMTooLarge(total, int(segLimitU32-1), int(textSize), int(rodataSize), int(dataSize))
 	}
 
-	rodataAddr := uint16(comLoadAddr + textSize)
-	dataAddr := uint16(comLoadAddr + textSize + rodataSize)
+	dataBlobSize := rodataSize + dataSize
+	dataBlob := make([]byte, int(dataBlobSize))
+	copy(dataBlob, g.rodata)
+	copy(dataBlob[int(rodataSize):], g.data)
 
-	// Patch rodata string headers: replace data_off with absolute near ptr.
+	// In EXE small-model, rodata/data live in DS with offset-based pointers.
 	for _, headerOff := range g.stringMap {
-		dataOff := getU16(g.rodata[headerOff : headerOff+2])
-		putU16(g.rodata[headerOff:headerOff+2], uint16(rodataAddr)+dataOff)
+		dataOff := getU16(dataBlob[headerOff : headerOff+2])
+		putU16(dataBlob[headerOff:headerOff+2], dataOff)
+	}
+
+	// Module image is code followed by paragraph-aligned data segment payload.
+	codeParas := (textSize + 15) >> 4
+	dataStart := codeParas << 4
+	moduleSize := dataStart + dataBlobSize
+	module := make([]byte, int(moduleSize))
+	copy(module, g.code)
+	copy(module[int(dataStart):], dataBlob)
+
+	dataSegRel := uint16(codeParas)
+	for _, off := range g.dataSegFixups {
+		putU16(module[off:off+2], dataSegRel)
 	}
 
 	// Patch code immediates referencing rodata header/data base.
 	for _, fix := range g.callFixups {
 		switch fix.Target {
 		case "$rodata_header$":
-			off := getU16(g.code[fix.CodeOffset : fix.CodeOffset+2])
-			putU16(g.code[fix.CodeOffset:fix.CodeOffset+2], uint16(rodataAddr)+off)
+			off := getU16(module[fix.CodeOffset : fix.CodeOffset+2])
+			putU16(module[fix.CodeOffset:fix.CodeOffset+2], off)
 		case "$data_addr$":
-			off := getU16(g.code[fix.CodeOffset : fix.CodeOffset+2])
-			putU16(g.code[fix.CodeOffset:fix.CodeOffset+2], uint16(dataAddr)+off)
+			off := getU16(module[fix.CodeOffset : fix.CodeOffset+2])
+			putU16(module[fix.CodeOffset:fix.CodeOffset+2], uint16(rodataSize)+off)
 		}
 	}
 
-	out := make([]byte, total)
-	copy(out, g.code)
-	copy(out[textSize:], g.rodata)
-	copy(out[textSize+rodataSize:], g.data)
+	// Build minimal MZ EXE header (no relocations).
+	fileSize := mzHeaderBytes + moduleSize
+	pages := (fileSize + 511) / 512
+	last := fileSize % 512
+	if last == 0 {
+		last = 512
+	}
+	header := make([]byte, mzHeaderBytes)
+	putU16(header[0:2], 0x5A4D)                // MZ
+	putU16(header[2:4], uint16(last))          // e_cblp
+	putU16(header[4:6], uint16(pages))         // e_cp
+	putU16(header[6:8], 0)                     // e_crlc
+	putU16(header[8:10], mzHeaderParas)        // e_cparhdr
+	putU16(header[10:12], 0x0010)              // e_minalloc
+	putU16(header[12:14], 0xFFFF)              // e_maxalloc
+	putU16(header[14:16], dataSegRel)          // e_ss
+	putU16(header[16:18], 0xFFFE)              // e_sp
+	putU16(header[18:20], 0)                   // e_csum
+	putU16(header[20:22], 0x0000)              // e_ip
+	putU16(header[22:24], 0x0000)              // e_cs
+	putU16(header[24:26], 0x0040)              // e_lfarlc
+	putU16(header[26:28], 0)                   // e_ovno
+
+	out := make([]byte, fileSize)
+	copy(out, header)
+	copy(out[mzHeaderBytes:], module)
 	return out, nil
 }
 
-// Minimal COM entry:
+// Minimal EXE entry:
+// - Initialize DS/ES = CS + data segment relative paragraph.
 // - Set operand stack DI near top of segment.
 // - Call init funcs.
 // - Call main.main.
 // - Exit via INT 21h AH=4Ch.
-func (g *CodeGen) emitCOMStart(irmod *ir.IRModule) {
+func (g *CodeGen) emitEXEStart(irmod *ir.IRModule) {
+	g.emitBytes(0x8C, 0xC8) // mov ax, cs
+	g.emitBytes(0x05)       // add ax, imm16
+	g.dataSegFixups = append(g.dataSegFixups, len(g.code))
+	g.emitU16(0)
+	g.emitBytes(0x8E, 0xD8) // mov ds, ax
+	g.emitBytes(0x8E, 0xC0) // mov es, ax
+
 	g.emitMovImm16(REG16_DI, 0xFF00)
 
 	for _, f := range irmod.Funcs {

@@ -60,7 +60,7 @@ index_txt="$SRC_DIR/INDEX.TXT"
 readme_txt="$SRC_DIR/README.TXT"
 
 to_crlf_file "$runall" "@ECHO OFF" "ECHO RTG DOS/8086 FULLCOMPILER SUITE" "ECHO."
-to_crlf_file "$index_txt" "RTG DOS/8086 COM TEST INDEX"
+to_crlf_file "$index_txt" "RTG DOS/8086 EXE TEST INDEX"
 to_crlf_file "$readme_txt" \
   "RTG DOS/8086 test disk" \
   "" \
@@ -72,7 +72,7 @@ to_crlf_file "$readme_txt" \
 
 for i in "${!tests[@]}"; do
   idx=$((i + 1))
-  dos_name="$(printf "T%03d.COM" "$idx")"
+  dos_name="$(printf "T%03d.EXE" "$idx")"
   stem="$(basename "${tests[$i]}" .go)"
   display="$(printf "%03d/%03d %s" "$idx" "${#tests[@]}" "$stem")"
 

@@ -13,7 +13,7 @@ func main() {
 	maxSteps := flag.Int("max-steps", 2_000_000, "instruction step limit")
 	flag.Parse()
 	if flag.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "usage: %s [-trace] [-max-steps N] <program.com> [args...]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [-trace] [-max-steps N] <program.com|program.exe> [args...]\n", os.Args[0])
 		os.Exit(2)
 	}
 

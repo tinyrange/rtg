@@ -11,6 +11,7 @@ func (g *CodeGen) compileConstStr(raw string) {
 	if !ok {
 		dataOff := len(g.rodata)
 		g.rodata = append(g.rodata, []byte(decoded)...)
+		g.rodata = append(g.rodata, 0)
 
 		headerOff = len(g.rodata)
 		g.rodata = append(g.rodata, 0, 0, byte(len(decoded)), byte(len(decoded)>>8))

@@ -82,10 +82,6 @@ func RunCOM(bin []byte, args []string, opts Options) (Result, error) {
 	if opts.MaxSteps <= 0 {
 		opts.MaxSteps = 2_000_000
 	}
-	if len(bin) > 65536-0x100 {
-		return Result{}, fmt.Errorf("COM too large: %d bytes", len(bin))
-	}
-	WarnIfLooksLike32Bit(bin)
 
 	c := &cpu{
 		trace:    opts.Trace,
@@ -97,8 +93,18 @@ func RunCOM(bin []byte, args []string, opts Options) (Result, error) {
 		nextFileHandle: 5,
 	}
 	defer c.closeFiles()
-	if err := c.loadCOM(defaultPSP, bin, args); err != nil {
-		return Result{}, fmt.Errorf("load COM: %w", err)
+	if isMZ(bin) {
+		if err := c.loadEXE(defaultPSP, bin, args); err != nil {
+			return Result{}, fmt.Errorf("load EXE: %w", err)
+		}
+	} else {
+		if len(bin) > 65536-0x100 {
+			return Result{}, fmt.Errorf("COM too large: %d bytes", len(bin))
+		}
+		WarnIfLooksLike32Bit(bin)
+		if err := c.loadCOM(defaultPSP, bin, args); err != nil {
+			return Result{}, fmt.Errorf("load COM: %w", err)
+		}
 	}
 	if err := c.run(); err != nil {
 		return Result{}, err
@@ -125,6 +131,17 @@ func WarnIfLooksLike32Bit(bin []byte) {
 	if bin[0] == 0xbf && bin[3] == 0x00 && bin[4] == 0x00 && bin[5] == 0xe8 {
 		fmt.Fprintf(os.Stderr, "comemu: warning: binary looks like 32-bit code stream in a COM image; real DOS starts in 16-bit mode\n")
 	}
+}
+
+func isMZ(bin []byte) bool {
+	return len(bin) >= 2 && bin[0] == 'M' && bin[1] == 'Z'
+}
+
+func rd16(b []byte, off int) (uint16, bool) {
+	if off+1 >= len(b) {
+		return 0, false
+	}
+	return uint16(b[off]) | (uint16(b[off+1]) << 8), true
 }
 
 func (c *cpu) loadCOM(psp uint16, bin []byte, args []string) error {
@@ -157,6 +174,90 @@ func (c *cpu) loadCOM(psp uint16, bin []byte, args []string) error {
 	return nil
 }
 
+func (c *cpu) loadEXE(psp uint16, bin []byte, args []string) error {
+	if len(bin) < 28 || !isMZ(bin) {
+		return errors.New("invalid MZ header")
+	}
+	eCblp, ok := rd16(bin, 2)
+	if !ok {
+		return errors.New("bad header")
+	}
+	eCp, _ := rd16(bin, 4)
+	eCrlc, _ := rd16(bin, 6)
+	eCparhdr, _ := rd16(bin, 8)
+	eSS, _ := rd16(bin, 14)
+	eSP, _ := rd16(bin, 16)
+	eIP, _ := rd16(bin, 20)
+	eCS, _ := rd16(bin, 22)
+	eLfarlc, _ := rd16(bin, 24)
+
+	fileSize := int(eCp) * 512
+	if eCp == 0 {
+		return errors.New("invalid page count")
+	}
+	if eCblp != 0 {
+		fileSize -= 512
+		fileSize += int(eCblp)
+	}
+	if fileSize > len(bin) {
+		fileSize = len(bin)
+	}
+	headerSize := int(eCparhdr) * 16
+	if headerSize < 28 || headerSize > fileSize {
+		return errors.New("invalid header size")
+	}
+
+	base := linear(psp, 0)
+	if int(base)+65536 > len(c.mem) {
+		return errors.New("PSP segment out of memory")
+	}
+	for i := 0; i < 256; i++ {
+		c.mem[int(base)+i] = 0
+	}
+
+	loadSeg := psp + 0x10
+	loadBase := linear(loadSeg, 0)
+	image := bin[headerSize:fileSize]
+	if int(loadBase)+len(image) > len(c.mem) {
+		return errors.New("image out of memory")
+	}
+	copy(c.mem[loadBase:], image)
+
+	// Apply relocations.
+	relocBase := int(eLfarlc)
+	for i := 0; i < int(eCrlc); i++ {
+		off, ok1 := rd16(bin, relocBase+i*4)
+		seg, ok2 := rd16(bin, relocBase+i*4+2)
+		if !ok1 || !ok2 {
+			return errors.New("bad relocation table")
+		}
+		addr := linear(loadSeg+seg, off)
+		if int(addr)+1 >= len(c.mem) {
+			return errors.New("relocation out of memory")
+		}
+		v := uint16(c.mem[addr]) | (uint16(c.mem[addr+1]) << 8)
+		v += loadSeg
+		c.mem[addr] = byte(v)
+		c.mem[addr+1] = byte(v >> 8)
+	}
+
+	c.cs = loadSeg + eCS
+	c.ip = eIP
+	c.ss = loadSeg + eSS
+	c.sp = eSP
+	c.ds = psp
+	c.es = psp
+
+	cmd := strings.Join(args, " ")
+	if len(cmd) > 126 {
+		cmd = cmd[:126]
+	}
+	c.mem[int(base)+0x80] = byte(len(cmd))
+	copy(c.mem[int(base)+0x81:int(base)+0x81+len(cmd)], []byte(cmd))
+	c.mem[int(base)+0x81+len(cmd)] = 0x0d
+	return nil
+}
+
 func (c *cpu) closeFiles() {
 	for h, f := range c.files {
 		_ = f.Close()
@@ -166,12 +267,16 @@ func (c *cpu) closeFiles() {
 
 func (c *cpu) allocFileHandle() uint16 {
 	h := c.nextFileHandle
+	start := h
 	for {
 		if _, inUse := c.files[h]; !inUse && h > 2 {
 			c.nextFileHandle = h + 1
 			return h
 		}
 		h++
+		if h == start {
+			return 0
+		}
 	}
 }
 
@@ -1144,6 +1249,12 @@ func (c *cpu) handleInt(vec byte) error {
 			return nil
 		}
 		h := c.allocFileHandle()
+		if h == 0 {
+			_ = f.Close()
+			c.cf = true
+			c.ax = 4 // too many open files
+			return nil
+		}
 		c.files[h] = f
 		c.ax = h
 		c.cf = false
@@ -1170,6 +1281,12 @@ func (c *cpu) handleInt(vec byte) error {
 			return nil
 		}
 		h := c.allocFileHandle()
+		if h == 0 {
+			_ = f.Close()
+			c.cf = true
+			c.ax = 4 // too many open files
+			return nil
+		}
 		c.files[h] = f
 		c.ax = h
 		c.cf = false
