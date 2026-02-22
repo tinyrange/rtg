@@ -2213,6 +2213,20 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
 	} else {
+		// Fixed-size arrays are parsed as slice-compatible nodes with a retained
+		// length expression in Type.Y; allocate and initialize backing storage.
+		if node.Type != nil && node.Type.Kind == NSliceType && node.Type.Y != nil {
+			arrLen := c.evalConstExprWithIota(node.Type.Y, 0)
+			if arrLen < 0 {
+				arrLen = 0
+			}
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: arrLen})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.sliceElemSize(node.Type))})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceMake", Arg: 2})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			return
+		}
+
 		// Struct locals are represented as pointers to heap-allocated storage.
 		// A zero-value struct var must still be addressable and non-nil.
 		if node.Type != nil {

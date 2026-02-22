@@ -36,7 +36,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Implement missing numeric conversion handling (`uint8(x)`, `int8(x)`, etc.).
 
 ## Arrays and range behavior
-- [ ] Fix local array allocation/storage semantics.
+- [x] Fix local array allocation/storage semantics.
 - [x] Reject invalid `range` targets (e.g. integer).
 
 ## Lexer/parser validation
