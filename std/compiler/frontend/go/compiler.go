@@ -103,8 +103,8 @@ type Compiler struct {
 	inComptimeFunc       bool
 	inIfInit             bool
 	ifInitLeakedNames    map[string]bool
-	assembleFuncs       map[string]assembleInfo
-	inAssembleBuilder   bool
+	assembleFuncs        map[string]assembleInfo
+	inAssembleBuilder    bool
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -1380,6 +1380,11 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		if !ok {
 			continue
 		}
+		if defineValue, ok := c.lookupDefineValue(qname, node.Name); ok {
+			c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(defineValue)})
+			c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
+			continue
+		}
 		c.compileExpr(node.X)
 		c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 	}
@@ -1400,6 +1405,19 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	}
 	c.irmod.Funcs = append(c.irmod.Funcs, f)
 	c.curFunc = nil
+}
+
+func (c *Compiler) lookupDefineValue(qualifiedName string, shortName string) (string, bool) {
+	if c == nil || c.target == nil || c.target.Defines == nil {
+		return "", false
+	}
+	if v, ok := c.target.Defines[qualifiedName]; ok {
+		return v, true
+	}
+	if v, ok := c.target.Defines[shortName]; ok {
+		return v, true
+	}
+	return "", false
 }
 
 func (c *Compiler) compileEmbedInit(pkg *Package, gidx int, pattern string) {
