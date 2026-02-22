@@ -23,6 +23,10 @@ func NewEvalState(target *common.Target, irmod *ir.IRModule) (*EvalState, error)
 	return nil, fmt.Errorf("vm backend disabled (built with no_backend_vm tag)")
 }
 
+func NewEvalStateNoInit(target *common.Target, irmod *ir.IRModule) (*EvalState, error) {
+	return nil, fmt.Errorf("vm backend disabled (built with no_backend_vm tag)")
+}
+
 func (e *EvalState) Call(funcName string, args []uint64, retCount int) ([]uint64, error) {
 	return nil, fmt.Errorf("vm backend disabled (built with no_backend_vm tag)")
 }

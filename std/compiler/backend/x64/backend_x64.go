@@ -81,6 +81,23 @@ func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) e
 
 // compileFunc generates x86-64 code for a single IR function.
 func (g *CodeGen) compileFunc(f *ir.IRFunc) {
+	if f.Native != nil {
+		if f.Native.Arch != "amd64" {
+			panic("ICE: x64 backend received native function for arch " + f.Native.Arch)
+		}
+		funcStart := g.funcOffsets[f.Name]
+		g.code = append(g.code, f.Native.Code...)
+		for _, fx := range f.Native.Fixups {
+			if fx.Kind != ir.NativeFixupCallRel32 {
+				continue
+			}
+			g.callFixups = append(g.callFixups, CallFixup{
+				CodeOffset: funcStart + fx.Off,
+				Target:     fx.Target,
+			})
+		}
+		return
+	}
 	g.curFunc = f
 	g.configureOperandCache(REG_R13, REG_R14)
 	g.curFrameSize = len(f.Locals)

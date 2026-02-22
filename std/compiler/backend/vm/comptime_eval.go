@@ -18,6 +18,14 @@ type EvalState struct {
 
 // NewEvalState builds a VM, runs package init functions, and returns an evaluator.
 func NewEvalState(target *common.Target, irmod *ir.IRModule) (*EvalState, error) {
+	return newEvalState(target, irmod, true)
+}
+
+func NewEvalStateNoInit(target *common.Target, irmod *ir.IRModule) (*EvalState, error) {
+	return newEvalState(target, irmod, false)
+}
+
+func newEvalState(target *common.Target, irmod *ir.IRModule, runInit bool) (*EvalState, error) {
 	cfg := newVMConfig(target.WordSize)
 	guard := 0x10000
 	if cfg.PtrSize <= 2 {
@@ -100,11 +108,13 @@ func NewEvalState(target *common.Target, irmod *ir.IRModule) (*EvalState, error)
 	vm.slabSmallSize = 2 * vm.config.WordSize
 	vm.slabLargeSize = 4 * vm.config.WordSize
 
-	for _, f := range irmod.Funcs {
-		if ir.IsInitFunc(f.Name) {
-			vm.execFunc(f)
-			if vm.exited {
-				return nil, fmt.Errorf("vm exited while running init function %s", f.Name)
+	if runInit {
+		for _, f := range irmod.Funcs {
+			if ir.IsInitFunc(f.Name) {
+				vm.execFunc(f)
+				if vm.exited {
+					return nil, fmt.Errorf("vm exited while running init function %s", f.Name)
+				}
 			}
 		}
 	}
