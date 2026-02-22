@@ -16,7 +16,7 @@ fi
 
 OUT_DIR="$ROOT_DIR/build/dos"
 mkdir -p "$OUT_DIR"
-rm -f "$OUT_DIR"/T??.COM "$OUT_DIR"/O??.TXT "$OUT_DIR"/S??.TXT "$OUT_DIR"/A??.TXT
+rm -f "$OUT_DIR"/T??.EXE "$OUT_DIR"/O??.TXT "$OUT_DIR"/S??.TXT "$OUT_DIR"/A??.TXT
 
 if [[ -n "${RTG_DOS_TESTS:-}" ]]; then
   RTG_DOS_TESTS="${RTG_DOS_TESTS//,/ }"
@@ -29,6 +29,7 @@ else
     tests/func_recursion.go
     tests/func_closure.go
     tests/iface_typeassert.go
+    tests/dos_cases/method_file_io.go
   )
 fi
 
@@ -42,7 +43,7 @@ for i in "${!TESTS[@]}"; do
   test_path="${TESTS[$i]}"
   idx=$((i + 1))
   dos_idx="$(printf "%02d" "$idx")"
-  dos_name="T${dos_idx}.COM"
+  dos_name="T${dos_idx}.EXE"
   out_name="O${dos_idx}.TXT"
   status_name="S${dos_idx}.TXT"
   after_name="A${dos_idx}.TXT"
