@@ -239,6 +239,15 @@ func (g *CodeGen) idivR(reg int) {
 	g.emitBytes(rex, 0xf7, byte(0xf8|(reg&7)))
 }
 
+// divR emits `div reg` (unsigned divide)
+func (g *CodeGen) divR(reg int) {
+	rex := byte(0x48)
+	if reg >= 8 {
+		rex |= 0x01
+	}
+	g.emitBytes(rex, 0xf7, byte(0xf0|(reg&7)))
+}
+
 // shlCl emits `shl reg, cl`
 func (g *CodeGen) shlCl(reg int) {
 	rex := byte(0x48)
