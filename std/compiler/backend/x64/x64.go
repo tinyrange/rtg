@@ -32,6 +32,9 @@ const (
 	CC_GE = 0x8D // greater or equal (signed)
 	CC_LE = 0x8E // less or equal (signed)
 	CC_G  = 0x8F // greater (signed)
+	CC_B  = 0x82 // below (unsigned)
+	CC_BE = 0x86 // below or equal (unsigned)
+	CC_A  = 0x87 // above (unsigned)
 	CC_AE = 0x83 // above or equal (unsigned) / not carry
 	CC_NS = 0x89 // not sign
 )

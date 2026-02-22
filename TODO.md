@@ -29,7 +29,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Enforce return statement arity and signature compliance.
 
 ## Integer semantics and conversions
-- [ ] Fix unsigned comparison codegen.
+- [x] Fix unsigned comparison codegen.
 - [ ] Fix unsigned right-shift codegen.
 - [ ] Fix unsigned division codegen.
 - [ ] Enforce width truncation/wrap for `int8`/`uint8`/`int32`.
