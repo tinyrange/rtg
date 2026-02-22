@@ -51,9 +51,9 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [ ] Implement proper arbitrary-precision constant handling.
 
 ## Redeclaration rules
-- [ ] Reject global variable redeclaration.
-- [ ] Reject function redeclaration.
-- [ ] Reject local redeclaration in same scope.
+- [x] Reject global variable redeclaration.
+- [x] Reject function redeclaration.
+- [x] Reject local redeclaration in same scope.
 - [ ] Enforce `:=` "at least one new variable" rule.
 
 ## Defer and function values
