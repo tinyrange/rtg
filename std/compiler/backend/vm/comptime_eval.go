@@ -88,9 +88,15 @@ func NewEvalState(target *common.Target, irmod *ir.IRModule) (*EvalState, error)
 	}
 
 	vm.frameStackSize = 64 * 1024
+	if cfg.PtrSize <= 2 {
+		vm.frameStackSize = 16 * 1024
+	}
 	vm.frameStackBase = int(vm.alloc(uint64(vm.frameStackSize), "frame-stack"))
 	vm.frameStackTop = vm.frameStackBase + vm.frameStackSize
 	vm.slabPageSize = 65536
+	if cfg.PtrSize <= 2 {
+		vm.slabPageSize = 4096
+	}
 	vm.slabSmallSize = 2 * vm.config.WordSize
 	vm.slabLargeSize = 4 * vm.config.WordSize
 

@@ -259,11 +259,17 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 
 	// Allocate frame stack (dedicated region for function call frames)
 	vm.frameStackSize = 64 * 1024
+	if cfg.PtrSize <= 2 {
+		vm.frameStackSize = 16 * 1024
+	}
 	vm.frameStackBase = int(vm.alloc(uint64(vm.frameStackSize), "frame-stack"))
 	vm.frameStackTop = vm.frameStackBase + vm.frameStackSize
 
 	// Initialize slab allocator for fixed-size objects
 	vm.slabPageSize = 65536
+	if cfg.PtrSize <= 2 {
+		vm.slabPageSize = 4096
+	}
 	vm.slabSmallSize = 2 * vm.config.WordSize
 	vm.slabLargeSize = 4 * vm.config.WordSize
 
