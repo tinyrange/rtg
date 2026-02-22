@@ -2036,16 +2036,19 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		}
 		vm.vmAsmEmitMovRegImm64(dst, int64(src))
 
-	case "AsmAmd64Add":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		src := int(vm.localGet(localsAddr, ws, 1))
-		vm.vmAsmEmit(vm.vmAsmRex(true, src, dst), 0x01, byte(0xc0|((src&7)<<3)|(dst&7)))
-
-	case "AsmAmd64Mul":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		imm := int32(vm.localGet(localsAddr, ws, 1))
-		vm.vmAsmEmit(vm.vmAsmRex(true, dst, dst), 0x69, byte(0xc0|((dst&7)<<3)|(dst&7)))
-		vm.vmAsmEmit(byte(imm), byte(imm>>8), byte(imm>>16), byte(imm>>24))
+	case "AsmAmd64Emit":
+		n := int(vm.localGet(localsAddr, ws, 0))
+		if n < 0 {
+			panic("AsmAmd64Emit: negative length")
+		}
+		if n > 8 {
+			panic("AsmAmd64Emit: length exceeds 8")
+		}
+		i := 0
+		for i < n {
+			vm.vmAsmEmit(byte(vm.localGet(localsAddr, ws, 1+i)))
+			i = i + 1
+		}
 
 	case "AsmAmd64Push":
 		src := int(vm.localGet(localsAddr, ws, 0))
