@@ -9,3 +9,11 @@ func HasEmbeddedStd() bool {
 func WalkEmbedFromFS(embedDir string) ([]string, []string) {
 	return nil, nil
 }
+
+func ReadDirFromEmbed(path string) []string {
+	return nil
+}
+
+func ReadFileFromEmbed(path string) string {
+	return ""
+}

@@ -1,4 +1,4 @@
-//go:build !rtg || no_embed_std
+//go:build no_embed_std
 
 package frontend
 

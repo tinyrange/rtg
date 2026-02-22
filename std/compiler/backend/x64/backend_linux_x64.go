@@ -120,7 +120,8 @@ func (g *CodeGen) compilePanic() {
 	g.emitBytes(0x0f, 0x05)                   // syscall
 	g.emitBytes(0x48, 0x83, 0xc4, 0x08)       // add rsp, 8         ; pop the '\n'
 
-	// Crash: null dereference → SIGSEGV
-	g.emitBytes(0x48, 0x31, 0xc0) // xor rax, rax
-	g.emitBytes(0x48, 0x8b, 0x00) // mov rax, [rax]
+	// Exit(2): align with Go panic process status instead of deliberate SIGSEGV.
+	g.emitBytes(0xbf, 0x02, 0x00, 0x00, 0x00) // mov edi, 2
+	g.emitBytes(0xb8, 0x3c, 0x00, 0x00, 0x00) // mov eax, 60  ; SYS_exit
+	g.emitBytes(0x0f, 0x05)                   // syscall
 }
