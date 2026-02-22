@@ -21,12 +21,13 @@ const (
 
 // Symbol represents a named entity in a package.
 type Symbol struct {
-	Name   string
-	Kind   SymKind
-	Node   *Node
-	Pkg    *Package
-	Intern string
-	Embed  string
+	Name       string
+	Kind       SymKind
+	Node       *Node
+	Pkg        *Package
+	Intern     string
+	Embed      string
+	LinkStatic bool
 }
 
 // Package represents a parsed Go package.
@@ -909,6 +910,12 @@ func collectDeclSymbol(pkg *Package, node *Node) {
 				sym, ok := pkg.Symbols[node.X.Name]
 				if ok {
 					sym.Embed = node.Name[6:len(node.Name)]
+				}
+			}
+			if _, ok := parseLinkStaticDirective(node.Name); ok && node.X.Name != "" {
+				sym, exists := pkg.Symbols[node.X.Name]
+				if exists {
+					sym.LinkStatic = true
 				}
 			}
 		}

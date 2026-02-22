@@ -685,6 +685,29 @@ func (vm *VM) readCString(addr uint64) string {
 	return string(buf)
 }
 
+func (vm *VM) readString(addr uint64) string {
+	if addr == 0 {
+		return ""
+	}
+	ws := uint64(vm.config.WordSize)
+	dataAddr := vm.loadWord(addr)
+	n := int(vm.loadWord(addr + ws))
+	if dataAddr == 0 || n <= 0 {
+		return ""
+	}
+	start := int(dataAddr)
+	if start < 0 || start+n > len(vm.memory) {
+		return ""
+	}
+	buf := make([]byte, n)
+	i := 0
+	for i < n {
+		buf[i] = vm.memory[start+i]
+		i = i + 1
+	}
+	return string(buf)
+}
+
 func (vm *VM) writeCString(s string) uint64 {
 	addr := vm.alloc(uint64(len(s)+1), "cstr")
 	a := int(addr)
@@ -1659,6 +1682,32 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.storeN(addr, 0, 1)
 		vm.storeN(addr+1, 0, 1)
 		vm.vmSysReturn(int64(addr))
+
+	case "ComptimeReadFile":
+		pathArg := vm.localGet(localsAddr, ws, 0)
+		path := vm.readString(pathArg)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			alt := vm.readCString(pathArg)
+			if alt != "" && alt != path {
+				if data2, err2 := os.ReadFile(alt); err2 == nil {
+					data = data2
+					err = nil
+				}
+			}
+		}
+		if err != nil {
+			vm.push(0)
+			vm.push(0)
+			return
+		}
+		s := string(data)
+		strAddr, ok := vm.stringAddrs[s]
+		if !ok {
+			strAddr = vm.internString(s)
+		}
+		vm.push(strAddr)
+		vm.push(1)
 
 	case "winVirtualAlloc":
 		// Legacy windows intrinsic name used by older self-hosted compiler stages.

@@ -2,8 +2,7 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"runtime"
+	comptime "j5.nz/rtg/x/comptime"
 )
 
 type ComptimeBuilder struct {
@@ -16,53 +15,44 @@ type ComptimeStruct struct {
 	S string
 }
 
-func readFileOnce(path string) (string, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", false
-	}
-	buf := make([]byte, 4096)
-	n, err := f.Read(buf)
-	f.Close()
-	if n == 0 && err != nil {
-		return "", false
-	}
-	return string(buf[0:n]), true
-}
-
 var comptimeBuilder = ComptimeBuilder{
 	Base: 7,
 	Path: "tests/comptime_fixture.txt",
 }
 
 //rtg:comptime
-func (b ComptimeBuilder) IntValue() int {
+func (b ComptimeBuilder) IntValue(ctx comptime.Context) int {
+	_ = ctx
 	return b.Base*3 + 2
 }
 
 //rtg:comptime
-func (b ComptimeBuilder) StringValue() string {
+func (b ComptimeBuilder) StringValue(ctx comptime.Context) string {
+	_ = ctx
 	return "value:" + "ok"
 }
 
 //rtg:comptime
-func (b ComptimeBuilder) SliceValue() []int {
+func (b ComptimeBuilder) SliceValue(ctx comptime.Context) []int {
+	_ = ctx
 	return nil
 }
 
 //rtg:comptime
-func (b ComptimeBuilder) MapValue() map[string]int {
+func (b ComptimeBuilder) MapValue(ctx comptime.Context) map[string]int {
+	_ = ctx
 	return nil
 }
 
 //rtg:comptime
-func (b ComptimeBuilder) StructValue() ComptimeStruct {
+func (b ComptimeBuilder) StructValue(ctx comptime.Context) ComptimeStruct {
+	_ = ctx
 	return ComptimeStruct{N: b.Base + 5, S: "struct"}
 }
 
 //rtg:comptime
-func (b ComptimeBuilder) ReadLocalFile() string {
-	data, ok := readFileOnce(b.Path)
+func (b ComptimeBuilder) ReadLocalFile(ctx comptime.Context) string {
+	data, ok := ctx.ReadFile(b.Path)
 	if !ok {
 		return "ERR"
 	}
@@ -70,59 +60,35 @@ func (b ComptimeBuilder) ReadLocalFile() string {
 }
 
 func main() {
-	passed := true
-
-	if comptimeBuilder.IntValue() != 23 {
-		fmt.Fprintf(os.Stderr, "FAIL int: got=%d\n", comptimeBuilder.IntValue())
-		passed = false
+	if comptimeBuilder.IntValue(comptime.Host()) != 23 {
+		panic("int")
 	}
 
-	if comptimeBuilder.StringValue() != "value:ok" {
-		fmt.Fprintf(os.Stderr, "FAIL string: got=%q\n", comptimeBuilder.StringValue())
-		passed = false
+	if comptimeBuilder.StringValue(comptime.Host()) != "value:ok" {
+		panic("string")
 	}
 
-	s := comptimeBuilder.SliceValue()
+	s := comptimeBuilder.SliceValue(comptime.Host())
 	if s != nil || len(s) != 0 {
-		fmt.Fprintf(os.Stderr, "FAIL slice: nil=%v len=%d\n", s == nil, len(s))
-		passed = false
+		panic("slice")
 	}
 
-	m := comptimeBuilder.MapValue()
+	m := comptimeBuilder.MapValue(comptime.Host())
 	if m != nil || len(m) != 0 {
-		fmt.Fprintf(os.Stderr, "FAIL map: nil=%v len=%d\n", m == nil, len(m))
-		passed = false
+		panic("map")
 	}
 
-	st := comptimeBuilder.StructValue()
+	st := comptimeBuilder.StructValue(comptime.Host())
 	if st.N != 12 || st.S != "struct" {
-		fmt.Fprintf(os.Stderr, "FAIL struct: N=%d S=%q\n", st.N, st.S)
-		passed = false
+		panic("struct")
 	}
 
 	comptimeBuilder.Path = "tests/comptime_fixture_missing.txt"
-	fileText := comptimeBuilder.ReadLocalFile()
+	fileText := comptimeBuilder.ReadLocalFile(comptime.Host())
 	expected := "compile-time fixture data\n"
 	altExpected := "compile-time fixture data\r\n"
-	allowErr := false
-	allowEmpty := false
-	if runtime.GOOS == "wasi" || runtime.GOOS == "dos" {
-		// WASI/DOS compile-time file I/O currently resolves this path as missing.
-		expected = "ERR"
-		altExpected = "ERR"
-	} else if runtime.GOOS == "windows" {
-		// Windows selfhost stages may fall back to runtime evaluation here,
-		// and older wrappers may currently produce an empty string in VM mode.
-		allowErr = true
-		allowEmpty = true
-	}
-	if fileText != expected && fileText != altExpected && (!allowErr || fileText != "ERR") && (!allowEmpty || fileText != "") {
-		fmt.Fprintf(os.Stderr, "FAIL file: goos=%s got=%q expected=%q alt=%q allowErr=%v allowEmpty=%v\n", runtime.GOOS, fileText, expected, altExpected, allowErr, allowEmpty)
-		passed = false
-	}
-
-	if !passed {
-		os.Exit(1)
+	if fileText != expected && fileText != altExpected {
+		panic("file")
 	}
 	fmt.Printf("PASS\n")
 }

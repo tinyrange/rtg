@@ -887,16 +887,17 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 	// Save rcx (type_id) on call stack since the call may clobber it
 	g.pushR(REG_RCX)
 
-	// Extract the method name part from "iface.Method"
-	dotIdx := 0
-	for dotIdx < len(methodName) {
+	// Extract method name from the last '.' so fully-qualified interface names
+	// like "main.Stringer.String" resolve to "String".
+	dotIdx := len(methodName) - 1
+	for dotIdx >= 0 {
 		if methodName[dotIdx] == '.' {
 			break
 		}
-		dotIdx++
+		dotIdx--
 	}
 	bareMethod := methodName
-	if dotIdx < len(methodName) {
+	if dotIdx >= 0 && dotIdx+1 < len(methodName) {
 		bareMethod = methodName[dotIdx+1:]
 	}
 

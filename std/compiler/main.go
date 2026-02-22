@@ -182,6 +182,7 @@ func main() {
 				} else {
 					compileTarget.PtrSize = 8
 				}
+				compileTarget.WordSize = compileTarget.PtrSize
 				compileTarget.GOOS = "c"
 				compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
 			} else if target == "ir" {
@@ -215,6 +216,7 @@ func main() {
 					compileTarget.GOOS = "dos"
 					compileTarget.GOARCH = "dos16"
 					compileTarget.PtrSize = 2
+					compileTarget.WordSize = 2
 					i = i + 2
 					continue
 				}
@@ -230,6 +232,7 @@ func main() {
 				} else {
 					compileTarget.PtrSize = 8
 				}
+				compileTarget.WordSize = compileTarget.PtrSize
 			}
 			i = i + 2
 		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
