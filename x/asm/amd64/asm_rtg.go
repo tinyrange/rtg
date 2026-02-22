@@ -30,11 +30,28 @@ func (a *Assembler) Load(dst reg, src int) {
 }
 
 func (a *Assembler) Add(dst reg, src reg) {
-	asmAdd(regCode(dst), regCode(src))
+	d := regCode(dst)
+	s := regCode(src)
+	asmEmit(3, rexW(s, d), 0x01, 0xc0|((s&7)<<3)|(d&7), 0, 0, 0, 0, 0)
 }
 
 func (a *Assembler) Mul(dst reg, imm int) {
-	asmMul(regCode(dst), imm)
+	if imm < -2147483648 || imm > 2147483647 {
+		panic("amd64.Assembler.Mul immediate must fit int32")
+	}
+	d := regCode(dst)
+	v := uint32(int32(imm))
+	asmEmit(
+		7,
+		rexW(d, d),
+		0x69,
+		0xc0|((d&7)<<3)|(d&7),
+		int(v),
+		int(v>>8),
+		int(v>>16),
+		int(v>>24),
+		0,
+	)
 }
 
 func (a *Assembler) Push(src reg) {
@@ -86,17 +103,25 @@ func __rtg_asm_take_fixups() []byte {
 	return asmTakeFixups()
 }
 
+func rexW(r int, b int) int {
+	rex := 0x48
+	if (r & 8) != 0 {
+		rex |= 0x04
+	}
+	if (b & 8) != 0 {
+		rex |= 0x01
+	}
+	return rex
+}
+
 //rtg:internal AsmAmd64Begin
 func asmBegin(name string, params int, rets int)
 
 //rtg:internal AsmAmd64Load
 func asmLoad(dst int, src int)
 
-//rtg:internal AsmAmd64Add
-func asmAdd(dst int, src int)
-
-//rtg:internal AsmAmd64Mul
-func asmMul(dst int, imm int)
+//rtg:internal AsmAmd64Emit
+func asmEmit(n int, b0 int, b1 int, b2 int, b3 int, b4 int, b5 int, b6 int, b7 int)
 
 //rtg:internal AsmAmd64Push
 func asmPush(src int)
