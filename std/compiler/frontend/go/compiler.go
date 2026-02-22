@@ -94,6 +94,8 @@ type Compiler struct {
 	comptimeSeq          int
 	comptimeDisabled     bool
 	inComptimeFunc       bool
+	inIfInit             bool
+	ifInitLeakedNames    map[string]bool
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -993,6 +995,7 @@ func (c *Compiler) evalConstString(node *Node) string {
 }
 
 func (c *Compiler) compilePackage(pkg *Package) {
+	c.checkTopLevelRedeclarations(pkg)
 	// Build interface and method tables for this package
 	c.buildInterfaceTable(pkg)
 	// Pre-pass: collect function return types so they're available during compilation
@@ -1003,6 +1006,64 @@ func (c *Compiler) compilePackage(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
 			c.compileTopDecl(node)
+		}
+	}
+}
+
+func appendTopDeclNames(node *Node, out []string) []string {
+	if node == nil {
+		return out
+	}
+	switch node.Kind {
+	case NDirective:
+		if node.X != nil {
+			return appendTopDeclNames(node.X, out)
+		}
+	case NBlock:
+		for _, child := range node.Nodes {
+			out = appendTopDeclNames(child, out)
+		}
+	case NFunc:
+		// Methods have their own receiver namespace and are not package-level decls.
+		if node.X != nil {
+			break
+		}
+		if node.Name != "" {
+			out = append(out, node.Name)
+		}
+	case NTypeDecl:
+		if node.Name != "" {
+			out = append(out, node.Name)
+		}
+	case NVarDecl, NConstDecl:
+		if len(node.Nodes) > 0 {
+			for _, child := range node.Nodes {
+				if child != nil && child.Name != "" {
+					out = append(out, child.Name)
+				}
+			}
+		} else if node.Name != "" {
+			out = append(out, node.Name)
+		}
+	}
+	return out
+}
+
+func (c *Compiler) checkTopLevelRedeclarations(pkg *Package) {
+	seen := make(map[string]bool)
+	for _, file := range pkg.Files {
+		for _, node := range file.Nodes {
+			names := appendTopDeclNames(node, nil)
+			for _, name := range names {
+				if name == "_" {
+					continue
+				}
+				if seen[name] {
+					c.errorf("%s: %s redeclared in this package", pkg.Path, name)
+					continue
+				}
+				seen[name] = true
+			}
 		}
 	}
 }
@@ -1479,6 +1540,8 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.inIfInit = false
+	c.ifInitLeakedNames = make(map[string]bool)
 	c.pushScope()
 
 	// Extract return type names for interface boxing
@@ -1778,6 +1841,12 @@ func (c *Compiler) addLocal(name string) int {
 	if len(c.scopes) > 0 {
 		c.scopes[len(c.scopes)-1][name] = idx
 	}
+	if c.inIfInit {
+		if c.ifInitLeakedNames == nil {
+			c.ifInitLeakedNames = make(map[string]bool)
+		}
+		c.ifInitLeakedNames[name] = true
+	}
 	return idx
 }
 
@@ -2060,6 +2129,13 @@ func (c *Compiler) setLocalMapMetadataFromQualified(name string, qtype string) {
 }
 
 func (c *Compiler) compileVarDecl(node *Node) {
+	if len(c.scopes) > 0 {
+		scope := c.scopes[len(c.scopes)-1]
+		if _, exists := scope[node.Name]; exists {
+			c.errorf("%s: %s redeclared in this block", c.curFunc.Name, node.Name)
+			return
+		}
+	}
 	if node.Type != nil && node.Type.Kind == NIdent {
 		tname := node.Type.Name
 		if !isBuiltinTypeName(tname) {
@@ -2258,6 +2334,17 @@ func (c *Compiler) compileAssign(node *Node) {
 	}
 
 	if node.Name == ":=" {
+		if !c.inIfInit && len(c.scopes) > 0 {
+			scope := c.scopes[len(c.scopes)-1]
+			if idx, exists := scope[node.X.Name]; exists {
+				isCommaOkForm := node.Y != nil && ((node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X)) || node.Y.Kind == NTypeAssertExpr)
+				isParam := idx >= 0 && idx < c.curFunc.Params
+				if !isParam && !isCommaOkForm && (c.ifInitLeakedNames == nil || !c.ifInitLeakedNames[node.X.Name]) {
+					c.errorf("%s: no new variables on left side of :=", c.curFunc.Name)
+					return
+				}
+			}
+		}
 		if node.Y != nil && c.exprReturnCount(node.Y) != 1 {
 			c.errorf("%s: assignment count mismatch: 1 variable but %d values", c.curFunc.Name, c.exprReturnCount(node.Y))
 			return
@@ -2526,6 +2613,8 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	savedMethodRecv := c.localMethodRecv
 	savedLocalFuncCaptures := c.localFuncCaptures
 	savedActiveCaptures := c.activeCaptures
+	savedInIfInit := c.inIfInit
+	savedIfInitLeakedNames := c.ifInitLeakedNames
 
 	c.activeCaptures = activeCaptures
 	c.compileFunc(fn)
@@ -2556,6 +2645,8 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	c.localMethodRecv = savedMethodRecv
 	c.localFuncCaptures = savedLocalFuncCaptures
 	c.activeCaptures = savedActiveCaptures
+	c.inIfInit = savedInIfInit
+	c.ifInitLeakedNames = savedIfInitLeakedNames
 	target := c.curPkg.QualName(name)
 	c.funcLiteralCaptures[target] = captures
 	return target
@@ -3155,7 +3246,10 @@ func (c *Compiler) compileIf(node *Node) {
 
 	// Compile init statement if present (e.g. if x, ok := m[k]; ok { ... })
 	if len(node.Nodes) > 0 {
+		savedInIfInit := c.inIfInit
+		c.inIfInit = true
 		c.compileStmt(node.Nodes[0])
+		c.inIfInit = savedInIfInit
 	}
 
 	c.compileCondJump(node.X, false, elseLabel)
@@ -5409,6 +5503,8 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedLocalFuncCaptures := c.localFuncCaptures
 	savedActiveCaptures := c.activeCaptures
 	savedComptimeDisabled := c.comptimeDisabled
+	savedInIfInit := c.inIfInit
+	savedIfInitLeakedNames := c.ifInitLeakedNames
 
 	c.curFunc = f
 	c.scopes = nil
@@ -5437,6 +5533,8 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
 	c.activeCaptures = nil
 	c.comptimeDisabled = true
+	c.inIfInit = false
+	c.ifInitLeakedNames = make(map[string]bool)
 	c.pushScope()
 	c.compileExpr(call)
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: retCount})
@@ -5468,6 +5566,8 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localFuncCaptures = savedLocalFuncCaptures
 	c.activeCaptures = savedActiveCaptures
 	c.comptimeDisabled = savedComptimeDisabled
+	c.inIfInit = savedInIfInit
+	c.ifInitLeakedNames = savedIfInitLeakedNames
 
 	if len(c.errors) > prevErrs {
 		return "", nil, fmt.Errorf("wrapper compilation produced errors")
