@@ -73,30 +73,30 @@ func main() {
 	passed := true
 
 	if comptimeBuilder.IntValue() != 23 {
-		fmt.Printf("FAIL int: got=%d\n", comptimeBuilder.IntValue())
+		fmt.Fprintf(os.Stderr, "FAIL int: got=%d\n", comptimeBuilder.IntValue())
 		passed = false
 	}
 
 	if comptimeBuilder.StringValue() != "value:ok" {
-		fmt.Printf("FAIL string: got=%q\n", comptimeBuilder.StringValue())
+		fmt.Fprintf(os.Stderr, "FAIL string: got=%q\n", comptimeBuilder.StringValue())
 		passed = false
 	}
 
 	s := comptimeBuilder.SliceValue()
 	if s != nil || len(s) != 0 {
-		fmt.Printf("FAIL slice: nil=%v len=%d\n", s == nil, len(s))
+		fmt.Fprintf(os.Stderr, "FAIL slice: nil=%v len=%d\n", s == nil, len(s))
 		passed = false
 	}
 
 	m := comptimeBuilder.MapValue()
 	if m != nil || len(m) != 0 {
-		fmt.Printf("FAIL map: nil=%v len=%d\n", m == nil, len(m))
+		fmt.Fprintf(os.Stderr, "FAIL map: nil=%v len=%d\n", m == nil, len(m))
 		passed = false
 	}
 
 	st := comptimeBuilder.StructValue()
 	if st.N != 12 || st.S != "struct" {
-		fmt.Printf("FAIL struct: N=%d S=%q\n", st.N, st.S)
+		fmt.Fprintf(os.Stderr, "FAIL struct: N=%d S=%q\n", st.N, st.S)
 		passed = false
 	}
 
@@ -114,7 +114,7 @@ func main() {
 		allowErr = true
 	}
 	if fileText != expected && fileText != altExpected && (!allowErr || fileText != "ERR") {
-		fmt.Printf("FAIL file: goos=%s got=%q expected=%q alt=%q allowErr=%v\n", runtime.GOOS, fileText, expected, altExpected, allowErr)
+		fmt.Fprintf(os.Stderr, "FAIL file: goos=%s got=%q expected=%q alt=%q allowErr=%v\n", runtime.GOOS, fileText, expected, altExpected, allowErr)
 		passed = false
 	}
 
