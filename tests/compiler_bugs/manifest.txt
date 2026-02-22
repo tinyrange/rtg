@@ -1,6 +1,6 @@
 # file|mode|expect
 tests/compiler_bugs/01_1_1_goto_is_silently_ignored_no_jump.go|compile_run|exit=2
-tests/compiler_bugs/02_1_2_fallthrough_does_nothing.go|compile_run|exit=0
+tests/compiler_bugs/02_1_2_fallthrough_does_nothing.go|compile_run|exit=2
 tests/compiler_bugs/03_1_3_break_inside_switch_does_not_break.go|compile_run|exit=2
 tests/compiler_bugs/04_1_4_break_label_ignored_acts_like_unlabeled_break.go|compile_run|exit=1
 tests/compiler_bugs/05_1_5_continue_label_ignored.go|compile_run|exit=1
