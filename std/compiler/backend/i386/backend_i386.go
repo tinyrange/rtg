@@ -21,6 +21,23 @@ func (g *CodeGen) initOperandCache_i386() {
 
 // compileFunc_i386 generates i386 code for a single IR function.
 func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
+	if f.Native != nil {
+		if f.Native.Arch != "386" {
+			panic("ICE: i386 backend received native function for arch " + f.Native.Arch)
+		}
+		funcStart := g.funcOffsets[f.Name]
+		g.code = append(g.code, f.Native.Code...)
+		for _, fx := range f.Native.Fixups {
+			if fx.Kind != ir.NativeFixupCallRel32 {
+				continue
+			}
+			g.callFixups = append(g.callFixups, CallFixup{
+				CodeOffset: funcStart + fx.Off,
+				Target:     fx.Target,
+			})
+		}
+		return
+	}
 	g.curFunc = f
 	g.initOperandCache_i386()
 	g.curFrameSize = len(f.Locals)
