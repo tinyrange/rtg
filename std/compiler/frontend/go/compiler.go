@@ -3865,7 +3865,7 @@ func (c *Compiler) compileExpr(node *Node) {
 	case NIntLit:
 		c.compileIntLit(node)
 	case NStringLit:
-		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: node.Name})
+		c.compileStringLit(node)
 	case NRuneLit:
 		c.compileRuneLit(node)
 	case NBasicLit:
@@ -3901,12 +3901,29 @@ func (c *Compiler) compileExpr(node *Node) {
 }
 
 func (c *Compiler) compileIntLit(node *Node) {
-	val := parseIntLiteral(node.Name)
+	val, ok := parseIntLiteralChecked(node.Name)
+	if !ok {
+		c.errorf("%s: invalid integer literal %q", c.curFunc.Name, node.Name)
+		val = 0
+	}
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 }
 
+func (c *Compiler) compileStringLit(node *Node) {
+	if !isValidStringLiteralContents(node.Name) {
+		c.errorf("%s: invalid string escape in literal", c.curFunc.Name)
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: ""})
+		return
+	}
+	c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: node.Name})
+}
+
 func (c *Compiler) compileRuneLit(node *Node) {
-	val := parseRuneLiteral(node.Name)
+	val, ok := parseRuneLiteralChecked(node.Name)
+	if !ok {
+		c.errorf("%s: invalid rune literal %q", c.curFunc.Name, node.Name)
+		val = 0
+	}
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(val)})
 }
 
@@ -6723,6 +6740,74 @@ func parseIntLiteral(s string) int64 {
 	return result
 }
 
+func parseIntLiteralChecked(s string) (int64, bool) {
+	if !isValidIntLiteral(s) {
+		return 0, false
+	}
+	return parseIntLiteral(s), true
+}
+
+func isValidIntLiteral(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		return validDigitsWithUnderscore(s[2:len(s)], 16)
+	}
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B') {
+		return validDigitsWithUnderscore(s[2:len(s)], 2)
+	}
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'o' || s[1] == 'O') {
+		return validDigitsWithUnderscore(s[2:len(s)], 8)
+	}
+	// Legacy leading-0 integers are octal.
+	if len(s) > 1 && s[0] == '0' && s[1] >= '0' && s[1] <= '9' {
+		return validDigitsWithUnderscore(s[1:len(s)], 8)
+	}
+	return validDigitsWithUnderscore(s, 10)
+}
+
+func validDigitsWithUnderscore(s string, base int) bool {
+	if len(s) == 0 {
+		return false
+	}
+	prevUnderscore := false
+	digits := 0
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == '_' {
+			if prevUnderscore || digits == 0 {
+				return false
+			}
+			prevUnderscore = true
+			i++
+			continue
+		}
+		d := hexDigitValue(ch)
+		if d < 0 || d >= base {
+			return false
+		}
+		prevUnderscore = false
+		digits++
+		i++
+	}
+	return digits > 0 && !prevUnderscore
+}
+
+func hexDigitValue(ch byte) int {
+	if ch >= '0' && ch <= '9' {
+		return int(ch - '0')
+	}
+	if ch >= 'a' && ch <= 'f' {
+		return int(ch-'a') + 10
+	}
+	if ch >= 'A' && ch <= 'F' {
+		return int(ch-'A') + 10
+	}
+	return -1
+}
+
 func parseBaseLiteral(s string, base int64) int64 {
 	var result int64
 	i := 0
@@ -6767,44 +6852,91 @@ func parseHexLiteral(s string) int64 {
 	return result
 }
 
-func parseRuneLiteral(s string) int {
+func parseRuneLiteralChecked(s string) (int, bool) {
 	if len(s) == 0 {
-		return 0
+		return 0, false
 	}
-	if s[0] == '\\' && len(s) >= 2 {
-		switch s[1] {
-		case 'n':
-			return 10
-		case 't':
-			return 9
-		case 'r':
-			return 13
-		case '\\':
-			return 92
-		case '\'':
-			return 39
-		case '"':
-			return 34
-		case '0':
-			return 0
+	if s[0] == '\\' {
+		if len(s) == 2 {
+			switch s[1] {
+			case 'n':
+				return 10, true
+			case 't':
+				return 9, true
+			case 'r':
+				return 13, true
+			case '\\':
+				return 92, true
+			case '\'':
+				return 39, true
+			case '"':
+				return 34, true
+			case '0':
+				return 0, true
+			}
+			return 0, false
 		}
-		return int(s[1])
+		if len(s) == 4 && s[1] == 'x' {
+			hi := hexDigitValue(s[2])
+			lo := hexDigitValue(s[3])
+			if hi >= 0 && lo >= 0 {
+				return hi<<4 | lo, true
+			}
+		}
+		return 0, false
 	}
-	// Decode UTF-8 leading rune.
 	b0 := s[0]
 	if b0 < 0x80 {
-		return int(b0)
+		if len(s) != 1 {
+			return 0, false
+		}
+		return int(b0), true
 	}
-	if (b0&0xE0) == 0xC0 && len(s) >= 2 {
-		return int(b0&0x1F)<<6 | int(s[1]&0x3F)
+	if (b0&0xE0) == 0xC0 && len(s) == 2 {
+		return int(b0&0x1F)<<6 | int(s[1]&0x3F), true
 	}
-	if (b0&0xF0) == 0xE0 && len(s) >= 3 {
-		return int(b0&0x0F)<<12 | int(s[1]&0x3F)<<6 | int(s[2]&0x3F)
+	if (b0&0xF0) == 0xE0 && len(s) == 3 {
+		return int(b0&0x0F)<<12 | int(s[1]&0x3F)<<6 | int(s[2]&0x3F), true
 	}
-	if (b0&0xF8) == 0xF0 && len(s) >= 4 {
-		return int(b0&0x07)<<18 | int(s[1]&0x3F)<<12 | int(s[2]&0x3F)<<6 | int(s[3]&0x3F)
+	if (b0&0xF8) == 0xF0 && len(s) == 4 {
+		return int(b0&0x07)<<18 | int(s[1]&0x3F)<<12 | int(s[2]&0x3F)<<6 | int(s[3]&0x3F), true
 	}
-	return int(b0)
+	return 0, false
+}
+
+func parseRuneLiteral(s string) int {
+	val, _ := parseRuneLiteralChecked(s)
+	return val
+}
+
+func isValidStringLiteralContents(s string) bool {
+	i := 0
+	for i < len(s) {
+		if s[i] != '\\' {
+			i++
+			continue
+		}
+		if i+1 >= len(s) {
+			return false
+		}
+		switch s[i+1] {
+		case 'n', 't', 'r', '\\', '"', '\'', '0':
+			i += 2
+		case 'x':
+			if i+3 >= len(s) {
+				return false
+			}
+			hi := hexDigitValue(s[i+2])
+			lo := hexDigitValue(s[i+3])
+			if hi < 0 || lo < 0 {
+				return false
+			}
+			i += 4
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // encodeStringLiteral converts raw bytes to an escaped string literal format

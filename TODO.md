@@ -40,11 +40,11 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [ ] Reject invalid `range` targets (e.g. integer).
 
 ## Lexer/parser validation
-- [ ] Enforce numeric underscore placement rules.
-- [ ] Reject invalid base literals and digits.
-- [ ] Reject invalid octal forms like `09`.
-- [ ] Enforce rune literal validity (single rune only).
-- [ ] Enforce string escape validation.
+- [x] Enforce numeric underscore placement rules.
+- [x] Reject invalid base literals and digits.
+- [x] Reject invalid octal forms like `09`.
+- [x] Enforce rune literal validity (single rune only).
+- [x] Enforce string escape validation.
 
 ## Constant evaluation
 - [ ] Reject constant division by zero.
