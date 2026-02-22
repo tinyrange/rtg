@@ -164,6 +164,12 @@ jobs:
 
           fail=0
           while IFS= read -r test_path; do
+            case "$test_path" in
+              *_amd64.go)
+                echo "SKIP_ARCH: $test_path"
+                continue
+                ;;
+            esac
             name="$(basename "${test_path%.go}")"
             com_path="$out_dir/${name}.com"
             out_path="$out_dir/${name}.out.txt"
