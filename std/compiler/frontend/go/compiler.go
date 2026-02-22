@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 	"j5.nz/rtg/std/compiler/stdlib"
@@ -42,6 +43,8 @@ type Compiler struct {
 	funcVariadic        map[string]int      // variadic function name → count of fixed params
 	funcVariadicIface   map[string]bool     // variadic function name → true if ...interface{}
 	funcVariadicElem    map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
+	comptimeFuncs       map[string]bool     // function/method name → true if marked //rtg:comptime
+	funcRetTypeNodes    map[string]*Node    // function name → first return type node (for comptime literal synthesis)
 	localElemSizes      map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
 	globalElemSizes     map[string]int      // qualified global name → slice element size
 	ifaceMethods        map[string][]string // interface name → method names
@@ -77,6 +80,8 @@ type Compiler struct {
 	activeCaptures      map[string]closureCaptureBinding
 	dotJoinCache        map[string]map[string]string // a → b → "a.b"
 	qualifyTypeCache    map[string]string            // "typeName\x00pkgPath" → qualified result
+	comptimeSeq         int
+	comptimeDisabled    bool
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -108,6 +113,8 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		funcVariadic:        make(map[string]int),
 		funcVariadicIface:   make(map[string]bool),
 		funcVariadicElem:    make(map[string]int),
+		comptimeFuncs:       make(map[string]bool),
+		funcRetTypeNodes:    make(map[string]*Node),
 		globalElemSizes:     make(map[string]int),
 		ifaceMethods:        make(map[string][]string),
 		ifaceMethodRets:     make(map[string]int),
@@ -916,7 +923,7 @@ func (c *Compiler) compilePackage(pkg *Package) {
 func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
-			fn, _ := unwrapDirectiveNode(node)
+			fn, directives := unwrapDirectiveNode(node)
 			if fn == nil {
 				continue
 			}
@@ -945,6 +952,24 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 			c.funcRetTypes[qname] = retTypeNames
 			c.funcRets[qname] = len(retTypeNames)
+			var firstRet *Node
+			if fn.Type != nil {
+				if fn.Type.Kind == NFuncType && len(fn.Type.Nodes) > 0 {
+					if fn.Type.Nodes[0].Type != nil {
+						firstRet = fn.Type.Nodes[0].Type
+					} else {
+						firstRet = fn.Type.Nodes[0]
+					}
+				} else {
+					firstRet = fn.Type
+				}
+			}
+			c.funcRetTypeNodes[qname] = firstRet
+			for _, d := range directives {
+				if isComptimeDirective(d) {
+					c.comptimeFuncs[qname] = true
+				}
+			}
 
 			// Pre-register variadic info and param count
 			paramCount := len(fn.Nodes)
@@ -4524,6 +4549,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				}
 			}
 			if ok {
+				if c.tryCompileComptimeCall(node, resolvedName) {
+					return
+				}
 				// Check if this method is variadic
 				fixedCount, isVariadic := c.funcVariadic[resolvedName]
 				isSpread := node.Name == "spread"
@@ -4572,6 +4600,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				if fieldType != "" {
 					resolvedName, ok := c.resolveMethodByConcreteType(fieldType, methodName)
 					if ok {
+						if c.tryCompileComptimeCall(node, resolvedName) {
+							return
+						}
 						// Push receiver (the field access) first, then args
 						c.emitCallWithReceiver(node.X.X, node.Nodes, resolvedName)
 						return
@@ -4584,6 +4615,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	// Determine the function to call
 	callName := c.resolveCallName(node.X)
 	if c.emitRuntimeMemBuiltinCall(callName, node.Nodes) {
+		return
+	}
+	if c.tryCompileComptimeCall(node, callName) {
 		return
 	}
 
@@ -4647,6 +4681,417 @@ func (c *Compiler) compileCallExpr(node *Node) {
 
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: argCount})
 	}
+}
+
+func (c *Compiler) tryCompileComptimeCall(node *Node, callName string) bool {
+	if node == nil || callName == "" || c.comptimeDisabled {
+		return false
+	}
+	if !c.comptimeFuncs[callName] {
+		return false
+	}
+	retCount, ok := c.funcRets[callName]
+	if !ok || retCount != 1 {
+		c.errorf("%s: comptime call %s must return exactly one value", c.curFunc.Name, callName)
+		return false
+	}
+	retType := c.funcRetTypeNodes[callName]
+	if retType == nil {
+		c.errorf("%s: comptime call %s has unknown return type", c.curFunc.Name, callName)
+		return false
+	}
+	if c.exprUsesLocalIdentifier(node) {
+		c.errorf("%s: comptime call %s may only use compile-time constants and globals", c.curFunc.Name, callName)
+		return false
+	}
+
+	wrapName, wrapFunc, err := c.buildComptimeWrapper(node, retCount)
+	if err != nil {
+		c.errorf("%s: comptime wrapper build failed for %s: %v", c.curFunc.Name, callName, err)
+		return false
+	}
+
+	c.irmod.Funcs = append(c.irmod.Funcs, wrapFunc)
+	eval, err := vm.NewEvalState(c.target, c.irmod)
+	c.irmod.Funcs = c.irmod.Funcs[0 : len(c.irmod.Funcs)-1]
+	if err != nil {
+		c.errorf("%s: comptime init failed for %s: %v", c.curFunc.Name, callName, err)
+		return false
+	}
+	rets, err := vm.EvalCall(eval, wrapName, nil, retCount)
+	if err != nil {
+		c.errorf("%s: comptime execution failed for %s: %v", c.curFunc.Name, callName, err)
+		return false
+	}
+	if len(rets) != 1 {
+		c.errorf("%s: comptime execution failed for %s: expected 1 return, got %d", c.curFunc.Name, callName, len(rets))
+		return false
+	}
+
+	lit, err := c.decodeComptimeValue(rets[0], retType, eval, 0)
+	if err != nil {
+		c.errorf("%s: comptime decode failed for %s: %v", c.curFunc.Name, callName, err)
+		return false
+	}
+	c.compileExpr(lit)
+	return true
+}
+
+func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.IRFunc, error) {
+	c.comptimeSeq = c.comptimeSeq + 1
+	wrapName := fmt.Sprintf("%s.comptime$%d", c.curPkg.Path, c.comptimeSeq)
+	f := &ir.IRFunc{Name: wrapName, RetCount: retCount}
+	prevErrs := len(c.errors)
+
+	savedCurFunc := c.curFunc
+	savedScopes := c.scopes
+	savedLocalElemSizes := c.localElemSizes
+	savedLocalTypes := c.localTypes
+	savedLocalTypeDecls := c.localTypeDecls
+	savedLocalStringVars := c.localStringVars
+	savedLocalConcreteTypes := c.localConcreteTypes
+	savedLocalMapVars := c.localMapVars
+	savedLocalMapValueTypes := c.localMapValueTypes
+	savedLocalAddrOf := c.localAddrOf
+	savedDeferNames := c.deferNames
+	savedDeferArgStarts := c.deferArgStarts
+	savedDeferArgCounts := c.deferArgCounts
+	savedDeferRetCounts := c.deferRetCounts
+	savedNamedResultNames := c.namedResultNames
+	savedLabelIDs := c.labelIDs
+	savedStackDepth := c.stackDepth
+	savedLocalFuncTargets := c.localFuncTargets
+	savedLocalMethodTargets := c.localMethodTargets
+	savedLocalMethodRecv := c.localMethodRecv
+	savedLocalFuncCaptures := c.localFuncCaptures
+	savedActiveCaptures := c.activeCaptures
+	savedComptimeDisabled := c.comptimeDisabled
+
+	c.curFunc = f
+	c.scopes = nil
+	c.localElemSizes = make(map[string]int)
+	c.localTypes = make(map[string]string)
+	c.localTypeDecls = make(map[string]*Node)
+	c.localStringVars = make(map[string]bool)
+	c.localConcreteTypes = make(map[string]string)
+	c.localMapVars = make(map[string]int)
+	c.localMapValueTypes = make(map[string]string)
+	c.localAddrOf = make(map[string]bool)
+	c.deferNames = nil
+	c.deferArgStarts = nil
+	c.deferArgCounts = nil
+	c.deferRetCounts = nil
+	c.namedResultNames = nil
+	c.labelIDs = make(map[string]int)
+	c.stackDepth = 0
+	c.localFuncTargets = make(map[string]string)
+	c.localMethodTargets = make(map[string]string)
+	c.localMethodRecv = make(map[string]int)
+	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.activeCaptures = nil
+	c.comptimeDisabled = true
+	c.pushScope()
+	c.compileExpr(call)
+	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: retCount})
+	c.popScope()
+
+	c.curFunc = savedCurFunc
+	c.scopes = savedScopes
+	c.localElemSizes = savedLocalElemSizes
+	c.localTypes = savedLocalTypes
+	c.localTypeDecls = savedLocalTypeDecls
+	c.localStringVars = savedLocalStringVars
+	c.localConcreteTypes = savedLocalConcreteTypes
+	c.localMapVars = savedLocalMapVars
+	c.localMapValueTypes = savedLocalMapValueTypes
+	c.localAddrOf = savedLocalAddrOf
+	c.deferNames = savedDeferNames
+	c.deferArgStarts = savedDeferArgStarts
+	c.deferArgCounts = savedDeferArgCounts
+	c.deferRetCounts = savedDeferRetCounts
+	c.namedResultNames = savedNamedResultNames
+	c.labelIDs = savedLabelIDs
+	c.stackDepth = savedStackDepth
+	c.localFuncTargets = savedLocalFuncTargets
+	c.localMethodTargets = savedLocalMethodTargets
+	c.localMethodRecv = savedLocalMethodRecv
+	c.localFuncCaptures = savedLocalFuncCaptures
+	c.activeCaptures = savedActiveCaptures
+	c.comptimeDisabled = savedComptimeDisabled
+
+	if len(c.errors) > prevErrs {
+		return "", nil, fmt.Errorf("wrapper compilation produced errors")
+	}
+	return wrapName, f, nil
+}
+
+func (c *Compiler) exprUsesLocalIdentifier(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == NIdent {
+		_, isLocal := c.lookupLocal(node.Name)
+		if isLocal {
+			return true
+		}
+	}
+	if c.exprUsesLocalIdentifier(node.X) {
+		return true
+	}
+	if c.exprUsesLocalIdentifier(node.Y) {
+		return true
+	}
+	if c.exprUsesLocalIdentifier(node.Body) {
+		return true
+	}
+	if c.exprUsesLocalIdentifier(node.Type) {
+		return true
+	}
+	for _, child := range node.Nodes {
+		if c.exprUsesLocalIdentifier(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneTypeNode(node *Node) *Node {
+	if node == nil {
+		return nil
+	}
+	out := &Node{
+		Kind: node.Kind,
+		Pos:  node.Pos,
+		Name: node.Name,
+	}
+	out.X = cloneTypeNode(node.X)
+	out.Y = cloneTypeNode(node.Y)
+	out.Body = cloneTypeNode(node.Body)
+	out.Type = cloneTypeNode(node.Type)
+	if len(node.Nodes) > 0 {
+		out.Nodes = make([]*Node, len(node.Nodes))
+		i := 0
+		for i < len(node.Nodes) {
+			out.Nodes[i] = cloneTypeNode(node.Nodes[i])
+			i = i + 1
+		}
+	}
+	return out
+}
+
+func (c *Compiler) resolveTypeAliasNode(typeNode *Node) *Node {
+	if typeNode == nil {
+		return nil
+	}
+	if typeNode.Kind == NIdent {
+		if decl, ok := c.lookupCurrentTypeDecl(typeNode.Name); ok && decl != nil && decl.Type != nil {
+			return decl.Type
+		}
+		return typeNode
+	}
+	if typeNode.Kind == NSelectorExpr && typeNode.X != nil && typeNode.X.Kind == NIdent {
+		pkg := c.resolvePackage(typeNode.X.Name)
+		if pkg != nil {
+			if sym, ok := pkg.Symbols[typeNode.Name]; ok && sym.Kind == SymType && sym.Node != nil && sym.Node.Type != nil {
+				return sym.Node.Type
+			}
+		}
+	}
+	return typeNode
+}
+
+func signExtendBits(raw uint64, bits int) int64 {
+	if bits <= 0 {
+		return int64(raw)
+	}
+	if bits >= 64 {
+		return int64(raw)
+	}
+	mask := (uint64(1) << uint(bits)) - 1
+	v := raw & mask
+	sign := uint64(1) << uint(bits-1)
+	if v&sign != 0 {
+		v = v | ^mask
+	}
+	return int64(v)
+}
+
+func maskBits(raw uint64, bits int) uint64 {
+	if bits <= 0 || bits >= 64 {
+		return raw
+	}
+	return raw & ((uint64(1) << uint(bits)) - 1)
+}
+
+func intNode(v int64) *Node {
+	return &Node{Kind: NIntLit, Name: fmt.Sprintf("%d", v)}
+}
+
+func (c *Compiler) decodeComptimeValue(raw uint64, typeNode *Node, eval *vm.EvalState, depth int) (*Node, error) {
+	if depth > 64 {
+		return nil, fmt.Errorf("value nesting too deep")
+	}
+	if typeNode == nil {
+		return intNode(int64(raw)), nil
+	}
+	aliasNode := c.resolveTypeAliasNode(typeNode)
+	if aliasNode == nil {
+		return intNode(int64(raw)), nil
+	}
+
+	if aliasNode.Kind == NIdent {
+		name := aliasNode.Name
+		wordBits := vm.EvalWordSize(eval) * 8
+		if name == "bool" {
+			if raw != 0 {
+				return &Node{Kind: NBasicLit, Name: "true"}, nil
+			}
+			return &Node{Kind: NBasicLit, Name: "false"}, nil
+		}
+		if name == "string" {
+			if raw == 0 {
+				return &Node{Kind: NStringLit, Name: ""}, nil
+			}
+			dataPtr := vm.EvalLoadWord(eval, raw)
+			slen := int(vm.EvalLoadWord(eval, raw+uint64(vm.EvalWordSize(eval))))
+			if slen <= 0 || dataPtr == 0 {
+				return &Node{Kind: NStringLit, Name: ""}, nil
+			}
+			data, err := vm.EvalLoadBytes(eval, dataPtr, slen)
+			if err != nil {
+				return nil, err
+			}
+			return &Node{Kind: NStringLit, Name: string(data)}, nil
+		}
+		if name == "byte" {
+			return intNode(signExtendBits(maskBits(raw, 8), 8)), nil
+		}
+		if name == "int16" {
+			return intNode(signExtendBits(raw, 16)), nil
+		}
+		if name == "int32" || name == "rune" {
+			return intNode(signExtendBits(raw, 32)), nil
+		}
+		if name == "int64" || name == "int" {
+			return intNode(signExtendBits(raw, wordBits)), nil
+		}
+		if name == "uint16" {
+			return intNode(int64(maskBits(raw, 16))), nil
+		}
+		if name == "uint32" {
+			return intNode(int64(maskBits(raw, 32))), nil
+		}
+		if name == "uint64" || name == "uint" || name == "uintptr" {
+			return intNode(int64(maskBits(raw, wordBits))), nil
+		}
+		// Named non-builtin type: decode via alias if possible.
+		if aliasNode != typeNode {
+			return c.decodeComptimeValue(raw, aliasNode, eval, depth+1)
+		}
+	}
+
+	if aliasNode.Kind == NSliceType {
+		if raw == 0 {
+			return &Node{Kind: NBasicLit, Name: "nil"}, nil
+		}
+		ws := uint64(vm.EvalWordSize(eval))
+		dataPtr := vm.EvalLoadWord(eval, raw)
+		slen := int(vm.EvalLoadWord(eval, raw+ws))
+		elemSize := int(vm.EvalLoadWord(eval, raw+3*ws))
+		var elems []*Node
+		i := 0
+		for i < slen {
+			var elemRaw uint64
+			if elemSize == 1 {
+				bs, err := vm.EvalLoadBytes(eval, dataPtr+uint64(i), 1)
+				if err != nil {
+					return nil, err
+				}
+				elemRaw = uint64(bs[0])
+			} else {
+				elemRaw = vm.EvalLoadWord(eval, dataPtr+uint64(i*elemSize))
+			}
+			ev, err := c.decodeComptimeValue(elemRaw, aliasNode.X, eval, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			elems = append(elems, ev)
+			i = i + 1
+		}
+		litType := typeNode
+		if litType == nil || litType.Kind != NSliceType {
+			litType = aliasNode
+		}
+		return &Node{Kind: NCompositeLit, Type: cloneTypeNode(litType), Nodes: elems}, nil
+	}
+
+	if aliasNode.Kind == NMapType {
+		if raw == 0 {
+			return &Node{Kind: NBasicLit, Name: "nil"}, nil
+		}
+		ws := uint64(vm.EvalWordSize(eval))
+		dataPtr := vm.EvalLoadWord(eval, raw)
+		mlen := int(vm.EvalLoadWord(eval, raw+ws))
+		entrySize := int(2 * ws)
+		var elems []*Node
+		i := 0
+		for i < mlen {
+			entryAddr := dataPtr + uint64(i*entrySize)
+			keyRaw := vm.EvalLoadWord(eval, entryAddr)
+			valRaw := vm.EvalLoadWord(eval, entryAddr+ws)
+			keyNode, err := c.decodeComptimeValue(keyRaw, aliasNode.X, eval, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			valNode, err := c.decodeComptimeValue(valRaw, aliasNode.Y, eval, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			elems = append(elems, &Node{Kind: NKeyValue, X: keyNode, Y: valNode})
+			i = i + 1
+		}
+		litType := typeNode
+		if litType == nil || litType.Kind != NMapType {
+			litType = aliasNode
+		}
+		return &Node{Kind: NCompositeLit, Type: cloneTypeNode(litType), Nodes: elems}, nil
+	}
+
+	structType := aliasNode
+	litType := typeNode
+	if aliasNode.Kind == NStructType {
+		// keep litType as declared type node so codegen emits named composite constructors.
+		if typeNode.Kind != NIdent && typeNode.Kind != NSelectorExpr {
+			litType = aliasNode
+		}
+	}
+	if structType.Kind == NStructType {
+		ws := uint64(vm.EvalWordSize(eval))
+		var fields []*Node
+		slot := 0
+		for _, field := range structType.Nodes {
+			if field == nil || field.Kind != NField {
+				continue
+			}
+			var fieldRaw uint64
+			if raw != 0 {
+				fieldRaw = vm.EvalLoadWord(eval, raw+uint64(slot)*ws)
+			}
+			fv, err := c.decodeComptimeValue(fieldRaw, field.Type, eval, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			fields = append(fields, fv)
+			slot = slot + 1
+		}
+		return &Node{Kind: NCompositeLit, Type: cloneTypeNode(litType), Nodes: fields}, nil
+	}
+
+	if aliasNode.Kind == NPointerType {
+		return intNode(int64(raw)), nil
+	}
+
+	return intNode(int64(raw)), nil
 }
 
 // qualifyTypeName qualifies a type name with a package path if not already qualified.
