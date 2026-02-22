@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 )
 
@@ -61,48 +60,39 @@ func main() {
 	passed := true
 
 	if comptimeBuilder.IntValue() != 23 {
-		fmt.Printf("FAIL: comptime int\n")
 		passed = false
 	}
 
 	if comptimeBuilder.StringValue() != "value:ok" {
-		fmt.Printf("FAIL: comptime string\n")
 		passed = false
 	}
 
 	s := comptimeBuilder.SliceValue()
 	if len(s) != 3 || s[0] != 7 || s[1] != 8 || s[2] != 9 {
-		fmt.Printf("FAIL: comptime slice\n")
 		passed = false
 	}
 
 	m := comptimeBuilder.MapValue()
 	if len(m) != 2 || m["base"] != 7 || m["double"] != 14 {
-		fmt.Printf("FAIL: comptime map\n")
 		passed = false
 	}
 
 	st := comptimeBuilder.StructValue()
 	if st.N != 12 || st.S != "struct" {
-		fmt.Printf("FAIL: comptime struct\n")
 		passed = false
 	}
 
 	orig, err := os.ReadFile(comptimeBuilder.Path)
 	if err != nil {
-		fmt.Printf("FAIL: fixture read\n")
 		passed = false
 	}
 	comptimeBuilder.Path = "tests/comptime_fixture_missing.txt"
 	fileText := comptimeBuilder.ReadLocalFile()
 	if fileText != string(orig) {
-		fmt.Printf("FAIL: comptime file read\n")
 		passed = false
 	}
 
-	if passed {
-		fmt.Printf("PASS\n")
-	} else {
+	if !passed {
 		os.Exit(1)
 	}
 }
