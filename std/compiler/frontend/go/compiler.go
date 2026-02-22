@@ -2759,7 +2759,21 @@ func (c *Compiler) emitDeferredCalls() {
 func (c *Compiler) compileReturn(node *Node) {
 	count := 0
 	retTypes := c.funcRetTypes[c.curFunc.Name]
+	expectedCount := c.funcRets[c.curFunc.Name]
 	bareReturn := node.X == nil && len(node.Nodes) == 0
+	explicitCount := 0
+	if node.X != nil {
+		explicitCount += c.exprReturnCount(node.X)
+	}
+	for _, extra := range node.Nodes {
+		explicitCount += c.exprReturnCount(extra)
+	}
+	if bareReturn && len(c.namedResultNames) == 0 && expectedCount > 0 {
+		c.errorf("%s: not enough return values: got 0, want %d", c.curFunc.Name, expectedCount)
+	}
+	if !bareReturn && explicitCount != expectedCount {
+		c.errorf("%s: wrong number of return values: got %d, want %d", c.curFunc.Name, explicitCount, expectedCount)
+	}
 	if bareReturn && len(c.namedResultNames) > 0 {
 		for i, name := range c.namedResultNames {
 			idx, ok := c.lookupLocal(name)
@@ -4964,6 +4978,80 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		}
 	}
 
+	// Check for concrete/interface method call with arbitrary receiver expressions
+	// (e.g. os.Stderr.Write(...), ptr.Field.Method(...)).
+	if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil {
+		recvExpr := node.X.X
+		methodName := node.X.Name
+
+		// Skip package-qualified function calls (pkg.Func(...)).
+		if !(recvExpr.Kind == NIdent && c.resolvePackage(recvExpr.Name) != nil) {
+			recvType := c.resolveExprType(recvExpr)
+			if recvType != "" {
+				if _, hasMethod := c.ifaceMethodReturnCount(recvType, methodName); hasMethod {
+					c.compileExpr(recvExpr)
+					for _, arg := range node.Nodes {
+						c.compileExpr(arg)
+					}
+					c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: c.dotJoin(recvType, methodName), Arg: len(node.Nodes)})
+					return
+				}
+
+				resolvedName, ok := c.resolveMethodByConcreteType(recvType, methodName)
+				if !ok {
+					if pm, found := c.findPromotedMethod(recvType, methodName); found {
+						if !c.isComptimeCallAllowed(pm.Target) {
+							return
+						}
+						c.compileExpr(recvExpr)
+						i := 0
+						for i < len(pm.Offsets) {
+							c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: pm.Offsets[i]})
+							c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
+							i++
+						}
+						for _, arg := range node.Nodes {
+							c.compileExpr(arg)
+						}
+						c.emit(ir.Inst{Op: ir.OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
+						return
+					}
+				}
+				if ok {
+					if !c.isComptimeCallAllowed(resolvedName) {
+						return
+					}
+					if c.tryCompileComptimeCall(node, resolvedName) {
+						return
+					}
+					fixedCount, isVariadic := c.funcVariadic[resolvedName]
+					isSpread := node.Name == "spread"
+					if isVariadic && !isSpread {
+						c.compileExpr(recvExpr)
+						i := 0
+						for i < fixedCount-1 && i < len(node.Nodes) {
+							c.compileExpr(node.Nodes[i])
+							i++
+						}
+						variadicCount := len(node.Nodes) - (fixedCount - 1)
+						if variadicCount < 0 {
+							variadicCount = 0
+						}
+						mVarElemSz := c.target.PtrSize
+						if mesz, ok := c.funcVariadicElem[resolvedName]; ok {
+							mVarElemSz = mesz
+						}
+						c.packVariadicSlice(node.Nodes, fixedCount-1, variadicCount, mVarElemSz, resolvedName)
+						c.emit(ir.Inst{Op: ir.OP_CALL, Name: resolvedName, Arg: fixedCount + 1})
+					} else {
+						c.emitCallWithReceiver(recvExpr, node.Nodes, resolvedName)
+					}
+					return
+				}
+			}
+		}
+	}
+
 	// Check for chained selector method call: e.g. node.Kind.String()
 	// node.X = SelectorExpr{Name: "String", X: SelectorExpr{Name: "Kind", X: Ident{Name: "node"}}}
 	if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NSelectorExpr {
@@ -5012,6 +5100,23 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	// Check if this is a variadic function call
 	fixedCount, isVariadic := c.funcVariadic[callName]
 	isSpread := node.Name == "spread"
+	argCount := len(node.Nodes)
+	if expected, ok := c.funcParams[callName]; ok {
+		if isVariadic {
+			if isSpread {
+				if argCount != fixedCount+1 {
+					c.errorf("%s: wrong number of arguments in variadic spread call to %s: got %d, want %d", c.curFunc.Name, callName, argCount, fixedCount+1)
+					return
+				}
+			} else if argCount < fixedCount {
+				c.errorf("%s: not enough arguments in call to %s: got %d, need at least %d", c.curFunc.Name, callName, argCount, fixedCount)
+				return
+			}
+		} else if argCount != expected {
+			c.errorf("%s: wrong number of arguments in call to %s: got %d, want %d", c.curFunc.Name, callName, argCount, expected)
+			return
+		}
+	}
 
 	if isVariadic && !isSpread {
 		// Compile fixed args normally
@@ -5054,17 +5159,6 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				c.maybeBoxValueForInterface(arg)
 			}
 		}
-
-		argCount := len(node.Nodes)
-
-		// Pad missing args with nil
-		if expected, ok := c.funcParams[callName]; ok && argCount < expected {
-			for argCount < expected {
-				c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
-				argCount++
-			}
-		}
-
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: argCount})
 	}
 }
