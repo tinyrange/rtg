@@ -57,7 +57,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [ ] Enforce `:=` "at least one new variable" rule.
 
 ## Defer and function values
-- [ ] Fix deferred function-value calls/linking.
+- [x] Fix deferred function-value calls/linking.
 
 ## Driver/import diagnostics
 - [x] Ensure `-run` preserves child process exit code semantics.

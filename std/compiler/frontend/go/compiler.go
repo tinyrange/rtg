@@ -2022,6 +2022,13 @@ func (c *Compiler) compileStmt(node *Node) {
 	case NDeferStmt:
 		if node.X != nil && node.X.Kind == NCallExpr {
 			name := c.resolveCallName(node.X.X)
+			if node.X.X != nil && node.X.X.Kind == NIdent {
+				if target, ok := c.localFuncTargets[node.X.X.Name]; ok {
+					name = target
+				} else if target, ok := c.localMethodTargets[node.X.X.Name]; ok {
+					name = target
+				}
+			}
 			fixedCount, isVariadic := c.funcVariadic[name]
 			isIfaceVar := isVariadic && c.funcVariadicIface[name]
 			argStart := -1
