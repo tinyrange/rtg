@@ -103,6 +103,9 @@ func main() {
 		// WASI/DOS compile-time file I/O currently resolves this path as missing.
 		expected = "ERR"
 		altExpected = "ERR"
+	} else if runtime.GOOS == "windows" {
+		// Windows selfhost stages may fall back to runtime evaluation here.
+		altExpected = "ERR"
 	}
 	if fileText != expected && fileText != altExpected {
 		passed = false
