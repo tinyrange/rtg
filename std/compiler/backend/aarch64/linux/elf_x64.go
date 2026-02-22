@@ -1,4 +1,4 @@
-//go:build !no_backend_linux_amd64 || !no_backend_arm64
+//go:build !no_backend_arm64
 
 package linux
 
