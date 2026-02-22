@@ -304,19 +304,19 @@ func (l *Lexer) scanNumber() Token {
 	if l.peek() == '0' && (l.peekAt(1) == 'x' || l.peekAt(1) == 'X') {
 		l.advance()
 		l.advance()
-		for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_' || (l.peek() >= 'a' && l.peek() <= 'f') || (l.peek() >= 'A' && l.peek() <= 'F')) {
+		for !l.atEnd() && (isDigit(l.peek()) || isLetter(l.peek()) || l.peek() == '_') {
 			l.advance()
 		}
 	} else if l.peek() == '0' && (l.peekAt(1) == 'b' || l.peekAt(1) == 'B') {
 		l.advance()
 		l.advance()
-		for !l.atEnd() && (l.peek() == '0' || l.peek() == '1' || l.peek() == '_') {
+		for !l.atEnd() && (isDigit(l.peek()) || isLetter(l.peek()) || l.peek() == '_') {
 			l.advance()
 		}
 	} else if l.peek() == '0' && (l.peekAt(1) == 'o' || l.peekAt(1) == 'O') {
 		l.advance()
 		l.advance()
-		for !l.atEnd() && ((l.peek() >= '0' && l.peek() <= '7') || l.peek() == '_') {
+		for !l.atEnd() && (isDigit(l.peek()) || isLetter(l.peek()) || l.peek() == '_') {
 			l.advance()
 		}
 	} else {
