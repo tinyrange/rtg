@@ -14,9 +14,9 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Enforce boolean operands for `&&`/`||`.
 - [x] Enforce comparability/type compatibility in comparisons.
 - [x] Reject dereference of non-pointers.
-- [ ] Reject indexing non-indexable values.
+- [x] Reject indexing non-indexable values.
 - [ ] Validate `len`/`cap` argument types.
-- [ ] Validate `panic` arity and argument typing.
+- [x] Validate `panic` arity and argument typing.
 
 ## Identifier and scope resolution
 - [ ] Reject undefined identifiers on read/write.
