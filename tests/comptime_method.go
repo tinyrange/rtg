@@ -2,6 +2,7 @@ package main
 
 import (
 	comptime "j5.nz/rtg/x/comptime"
+	"runtime"
 )
 
 type ComptimeBuilder struct {
@@ -53,6 +54,11 @@ func (b ComptimeBuilder) ReadLocalFile() string {
 	return data
 }
 
+func writePassLine() {
+	out := []byte("PASS\n")
+	runtime.SysWrite(1, runtime.Sliceptr(out), uintptr(len(out)))
+}
+
 func main() {
 	if comptimeBuilder.IntValue() != 23 {
 		panic("int")
@@ -84,5 +90,5 @@ func main() {
 	if fileText != expected && fileText != altExpected {
 		panic("file")
 	}
-	print("PASS\n")
+	writePassLine()
 }
