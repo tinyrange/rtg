@@ -1684,7 +1684,10 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.execIntrinsic("SysUnlink", localsAddr, ws)
 	case "winGetLastError":
 		// Legacy windows intrinsic name used by older self-hosted compiler stages.
-		// This intrinsic returns a single DWORD, not syscall-style (r1,r2,errno).
+		// Return syscall-style triple for compatibility with older wrappers.
+		// Keep both r1 and errno non-zero so either consumption pattern sees an error.
+		vm.push(1)
+		vm.push(0)
 		vm.push(1)
 	case "winGetCurrentDirectory":
 		vm.execIntrinsic("SysGetcwd", localsAddr, ws)
