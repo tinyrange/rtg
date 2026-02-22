@@ -2026,7 +2026,7 @@ func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
 	c.compileLValueGet(node.X)
 	c.compileExpr(node.Y)
 	inst := ir.Inst{Op: op, Width: w}
-	if op == ir.OP_SHR && c.isUnsignedExpr(node.X) {
+	if (op == ir.OP_SHR || op == ir.OP_DIV || op == ir.OP_MOD) && c.isUnsignedExpr(node.X) {
 		inst.Name = "unsigned"
 	}
 	c.emit(inst)
@@ -4310,9 +4310,17 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "*":
 		c.emit(ir.Inst{Op: ir.OP_MUL, Width: w})
 	case "/":
-		c.emit(ir.Inst{Op: ir.OP_DIV, Width: w})
+		inst := ir.Inst{Op: ir.OP_DIV, Width: w}
+		if c.isUnsignedExpr(node.X) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case "%":
-		c.emit(ir.Inst{Op: ir.OP_MOD, Width: w})
+		inst := ir.Inst{Op: ir.OP_MOD, Width: w}
+		if c.isUnsignedExpr(node.X) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case "&":
 		c.emit(ir.Inst{Op: ir.OP_AND, Width: w})
 	case "|":

@@ -461,15 +461,25 @@ func (g *CodeGen) compileBinOp(inst ir.Inst) {
 		g.movRR(REG_RDX, REG_RAX)
 		g.movRR(REG_RAX, REG_RCX)
 		g.movRR(REG_RCX, REG_RDX)
-		g.cqo()
-		g.idivR(REG_RCX)
+		if inst.Name == "unsigned" {
+			g.xorRR(REG_RDX, REG_RDX)
+			g.divR(REG_RCX)
+		} else {
+			g.cqo()
+			g.idivR(REG_RCX)
+		}
 		g.movRR(REG_RCX, REG_RAX)
 	case ir.OP_MOD:
 		g.movRR(REG_RDX, REG_RAX)
 		g.movRR(REG_RAX, REG_RCX)
 		g.movRR(REG_RCX, REG_RDX)
-		g.cqo()
-		g.idivR(REG_RCX)
+		if inst.Name == "unsigned" {
+			g.xorRR(REG_RDX, REG_RDX)
+			g.divR(REG_RCX)
+		} else {
+			g.cqo()
+			g.idivR(REG_RCX)
+		}
 		g.movRR(REG_RCX, REG_RDX)
 	case ir.OP_AND:
 		g.andRR(REG_RCX, REG_RAX)
