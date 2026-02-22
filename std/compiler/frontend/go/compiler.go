@@ -3082,6 +3082,9 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 		}
 		return
 	}
+	if c.isDefinitelyNonBoolExpr(cond) {
+		c.errorf("%s: condition must be bool", c.curFunc.Name)
+	}
 
 	if cond.Kind == NUnaryExpr && cond.Name == "!" {
 		c.compileCondJump(cond.X, !jumpIfTrue, targetLabel)
@@ -3091,6 +3094,9 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 	if cond.Kind == NBinaryExpr {
 		switch cond.Name {
 		case "&&":
+			if c.isDefinitelyNonBoolExpr(cond.X) || c.isDefinitelyNonBoolExpr(cond.Y) {
+				c.errorf("%s: && requires boolean operands", c.curFunc.Name)
+			}
 			if jumpIfTrue {
 				skipLabel := c.newLabel()
 				c.compileCondJump(cond.X, false, skipLabel)
@@ -3102,6 +3108,9 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 			}
 			return
 		case "||":
+			if c.isDefinitelyNonBoolExpr(cond.X) || c.isDefinitelyNonBoolExpr(cond.Y) {
+				c.errorf("%s: || requires boolean operands", c.curFunc.Name)
+			}
 			if jumpIfTrue {
 				c.compileCondJump(cond.X, true, targetLabel)
 				c.compileCondJump(cond.Y, true, targetLabel)
@@ -3113,6 +3122,9 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 			}
 			return
 		case "==", "!=", "<", ">", "<=", ">=":
+			if c.boolOperandMismatch(cond.X, cond.Y) {
+				c.errorf("%s: invalid comparison between bool and non-bool", c.curFunc.Name)
+			}
 			if (cond.Name == "==" || cond.Name == "!=") && (c.isStringTypedExpr(cond.X) || c.isStringTypedExpr(cond.Y) || isStringExpr(cond.X) || isStringExpr(cond.Y)) {
 				c.emitStringEqualCall(cond.X, cond.Y)
 				if (cond.Name == "==" && jumpIfTrue) || (cond.Name == "!=" && !jumpIfTrue) {
@@ -3897,6 +3909,60 @@ func (c *Compiler) isStringTypedExpr(node *Node) bool {
 		}
 	}
 	return false
+}
+
+func (c *Compiler) isBoolTypedExpr(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case NBasicLit:
+		return node.Name == "true" || node.Name == "false"
+	case NUnaryExpr:
+		return node.Name == "!" && c.isBoolTypedExpr(node.X)
+	case NBinaryExpr:
+		switch node.Name {
+		case "&&", "||", "==", "!=", "<", ">", "<=", ">=":
+			return true
+		}
+	case NCallExpr:
+		if node.X != nil {
+			calleeName := c.resolveCallName(node.X)
+			if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
+				return retTypes[0] == "bool"
+			}
+		}
+	}
+	return c.resolveExprType(node) == "bool"
+}
+
+func (c *Compiler) isDefinitelyNonBoolExpr(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case NIntLit, NRuneLit, NStringLit:
+		return true
+	case NBasicLit:
+		return node.Name != "true" && node.Name != "false"
+	case NUnaryExpr:
+		return node.Name != "!"
+	case NBinaryExpr:
+		switch node.Name {
+		case "&&", "||", "==", "!=", "<", ">", "<=", ">=":
+			return false
+		default:
+			return true
+		}
+	}
+	t := c.resolveExprType(node)
+	return t != "" && t != "bool"
+}
+
+func (c *Compiler) boolOperandMismatch(left *Node, right *Node) bool {
+	leftBool := c.isBoolTypedExpr(left)
+	rightBool := c.isBoolTypedExpr(right)
+	return (leftBool && !rightBool) || (!leftBool && rightBool)
 }
 
 // isExprByte returns true if the expression is known to produce a single byte value.
