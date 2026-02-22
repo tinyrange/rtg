@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	comptimePkgPath         = "j5.nz/rtg/x/comptime"
-	comptimeContextTypeName = "j5.nz/rtg/x/comptime.Context"
-	comptimePkgPrefix       = "j5.nz/rtg/x/comptime."
+	comptimePkgPath   = "j5.nz/rtg/x/comptime"
+	comptimePkgPrefix = "j5.nz/rtg/x/comptime."
 )
 
 type closureCaptureSpec struct {
@@ -1041,9 +1040,7 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			c.funcParams[qname] = paramCount
 			c.funcParamTypes[qname] = paramTypeNames
 			if isComptimeFunc {
-				if c.validateComptimeSignature(qname, fn, paramTypeNames, pkg.Path) {
-					c.comptimeFuncs[qname] = true
-				}
+				c.comptimeFuncs[qname] = true
 			}
 			if isVariadic {
 				c.funcVariadic[qname] = fixedParams
@@ -1052,23 +1049,6 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 		}
 	}
-}
-
-func (c *Compiler) validateComptimeSignature(qname string, fn *Node, paramTypeNames []string, pkgPath string) bool {
-	ctxIdx := 0
-	if fn != nil && fn.X != nil {
-		ctxIdx = 1
-	}
-	if len(paramTypeNames) <= ctxIdx {
-		c.errorf("%s: //rtg:comptime function must take j5.nz/rtg/x/comptime.Context as first argument", qname)
-		return false
-	}
-	got := c.qualifyTypeName(paramTypeNames[ctxIdx], pkgPath)
-	if got != comptimeContextTypeName {
-		c.errorf("%s: //rtg:comptime function first argument must be j5.nz/rtg/x/comptime.Context (got %s)", qname, got)
-		return false
-	}
-	return true
 }
 
 func (c *Compiler) isComptimeCallAllowed(callName string) bool {
@@ -1082,24 +1062,10 @@ func (c *Compiler) isComptimeCallAllowed(callName string) bool {
 		if strings.HasPrefix(callName, comptimePkgPrefix) {
 			return true
 		}
-		c.errorf("%s: comptime functions may only access host operations via j5.nz/rtg/x/comptime.Context (disallowed call: %s)", c.curFunc.Name, callName)
+		c.errorf("%s: comptime functions may only access host operations via j5.nz/rtg/x/comptime (disallowed call: %s)", c.curFunc.Name, callName)
 		return false
 	}
 	return true
-}
-
-func (c *Compiler) isComptimeHostExpr(node *Node) bool {
-	if node == nil || node.Kind != NCallExpr || node.X == nil {
-		return false
-	}
-	if node.X.Kind != NSelectorExpr || node.X.X == nil || node.X.X.Kind != NIdent {
-		return false
-	}
-	if node.X.Name != "Host" {
-		return false
-	}
-	pkg := c.resolvePackage(node.X.X.Name)
-	return pkg != nil && pkg.Path == comptimePkgPath
 }
 
 func (c *Compiler) buildInterfaceTable(pkg *Package) {
@@ -4822,10 +4788,6 @@ func (c *Compiler) tryCompileComptimeCall(node *Node, callName string) bool {
 	retType := c.funcRetTypeNodes[callName]
 	if retType == nil {
 		c.errorf("%s: comptime call %s has unknown return type", c.curFunc.Name, callName)
-		return false
-	}
-	if len(node.Nodes) < 1 {
-		c.errorf("%s: comptime call %s must pass j5.nz/rtg/x/comptime.Context as first argument", c.curFunc.Name, callName)
 		return false
 	}
 	if c.exprUsesLocalIdentifier(node) {

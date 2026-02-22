@@ -2,14 +2,7 @@
 
 package comptime
 
-type hostContext struct{}
-
-func Host() Context {
-	return hostContext{}
-}
-
-func (h hostContext) ReadFile(path string) (string, bool) {
-	_ = h
+func ReadFile(path string) (string, bool) {
 	return hostReadFile(path)
 }
 
