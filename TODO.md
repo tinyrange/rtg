@@ -54,7 +54,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Reject global variable redeclaration.
 - [x] Reject function redeclaration.
 - [x] Reject local redeclaration in same scope.
-- [ ] Enforce `:=` "at least one new variable" rule.
+- [x] Enforce `:=` "at least one new variable" rule.
 
 ## Defer and function values
 - [x] Fix deferred function-value calls/linking.
