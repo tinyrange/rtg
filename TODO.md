@@ -19,8 +19,8 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Validate `panic` arity and argument typing.
 
 ## Identifier and scope resolution
-- [ ] Reject undefined identifiers on read/write.
-- [ ] Reject undefined type names.
+- [x] Reject undefined identifiers on read/write.
+- [x] Reject undefined type names.
 - [ ] Fix `if init` variable scope leakage.
 
 ## Assignment/call/return arity validation
