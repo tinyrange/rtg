@@ -3,6 +3,7 @@ package emu8086
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math/bits"
 	"os"
 	"strings"
@@ -59,6 +60,10 @@ type cpu struct {
 	segOverride    uint16
 
 	dosMode bool
+
+	files          map[uint16]*os.File
+	nextFileHandle uint16
+	faultErr       error
 }
 
 type Options struct {
@@ -87,7 +92,11 @@ func RunCOM(bin []byte, args []string, opts Options) (Result, error) {
 		maxSteps: opts.MaxSteps,
 		dbgWrite: opts.DbgWrite,
 		dosMode:  true,
+		files:    make(map[uint16]*os.File),
+		// 0,1,2 are std handles in DOS.
+		nextFileHandle: 5,
 	}
+	defer c.closeFiles()
 	if err := c.loadCOM(defaultPSP, bin, args); err != nil {
 		return Result{}, fmt.Errorf("load COM: %w", err)
 	}
@@ -148,13 +157,51 @@ func (c *cpu) loadCOM(psp uint16, bin []byte, args []string) error {
 	return nil
 }
 
+func (c *cpu) closeFiles() {
+	for h, f := range c.files {
+		_ = f.Close()
+		delete(c.files, h)
+	}
+}
+
+func (c *cpu) allocFileHandle() uint16 {
+	h := c.nextFileHandle
+	for {
+		if _, inUse := c.files[h]; !inUse && h > 2 {
+			c.nextFileHandle = h + 1
+			return h
+		}
+		h++
+	}
+}
+
+func (c *cpu) readDOSString(seg, off uint16) (string, bool) {
+	buf := make([]byte, 0, 64)
+	i := uint16(0)
+	for i < 0xfff0 {
+		b := c.rb(linear(seg, off+i))
+		if b == 0 {
+			return string(buf), true
+		}
+		buf = append(buf, b)
+		i++
+	}
+	return "", false
+}
+
 func (c *cpu) run() error {
 	for !c.exited {
+		if c.faultErr != nil {
+			return c.faultErr
+		}
 		if c.steps >= c.maxSteps {
 			return fmt.Errorf("step limit reached at %04x:%04x", c.cs, c.ip)
 		}
 		if err := c.step(); err != nil {
 			return err
+		}
+		if c.faultErr != nil {
+			return c.faultErr
 		}
 		c.steps++
 	}
@@ -595,6 +642,8 @@ decoded:
 		c.setReg8(0, c.rb(linear(seg, off)))
 		c.ip++
 		return nil
+	case 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf:
+		return c.execESC(csip)
 	case 0x31:
 		return c.exec31(csip)
 	case 0x01:
@@ -1076,6 +1125,98 @@ func (c *cpu) handleInt(vec byte) error {
 
 	ah := byte(c.ax >> 8)
 	switch ah {
+	case 0x28:
+		// DOS idle interrupt hook; no-op in emulator.
+		c.cf = false
+		return nil
+	case 0x3c:
+		// Create/truncate file: DS:DX=ASCIIZ path, CX=attributes (ignored).
+		path, ok := c.readDOSString(c.ds, c.dx)
+		if !ok {
+			c.cf = true
+			c.ax = 2
+			return nil
+		}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if err != nil {
+			c.cf = true
+			c.ax = 5
+			return nil
+		}
+		h := c.allocFileHandle()
+		c.files[h] = f
+		c.ax = h
+		c.cf = false
+		return nil
+	case 0x3d:
+		// Open file: AL=mode(0 rd,1 wr,2 rdwr), DS:DX=ASCIIZ path.
+		path, ok := c.readDOSString(c.ds, c.dx)
+		if !ok {
+			c.cf = true
+			c.ax = 2
+			return nil
+		}
+		mode := int(c.ax & 0x00ff)
+		flags := os.O_RDONLY
+		if mode == 1 {
+			flags = os.O_WRONLY
+		} else if mode == 2 {
+			flags = os.O_RDWR
+		}
+		f, err := os.OpenFile(path, flags, 0)
+		if err != nil {
+			c.cf = true
+			c.ax = 2
+			return nil
+		}
+		h := c.allocFileHandle()
+		c.files[h] = f
+		c.ax = h
+		c.cf = false
+		return nil
+	case 0x3e:
+		// Close file: BX=handle.
+		h := c.bx
+		f, ok := c.files[h]
+		if !ok {
+			c.cf = true
+			c.ax = 6
+			return nil
+		}
+		_ = f.Close()
+		delete(c.files, h)
+		c.ax = 0
+		c.cf = false
+		return nil
+	case 0x3f:
+		// Read file: BX=handle, CX=count, DS:DX=buffer.
+		h := c.bx
+		f, ok := c.files[h]
+		if !ok {
+			c.cf = true
+			c.ax = 6
+			return nil
+		}
+		count := int(c.cx)
+		if count < 0 {
+			count = 0
+		}
+		buf := make([]byte, count)
+		n, err := f.Read(buf)
+		if n > 0 {
+			dst := linear(c.ds, c.dx)
+			for i := 0; i < n; i++ {
+				c.wb(dst+uint32(i), buf[i])
+			}
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			c.cf = true
+			c.ax = 5
+			return nil
+		}
+		c.ax = uint16(n)
+		c.cf = false
+		return nil
 	case 0x4c:
 		c.exitCode = int(byte(c.ax))
 		c.exited = true
@@ -1126,14 +1267,29 @@ func (c *cpu) handleInt(vec byte) error {
 		switch h {
 		case 1:
 			_, _ = os.Stdout.Write(data)
+			c.ax = count
+			c.cf = false
 		case 2:
 			_, _ = os.Stderr.Write(data)
+			c.ax = count
+			c.cf = false
 		default:
-			// ignore unknown handle; report success for now
+			f, ok := c.files[h]
+			if !ok {
+				c.cf = true
+				c.ax = 6
+				return nil
+			}
+			n, err := f.Write(data)
+			if err != nil {
+				c.cf = true
+				c.ax = 5
+				return nil
+			}
+			c.ax = uint16(n)
+			c.cf = false
 		}
 		c.writes++
-		c.ax = count
-		c.cf = false
 		return nil
 	case 0x09:
 		ptr := linear(c.ds, c.dx)
@@ -2729,6 +2885,23 @@ func (c *cpu) execD3(pc uint32) error {
 	return nil
 }
 
+func (c *cpu) execESC(pc uint32) error {
+	// 8087 ESC opcodes (D8..DF): consume ModR/M and any displacement.
+	modrm := c.rb(pc + 1)
+	mod := (modrm >> 6) & 0x3
+	rm := modrm & 0x7
+	if mod == 0x3 {
+		c.ip += 2
+		return nil
+	}
+	_, _, ok, dispLen := c.ea16SegOff(mod, rm, pc+2)
+	if !ok {
+		return fmt.Errorf("unsupported esc form modrm=%02x at %04x:%04x", modrm, c.cs, c.ip)
+	}
+	c.ip += uint16(2 + dispLen)
+	return nil
+}
+
 func (c *cpu) group2_8(op, v byte, count uint) byte {
 	if count == 0 {
 		return v
@@ -3274,17 +3447,29 @@ func (c *cpu) ea16SegOff(mod, rm byte, dispStart uint32) (uint16, uint16, bool, 
 }
 
 func linear(seg, off uint16) uint32 {
-	return (uint32(seg)*16 + uint32(off)) & memMask
+	return uint32(seg)*16 + uint32(off)
 }
 
 func (c *cpu) csip() uint32 { return linear(c.cs, c.ip) }
 
 func (c *cpu) rb(addr uint32) byte {
-	return c.mem[addr&memMask]
+	if addr >= memSize {
+		if c.faultErr == nil {
+			c.faultErr = fmt.Errorf("memory read overflow at %05x (cs:ip=%04x:%04x)", addr, c.cs, c.ip)
+		}
+		return 0
+	}
+	return c.mem[addr]
 }
 
 func (c *cpu) wb(addr uint32, v byte) {
-	c.mem[addr&memMask] = v
+	if addr >= memSize {
+		if c.faultErr == nil {
+			c.faultErr = fmt.Errorf("memory write overflow at %05x (cs:ip=%04x:%04x)", addr, c.cs, c.ip)
+		}
+		return
+	}
+	c.mem[addr] = v
 }
 
 func (c *cpu) u16(addr uint32) uint16 {
