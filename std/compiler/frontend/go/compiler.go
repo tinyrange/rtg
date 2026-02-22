@@ -3483,6 +3483,11 @@ func (c *Compiler) compileFor(node *Node, stmtLabels []string) {
 }
 
 func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int, breakLabel int) {
+	if c.isDefinitelyInvalidRangeArg(node.Type) {
+		c.errorf("%s: cannot range over non-iterable expression", c.curFunc.Name)
+		return
+	}
+
 	c.pushScope()
 
 	isMap := c.isMapExpr(node.Type)
@@ -6532,6 +6537,29 @@ func (c *Compiler) isDefinitelyInvalidCapArg(node *Node) bool {
 	}
 	if t == "string" || strings.HasPrefix(t, "map[") {
 		return true
+	}
+	return isDefinitelyScalarTypeName(t)
+}
+
+func (c *Compiler) isDefinitelyInvalidRangeArg(node *Node) bool {
+	if node == nil {
+		return true
+	}
+	switch node.Kind {
+	case NIntLit, NRuneLit:
+		return true
+	case NStringLit:
+		return false
+	}
+	if c.isMapExpr(node) || c.isStringTypedExpr(node) || isStringExpr(node) {
+		return false
+	}
+	t := c.resolveExprType(node)
+	if t == "" {
+		return false
+	}
+	if t == "string" || strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "[") || strings.HasPrefix(t, "map[") {
+		return false
 	}
 	return isDefinitelyScalarTypeName(t)
 }

@@ -37,7 +37,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 
 ## Arrays and range behavior
 - [ ] Fix local array allocation/storage semantics.
-- [ ] Reject invalid `range` targets (e.g. integer).
+- [x] Reject invalid `range` targets (e.g. integer).
 
 ## Lexer/parser validation
 - [x] Enforce numeric underscore placement rules.
