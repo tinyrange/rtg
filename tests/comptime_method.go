@@ -99,15 +99,16 @@ func main() {
 	fileText := comptimeBuilder.ReadLocalFile()
 	expected := "compile-time fixture data\n"
 	altExpected := "compile-time fixture data\r\n"
+	allowErr := false
 	if runtime.GOOS == "wasi" || runtime.GOOS == "dos" {
 		// WASI/DOS compile-time file I/O currently resolves this path as missing.
 		expected = "ERR"
 		altExpected = "ERR"
 	} else if runtime.GOOS == "windows" {
 		// Windows selfhost stages may fall back to runtime evaluation here.
-		altExpected = "ERR"
+		allowErr = true
 	}
-	if fileText != expected && fileText != altExpected {
+	if fileText != expected && fileText != altExpected && (!allowErr || fileText != "ERR") {
 		passed = false
 	}
 
