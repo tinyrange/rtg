@@ -1682,6 +1682,10 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.execIntrinsic("SysRmdir", localsAddr, ws)
 	case "winDeleteFile":
 		vm.execIntrinsic("SysUnlink", localsAddr, ws)
+	case "winGetLastError":
+		// Legacy windows intrinsic name used by older self-hosted compiler stages.
+		// This intrinsic returns a single DWORD, not syscall-style (r1,r2,errno).
+		vm.push(1)
 	case "winGetCurrentDirectory":
 		vm.execIntrinsic("SysGetcwd", localsAddr, ws)
 	case "winGetCurrentProcessId":
