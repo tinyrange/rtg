@@ -668,6 +668,12 @@ func (c *Compiler) resolveExprType(node *Node) string {
 		if node.X != nil && node.X.Kind == NIdent && node.X.Name == "string" {
 			return "string"
 		}
+		if node.X != nil && node.X.Kind == NIdent {
+			switch node.X.Name {
+			case "int", "uintptr", "uint", "byte", "int16", "int32", "int64", "uint16", "uint32", "uint64":
+				return node.X.Name
+			}
+		}
 		calleeName := c.resolveCallName(node.X)
 		if node.X != nil && node.X.Kind == NIdent {
 			if target, ok := c.localFuncTargets[node.X.Name]; ok {
@@ -752,6 +758,17 @@ func (c *Compiler) isUnsignedComparison(node *Node) bool {
 		right = c.exprConcreteType(node.Y)
 	}
 	return isUnsignedTypeName(left) || isUnsignedTypeName(right)
+}
+
+func (c *Compiler) isUnsignedExpr(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	typ := c.resolveExprType(node)
+	if typ == "" {
+		typ = c.exprConcreteType(node)
+	}
+	return isUnsignedTypeName(typ)
 }
 
 // exprWidth infers the operand width from an AST expression.
@@ -2008,7 +2025,11 @@ func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
 	w := c.exprWidth(node.X)
 	c.compileLValueGet(node.X)
 	c.compileExpr(node.Y)
-	c.emit(ir.Inst{Op: op, Width: w})
+	inst := ir.Inst{Op: op, Width: w}
+	if op == ir.OP_SHR && c.isUnsignedExpr(node.X) {
+		inst.Name = "unsigned"
+	}
+	c.emit(inst)
 	c.compileLValueSet(node.X)
 }
 
@@ -3052,6 +3073,12 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "string" {
 			return "string"
 		}
+		if expr.X != nil && expr.X.Kind == NIdent {
+			switch expr.X.Name {
+			case "int", "uintptr", "uint", "byte", "int16", "int32", "int64", "uint16", "uint32", "uint64":
+				return expr.X.Name
+			}
+		}
 		// append returns the same slice type as its first argument
 		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "append" && len(expr.Nodes) > 0 {
 			return c.exprConcreteType(expr.Nodes[0])
@@ -3094,6 +3121,19 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 	// Selector expression: e.g. directive.X, node.Type
 	if expr.Kind == NSelectorExpr {
 		return c.resolveExprType(expr)
+	}
+	// Basic arithmetic/bitwise operations preserve operand type.
+	if expr.Kind == NBinaryExpr {
+		switch expr.Name {
+		case "==", "!=", "<", ">", "<=", ">=", "&&", "||":
+			return "bool"
+		case "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>":
+			left := c.exprConcreteType(expr.X)
+			if left != "" {
+				return left
+			}
+			return c.exprConcreteType(expr.Y)
+		}
 	}
 	return ""
 }
@@ -4282,7 +4322,11 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "<<":
 		c.emit(ir.Inst{Op: ir.OP_SHL, Width: w})
 	case ">>":
-		c.emit(ir.Inst{Op: ir.OP_SHR, Width: w})
+		inst := ir.Inst{Op: ir.OP_SHR, Width: w}
+		if c.isUnsignedExpr(node.X) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case "==":
 		c.emit(ir.Inst{Op: ir.OP_EQ, Width: w})
 	case "!=":

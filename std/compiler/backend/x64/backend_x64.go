@@ -184,30 +184,30 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 		g.opPush(REG_RAX)
 
 	case ir.OP_ADD:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_SUB:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_MUL:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_DIV:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_MOD:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_NEG:
 		g.opPop(REG_RAX)
 		g.negR(REG_RAX)
 		g.opPush(REG_RAX)
 
 	case ir.OP_AND:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_OR:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_XOR:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_SHL:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 	case ir.OP_SHR:
-		g.compileBinOp(inst.Op)
+		g.compileBinOp(inst)
 
 	case ir.OP_EQ:
 		g.compileCompare(0x94) // sete
@@ -445,12 +445,12 @@ func (g *CodeGen) compileGlobalAddr(inst ir.Inst) {
 
 // === Binary operations ===
 
-func (g *CodeGen) compileBinOp(op ir.Opcode) {
+func (g *CodeGen) compileBinOp(inst ir.Inst) {
 	// pop two values: rax = second (top), rcx = first (below), push result
 	g.opPop(REG_RAX)
 	g.opPop(REG_RCX)
 
-	switch op {
+	switch inst.Op {
 	case ir.OP_ADD:
 		g.addRR(REG_RCX, REG_RAX)
 	case ir.OP_SUB:
@@ -485,7 +485,11 @@ func (g *CodeGen) compileBinOp(op ir.Opcode) {
 	case ir.OP_SHR:
 		g.movRR(REG_RDX, REG_RCX)
 		g.movRR(REG_RCX, REG_RAX)
-		g.sarCl(REG_RDX)
+		if inst.Name == "unsigned" {
+			g.shrCl(REG_RDX)
+		} else {
+			g.sarCl(REG_RDX)
+		}
 		g.movRR(REG_RCX, REG_RDX)
 	}
 
