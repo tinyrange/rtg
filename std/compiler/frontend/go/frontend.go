@@ -192,11 +192,11 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 		if pkg == nil {
 			dirs := p.resolveImportDirs(baseDir, importPath)
 			if len(dirs) == 0 {
-				fmt.Fprintf(os.Stderr, "warning: cannot resolve import %s\n", importPath)
-				continue
+				fmt.Fprintf(os.Stderr, "error: cannot resolve import %s\n", importPath)
+				os.Exit(1)
 			}
-			fmt.Fprintf(os.Stderr, "warning: no Go files for import %s\n", importPath)
-			continue
+			fmt.Fprintf(os.Stderr, "error: no Go files for import %s\n", importPath)
+			os.Exit(1)
 		}
 		mod.Packages[importPath] = pkg
 

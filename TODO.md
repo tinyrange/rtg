@@ -61,7 +61,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 
 ## Driver/import diagnostics
 - [ ] Ensure `-run` preserves child process exit code semantics.
-- [ ] Make missing imports hard compile errors.
+- [x] Make missing imports hard compile errors.
 
 ## Regression discipline
 - [ ] Keep `tests/compiler_bugs/manifest.txt` in sync as behavior changes.
