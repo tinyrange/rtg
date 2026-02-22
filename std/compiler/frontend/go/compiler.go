@@ -3630,18 +3630,26 @@ func (c *Compiler) compileBranch(node *Node) {
 			targets := c.breakLabelTargets[node.X.Name]
 			if len(targets) > 0 {
 				c.emit(ir.Inst{Op: ir.OP_JMP, Arg: targets[len(targets)-1]})
+			} else {
+				c.errorf("%s: invalid break label %s", c.curFunc.Name, node.X.Name)
 			}
 		} else if len(c.breaks) > 0 {
 			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.breaks[len(c.breaks)-1]})
+		} else {
+			c.errorf("%s: break is not in a loop or switch", c.curFunc.Name)
 		}
 	case "continue":
 		if node.X != nil && node.X.Kind == NIdent {
 			targets := c.continueLabelTargets[node.X.Name]
 			if len(targets) > 0 {
 				c.emit(ir.Inst{Op: ir.OP_JMP, Arg: targets[len(targets)-1]})
+			} else {
+				c.errorf("%s: invalid continue label %s", c.curFunc.Name, node.X.Name)
 			}
 		} else if len(c.continues) > 0 {
 			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.continues[len(c.continues)-1]})
+		} else {
+			c.errorf("%s: continue is not in a loop", c.curFunc.Name)
 		}
 	case "fallthrough":
 		if len(c.fallthroughs) > 0 {
