@@ -747,16 +747,17 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 	g.emitSubImm(REG_SP, REG_SP, 16)
 	g.EmitStr(REG_X1, REG_SP, 0)
 
-	// Extract method name
-	dotIdx := 0
-	for dotIdx < len(methodName) {
+	// Extract method name from the last '.' so fully-qualified interface names
+	// like "main.Stringer.String" resolve to "String".
+	dotIdx := len(methodName) - 1
+	for dotIdx >= 0 {
 		if methodName[dotIdx] == '.' {
 			break
 		}
-		dotIdx++
+		dotIdx--
 	}
 	bareMethod := methodName
-	if dotIdx < len(methodName) {
+	if dotIdx >= 0 && dotIdx+1 < len(methodName) {
 		bareMethod = methodName[dotIdx+1:]
 	}
 

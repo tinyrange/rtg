@@ -10,6 +10,12 @@ import (
 	"j5.nz/rtg/std/compiler/stdlib"
 )
 
+const (
+	comptimePkgPath         = "j5.nz/rtg/x/comptime"
+	comptimeContextTypeName = "j5.nz/rtg/x/comptime.Context"
+	comptimePkgPrefix       = "j5.nz/rtg/x/comptime."
+)
+
 type closureCaptureSpec struct {
 	Name  string
 	Width int
@@ -43,6 +49,8 @@ type Compiler struct {
 	funcVariadic        map[string]int      // variadic function name → count of fixed params
 	funcVariadicIface   map[string]bool     // variadic function name → true if ...interface{}
 	funcVariadicElem    map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
+	funcIsInternal      map[string]bool     // function name → true if declared via //rtg:internal
+	funcIsLinkStatic    map[string]bool     // function name → true if declared via //rtg:linkstatic
 	comptimeFuncs       map[string]bool     // function/method name → true if marked //rtg:comptime
 	funcRetTypeNodes    map[string]*Node    // function name → first return type node (for comptime literal synthesis)
 	localElemSizes      map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
@@ -82,6 +90,7 @@ type Compiler struct {
 	qualifyTypeCache    map[string]string            // "typeName\x00pkgPath" → qualified result
 	comptimeSeq         int
 	comptimeDisabled    bool
+	inComptimeFunc      bool
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -113,6 +122,8 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		funcVariadic:        make(map[string]int),
 		funcVariadicIface:   make(map[string]bool),
 		funcVariadicElem:    make(map[string]int),
+		funcIsInternal:      make(map[string]bool),
+		funcIsLinkStatic:    make(map[string]bool),
 		comptimeFuncs:       make(map[string]bool),
 		funcRetTypeNodes:    make(map[string]*Node),
 		globalElemSizes:     make(map[string]int),
@@ -132,6 +143,17 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		qualifyTypeCache:    make(map[string]string),
 	}
 	c.initBuiltinTypes()
+
+	// Pre-pass: collect interface and method declarations for all packages so
+	// interface method lowering does not depend on per-package compile order.
+	for _, path := range mod.Order {
+		pkg, ok := mod.Packages[path]
+		if !ok {
+			continue
+		}
+		c.curPkg = pkg
+		c.buildInterfaceTable(pkg)
+	}
 
 	// Register globals for all packages in topological order
 	for _, path := range mod.Order {
@@ -965,9 +987,16 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				}
 			}
 			c.funcRetTypeNodes[qname] = firstRet
+			isComptimeFunc := false
 			for _, d := range directives {
 				if isComptimeDirective(d) {
-					c.comptimeFuncs[qname] = true
+					isComptimeFunc = true
+				}
+				if parseInternalDirective(d) != "" {
+					c.funcIsInternal[qname] = true
+				}
+				if _, ok := parseLinkStaticDirective(d); ok {
+					c.funcIsLinkStatic[qname] = true
 				}
 			}
 
@@ -1011,6 +1040,11 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 			c.funcParams[qname] = paramCount
 			c.funcParamTypes[qname] = paramTypeNames
+			if isComptimeFunc {
+				if c.validateComptimeSignature(qname, fn, paramTypeNames, pkg.Path) {
+					c.comptimeFuncs[qname] = true
+				}
+			}
 			if isVariadic {
 				c.funcVariadic[qname] = fixedParams
 				c.funcVariadicIface[qname] = isIfaceVariadic
@@ -1018,6 +1052,54 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 		}
 	}
+}
+
+func (c *Compiler) validateComptimeSignature(qname string, fn *Node, paramTypeNames []string, pkgPath string) bool {
+	ctxIdx := 0
+	if fn != nil && fn.X != nil {
+		ctxIdx = 1
+	}
+	if len(paramTypeNames) <= ctxIdx {
+		c.errorf("%s: //rtg:comptime function must take j5.nz/rtg/x/comptime.Context as first argument", qname)
+		return false
+	}
+	got := c.qualifyTypeName(paramTypeNames[ctxIdx], pkgPath)
+	if got != comptimeContextTypeName {
+		c.errorf("%s: //rtg:comptime function first argument must be j5.nz/rtg/x/comptime.Context (got %s)", qname, got)
+		return false
+	}
+	return true
+}
+
+func (c *Compiler) isComptimeCallAllowed(callName string) bool {
+	if !c.inComptimeFunc {
+		return true
+	}
+	if callName == "" {
+		return true
+	}
+	if c.funcIsInternal[callName] || c.funcIsLinkStatic[callName] {
+		if strings.HasPrefix(callName, comptimePkgPrefix) {
+			return true
+		}
+		c.errorf("%s: comptime functions may only access host operations via j5.nz/rtg/x/comptime.Context (disallowed call: %s)", c.curFunc.Name, callName)
+		return false
+	}
+	return true
+}
+
+func (c *Compiler) isComptimeHostExpr(node *Node) bool {
+	if node == nil || node.Kind != NCallExpr || node.X == nil {
+		return false
+	}
+	if node.X.Kind != NSelectorExpr || node.X.X == nil || node.X.X.Kind != NIdent {
+		return false
+	}
+	if node.X.Name != "Host" {
+		return false
+	}
+	pkg := c.resolvePackage(node.X.X.Name)
+	return pkg != nil && pkg.Path == comptimePkgPath
 }
 
 func (c *Compiler) buildInterfaceTable(pkg *Package) {
@@ -1335,6 +1417,12 @@ func (c *Compiler) compileFunc(node *Node) {
 		qname = c.dotJoin(c.curPkg.QualName(recvType), node.Name)
 	}
 	f := &ir.IRFunc{Name: qname}
+	savedInComptimeFunc := c.inComptimeFunc
+	if savedInComptimeFunc || c.comptimeFuncs[qname] {
+		c.inComptimeFunc = true
+	} else {
+		c.inComptimeFunc = false
+	}
 	c.curFunc = f
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
@@ -1438,15 +1526,15 @@ func (c *Compiler) compileFunc(node *Node) {
 				if isVarParam {
 					typeName = "[]" + typeName
 				}
+				qualifiedType := c.qualifyTypeName(typeName, "")
 				// Track interface-typed params
-				if c.isInterfaceTypeName(typeName) {
-					c.localTypes[pname] = typeName
+				if c.isInterfaceTypeName(typeName) || c.isInterfaceTypeName(qualifiedType) {
+					c.localTypes[pname] = qualifiedType
 				}
-				ct := c.qualifyTypeName(typeName, "")
-				c.localConcreteTypes[pname] = ct
+				c.localConcreteTypes[pname] = qualifiedType
 				// Also track slice elem sizes from type
-				if len(ct) > 2 && ct[0] == '[' && ct[1] == ']' {
-					c.localElemSizes[pname] = c.typeElemSize(ct[2:len(ct)])
+				if len(qualifiedType) > 2 && qualifiedType[0] == '[' && qualifiedType[1] == ']' {
+					c.localElemSizes[pname] = c.typeElemSize(qualifiedType[2:len(qualifiedType)])
 				}
 				// Track map-typed params
 				if param.Type.Kind == NMapType {
@@ -1503,6 +1591,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	}
 	c.irmod.Funcs = append(c.irmod.Funcs, f)
 	c.curFunc = nil
+	c.inComptimeFunc = savedInComptimeFunc
 }
 
 func (c *Compiler) compileIntrinsicFunc(node *Node, intern string) {
@@ -1930,11 +2019,11 @@ func (c *Compiler) compileVarDecl(node *Node) {
 	// Track interface-typed variables
 	if node.Type != nil {
 		typeName := nodeTypeName(node.Type)
-		if c.isInterfaceTypeName(typeName) {
-			c.localTypes[node.Name] = typeName
-		}
 		// Track concrete type for struct field access and method resolution
 		ct := c.qualifyTypeName(typeName, "")
+		if c.isInterfaceTypeName(typeName) || c.isInterfaceTypeName(ct) {
+			c.localTypes[node.Name] = ct
+		}
 		c.localConcreteTypes[node.Name] = ct
 	}
 	if node.X != nil {
@@ -2046,8 +2135,8 @@ func (c *Compiler) compileAssign(node *Node) {
 				for j, lhs := range node.Nodes {
 					if j < len(retTypes) {
 						qret := c.qualifyTypeName(retTypes[j], calleePkg)
-						if c.isInterfaceTypeName(retTypes[j]) {
-							c.localTypes[lhs.Name] = retTypes[j]
+						if c.isInterfaceTypeName(retTypes[j]) || c.isInterfaceTypeName(qret) {
+							c.localTypes[lhs.Name] = qret
 						}
 						if retTypes[j] == "string" {
 							c.localStringVars[lhs.Name] = true
@@ -2108,6 +2197,9 @@ func (c *Compiler) compileAssign(node *Node) {
 		// Track concrete type and elem size for method resolution and indexing
 		if ct := c.exprConcreteType(node.Y); ct != "" {
 			c.localConcreteTypes[node.X.Name] = ct
+			if c.isInterfaceTypeName(ct) {
+				c.localTypes[node.X.Name] = ct
+			}
 			// Track slice elem sizes
 			if len(ct) > 2 && ct[0] == '[' && ct[1] == ']' {
 				c.localElemSizes[node.X.Name] = c.typeElemSize(ct[2:len(ct)])
@@ -2639,13 +2731,15 @@ func (c *Compiler) compileReturn(node *Node) {
 	}
 
 	if node.X != nil {
+		retIdx := count
 		c.compileExpr(node.X)
-		c.maybeBoxInterface(node.X, retTypes, 0)
+		c.maybeBoxInterface(node.X, retTypes, retIdx)
 		count++
 	}
-	for i, extra := range node.Nodes {
+	for _, extra := range node.Nodes {
+		retIdx := count
 		c.compileExpr(extra)
-		c.maybeBoxInterface(extra, retTypes, i+1)
+		c.maybeBoxInterface(extra, retTypes, retIdx)
 		count++
 	}
 	if len(c.deferNames) > 0 {
@@ -2661,7 +2755,7 @@ func (c *Compiler) maybeBoxInterface(expr *Node, retTypes []string, idx int) {
 		return
 	}
 	expectedType := retTypes[idx]
-	if !c.isInterfaceTypeName(expectedType) {
+	if !c.isInterfaceTypeName(expectedType) && !c.isInterfaceTypeName(c.qualifyTypeName(expectedType, "")) {
 		return
 	}
 	// Don't box nil
@@ -2673,15 +2767,33 @@ func (c *Compiler) maybeBoxInterface(expr *Node, retTypes []string, idx int) {
 		calleeName := c.resolveCallName(expr.X)
 		if calleeRetTypes, ok := c.funcRetTypes[calleeName]; ok {
 			if idx < len(calleeRetTypes) {
-				if c.isInterfaceTypeName(calleeRetTypes[idx]) {
+				gotType := calleeRetTypes[idx]
+				if c.isInterfaceTypeName(gotType) || c.isInterfaceTypeName(c.qualifyTypeName(gotType, "")) {
 					return // callee already boxes
 				}
 			}
 		}
 	}
-	typeID := c.resolveConcreteTypeID(expr)
-	if typeID > 0 {
+	if typeID := c.resolveConcreteTypeID(expr); typeID > 0 {
 		c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
+		return
+	}
+	if ct := c.exprConcreteType(expr); ct != "" {
+		if c.isInterfaceTypeName(ct) {
+			return
+		}
+		c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: c.typeIDForTypeName(ct)})
+		return
+	}
+	shouldCheckPrimitive := false
+	switch expr.Kind {
+	case NIntLit, NRuneLit, NStringLit, NBasicLit, NUnaryExpr, NSliceExpr:
+		shouldCheckPrimitive = true
+	}
+	if shouldCheckPrimitive {
+		if typeID := c.exprPrimitiveTypeID(expr); typeID > 0 {
+			c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
+		}
 	}
 }
 
@@ -4533,6 +4645,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			resolvedName, ok := c.resolveMethodByConcreteType(concreteType, methodName)
 			if !ok {
 				if pm, found := c.findPromotedMethod(concreteType, methodName); found {
+					if !c.isComptimeCallAllowed(pm.Target) {
+						return
+					}
 					// Build receiver from embedded field path.
 					c.compileExpr(node.X.X)
 					i := 0
@@ -4549,6 +4664,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				}
 			}
 			if ok {
+				if !c.isComptimeCallAllowed(resolvedName) {
+					return
+				}
 				if c.tryCompileComptimeCall(node, resolvedName) {
 					return
 				}
@@ -4600,6 +4718,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				if fieldType != "" {
 					resolvedName, ok := c.resolveMethodByConcreteType(fieldType, methodName)
 					if ok {
+						if !c.isComptimeCallAllowed(resolvedName) {
+							return
+						}
 						if c.tryCompileComptimeCall(node, resolvedName) {
 							return
 						}
@@ -4614,6 +4735,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 
 	// Determine the function to call
 	callName := c.resolveCallName(node.X)
+	if !c.isComptimeCallAllowed(callName) {
+		return
+	}
 	if c.emitRuntimeMemBuiltinCall(callName, node.Nodes) {
 		return
 	}
@@ -4700,6 +4824,10 @@ func (c *Compiler) tryCompileComptimeCall(node *Node, callName string) bool {
 		c.errorf("%s: comptime call %s has unknown return type", c.curFunc.Name, callName)
 		return false
 	}
+	if len(node.Nodes) < 1 {
+		c.errorf("%s: comptime call %s must pass j5.nz/rtg/x/comptime.Context as first argument", c.curFunc.Name, callName)
+		return false
+	}
 	if c.exprUsesLocalIdentifier(node) {
 		c.errorf("%s: comptime call %s may only use compile-time constants and globals", c.curFunc.Name, callName)
 		return false
@@ -4712,6 +4840,10 @@ func (c *Compiler) tryCompileComptimeCall(node *Node, callName string) bool {
 	}
 
 	c.irmod.Funcs = append(c.irmod.Funcs, wrapFunc)
+	c.irmod.TypeIDs = c.typeIDs
+	c.irmod.MethodTable = c.methodTable
+	c.irmod.IfaceMethods = c.ifaceMethods
+	c.irmod.IfaceMethodRets = c.ifaceMethodRets
 	eval, err := vm.NewEvalState(c.target, c.irmod)
 	c.irmod.Funcs = c.irmod.Funcs[0 : len(c.irmod.Funcs)-1]
 	if err != nil {

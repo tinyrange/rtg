@@ -2713,19 +2713,22 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 		g.w.globalSet(uint32(g.globalSP))
 	}
 
-	// Extract interface and bare method names from "iface.Method"
-	dotIdx := 0
-	for dotIdx < len(methodName) {
+	// Extract interface and bare method names using the last '.'
+	// so fully-qualified names like "main.Stringer.String" are handled.
+	dotIdx := len(methodName) - 1
+	for dotIdx >= 0 {
 		if methodName[dotIdx] == '.' {
 			break
 		}
-		dotIdx++
+		dotIdx--
 	}
 	ifaceName := ""
 	bareMethod := methodName
-	if dotIdx < len(methodName) {
+	if dotIdx >= 0 {
 		ifaceName = methodName[:dotIdx]
-		bareMethod = methodName[dotIdx+1:]
+		if dotIdx+1 < len(methodName) {
+			bareMethod = methodName[dotIdx+1:]
+		}
 	}
 
 	// Expected return count from interface signature (if known)

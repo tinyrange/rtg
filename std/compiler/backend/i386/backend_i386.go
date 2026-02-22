@@ -745,16 +745,17 @@ func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 	// Save ecx (type_id)
 	g.pushR32(REG32_ECX)
 
-	// Extract bare method name
-	dotIdx := 0
-	for dotIdx < len(methodName) {
+	// Extract method name from the last '.' so fully-qualified interface names
+	// like "main.Stringer.String" resolve to "String".
+	dotIdx := len(methodName) - 1
+	for dotIdx >= 0 {
 		if methodName[dotIdx] == '.' {
 			break
 		}
-		dotIdx++
+		dotIdx--
 	}
 	bareMethod := methodName
-	if dotIdx < len(methodName) {
+	if dotIdx >= 0 && dotIdx+1 < len(methodName) {
 		bareMethod = methodName[dotIdx+1:]
 	}
 
