@@ -1970,6 +1970,14 @@ func (c *Compiler) setLocalMapMetadataFromQualified(name string, qtype string) {
 }
 
 func (c *Compiler) compileVarDecl(node *Node) {
+	if node.Type != nil && node.Type.Kind == NIdent {
+		tname := node.Type.Name
+		if !isBuiltinTypeName(tname) {
+			if _, ok := c.lookupCurrentTypeDecl(tname); !ok {
+				c.errorf("%s: undefined type: %s", c.curFunc.Name, tname)
+			}
+		}
+	}
 	idx := c.addLocal(node.Name)
 	// Mark uint64/int64 locals for i64 on wasm32
 	if node.Type != nil && node.Type.Kind == NIdent && (node.Type.Name == "uint64" || node.Type.Name == "int64") {
@@ -2059,6 +2067,18 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 	}
+}
+
+func isBuiltinTypeName(t string) bool {
+	switch t {
+	case "bool",
+		"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"uintptr", "byte", "rune",
+		"string", "error", "interface{}":
+		return true
+	}
+	return false
 }
 
 func (c *Compiler) compileAssign(node *Node) {
@@ -2543,6 +2563,9 @@ func (c *Compiler) compileLValueSet(node *Node) {
 			gidx, gok := c.lookupGlobal(node.Name)
 			if gok {
 				c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
+			} else {
+				c.errorf("%s: undefined: %s", c.curFunc.Name, node.Name)
+				c.emit(ir.Inst{Op: ir.OP_DROP})
 			}
 		}
 	case NIndexExpr:
@@ -3759,6 +3782,11 @@ func (c *Compiler) compileBasicLit(node *Node) {
 }
 
 func (c *Compiler) compileIdent(node *Node) {
+	if node.Name == "recover" {
+		// Predeclared builtin function value; represented as nil placeholder.
+		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+		return
+	}
 	idx, ok := c.lookupLocal(node.Name)
 	if ok {
 		w := 0
@@ -3799,8 +3827,8 @@ func (c *Compiler) compileIdent(node *Node) {
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 		return
 	}
-	// Could be a package name or unresolved — emit as global reference
-	c.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Name: node.Name})
+	c.errorf("%s: undefined: %s", c.curFunc.Name, node.Name)
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 }
 
 // resolveConstValue evaluates a constant declaration's value at compile time.
