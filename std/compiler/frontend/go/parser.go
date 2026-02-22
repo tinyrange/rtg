@@ -1304,13 +1304,23 @@ func (p *Parser) parseStmt() *Node {
 	case TOKEN_BREAK:
 		pos := p.peek().Line
 		p.advance()
+		var target *Node
+		if p.at(TOKEN_IDENT) {
+			name := p.advance()
+			target = &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}
+		}
 		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "break", Pos: pos}
+		return &Node{Kind: NBranch, Name: "break", X: target, Pos: pos}
 	case TOKEN_CONTINUE:
 		pos := p.peek().Line
 		p.advance()
+		var target *Node
+		if p.at(TOKEN_IDENT) {
+			name := p.advance()
+			target = &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}
+		}
 		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "continue", Pos: pos}
+		return &Node{Kind: NBranch, Name: "continue", X: target, Pos: pos}
 	case TOKEN_FALLTHROUGH:
 		pos := p.peek().Line
 		p.advance()

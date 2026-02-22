@@ -6,7 +6,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Fix `goto` and label jump lowering.
 - [x] Fix `fallthrough` in `switch`.
 - [x] Fix `break` handling in `switch`.
-- [ ] Fix labeled `break`/`continue` targets.
+- [x] Fix labeled `break`/`continue` targets.
 - [ ] Reject illegal `break`/`continue` outside loops/switch.
 
 ## Type-checking gaps
