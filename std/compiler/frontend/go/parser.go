@@ -1165,14 +1165,15 @@ func (p *Parser) parseSliceOrArrayType() *Node {
 		return &Node{Kind: NSliceType, X: elem, Pos: pos}
 	}
 	// Accept fixed/ellipsis array forms as slice-compatible for now.
+	var arrayLen *Node
 	if p.at(TOKEN_ELLIPSIS) {
 		p.advance()
 	} else {
-		p.parseExpr()
+		arrayLen = p.parseExpr()
 	}
 	p.expect(TOKEN_RBRACK)
 	elem := p.parseType()
-	return &Node{Kind: NSliceType, X: elem, Pos: pos}
+	return &Node{Kind: NSliceType, X: elem, Y: arrayLen, Pos: pos}
 }
 
 func (p *Parser) parseMapType() *Node {
