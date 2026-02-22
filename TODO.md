@@ -25,8 +25,8 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 
 ## Assignment/call/return arity validation
 - [x] Enforce assignment LHS/RHS arity matching.
-- [ ] Enforce function call argument arity.
-- [ ] Enforce return statement arity and signature compliance.
+- [x] Enforce function call argument arity.
+- [x] Enforce return statement arity and signature compliance.
 
 ## Integer semantics and conversions
 - [ ] Fix unsigned comparison codegen.
