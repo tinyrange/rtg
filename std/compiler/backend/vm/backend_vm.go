@@ -49,7 +49,9 @@ func newVMConfig(wordSize int) VMConfig {
 
 // VM is the abstract machine state.
 type VM struct {
-	config VMConfig
+	config       VMConfig
+	targetGOOS   string
+	targetGOARCH string
 
 	// Operand stack
 	stack []uint64
@@ -150,21 +152,23 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		guard = 0x100
 	}
 	vm := &VM{
-		config:      cfg,
-		stack:       make([]uint64, 0, 4096),
-		memory:      make([]byte, 256*1024),
-		memNext:     guard,
-		funcs:       make(map[string]*ir.IRFunc),
-		stringAddrs: make(map[string]uint64),
-		methodIDs:   make(map[string]int),
-		fdFiles:     make([]*os.File, 256),
-		fdUsed:      make([]bool, 256),
-		fdIsPopen:   make([]bool, 256),
-		nextFD:      3,
-		dirEntries:  make([][]os.DirEntry, 64),
-		dirPos:      make([]int, 64),
-		dirUsed:     make([]bool, 64),
-		nextDirID:   1,
+		config:       cfg,
+		targetGOOS:   target.GOOS,
+		targetGOARCH: target.GOARCH,
+		stack:        make([]uint64, 0, 4096),
+		memory:       make([]byte, 256*1024),
+		memNext:      guard,
+		funcs:        make(map[string]*ir.IRFunc),
+		stringAddrs:  make(map[string]uint64),
+		methodIDs:    make(map[string]int),
+		fdFiles:      make([]*os.File, 256),
+		fdUsed:       make([]bool, 256),
+		fdIsPopen:    make([]bool, 256),
+		nextFD:       3,
+		dirEntries:   make([][]os.DirEntry, 64),
+		dirPos:       make([]int, 64),
+		dirUsed:      make([]bool, 64),
+		nextDirID:    1,
 	}
 
 	// RTG_VM_STEPS=N: halt after N instructions and dump call stack
@@ -859,6 +863,126 @@ func (vm *VM) vmSysReturn(rv int64) {
 		vm.push(uint64(rv) & vm.config.WordMask)
 		vm.push(0)
 		vm.push(0)
+	}
+}
+
+func (vm *VM) execIntrinsicArgs(name string, ws uint64, args ...uint64) {
+	if len(args) == 0 {
+		vm.execIntrinsic(name, 0, ws)
+		return
+	}
+	addr := vm.alloc(uint64(len(args))*ws, "intrinsic-args")
+	i := 0
+	for i < len(args) {
+		vm.storeWord(addr+uint64(i)*ws, args[i])
+		i = i + 1
+	}
+	vm.execIntrinsic(name, addr, ws)
+}
+
+func (vm *VM) execSyscallIntrinsic(num int, ws uint64, a0 uint64, a1 uint64, a2 uint64, a3 uint64, a4 uint64, a5 uint64) {
+	switch vm.targetGOARCH {
+	case "amd64":
+		switch num {
+		case 0:
+			vm.execIntrinsicArgs("SysRead", ws, a0, a1, a2)
+		case 1:
+			vm.execIntrinsicArgs("SysWrite", ws, a0, a1, a2)
+		case 2:
+			vm.execIntrinsicArgs("SysOpen", ws, a0, a1, a2)
+		case 3:
+			vm.execIntrinsicArgs("SysClose", ws, a0)
+		case 4:
+			vm.execIntrinsicArgs("SysStat", ws, a0, a1)
+		case 9:
+			vm.execIntrinsicArgs("SysMmap", ws, a0, a1, a2, a3, a4, a5)
+		case 39:
+			vm.execIntrinsicArgs("SysGetpid", ws)
+		case 79:
+			vm.execIntrinsicArgs("SysGetcwd", ws, a0, a1)
+		case 83:
+			vm.execIntrinsicArgs("SysMkdir", ws, a0, a1)
+		case 84:
+			vm.execIntrinsicArgs("SysRmdir", ws, a0)
+		case 87:
+			vm.execIntrinsicArgs("SysUnlink", ws, a0)
+		case 90:
+			vm.execIntrinsicArgs("SysChmod", ws, a0, a1)
+		case 231:
+			vm.execIntrinsicArgs("SysExit", ws, a0)
+		default:
+			vm.vmSysReturn(-38)
+		}
+	case "arm64":
+		switch num {
+		case 17:
+			vm.execIntrinsicArgs("SysGetcwd", ws, a0, a1)
+		case 34:
+			// arm64 uses mkdirat(dirfd, path, mode); ignore dirfd in VM.
+			vm.execIntrinsicArgs("SysMkdir", ws, a1, a2)
+		case 35:
+			// arm64 uses unlinkat(dirfd, path, flags); 0x200 == AT_REMOVEDIR.
+			if a2 == 0x200 {
+				vm.execIntrinsicArgs("SysRmdir", ws, a1)
+			} else {
+				vm.execIntrinsicArgs("SysUnlink", ws, a1)
+			}
+		case 53:
+			// arm64 uses fchmodat(dirfd, path, mode, flags); ignore dirfd/flags.
+			vm.execIntrinsicArgs("SysChmod", ws, a1, a2)
+		case 56:
+			// arm64 uses openat(dirfd, path, flags, mode); ignore dirfd.
+			vm.execIntrinsicArgs("SysOpen", ws, a1, a2, a3)
+		case 57:
+			vm.execIntrinsicArgs("SysClose", ws, a0)
+		case 63:
+			vm.execIntrinsicArgs("SysRead", ws, a0, a1, a2)
+		case 64:
+			vm.execIntrinsicArgs("SysWrite", ws, a0, a1, a2)
+		case 79:
+			// arm64 uses newfstatat(dirfd, path, statbuf, flags); ignore dirfd/flags.
+			vm.execIntrinsicArgs("SysStat", ws, a1, a2)
+		case 94:
+			vm.execIntrinsicArgs("SysExit", ws, a0)
+		case 172:
+			vm.execIntrinsicArgs("SysGetpid", ws)
+		case 222:
+			vm.execIntrinsicArgs("SysMmap", ws, a0, a1, a2, a3, a4, a5)
+		default:
+			vm.vmSysReturn(-38)
+		}
+	default:
+		// linux/386 and dos16 use the same numbering for basic file syscalls.
+		switch num {
+		case 3:
+			vm.execIntrinsicArgs("SysRead", ws, a0, a1, a2)
+		case 4:
+			vm.execIntrinsicArgs("SysWrite", ws, a0, a1, a2)
+		case 5:
+			vm.execIntrinsicArgs("SysOpen", ws, a0, a1, a2)
+		case 6:
+			vm.execIntrinsicArgs("SysClose", ws, a0)
+		case 10:
+			vm.execIntrinsicArgs("SysUnlink", ws, a0)
+		case 15:
+			vm.execIntrinsicArgs("SysChmod", ws, a0, a1)
+		case 20:
+			vm.execIntrinsicArgs("SysGetpid", ws)
+		case 39:
+			vm.execIntrinsicArgs("SysMkdir", ws, a0, a1)
+		case 40:
+			vm.execIntrinsicArgs("SysRmdir", ws, a0)
+		case 106:
+			vm.execIntrinsicArgs("SysStat", ws, a0, a1)
+		case 183:
+			vm.execIntrinsicArgs("SysGetcwd", ws, a0, a1)
+		case 192:
+			vm.execIntrinsicArgs("SysMmap", ws, a0, a1, a2, a3, a4, a5)
+		case 252:
+			vm.execIntrinsicArgs("SysExit", ws, a0)
+		default:
+			vm.vmSysReturn(-38)
+		}
 	}
 }
 
@@ -1611,6 +1735,25 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 			vm.vmSysReturn(int64(addr))
 		}
 
+	case "SysGetCommandLine", "winGetCommandLine":
+		cmd := ""
+		i := 0
+		for i < len(vmArgs) {
+			if i > 0 {
+				cmd = cmd + " "
+			}
+			cmd = cmd + vmArgs[i]
+			i = i + 1
+		}
+		vm.vmSysReturn(int64(vm.writeCString(cmd)))
+
+	case "SysGetEnvStrings", "winGetEnvStrings":
+		// Return an empty environment block (double-NUL terminated).
+		addr := vm.alloc(2, "env-strings")
+		vm.storeN(addr, 0, 1)
+		vm.storeN(addr+1, 0, 1)
+		vm.vmSysReturn(int64(addr))
+
 	case "SysOpendir":
 		pathAddr := vm.localGet(localsAddr, ws, 0)
 		path := vm.readCString(pathAddr)
@@ -1753,6 +1896,20 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.push(uint64(os.Getpid()) & vm.config.WordMask)
 		vm.push(0)
 		vm.push(0)
+
+	case "SysGetdents64":
+		// Directory entry layout differs by target ABI; not emulated here.
+		vm.vmSysReturn(-38)
+
+	case "Syscall":
+		num := int(vm.localGet(localsAddr, ws, 0) & 0xFFFFFFFF)
+		a0 := vm.localGet(localsAddr, ws, 1)
+		a1 := vm.localGet(localsAddr, ws, 2)
+		a2 := vm.localGet(localsAddr, ws, 3)
+		a3 := vm.localGet(localsAddr, ws, 4)
+		a4 := vm.localGet(localsAddr, ws, 5)
+		a5 := vm.localGet(localsAddr, ws, 6)
+		vm.execSyscallIntrinsic(num, ws, a0, a1, a2, a3, a4, a5)
 
 	// Memory intrinsics
 	case "Sliceptr":
