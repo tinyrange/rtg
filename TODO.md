@@ -30,7 +30,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 
 ## Integer semantics and conversions
 - [x] Fix unsigned comparison codegen.
-- [ ] Fix unsigned right-shift codegen.
+- [x] Fix unsigned right-shift codegen.
 - [ ] Fix unsigned division codegen.
 - [ ] Enforce width truncation/wrap for `int8`/`uint8`/`int32`.
 - [ ] Implement missing numeric conversion handling (`uint8(x)`, `int8(x)`, etc.).

@@ -257,6 +257,15 @@ func (g *CodeGen) sarCl(reg int) {
 	g.emitBytes(rex, 0xd3, byte(0xf8|(reg&7)))
 }
 
+// shrCl emits `shr reg, cl` (logical shift right)
+func (g *CodeGen) shrCl(reg int) {
+	rex := byte(0x48)
+	if reg >= 8 {
+		rex |= 0x01
+	}
+	g.emitBytes(rex, 0xd3, byte(0xe8|(reg&7)))
+}
+
 // shlImm emits `shl reg, imm8`
 func (g *CodeGen) shlImm(reg int, n byte) {
 	rex := byte(0x48)
