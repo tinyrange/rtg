@@ -3564,10 +3564,35 @@ func (c *Compiler) compileDec(node *Node) {
 }
 
 func (c *Compiler) compileBranch(node *Node) {
-	if node.Name == "break" && len(c.breaks) > 0 {
-		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.breaks[len(c.breaks)-1]})
-	} else if node.Name == "continue" && len(c.continues) > 0 {
-		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.continues[len(c.continues)-1]})
+	switch node.Name {
+	case "break":
+		if len(c.breaks) > 0 {
+			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.breaks[len(c.breaks)-1]})
+		}
+	case "continue":
+		if len(c.continues) > 0 {
+			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.continues[len(c.continues)-1]})
+		}
+	case "goto":
+		if node.X == nil || node.X.Kind != NIdent {
+			return
+		}
+		labelID, ok := c.labelIDs[node.X.Name]
+		if !ok {
+			labelID = c.newLabel()
+			c.labelIDs[node.X.Name] = labelID
+		}
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: labelID})
+	case "label":
+		if node.X == nil || node.X.Kind != NIdent {
+			return
+		}
+		labelID, ok := c.labelIDs[node.X.Name]
+		if !ok {
+			labelID = c.newLabel()
+			c.labelIDs[node.X.Name] = labelID
+		}
+		c.emitLabel(labelID)
 	}
 }
 
