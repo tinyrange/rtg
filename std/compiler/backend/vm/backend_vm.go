@@ -1664,6 +1664,29 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		// Legacy windows intrinsic name used by older self-hosted compiler stages.
 		vm.execIntrinsic("SysMmap", localsAddr, ws)
 
+	case "winReadFile":
+		vm.execIntrinsic("SysRead", localsAddr, ws)
+	case "winWriteFile":
+		vm.execIntrinsic("SysWrite", localsAddr, ws)
+	case "winCreateFile":
+		vm.execIntrinsic("SysOpen", localsAddr, ws)
+	case "winCloseHandle":
+		vm.execIntrinsic("SysClose", localsAddr, ws)
+	case "winGetFileAttributes":
+		vm.execIntrinsic("SysStat", localsAddr, ws)
+	case "winExitProcess":
+		vm.execIntrinsic("SysExit", localsAddr, ws)
+	case "winCreateDirectory":
+		vm.execIntrinsic("SysMkdir", localsAddr, ws)
+	case "winRemoveDirectory":
+		vm.execIntrinsic("SysRmdir", localsAddr, ws)
+	case "winDeleteFile":
+		vm.execIntrinsic("SysUnlink", localsAddr, ws)
+	case "winGetCurrentDirectory":
+		vm.execIntrinsic("SysGetcwd", localsAddr, ws)
+	case "winGetCurrentProcessId":
+		vm.execIntrinsic("SysGetpid", localsAddr, ws)
+
 	case "SysOpendir":
 		pathAddr := vm.localGet(localsAddr, ws, 0)
 		path := vm.readCString(pathAddr)
