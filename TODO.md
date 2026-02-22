@@ -10,9 +10,9 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Reject illegal `break`/`continue` outside loops/switch.
 
 ## Type-checking gaps
-- [ ] Enforce boolean conditions for `if`/`for`.
-- [ ] Enforce boolean operands for `&&`/`||`.
-- [ ] Enforce comparability/type compatibility in comparisons.
+- [x] Enforce boolean conditions for `if`/`for`.
+- [x] Enforce boolean operands for `&&`/`||`.
+- [x] Enforce comparability/type compatibility in comparisons.
 - [ ] Reject dereference of non-pointers.
 - [ ] Reject indexing non-indexable values.
 - [ ] Validate `len`/`cap` argument types.
