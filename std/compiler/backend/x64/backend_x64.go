@@ -265,13 +265,29 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	case ir.OP_JMP_NEQ:
 		g.compileCompareJump(CC_NE, inst.Arg)
 	case ir.OP_JMP_LT:
-		g.compileCompareJump(CC_L, inst.Arg)
+		cc := byte(CC_L)
+		if inst.Name == "unsigned" {
+			cc = CC_B
+		}
+		g.compileCompareJump(cc, inst.Arg)
 	case ir.OP_JMP_GT:
-		g.compileCompareJump(CC_G, inst.Arg)
+		cc := byte(CC_G)
+		if inst.Name == "unsigned" {
+			cc = CC_A
+		}
+		g.compileCompareJump(cc, inst.Arg)
 	case ir.OP_JMP_LEQ:
-		g.compileCompareJump(CC_LE, inst.Arg)
+		cc := byte(CC_LE)
+		if inst.Name == "unsigned" {
+			cc = CC_BE
+		}
+		g.compileCompareJump(cc, inst.Arg)
 	case ir.OP_JMP_GEQ:
-		g.compileCompareJump(CC_GE, inst.Arg)
+		cc := byte(CC_GE)
+		if inst.Name == "unsigned" {
+			cc = CC_AE
+		}
+		g.compileCompareJump(cc, inst.Arg)
 
 	case ir.OP_CALL:
 		g.compileCall(inst)

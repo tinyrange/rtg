@@ -1263,6 +1263,7 @@ func (g *WasmGen) compileCompareJump(inst ir.Inst) {
 	t := g.ensureBothSameType()
 	g.popType()
 	g.popType()
+	unsigned := inst.Name == "unsigned"
 	if t == WASM_TYPE_I64 {
 		switch inst.Op {
 		case ir.OP_JMP_EQ:
@@ -1270,13 +1271,29 @@ func (g *WasmGen) compileCompareJump(inst ir.Inst) {
 		case ir.OP_JMP_NEQ:
 			g.w.op(OP_WASM_I64_NE)
 		case ir.OP_JMP_LT:
-			g.w.op(OP_WASM_I64_LT_S)
+			if unsigned {
+				g.w.op(OP_WASM_I64_LT_U)
+			} else {
+				g.w.op(OP_WASM_I64_LT_S)
+			}
 		case ir.OP_JMP_GT:
-			g.w.op(OP_WASM_I64_GT_S)
+			if unsigned {
+				g.w.op(OP_WASM_I64_GT_U)
+			} else {
+				g.w.op(OP_WASM_I64_GT_S)
+			}
 		case ir.OP_JMP_LEQ:
-			g.w.op(OP_WASM_I64_LE_S)
+			if unsigned {
+				g.w.op(OP_WASM_I64_LE_U)
+			} else {
+				g.w.op(OP_WASM_I64_LE_S)
+			}
 		case ir.OP_JMP_GEQ:
-			g.w.op(OP_WASM_I64_GE_S)
+			if unsigned {
+				g.w.op(OP_WASM_I64_GE_U)
+			} else {
+				g.w.op(OP_WASM_I64_GE_S)
+			}
 		}
 		return
 	}
@@ -1286,13 +1303,29 @@ func (g *WasmGen) compileCompareJump(inst ir.Inst) {
 	case ir.OP_JMP_NEQ:
 		g.w.op(OP_WASM_I32_NE)
 	case ir.OP_JMP_LT:
-		g.w.op(OP_WASM_I32_LT_S)
+		if unsigned {
+			g.w.op(OP_WASM_I32_LT_U)
+		} else {
+			g.w.op(OP_WASM_I32_LT_S)
+		}
 	case ir.OP_JMP_GT:
-		g.w.op(OP_WASM_I32_GT_S)
+		if unsigned {
+			g.w.op(OP_WASM_I32_GT_U)
+		} else {
+			g.w.op(OP_WASM_I32_GT_S)
+		}
 	case ir.OP_JMP_LEQ:
-		g.w.op(OP_WASM_I32_LE_S)
+		if unsigned {
+			g.w.op(OP_WASM_I32_LE_U)
+		} else {
+			g.w.op(OP_WASM_I32_LE_S)
+		}
 	case ir.OP_JMP_GEQ:
-		g.w.op(OP_WASM_I32_GE_S)
+		if unsigned {
+			g.w.op(OP_WASM_I32_GE_U)
+		} else {
+			g.w.op(OP_WASM_I32_GE_S)
+		}
 	}
 }
 

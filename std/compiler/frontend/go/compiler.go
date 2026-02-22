@@ -720,6 +720,40 @@ func typeWidth(name string) int {
 	return 0
 }
 
+func isUnsignedTypeName(name string) bool {
+	for len(name) > 0 && name[0] == '*' {
+		name = name[1:]
+	}
+	i := len(name) - 1
+	for i >= 0 {
+		if name[i] == '.' {
+			name = name[i+1:]
+			break
+		}
+		i--
+	}
+	switch name {
+	case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
+		return true
+	}
+	return false
+}
+
+func (c *Compiler) isUnsignedComparison(node *Node) bool {
+	if node == nil || node.X == nil || node.Y == nil {
+		return false
+	}
+	left := c.resolveExprType(node.X)
+	if left == "" {
+		left = c.exprConcreteType(node.X)
+	}
+	right := c.resolveExprType(node.Y)
+	if right == "" {
+		right = c.exprConcreteType(node.Y)
+	}
+	return isUnsignedTypeName(left) || isUnsignedTypeName(right)
+}
+
 // exprWidth infers the operand width from an AST expression.
 // Returns 0 for word-sized, or 1/2/4/8 for explicitly sized types.
 func (c *Compiler) exprWidth(node *Node) int {
@@ -3145,7 +3179,11 @@ func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
 	}
 	c.compileExpr(node.X)
 	c.compileExpr(node.Y)
-	c.emit(ir.Inst{Op: irOp, Arg: targetLabel, Width: c.exprWidth(node)})
+	inst := ir.Inst{Op: irOp, Arg: targetLabel, Width: c.exprWidth(node)}
+	if (op == "<" || op == ">" || op == "<=" || op == ">=") && c.isUnsignedComparison(node) {
+		inst.Name = "unsigned"
+	}
+	c.emit(inst)
 	return true
 }
 
