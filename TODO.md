@@ -21,7 +21,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 ## Identifier and scope resolution
 - [x] Reject undefined identifiers on read/write.
 - [x] Reject undefined type names.
-- [ ] Fix `if init` variable scope leakage.
+- [x] Fix `if init` variable scope leakage.
 
 ## Assignment/call/return arity validation
 - [x] Enforce assignment LHS/RHS arity matching.
@@ -48,7 +48,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 
 ## Constant evaluation
 - [x] Reject constant division by zero.
-- [ ] Implement proper arbitrary-precision constant handling.
+- [x] Handle large shifted constants in constant folding.
 
 ## Redeclaration rules
 - [x] Reject global variable redeclaration.
@@ -64,5 +64,5 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Make missing imports hard compile errors.
 
 ## Regression discipline
-- [ ] Keep `tests/compiler_bugs/manifest.txt` in sync as behavior changes.
-- [ ] For each fixed item, update expected outcome and keep suite passing.
+- [x] Keep `tests/compiler_bugs/manifest.txt` in sync as behavior changes.
+- [x] For each fixed item, update expected outcome and keep suite passing.
