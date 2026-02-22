@@ -1846,6 +1846,14 @@ func (c *Compiler) compileStmt(node *Node) {
 	switch node.Kind {
 	case NVarDecl:
 		if len(node.Nodes) > 0 {
+			if rhs, ok := sharedVarDeclRHS(node.Nodes); ok {
+				lhs := make([]*Node, 0, len(node.Nodes))
+				for _, child := range node.Nodes {
+					lhs = append(lhs, &Node{Kind: NIdent, Name: child.Name, Pos: child.Pos})
+				}
+				c.compileAssign(&Node{Kind: NAssign, Name: ":=", Nodes: lhs, Y: rhs, Pos: node.Pos})
+				return
+			}
 			for _, child := range node.Nodes {
 				c.compileVarDecl(child)
 			}
@@ -1930,6 +1938,22 @@ func (c *Compiler) compileStmt(node *Node) {
 	default:
 		panic("ICE: unhandled statement kind in compileStmt")
 	}
+}
+
+func sharedVarDeclRHS(decls []*Node) (*Node, bool) {
+	if len(decls) < 2 {
+		return nil, false
+	}
+	rhs := decls[0].X
+	if rhs == nil {
+		return nil, false
+	}
+	for _, decl := range decls {
+		if decl == nil || decl.Kind != NVarDecl || decl.X != rhs || decl.Type != nil {
+			return nil, false
+		}
+	}
+	return rhs, true
 }
 
 func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
@@ -2086,6 +2110,10 @@ func (c *Compiler) compileAssign(node *Node) {
 		isDefine := node.Name == ":="
 		// Multi-value assignment with comma-separated RHS: a, b := 1, 2
 		if node.Body != nil && node.Body.Kind == NBlock && len(node.Body.Nodes) > 0 {
+			if len(node.Body.Nodes) != len(node.Nodes) {
+				c.errorf("%s: assignment count mismatch: %d variables but %d values", c.curFunc.Name, len(node.Nodes), len(node.Body.Nodes))
+				return
+			}
 			for _, rhs := range node.Body.Nodes {
 				c.compileExpr(rhs)
 			}
@@ -2119,6 +2147,10 @@ func (c *Compiler) compileAssign(node *Node) {
 		}
 
 		// Multi-value assignment: a, b = expr or a, b := expr
+		if node.Y != nil && c.exprReturnCount(node.Y) != len(node.Nodes) {
+			c.errorf("%s: assignment count mismatch: %d variables but %d values", c.curFunc.Name, len(node.Nodes), c.exprReturnCount(node.Y))
+			return
+		}
 		c.compileExpr(node.Y)
 
 		// Track interface-typed, string-typed, and concrete-typed locals from multi-value := assignments
@@ -2160,6 +2192,10 @@ func (c *Compiler) compileAssign(node *Node) {
 	}
 
 	if node.Name == ":=" {
+		if node.Y != nil && c.exprReturnCount(node.Y) != 1 {
+			c.errorf("%s: assignment count mismatch: 1 variable but %d values", c.curFunc.Name, c.exprReturnCount(node.Y))
+			return
+		}
 		// Short var decl
 		idx := c.addLocal(node.X.Name)
 		// Infer width from RHS expression for int64/uint64/etc.
@@ -2312,6 +2348,10 @@ func (c *Compiler) compileAssign(node *Node) {
 	}
 
 	// Regular assignment
+	if node.Y != nil && c.exprReturnCount(node.Y) != 1 {
+		c.errorf("%s: assignment count mismatch: 1 variable but %d values", c.curFunc.Name, c.exprReturnCount(node.Y))
+		return
+	}
 	c.compileExpr(node.Y)
 	if _, ok := c.lvalueInterfaceType(node.X); ok {
 		c.maybeBoxValueForInterface(node.Y)

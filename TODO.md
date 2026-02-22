@@ -24,7 +24,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [ ] Fix `if init` variable scope leakage.
 
 ## Assignment/call/return arity validation
-- [ ] Enforce assignment LHS/RHS arity matching.
+- [x] Enforce assignment LHS/RHS arity matching.
 - [ ] Enforce function call argument arity.
 - [ ] Enforce return statement arity and signature compliance.
 
