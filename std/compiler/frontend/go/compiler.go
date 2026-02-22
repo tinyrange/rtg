@@ -4645,6 +4645,16 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			return
 		}
 		if name == "len" {
+			if len(node.Nodes) != 1 {
+				c.errorf("%s: len expects exactly one argument", c.curFunc.Name)
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
+			if c.isDefinitelyInvalidLenArg(node.Nodes[0]) {
+				c.errorf("%s: invalid argument to len", c.curFunc.Name)
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
 			if len(node.Nodes) > 0 && c.isMapExpr(node.Nodes[0]) {
 				c.compileExpr(node.Nodes[0])
 				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapLen", Arg: 1})
@@ -4655,6 +4665,16 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			return
 		}
 		if name == "cap" {
+			if len(node.Nodes) != 1 {
+				c.errorf("%s: cap expects exactly one argument", c.curFunc.Name)
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
+			if c.isDefinitelyInvalidCapArg(node.Nodes[0]) {
+				c.errorf("%s: invalid argument to cap", c.curFunc.Name)
+				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
 			c.compileExpr(node.Nodes[0])
 			c.emit(ir.Inst{Op: ir.OP_CAP})
 			return
@@ -4705,10 +4725,17 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			if len(c.deferNames) > 0 {
 				c.emitDeferredCalls()
 			}
-			if len(node.Nodes) > 0 {
-				c.compileExpr(node.Nodes[0])
-			} else {
+			if len(node.Nodes) != 1 {
+				c.errorf("%s: panic expects exactly one argument", c.curFunc.Name)
 				c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "panic"})
+				c.emit(ir.Inst{Op: ir.OP_PANIC})
+				return
+			}
+			arg := node.Nodes[0]
+			c.compileExpr(arg)
+			if !c.isStringTypedExpr(arg) && !isStringExpr(arg) {
+				c.maybeBoxValueForInterface(arg)
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Tostring", Arg: 1})
 			}
 			c.emit(ir.Inst{Op: ir.OP_PANIC})
 			return
@@ -6017,11 +6044,89 @@ func (c *Compiler) compileIndexExpr(node *Node) {
 		c.emit(ir.Inst{Op: ir.OP_DROP})
 		return
 	}
+	if c.isDefinitelyNonIndexableExpr(node.X) {
+		c.errorf("%s: cannot index non-indexable expression", c.curFunc.Name)
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
 	elemSize := c.exprElemSize(node.X)
 	c.compileExpr(node.X)
 	c.compileExpr(node.Y)
 	c.emit(ir.Inst{Op: ir.OP_INDEX_ADDR, Arg: elemSize})
 	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: elemSize})
+}
+
+func (c *Compiler) isDefinitelyNonIndexableExpr(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if c.isMapExpr(node) || c.isStringTypedExpr(node) || isStringExpr(node) {
+		return false
+	}
+	t := c.resolveExprType(node)
+	if t == "" {
+		return false
+	}
+	if t == "string" || strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "[") || strings.HasPrefix(t, "map[") {
+		return false
+	}
+	return true
+}
+
+func (c *Compiler) isDefinitelyInvalidLenArg(node *Node) bool {
+	if node == nil {
+		return true
+	}
+	switch node.Kind {
+	case NIntLit, NRuneLit, NStringLit:
+		return node.Kind != NStringLit
+	}
+	if c.isMapExpr(node) || c.isStringTypedExpr(node) || isStringExpr(node) {
+		return false
+	}
+	t := c.resolveExprType(node)
+	if t == "" {
+		return false
+	}
+	if t == "string" || strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "[") || strings.HasPrefix(t, "map[") {
+		return false
+	}
+	return isDefinitelyScalarTypeName(t)
+}
+
+func (c *Compiler) isDefinitelyInvalidCapArg(node *Node) bool {
+	if node == nil {
+		return true
+	}
+	switch node.Kind {
+	case NIntLit, NRuneLit, NStringLit:
+		return true
+	}
+	if c.isMapExpr(node) || c.isStringTypedExpr(node) || isStringExpr(node) {
+		return true
+	}
+	t := c.resolveExprType(node)
+	if t == "" {
+		return false
+	}
+	if strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "[") {
+		return false
+	}
+	if t == "string" || strings.HasPrefix(t, "map[") {
+		return true
+	}
+	return isDefinitelyScalarTypeName(t)
+}
+
+func isDefinitelyScalarTypeName(t string) bool {
+	switch t {
+	case "bool",
+		"int", "int16", "int32", "int64",
+		"uint", "uint16", "uint32", "uint64",
+		"uintptr", "byte", "rune":
+		return true
+	}
+	return false
 }
 
 // mapExprKeyKind returns the key kind of a map expression (0=int, 1=string, -1=not a map).
