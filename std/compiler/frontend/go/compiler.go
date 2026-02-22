@@ -2296,6 +2296,27 @@ func isBuiltinTypeName(t string) bool {
 func (c *Compiler) compileAssign(node *Node) {
 	if len(node.Nodes) > 0 {
 		isDefine := node.Name == ":="
+		if isDefine && !c.inIfInit && len(c.scopes) > 0 {
+			scope := c.scopes[len(c.scopes)-1]
+			hasNew := false
+			for _, lhs := range node.Nodes {
+				if lhs == nil || lhs.Kind != NIdent || lhs.Name == "_" {
+					continue
+				}
+				if _, exists := scope[lhs.Name]; !exists {
+					hasNew = true
+					break
+				}
+				if c.ifInitLeakedNames != nil && c.ifInitLeakedNames[lhs.Name] {
+					hasNew = true
+					break
+				}
+			}
+			if !hasNew {
+				c.errorf("%s: no new variables on left side of :=", c.curFunc.Name)
+				return
+			}
+		}
 		// Multi-value assignment with comma-separated RHS: a, b := 1, 2
 		if node.Body != nil && node.Body.Kind == NBlock && len(node.Body.Nodes) > 0 {
 			if len(node.Body.Nodes) != len(node.Nodes) {
