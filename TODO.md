@@ -47,7 +47,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Enforce string escape validation.
 
 ## Constant evaluation
-- [ ] Reject constant division by zero.
+- [x] Reject constant division by zero.
 - [ ] Implement proper arbitrary-precision constant handling.
 
 ## Redeclaration rules

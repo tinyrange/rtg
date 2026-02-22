@@ -896,17 +896,28 @@ func (c *Compiler) evalConstExprWithIota(node *Node, iotaVal int64) int64 {
 		case "*":
 			return left * right
 		case "/":
-			if right != 0 {
-				return left / right
+			if right == 0 {
+				c.errorf("constant division by zero")
+				return 0
 			}
-			return 0
+			return left / right
 		case "%":
-			if right != 0 {
-				return left % right
+			if right == 0 {
+				c.errorf("constant modulo by zero")
+				return 0
 			}
-			return 0
+			return left % right
 		case "<<":
-			return left << uint(right)
+			if right < 0 || right >= 63 {
+				c.errorf("constant shift overflow")
+				return 0
+			}
+			shifted := left << uint(right)
+			if (shifted >> uint(right)) != left {
+				c.errorf("constant shift overflow")
+				return 0
+			}
+			return shifted
 		case ">>":
 			return left >> uint(right)
 		case "|":
