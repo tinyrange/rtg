@@ -154,7 +154,8 @@ func (g *CodeGen) compilePanic_linux386() {
 	g.popR32(REG32_EBP)
 	g.popR32(REG32_EDI)
 
-	// Crash: null dereference -> SIGSEGV
-	g.xorRR32(REG32_EAX, REG32_EAX)
-	g.loadMem32(REG32_EAX, REG32_EAX, 0) // mov eax, [eax] -> segfault
+	// exit(2): return a clean panic status instead of deliberate SIGSEGV.
+	g.emitMovRegImm32(REG32_EBX, 2) // status
+	g.emitMovRegImm32(REG32_EAX, 1) // SYS_exit
+	g.emitInt80()
 }

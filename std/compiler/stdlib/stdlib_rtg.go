@@ -6,7 +6,7 @@ import (
 	"embed"
 )
 
-//go:embed ..
+//go:embed ../..
 var embeddedStd embed.FS
 
 func HasEmbeddedStd() bool {
