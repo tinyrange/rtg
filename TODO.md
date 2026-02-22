@@ -7,7 +7,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Fix `fallthrough` in `switch`.
 - [x] Fix `break` handling in `switch`.
 - [x] Fix labeled `break`/`continue` targets.
-- [ ] Reject illegal `break`/`continue` outside loops/switch.
+- [x] Reject illegal `break`/`continue` outside loops/switch.
 
 ## Type-checking gaps
 - [ ] Enforce boolean conditions for `if`/`for`.
