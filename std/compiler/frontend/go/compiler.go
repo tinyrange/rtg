@@ -910,17 +910,15 @@ func (c *Compiler) evalConstExprWithIota(node *Node, iotaVal int64) int64 {
 			}
 			return left % right
 		case "<<":
-			if right < 0 || right >= 63 {
+			if right < 0 || right >= 64 {
 				c.errorf("constant shift overflow")
 				return 0
 			}
-			shifted := left << uint(right)
-			if (shifted >> uint(right)) != left {
-				c.errorf("constant shift overflow")
-				return 0
-			}
-			return shifted
+			return int64(uint64(left) << uint(right))
 		case ">>":
+			if v, ok := c.evalRightShiftViaConstLeftShift(node.X, right, iotaVal); ok {
+				return v
+			}
 			return left >> uint(right)
 		case "|":
 			return left | right
@@ -954,6 +952,33 @@ func (c *Compiler) evalConstExprWithIota(node *Node, iotaVal int64) int64 {
 		return 0
 	}
 	return 0
+}
+
+func (c *Compiler) evalRightShiftViaConstLeftShift(leftExpr *Node, rightShift int64, iotaVal int64) (int64, bool) {
+	if leftExpr == nil || leftExpr.Kind != NIdent || rightShift < 0 {
+		return 0, false
+	}
+	sym, ok := c.curPkg.Symbols[leftExpr.Name]
+	if !ok || sym.Kind != SymConst || sym.Node == nil || sym.Node.X == nil {
+		return 0, false
+	}
+	shiftExpr := sym.Node.X
+	if shiftExpr.Kind != NBinaryExpr || shiftExpr.Name != "<<" || shiftExpr.Y == nil {
+		return 0, false
+	}
+	leftShift := c.evalConstExprWithIota(shiftExpr.Y, iotaVal)
+	if leftShift < 0 {
+		return 0, false
+	}
+	base := c.evalConstExprWithIota(shiftExpr.X, iotaVal)
+	if leftShift >= rightShift {
+		netShift := leftShift - rightShift
+		if netShift >= 63 {
+			return 0, false
+		}
+		return base << uint(netShift), true
+	}
+	return base >> uint(rightShift-leftShift), true
 }
 
 func (c *Compiler) isConstStringExpr(node *Node) bool {
