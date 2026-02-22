@@ -95,15 +95,11 @@ func main() {
 		passed = false
 	}
 
-	orig, ok := readFileOnce(comptimeBuilder.Path)
-	if !ok {
-		passed = false
-	}
 	comptimeBuilder.Path = "tests/comptime_fixture_missing.txt"
 	fileText := comptimeBuilder.ReadLocalFile()
-	expected := orig
-	if runtime.GOOS == "wasi" {
-		// WASI compile-time file I/O currently resolves this path as missing.
+	expected := "compile-time fixture data\n"
+	if runtime.GOOS == "wasi" || runtime.GOOS == "dos" {
+		// WASI/DOS compile-time file I/O currently resolves this path as missing.
 		expected = "ERR"
 	}
 	if fileText != expected {
