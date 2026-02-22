@@ -1670,7 +1670,7 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 			vm.vmSysReturn(int64(addr))
 		}
 
-	case "SysGetCommandLine", "winGetCommandLine":
+	case "SysGetCommandLine":
 		cmd := ""
 		i := 0
 		for i < len(vmArgs) {
@@ -1682,7 +1682,7 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		}
 		vm.vmSysReturn(int64(vm.writeCString(cmd)))
 
-	case "SysGetEnvStrings", "winGetEnvStrings":
+	case "SysGetEnvStrings":
 		// Return an empty environment block (double-NUL terminated).
 		addr := vm.alloc(2, "env-strings")
 		vm.storeN(addr, 0, 1)
@@ -1714,40 +1714,6 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		}
 		vm.push(strAddr)
 		vm.push(1)
-
-	case "winVirtualAlloc":
-		// Legacy windows intrinsic name used by older self-hosted compiler stages.
-		vm.execIntrinsic("SysMmap", localsAddr, ws)
-
-	case "winReadFile":
-		vm.execIntrinsic("SysRead", localsAddr, ws)
-	case "winWriteFile":
-		vm.execIntrinsic("SysWrite", localsAddr, ws)
-	case "winCreateFile":
-		vm.execIntrinsic("SysOpen", localsAddr, ws)
-	case "winCloseHandle":
-		vm.execIntrinsic("SysClose", localsAddr, ws)
-	case "winGetFileAttributes":
-		vm.execIntrinsic("SysStat", localsAddr, ws)
-	case "winExitProcess":
-		vm.execIntrinsic("SysExit", localsAddr, ws)
-	case "winCreateDirectory":
-		vm.execIntrinsic("SysMkdir", localsAddr, ws)
-	case "winRemoveDirectory":
-		vm.execIntrinsic("SysRmdir", localsAddr, ws)
-	case "winDeleteFile":
-		vm.execIntrinsic("SysUnlink", localsAddr, ws)
-	case "winGetLastError":
-		// Legacy windows intrinsic name used by older self-hosted compiler stages.
-		// Return syscall-style triple for compatibility with older wrappers.
-		// Keep both r1 and errno non-zero so either consumption pattern sees an error.
-		vm.push(1)
-		vm.push(0)
-		vm.push(1)
-	case "winGetCurrentDirectory":
-		vm.execIntrinsic("SysGetcwd", localsAddr, ws)
-	case "winGetCurrentProcessId":
-		vm.execIntrinsic("SysGetpid", localsAddr, ws)
 
 	case "SysOpendir":
 		pathAddr := vm.localGet(localsAddr, ws, 0)
