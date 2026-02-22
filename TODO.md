@@ -15,7 +15,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Enforce comparability/type compatibility in comparisons.
 - [x] Reject dereference of non-pointers.
 - [x] Reject indexing non-indexable values.
-- [ ] Validate `len`/`cap` argument types.
+- [x] Validate `len`/`cap` argument types.
 - [x] Validate `panic` arity and argument typing.
 
 ## Identifier and scope resolution
@@ -60,7 +60,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [ ] Fix deferred function-value calls/linking.
 
 ## Driver/import diagnostics
-- [ ] Ensure `-run` preserves child process exit code semantics.
+- [x] Ensure `-run` preserves child process exit code semantics.
 - [x] Make missing imports hard compile errors.
 
 ## Regression discipline
