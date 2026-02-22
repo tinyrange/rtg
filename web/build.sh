@@ -11,7 +11,11 @@ fi
 
 # Step 2: Compile WASM compiler (without embedded std to reduce size)
 echo "Compiling WASM compiler..."
-./build/rtg -T wasi/wasm32 -tags no_embed_std -o web/compiler.wasm ./std/compiler/
+GIT_HASH="$(git rev-parse --short=12 HEAD 2>/dev/null || true)"
+if [ -z "$GIT_HASH" ]; then
+  GIT_HASH="unknown"
+fi
+./build/rtg -T wasi/wasm32 -tags no_embed_std -D "main.compilerBuildGitHash=$GIT_HASH" -o web/compiler.wasm ./std/compiler/
 echo "Generated web/compiler.wasm ($(wc -c < web/compiler.wasm) bytes)"
 
 # Step 3: Bundle everything into a single playground.html

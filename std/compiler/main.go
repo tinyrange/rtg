@@ -27,6 +27,7 @@ var compileTarget = common.Target{
 	CModel:                0,                // 16/32/64 when targetBackend==c
 	WordSize:              defaultPtrSize(), // word size in bytes
 	BuildTags:             []string{},
+	Defines:               map[string]string{},
 	CompilerDebug:         false,
 	StripBinary:           false,
 	StdlibIncludePaths:    []string{},
@@ -145,12 +146,16 @@ func main() {
 	var extractStdlibDest string
 	var runMode bool
 	var stdinInput bool
+	var showVersion bool
 	var programArgs []string
 	i := 1
 	for i < len(os.Args) {
 		if os.Args[i] == "-h" || os.Args[i] == "--help" {
 			printHelp(os.Args[0], os.Stdout)
 			os.Exit(0)
+		} else if os.Args[i] == "-version" || os.Args[i] == "--version" {
+			showVersion = true
+			i = i + 1
 		} else if os.Args[i] == "-run" {
 			runMode = true
 			i = i + 1
@@ -259,6 +264,15 @@ func main() {
 		} else if os.Args[i] == "-tags" && i+1 < len(os.Args) {
 			extraTags = os.Args[i+1]
 			i = i + 2
+		} else if os.Args[i] == "-D" && i+1 < len(os.Args) {
+			key, value, ok := parseDefineArg(os.Args[i+1])
+			if !ok {
+				fmt.Fprintf(os.Stderr, "invalid -D value %q: expected key=value\n", os.Args[i+1])
+				runCleanup()
+				os.Exit(1)
+			}
+			compileTarget.Defines[key] = value
+			i = i + 2
 		} else if os.Args[i] == "-include" && i+1 < len(os.Args) {
 			val := common.NormalizePath(os.Args[i+1])
 			if !compileTarget.StdlibIncludeExplicit {
@@ -295,6 +309,10 @@ func main() {
 			entryFiles = append(entryFiles, common.NormalizePath(os.Args[i]))
 			i = i + 1
 		}
+	}
+	if showVersion {
+		fmt.Fprintf(os.Stdout, "%s\n", compilerStamp())
+		os.Exit(0)
 	}
 	if stdinInput {
 		if fromIRBinaryPath != "" {
@@ -369,6 +387,11 @@ func main() {
 	compileTarget.BuildTags = append(compileTarget.BuildTags, "rtg")
 	if ir.SizeAnalysisPath != "" {
 		compileTarget.StripBinary = true
+	}
+	if compilerBuildGitHash != "" {
+		if _, ok := compileTarget.Defines["main.compilerBuildGitHash"]; !ok {
+			compileTarget.Defines["main.compilerBuildGitHash"] = compilerBuildGitHash
+		}
 	}
 	traceExit(10)
 
@@ -596,6 +619,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -o <path>              Output path (default: output)\n")
 	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
+	fmt.Fprintf(out, "  -D <key=value>         Set a string value for a global variable symbol\n")
 	fmt.Fprintf(out, "  -include <path|->      Add stdlib search root; first -include disables default embedded stdlib, -include - re-enables it\n")
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
@@ -606,6 +630,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -list-build-tags <p>   Write discovered build tags (one per line)\n")
 	fmt.Fprintf(out, "  -run                   Compile and run the output binary\n")
 	fmt.Fprintf(out, "  -size-analysis <path>  Write per-function size analysis JSON\n")
+	fmt.Fprintf(out, "  -version, --version    Print compiler stamp\n")
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
 	fmt.Fprintf(out, "  -strip, -s             Strip symbol/debug metadata from native binaries\n")
 	fmt.Fprintf(out, "  -h, --help             Show this help\n")
@@ -614,6 +639,19 @@ func printHelp(program string, out *os.File) {
 	for _, target := range possibleTargets() {
 		fmt.Fprintf(out, "  %s\n", target)
 	}
+}
+
+func parseDefineArg(raw string) (string, string, bool) {
+	eq := strings.Index(raw, "=")
+	if eq <= 0 {
+		return "", "", false
+	}
+	key := raw[0:eq]
+	value := raw[eq+1:]
+	if key == "" {
+		return "", "", false
+	}
+	return key, value, true
 }
 
 func possibleTargets() []string {

@@ -37,6 +37,7 @@ const tagsPanel = document.getElementById("tags-panel");
 const tagsList = document.getElementById("tags-list");
 const tagsMeta = document.getElementById("tags-meta");
 const btnRescanTags = document.getElementById("btn-rescan-tags");
+const compilerStampEl = document.getElementById("compiler-stamp");
 
 // --- Init ---
 function init() {
@@ -413,10 +414,30 @@ async function loadCompilerModule() {
     }
     compilerModule = await WebAssembly.compileStreaming(fetch("compiler.wasm"));
     setStatus("Ready");
+    await loadCompilerStamp();
     discoverBuildTags();
   } catch (e) {
     setStatus("Error loading compiler: " + e.message);
   }
+}
+
+async function loadCompilerStamp() {
+  if (!compilerModule || !compilerStampEl) return;
+  try {
+    const fs = new VirtualFS();
+    let stamp = "";
+    const exitCode = await runCompilerInWasi(fs, ["rtg", "-version"], {
+      onStdout: (data) => {
+        stamp += new TextDecoder().decode(data);
+      },
+    });
+    const clean = stamp.trim();
+    if (exitCode === 0 && clean.length > 0) {
+      compilerStampEl.textContent = "RTG " + clean;
+      return;
+    }
+  } catch {}
+  compilerStampEl.textContent = "RTG unknown";
 }
 
 async function runCompilerInWasi(fs, args, handlers = {}) {

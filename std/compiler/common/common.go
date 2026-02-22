@@ -10,6 +10,7 @@ type Target struct {
 	CModel                int    // 16/32/64 when targetBackend==c
 	WordSize              int    // word size in bytes
 	BuildTags             []string
+	Defines               map[string]string
 	CompilerDebug         bool
 	StripBinary           bool
 	StdlibIncludePaths    []string
