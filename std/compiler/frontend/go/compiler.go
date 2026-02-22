@@ -306,9 +306,9 @@ func isBuiltinName(name string) bool {
 	case 'd':
 		return name == "delete"
 	case 'i':
-		return name == "int" || name == "int16" || name == "int32" || name == "int64" || name == "iota" || name == "imag"
+		return name == "int" || name == "int8" || name == "int16" || name == "int32" || name == "int64" || name == "iota" || name == "imag"
 	case 'u':
-		return name == "uint" || name == "uint16" || name == "uint32" || name == "uint64" || name == "uintptr"
+		return name == "uint" || name == "uint8" || name == "uint16" || name == "uint32" || name == "uint64" || name == "uintptr"
 	case 'b':
 		return name == "byte" || name == "bool"
 	case 's':
@@ -670,7 +670,7 @@ func (c *Compiler) resolveExprType(node *Node) string {
 		}
 		if node.X != nil && node.X.Kind == NIdent {
 			switch node.X.Name {
-			case "int", "uintptr", "uint", "byte", "int16", "int32", "int64", "uint16", "uint32", "uint64":
+			case "int", "uintptr", "uint", "byte", "int8", "uint8", "int16", "int32", "int64", "uint16", "uint32", "uint64":
 				return node.X.Name
 			}
 		}
@@ -3075,7 +3075,7 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 		}
 		if expr.X != nil && expr.X.Kind == NIdent {
 			switch expr.X.Name {
-			case "int", "uintptr", "uint", "byte", "int16", "int32", "int64", "uint16", "uint32", "uint64":
+			case "int", "uintptr", "uint", "byte", "int8", "uint8", "int16", "int32", "int64", "uint16", "uint32", "uint64":
 				return expr.X.Name
 			}
 		}
@@ -4964,7 +4964,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			return
 		}
 		// Type conversions: int(), uintptr(), byte(), string(), int16(), int32()
-		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "string" || name == "int16" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" {
+		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "int8" || name == "uint8" || name == "string" || name == "int16" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" {
 			arg := node.Nodes[0]
 			c.compileExpr(arg)
 			if name == "string" {

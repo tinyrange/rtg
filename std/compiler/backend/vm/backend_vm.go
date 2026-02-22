@@ -1348,6 +1348,13 @@ func (vm *VM) execFunc(f *ir.IRFunc) {
 			case "byte":
 				a := vm.pop()
 				vm.push(a & 0xFF)
+			case "uint8":
+				a := vm.pop()
+				vm.push(a & 0xFF)
+			case "int8":
+				a := vm.pop()
+				v := int8(uint8(a))
+				vm.push(uint64(int64(v)) & vm.config.WordMask)
 			case "uint16":
 				a := vm.pop()
 				vm.push(a & 0xFFFF)
