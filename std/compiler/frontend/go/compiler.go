@@ -3310,13 +3310,29 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 func (c *Compiler) compileIf(node *Node) {
 	elseLabel := c.newLabel()
 	endLabel := c.newLabel()
+	var initScopeNames []string
 
 	// Compile init statement if present (e.g. if x, ok := m[k]; ok { ... })
 	if len(node.Nodes) > 0 {
+		existing := make(map[string]bool)
+		if len(c.scopes) > 0 {
+			scope := c.scopes[len(c.scopes)-1]
+			for name := range scope {
+				existing[name] = true
+			}
+		}
 		savedInIfInit := c.inIfInit
 		c.inIfInit = true
 		c.compileStmt(node.Nodes[0])
 		c.inIfInit = savedInIfInit
+		if len(c.scopes) > 0 {
+			scope := c.scopes[len(c.scopes)-1]
+			for name := range scope {
+				if !existing[name] {
+					initScopeNames = append(initScopeNames, name)
+				}
+			}
+		}
 	}
 
 	c.compileCondJump(node.X, false, elseLabel)
@@ -3350,6 +3366,12 @@ func (c *Compiler) compileIf(node *Node) {
 		c.stackDepth = thenDepth
 	}
 	c.emitLabel(endLabel)
+	if len(c.scopes) > 0 {
+		scope := c.scopes[len(c.scopes)-1]
+		for _, name := range initScopeNames {
+			delete(scope, name)
+		}
+	}
 }
 
 func (c *Compiler) invertCmpOp(op string) string {
