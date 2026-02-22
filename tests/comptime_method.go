@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	comptime "j5.nz/rtg/x/comptime"
 )
 
@@ -27,7 +26,7 @@ func (b ComptimeBuilder) IntValue() int {
 
 //rtg:comptime
 func (b ComptimeBuilder) StringValue() string {
-	return "value:" + "ok"
+	return "value:ok"
 }
 
 //rtg:comptime
@@ -85,5 +84,5 @@ func main() {
 	if fileText != expected && fileText != altExpected {
 		panic("file")
 	}
-	fmt.Printf("PASS\n")
+	print("PASS\n")
 }
