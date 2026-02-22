@@ -1128,6 +1128,14 @@ func (g *CodeGen) compileConvert(typeName string) {
 		g.opPop(REG_RAX)
 		g.movzxB(REG_RAX)
 		g.opPush(REG_RAX)
+	case "uint8":
+		g.opPop(REG_RAX)
+		g.movzxB(REG_RAX)
+		g.opPush(REG_RAX)
+	case "int8":
+		g.opPop(REG_RAX)
+		g.movsxB(REG_RAX)
+		g.opPush(REG_RAX)
 	case "uint16":
 		g.opPop(REG_RAX)
 		g.movzxW(REG_RAX)

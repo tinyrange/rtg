@@ -887,6 +887,16 @@ func (g *CodeGen) compileConvert_i386(typeName string) {
 		g.opPop(REG32_EAX)
 		g.movzxB32(REG32_EAX)
 		g.opPush(REG32_EAX)
+	case "uint8":
+		g.opPop(REG32_EAX)
+		g.movzxB32(REG32_EAX)
+		g.opPush(REG32_EAX)
+	case "int8":
+		g.opPop(REG32_EAX)
+		// Sign-extend low byte via shift pair (EAX = int8(EAX)).
+		g.emitBytes(0xc1, 0xe0, 24) // shl eax, 24
+		g.emitBytes(0xc1, 0xf8, 24) // sar eax, 24
+		g.opPush(REG32_EAX)
 	case "uint16":
 		g.opPop(REG32_EAX)
 		g.movzxW32(REG32_EAX)

@@ -33,7 +33,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Fix unsigned right-shift codegen.
 - [x] Fix unsigned division codegen.
 - [x] Enforce width truncation/wrap for `int8`/`uint8`/`int32`.
-- [ ] Implement missing numeric conversion handling (`uint8(x)`, `int8(x)`, etc.).
+- [x] Implement missing numeric conversion handling (`uint8(x)`, `int8(x)`, etc.).
 
 ## Arrays and range behavior
 - [ ] Fix local array allocation/storage semantics.

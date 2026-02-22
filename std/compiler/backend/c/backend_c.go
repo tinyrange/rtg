@@ -1165,6 +1165,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 					}
 				case "byte":
 					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
+				case "uint8":
+					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
+				case "int8":
+					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(signed char)(unsigned char)a);\n")
 				case "uint16":
 					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffffu);\n")
 				case "int16":

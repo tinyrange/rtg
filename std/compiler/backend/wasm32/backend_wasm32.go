@@ -2951,6 +2951,24 @@ func (g *WasmGen) compileConvert(typeName string) {
 		g.w.i32Const(0xff)
 		g.w.op(OP_WASM_I32_AND)
 		g.pushType(WASM_TYPE_I32)
+	case "uint8":
+		t := g.popType()
+		if t == WASM_TYPE_I64 {
+			g.w.i32WrapI64()
+		}
+		g.w.i32Const(0xff)
+		g.w.op(OP_WASM_I32_AND)
+		g.pushType(WASM_TYPE_I32)
+	case "int8":
+		t := g.popType()
+		if t == WASM_TYPE_I64 {
+			g.w.i32WrapI64()
+		}
+		g.w.i32Const(24)
+		g.w.op(OP_WASM_I32_SHL)
+		g.w.i32Const(24)
+		g.w.op(OP_WASM_I32_SHR_S)
+		g.pushType(WASM_TYPE_I32)
 	case "uint16":
 		t := g.popType()
 		if t == WASM_TYPE_I64 {

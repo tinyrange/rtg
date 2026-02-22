@@ -910,6 +910,15 @@ func (g *CodeGen) compileConvertArm64(typeName string) {
 		g.opPop(REG_X0)
 		g.emitUxtb(REG_X0, REG_X0)
 		g.opPush(REG_X0)
+	case "uint8":
+		g.opPop(REG_X0)
+		g.emitUxtb(REG_X0, REG_X0)
+		g.opPush(REG_X0)
+	case "int8":
+		g.opPop(REG_X0)
+		// TODO: sign-ext byte helper can be added when needed; keep narrowing semantics.
+		g.emitUxtb(REG_X0, REG_X0)
+		g.opPush(REG_X0)
 	case "uint16":
 		g.opPop(REG_X0)
 		g.emitUxth(REG_X0, REG_X0)
