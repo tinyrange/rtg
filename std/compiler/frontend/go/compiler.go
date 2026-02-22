@@ -3331,6 +3331,7 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 func (c *Compiler) compileSwitch(node *Node) {
 	savedDepth := c.stackDepth
 	endLabel := c.newLabel()
+	c.breaks = append(c.breaks, endLabel)
 	isTypeSwitch := node.Name == "typeswitch"
 	needsScope := node.X != nil
 	if needsScope {
@@ -3459,6 +3460,7 @@ func (c *Compiler) compileSwitch(node *Node) {
 	if needsScope {
 		c.popScope()
 	}
+	c.breaks = c.breaks[0 : len(c.breaks)-1]
 	c.stackDepth = savedDepth // switch should have net-zero effect
 }
 
