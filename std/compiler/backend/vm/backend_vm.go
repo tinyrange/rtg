@@ -2006,6 +2006,22 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		a5 := vm.localGet(localsAddr, ws, 6)
 		vm.execSyscallIntrinsic(num, ws, a0, a1, a2, a3, a4, a5)
 
+	case "winVirtualAlloc":
+		_ = vm.localGet(localsAddr, ws, 0) // addr (ignored)
+		size := vm.localGet(localsAddr, ws, 1)
+		_ = vm.localGet(localsAddr, ws, 2) // allocType (ignored)
+		_ = vm.localGet(localsAddr, ws, 3) // protect (ignored)
+		if size == 0 {
+			vm.push(0)
+			vm.push(0)
+			vm.push(1)
+			return
+		}
+		p := vm.alloc(size, "win-virtualalloc")
+		vm.push(p)
+		vm.push(0)
+		vm.push(0)
+
 	case "AsmAmd64Begin":
 		params := int(vm.localGet(localsAddr, ws, 1))
 		vm.vmAsmBegin(params)

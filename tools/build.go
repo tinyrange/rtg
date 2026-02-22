@@ -722,6 +722,12 @@ func (e *Executor) handleFullCompiler(args []string) error {
 	for _, testPath := range tests {
 		base := filepath.Base(testPath)
 		name := strings.TrimSuffix(base, fileExt(base))
+		if strings.HasSuffix(name, "_amd64") {
+			if backend != "rtg" || targetArch != "amd64" {
+				fmt.Printf("SKIP: %s/%s (amd64-only test)\n", backend, name)
+				continue
+			}
+		}
 		if backend == "wasm" && name == "iface_typeassert" {
 			fmt.Printf("SKIP: %s/%s (known wasm32 type-assertion issue)\n", backend, name)
 			continue
