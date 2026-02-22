@@ -115,6 +115,10 @@ type VM struct {
 	slabLargeEnd  int
 	slabLargeFree uint64
 
+	// Reusable scratch area for intrinsic argument marshalling.
+	intrinsicScratchAddr  uint64
+	intrinsicScratchWords int
+
 	// Execution state
 	exited bool
 
@@ -871,7 +875,15 @@ func (vm *VM) execIntrinsicArgs(name string, ws uint64, args ...uint64) {
 		vm.execIntrinsic(name, 0, ws)
 		return
 	}
-	addr := vm.alloc(uint64(len(args))*ws, "intrinsic-args")
+	if vm.intrinsicScratchWords < len(args) || vm.intrinsicScratchAddr == 0 {
+		words := len(args)
+		if words < 8 {
+			words = 8
+		}
+		vm.intrinsicScratchAddr = vm.alloc(uint64(words)*ws, "intrinsic-args-scratch")
+		vm.intrinsicScratchWords = words
+	}
+	addr := vm.intrinsicScratchAddr
 	i := 0
 	for i < len(args) {
 		vm.storeWord(addr+uint64(i)*ws, args[i])
@@ -1753,6 +1765,10 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.storeN(addr, 0, 1)
 		vm.storeN(addr+1, 0, 1)
 		vm.vmSysReturn(int64(addr))
+
+	case "winVirtualAlloc":
+		// Legacy windows intrinsic name used by older self-hosted compiler stages.
+		vm.execIntrinsic("SysMmap", localsAddr, ws)
 
 	case "SysOpendir":
 		pathAddr := vm.localGet(localsAddr, ws, 0)
