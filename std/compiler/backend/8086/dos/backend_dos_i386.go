@@ -15,7 +15,10 @@
 //
 // Syscall intrinsic follows your shim mapping:
 //
+//	3   -> read(fd, buf, count) via INT 21h AH=3Fh
 //	4   -> write(fd, buf, count) via INT 21h AH=40h
+//	5   -> open/create via INT 21h AH=3Dh/3Ch
+//	6   -> close(fd) via INT 21h AH=3Eh
 //	252 -> exit(code) via INT 21h AH=4Ch
 //	192 -> mmap(...) stub returning a fixed near heap base (0x7000)
 //
@@ -23,10 +26,8 @@
 package dos
 
 import (
-	"fmt"
 	"os"
 
-	"j5.nz/rtg/std/compiler/backend/becommon"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
@@ -159,23 +160,17 @@ func GenerateDOSCOM(target *common.Target, irmod *ir.IRModule, outputPath string
 		g.patchRel16At(fix.CodeOffset, off)
 	}
 	if len(unresolved) > 0 {
-		seen := map[string]bool{}
-		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
-		for _, name := range unresolved {
-			if !seen[name] {
-				fmt.Fprintf(os.Stderr, "  %s\n", name)
-				seen[name] = true
-			}
-		}
-		return fmt.Errorf("%d unresolved calls", len(unresolved))
+		reportUnresolvedCalls(unresolved)
+		return errUnresolvedCalls(len(unresolved))
 	}
 
 	com, err := g.buildCOM()
 	if err != nil {
+		writeSizeAnalysisTarget(*target)
 		return err
 	}
 	if err := os.WriteFile(outputPath, com, 0755); err != nil {
-		return fmt.Errorf("write output: %v", err)
+		return errWriteOutput(err)
 	}
 	return nil
 }
@@ -188,7 +183,7 @@ func (g *CodeGen) buildCOM() ([]byte, error) {
 	dataSize := len(g.data)
 	total := textSize + rodataSize + dataSize
 	if total > comMaxImage {
-		return nil, fmt.Errorf("COM image too large: %d bytes (max %d)", total, comMaxImage)
+		return nil, errCOMTooLarge(total, comMaxImage, textSize, rodataSize, dataSize)
 	}
 
 	rodataAddr := uint16(comLoadAddr + textSize)
@@ -283,162 +278,6 @@ func (g *CodeGen) compileFunc(f *ir.IRFunc) {
 	}
 }
 
-func (g *CodeGen) compileInst(inst ir.Inst) {
-	switch inst.Op {
-	case ir.OP_CONST_I64:
-		g.compileConst(int16(inst.Val))
-	case ir.OP_CONST_BOOL:
-		if inst.Arg != 0 {
-			g.compileConst(1)
-		} else {
-			g.compileConst(0)
-		}
-	case ir.OP_CONST_NIL:
-		g.compileConst(0)
-	case ir.OP_CONST_STR:
-		g.compileConstStr(inst.Name)
-
-	case ir.OP_LOCAL_GET:
-		g.localGet(inst.Arg)
-	case ir.OP_LOCAL_SET:
-		g.localSet(inst.Arg)
-	case ir.OP_LOCAL_ADD_IMM:
-		g.localAddImm(inst.Arg, int16(inst.Val))
-	case ir.OP_LOCAL_ADDR:
-		g.localAddr(inst.Arg)
-
-	case ir.OP_GLOBAL_GET:
-		g.globalGet(inst.Arg)
-	case ir.OP_GLOBAL_SET:
-		g.globalSet(inst.Arg)
-	case ir.OP_GLOBAL_ADDR:
-		g.globalAddr(inst.Arg)
-
-	case ir.OP_DROP:
-		g.opDrop()
-	case ir.OP_DUP:
-		g.opLoad(REG16_AX)
-		g.opPush(REG16_AX)
-
-	case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD,
-		ir.OP_AND, ir.OP_OR, ir.OP_XOR, ir.OP_SHL, ir.OP_SHR:
-		g.binOp(inst.Op)
-
-	case ir.OP_NEG:
-		g.opPop(REG16_AX)
-		g.negR16(REG16_AX)
-		g.opPush(REG16_AX)
-
-	case ir.OP_EQ:
-		g.compareToBool(CC16_E)
-	case ir.OP_NEQ:
-		g.compareToBool(CC16_NE)
-	case ir.OP_LT:
-		g.compareToBool(CC16_L)
-	case ir.OP_GT:
-		g.compareToBool(CC16_G)
-	case ir.OP_LEQ:
-		g.compareToBool(CC16_LE)
-	case ir.OP_GEQ:
-		g.compareToBool(CC16_GE)
-
-	case ir.OP_NOT:
-		g.opPop(REG16_AX)
-		g.xorImm8_16(REG16_AX, 0x01)
-		g.opPush(REG16_AX)
-
-	case ir.OP_LABEL:
-		g.labelOffsets[inst.Arg] = len(g.code)
-
-	case ir.OP_JMP:
-		off := g.jmpRel16()
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: off,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJmpRel16,
-		})
-
-	case ir.OP_JMP_IF:
-		g.opPop(REG16_AX)
-		g.testRR16(REG16_AX, REG16_AX)
-		off := g.jccNearRel16(CC16_NE)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: off,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJccRel16,
-			CC:         CC16_NE,
-		})
-
-	case ir.OP_JMP_IF_NOT:
-		g.opPop(REG16_AX)
-		g.testRR16(REG16_AX, REG16_AX)
-		off := g.jccNearRel16(CC16_E)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: off,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJccRel16,
-			CC:         CC16_E,
-		})
-
-	case ir.OP_JMP_EQ:
-		g.compareJump(CC16_E, inst.Arg)
-	case ir.OP_JMP_NEQ:
-		g.compareJump(CC16_NE, inst.Arg)
-	case ir.OP_JMP_LT:
-		g.compareJump(CC16_L, inst.Arg)
-	case ir.OP_JMP_GT:
-		g.compareJump(CC16_G, inst.Arg)
-	case ir.OP_JMP_LEQ:
-		g.compareJump(CC16_LE, inst.Arg)
-	case ir.OP_JMP_GEQ:
-		g.compareJump(CC16_GE, inst.Arg)
-
-	case ir.OP_CALL:
-		if len(inst.Name) > 18 && inst.Name[:18] == "builtin.composite." {
-			g.compositeLitCall(inst.Arg)
-		} else {
-			g.emitCallPlaceholder(inst.Name)
-		}
-
-	case ir.OP_CALL_INTRINSIC:
-		g.callIntrinsic(inst.Name)
-
-	case ir.OP_RETURN:
-		g.leave16()
-		g.ret16()
-
-	case ir.OP_LOAD:
-		g.memLoad(inst.Arg) // size in bytes: 1 or 2 (treat others as 2)
-	case ir.OP_STORE:
-		g.memStore(inst.Arg)
-	case ir.OP_OFFSET:
-		g.offset(inst.Arg)
-	case ir.OP_INDEX_ADDR:
-		g.indexAddr(inst.Arg)
-	case ir.OP_LEN:
-		g.sliceLen()
-	case ir.OP_CAP:
-		g.sliceCap()
-
-	case ir.OP_CONVERT:
-		g.convert(inst.Name)
-
-	case ir.OP_IFACE_BOX:
-		g.ifaceBox(inst.Arg)
-	case ir.OP_IFACE_CALL:
-		g.ifaceCall(inst.Name, inst.Arg)
-
-	case ir.OP_PANIC:
-		g.emitByte(0xCC) // int3
-
-	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
-		// handled by intrinsics/builtins in your IR
-
-	default:
-		panic("ICE: unhandled opcode in 8086 backend")
-	}
-}
-
 // ===== Constants / locals / globals =====
 
 func (g *CodeGen) compileConst(v int16) {
@@ -447,31 +286,6 @@ func (g *CodeGen) compileConst(v int16) {
 	} else {
 		g.emitMovImm16(REG16_AX, uint16(v))
 	}
-	g.opPush(REG16_AX)
-}
-
-func (g *CodeGen) compileConstStr(raw string) {
-	decoded := becommon.DecodeStringLiteral(raw)
-
-	headerOff, ok := g.stringMap[decoded]
-	if !ok {
-		dataOff := len(g.rodata)
-		g.rodata = append(g.rodata, []byte(decoded)...)
-
-		headerOff = len(g.rodata)
-		// header: {data_ptr:u16 (placeholder), len:u16}
-		g.rodata = append(g.rodata, 0, 0, byte(len(decoded)), byte(len(decoded)>>8))
-
-		g.stringMap[decoded] = headerOff
-		putU16(g.rodata[headerOff:headerOff+2], uint16(dataOff))
-	}
-
-	// mov ax, imm16(headerOff) with a fixup to convert to absolute rodata address later.
-	g.emitMovImm16(REG16_AX, uint16(headerOff))
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 2,
-		Target:     "$rodata_header$",
-	})
 	g.opPush(REG16_AX)
 }
 
@@ -786,36 +600,6 @@ func (g *CodeGen) convert(typeName string) {
 
 // ===== Intrinsics =====
 
-func (g *CodeGen) callIntrinsic(name string) {
-	switch name {
-	case "Syscall":
-		g.compileSyscallIntrinsic()
-	case "Sliceptr":
-		// Param0 is in local0: load [hdr+0]
-		g.loadLocal(2, REG16_BX)
-		g.emitLoadRM16(REG16_AX, EA16_BX, 0)
-		g.opPush(REG16_AX)
-	case "Makeslice":
-		g.makeSliceIntrinsic()
-	case "Stringptr":
-		g.loadLocal(2, REG16_BX)
-		g.emitLoadRM16(REG16_AX, EA16_BX, 0)
-		g.opPush(REG16_AX)
-	case "Makestring":
-		g.makeStringIntrinsic()
-	case "Tostring":
-		g.tostringIntrinsic()
-	case "ReadPtr":
-		g.readPtrIntrinsic()
-	case "WritePtr":
-		g.writePtrIntrinsic()
-	case "WriteByte":
-		g.writeByteIntrinsic()
-	default:
-		panic("ICE: unknown intrinsic in 8086 backend: " + name)
-	}
-}
-
 func (g *CodeGen) makeSliceIntrinsic() {
 	// Allocate 4-word header {ptr,len,cap,elem_size}
 	g.compileConst(8)
@@ -850,100 +634,6 @@ func (g *CodeGen) makeStringIntrinsic() {
 	g.opPush(REG16_BX)
 }
 
-func (g *CodeGen) tostringIntrinsic() {
-	// This is called inside wrapper fns where params are locals.
-	g.compileTostringBody()
-}
-
-func (g *CodeGen) emitTostringHelper() {
-	if g.hasTostringHelper {
-		return
-	}
-	g.hasTostringHelper = true
-	g.funcOffsets[outlinedTostringHelper] = len(g.code)
-
-	// Helper has 1 param; create 1-word frame.
-	g.pushR16(REG16_BP)
-	g.movRR16(REG16_BP, REG16_SP)
-	g.subImm16(REG16_SP, 2)
-
-	// Move param from operand stack into local0.
-	g.opPop(REG16_AX)
-	g.storeLocal(2, REG16_AX)
-
-	g.compileTostringBody()
-	g.leave16()
-	g.ret16()
-}
-
-func (g *CodeGen) compileTostringBody() {
-	// Param0 = value (string header ptr OR iface box ptr).
-	// Heuristic: if [ptr] < 256 => iface box, else treat as string.
-	g.loadLocal(2, REG16_BX)             // BX=value
-	g.emitLoadRM16(REG16_CX, EA16_BX, 0) // CX = [BX]
-	g.cmpImm16(REG16_CX, 256)
-	stringCase := g.jccNearRel16(CC16_AE) // if CX >= 256 => string
-
-	// iface: [box+0]=type_id, [box+2]=value
-	g.emitLoadRM16(REG16_DX, EA16_BX, 2) // DX = concrete value
-	// type_id in CX
-
-	doneFixups := make([]int, 0)
-
-	// type_id 1 = int => runtime.IntToString
-	g.cmpImm16(REG16_CX, 1)
-	next := g.jccNearRel16(CC16_NE)
-	g.opPush(REG16_DX)
-	g.emitCallPlaceholder("runtime.IntToString")
-	doneFixups = append(doneFixups, g.jmpRel16())
-	g.patchRel16(next)
-
-	// type_id 2 = string => pass through (DX already string hdr*)
-	g.cmpImm16(REG16_CX, 2)
-	next = g.jccNearRel16(CC16_NE)
-	g.opPush(REG16_DX)
-	doneFixups = append(doneFixups, g.jmpRel16())
-	g.patchRel16(next)
-
-	// User-defined type dispatch: typeName.Error or typeName.String.
-	var entries []becommon.DispatchEntry
-	if g.irmod != nil && g.irmod.TypeIDs != nil {
-		for typeName, tid := range g.irmod.TypeIDs {
-			c := typeName + ".Error"
-			if _, ok := g.irmod.MethodTable[c]; ok {
-				entries = append(entries, becommon.DispatchEntry{TypeID: tid, FuncName: c})
-				continue
-			}
-			c = typeName + ".String"
-			if _, ok := g.irmod.MethodTable[c]; ok {
-				entries = append(entries, becommon.DispatchEntry{TypeID: tid, FuncName: c})
-			}
-		}
-	}
-	for _, e := range entries {
-		g.cmpImm16(REG16_CX, int16(e.TypeID))
-		next = g.jccNearRel16(CC16_NE)
-		g.opPush(REG16_DX)
-		g.emitCallPlaceholder(e.FuncName)
-		doneFixups = append(doneFixups, g.jmpRel16())
-		g.patchRel16(next)
-	}
-
-	// default => empty string (nil)
-	g.compileConst(0)
-	doneFixups = append(doneFixups, g.jmpRel16())
-
-	// string case: push original value
-	g.patchRel16(stringCase)
-	g.loadLocal(2, REG16_AX)
-	g.opPush(REG16_AX)
-
-	join := len(g.code)
-	for _, f := range doneFixups {
-		g.patchRel16At(f, join)
-	}
-}
-
 func (g *CodeGen) readPtrIntrinsic() {
 	// Param0 = addr (local0). Read word at addr.
 	g.loadLocal(2, REG16_BX)
@@ -963,150 +653,6 @@ func (g *CodeGen) writeByteIntrinsic() {
 	g.loadLocal(2, REG16_BX)
 	g.loadLocal(4, REG16_AX)
 	g.emitBytes(0x88, 0x07) // mov [bx], al
-}
-
-func (g *CodeGen) compileSyscallIntrinsic() {
-	// Locals: 0=sysno, 1=a0, 2=a1, 3=a2 ...
-	g.loadLocal(2, REG16_AX) // sysno
-	g.cmpImm16(REG16_AX, 4)
-	fixWrite := g.jccNearRel16(CC16_E)
-	g.cmpImm16(REG16_AX, 252)
-	fixExit := g.jccNearRel16(CC16_E)
-	g.cmpImm16(REG16_AX, 192)
-	fixMmap := g.jccNearRel16(CC16_E)
-
-	// default: (r1=0,r2=0,err=38)
-	g.compileConst(0)
-	g.compileConst(0)
-	g.compileConst(38)
-	done := g.jmpRel16()
-
-	// write(fd, buf, count) via int21 ah=40h
-	g.patchRel16(fixWrite)
-	g.loadLocal(4, REG16_BX)              // fd
-	g.loadLocal(6, REG16_DX)              // buf
-	g.loadLocal(8, REG16_CX)              // count
-	g.emitBytes(0xB4, 0x40)               // mov ah,40h
-	g.emitBytes(0xCD, 0x21)               // int 21h
-	fixWriteErr := g.jccNearRel16(CC16_C) // carry => error
-
-	// success: push (ax,0,0)
-	g.opPush(REG16_AX)
-	g.compileConst(0)
-	g.compileConst(0)
-	writeJoin := g.jmpRel16()
-
-	// error: AX = DOS error code => (0,0,ax)
-	g.patchRel16(fixWriteErr)
-	g.compileConst(0)
-	g.compileConst(0)
-	g.opPush(REG16_AX)
-	writeDone := g.jmpRel16()
-
-	// exit(code) via int21 ah=4Ch
-	g.patchRel16(fixExit)
-	g.loadLocal(4, REG16_AX) // exit code in AL
-	g.emitBytes(0xB4, 0x4C)  // mov ah,4Ch
-	g.emitBytes(0xCD, 0x21)  // int 21h
-	g.emitByte(0xCC)         // int3 (should not return)
-
-	// mmap stub: return (0x7000,0,0)
-	g.patchRel16(fixMmap)
-	g.compileConst(0x7000)
-	g.compileConst(0)
-	g.compileConst(0)
-	mmapJoin := g.jmpRel16()
-
-	// joins
-	g.patchRel16(writeJoin)
-	g.patchRel16(writeDone)
-	g.patchRel16(mmapJoin)
-	g.patchRel16(done)
-}
-
-// ===== Interface boxing/calls (minimal, 16-bit) =====
-
-func (g *CodeGen) ifaceBox(typeID int) {
-	// Pop concrete value into AX, save on stack (CPU stack).
-	g.opPop(REG16_AX)
-	g.pushR16(REG16_AX)
-
-	// Alloc 2 words: {type_id, value}
-	g.compileConst(4)
-	g.emitCallPlaceholder("runtime.Alloc")
-	g.opPop(REG16_BX) // box*
-
-	// box[0]=type_id
-	g.emitMovImm16(REG16_AX, uint16(typeID))
-	g.emitStoreRM16(EA16_BX, 0, REG16_AX)
-
-	// box[2]=value
-	g.popR16(REG16_AX)
-	g.emitStoreRM16(EA16_BX, 2, REG16_AX)
-
-	g.opPush(REG16_BX)
-}
-
-func (g *CodeGen) ifaceCall(methodName string, argCount int) {
-	// Save args from operand stack to CPU stack.
-	for i := 0; i < argCount; i++ {
-		g.opPop(REG16_AX)
-		g.pushR16(REG16_AX)
-	}
-
-	// Pop iface pointer into BX.
-	g.opPop(REG16_BX)
-
-	// Load type_id and concrete value.
-	g.emitLoadRM16(REG16_CX, EA16_BX, 0) // type_id
-	g.emitLoadRM16(REG16_DX, EA16_BX, 2) // value
-
-	// Push receiver then restore args to operand stack.
-	g.opPush(REG16_DX)
-	for i := argCount - 1; i >= 0; i-- {
-		g.popR16(REG16_AX)
-		g.opPush(REG16_AX)
-	}
-
-	// Extract bare method name after last dot.
-	dot := len(methodName) - 1
-	for dot >= 0 && methodName[dot] != '.' {
-		dot--
-	}
-	bare := methodName
-	if dot >= 0 && dot+1 < len(methodName) {
-		bare = methodName[dot+1:]
-	}
-
-	var entries []becommon.DispatchEntry
-	if g.irmod != nil && g.irmod.TypeIDs != nil {
-		for typeName, tid := range g.irmod.TypeIDs {
-			c := typeName + "." + bare
-			if _, ok := g.irmod.MethodTable[c]; ok {
-				entries = append(entries, becommon.DispatchEntry{TypeID: tid, FuncName: c})
-			}
-		}
-	}
-
-	if len(entries) == 0 {
-		g.emitByte(0xCC)
-		return
-	}
-
-	endFixups := make([]int, 0)
-	for _, e := range entries {
-		g.cmpImm16(REG16_CX, int16(e.TypeID))
-		next := g.jccNearRel16(CC16_NE)
-		g.emitCallPlaceholder(e.FuncName)
-		endFixups = append(endFixups, g.jmpRel16())
-		g.patchRel16(next)
-	}
-	g.emitByte(0xCC)
-
-	end := len(g.code)
-	for _, f := range endFixups {
-		g.patchRel16At(f, end)
-	}
 }
 
 func (g *CodeGen) compositeLitCall(fieldCount int) {

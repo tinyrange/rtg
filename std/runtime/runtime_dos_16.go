@@ -19,9 +19,9 @@ var GOOS string = "dos"
 var GOARCH string = "dos16"
 
 func init() {
-	// Keep heap above typical COM text/data while reserving room for stack.
-	heapChunk = 16384
-	dosMmapBase = 0x8000
+	// Keep heap above large COM text/data while leaving headroom for stack.
+	heapChunk = 2048
+	dosMmapBase = 0xD000
 }
 
 //rtg:internal Syscall
@@ -77,7 +77,7 @@ func SysMmap(addr, length, prot, flags, fd, offset uintptr) (uintptr, uintptr, u
 	// Align mappings to 16-byte boundaries so pointer arithmetic remains simple.
 	size := (length + 15) &^ uintptr(15)
 	base := dosMmapBase
-	const dosHeapLimit uintptr = 0xE000
+	const dosHeapLimit uintptr = 0xFF00
 	if base+size > dosHeapLimit {
 		return 0, 0, 12
 	}
