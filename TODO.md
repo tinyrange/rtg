@@ -13,7 +13,7 @@ Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build
 - [x] Enforce boolean conditions for `if`/`for`.
 - [x] Enforce boolean operands for `&&`/`||`.
 - [x] Enforce comparability/type compatibility in comparisons.
-- [ ] Reject dereference of non-pointers.
+- [x] Reject dereference of non-pointers.
 - [ ] Reject indexing non-indexable values.
 - [ ] Validate `len`/`cap` argument types.
 - [ ] Validate `panic` arity and argument typing.
