@@ -30,67 +30,70 @@ type closureCaptureBinding struct {
 
 // Compiler lowers AST from a Module into stack machine IR.
 type Compiler struct {
-	target              *common.Target
-	mod                 *Module
-	irmod               *ir.IRModule
-	curFunc             *ir.IRFunc
-	scopes              []map[string]int
-	labelSeq            int
-	breaks              []int
-	continues           []int
-	fallthroughs        []int
-	globals             map[string]int
-	types               map[string]*ir.TypeInfo
-	curPkg              *Package
-	errors              []string
-	funcRets            map[string]int      // function name → return count
-	funcParams          map[string]int      // function name → param count
-	funcParamTypes      map[string][]string // function name → param type names (receiver first for methods)
-	funcVariadic        map[string]int      // variadic function name → count of fixed params
-	funcVariadicIface   map[string]bool     // variadic function name → true if ...interface{}
-	funcVariadicElem    map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
-	funcIsInternal      map[string]bool     // function name → true if declared via //rtg:internal
-	funcIsLinkStatic    map[string]bool     // function name → true if declared via //rtg:linkstatic
-	comptimeFuncs       map[string]bool     // function/method name → true if marked //rtg:comptime
-	funcRetTypeNodes    map[string]*Node    // function name → first return type node (for comptime literal synthesis)
-	localElemSizes      map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
-	globalElemSizes     map[string]int      // qualified global name → slice element size
-	ifaceMethods        map[string][]string // interface name → method names
-	ifaceMethodRets     map[string]int      // iface+"\x00"+method → return count
-	methodTable         map[string]string   // "pkg.Type.Method" → qualified IR func name
-	typeIDs             map[string]int      // concrete type qualified name → unique int
-	nextTypeID          int
-	localTypes          map[string]string   // local var name → type name (for interface-typed locals)
-	localTypeDecls      map[string]*Node    // local type name → type declaration node (function scope)
-	localStringVars     map[string]bool     // local var name → true if the local is a string
-	localConcreteTypes  map[string]string   // local var name → qualified type name for method resolution
-	funcRetTypes        map[string][]string // function name → return type names
-	localMapVars        map[string]int      // local var name → keyKind (0=int, 1=string) if it's a map
-	localMapValueTypes  map[string]string   // local map var name → value type name (e.g. "*Package")
-	globalMapVars       map[string]int      // qualified global name → keyKind if it's a map
-	globalConcreteTypes map[string]string   // qualified global name → qualified type name
-	constValues         map[string]int64    // qualified const name → precomputed value
-	constStringValues   map[string]string   // qualified const name → precomputed string value
-	localAddrOf         map[string]bool     // local var name → true if assigned from &var (pointer-to-pointer)
-	stackDepth          int                 // operand stack depth tracking for balance checks
-	deferNames          []string
-	deferArgStarts      []int
-	deferArgCounts      []int
-	deferRetCounts      []int
-	namedResultNames    []string
-	labelIDs            map[string]int
-	funcLitSeq          int
-	localFuncTargets    map[string]string
-	localMethodTargets  map[string]string
-	localMethodRecv     map[string]int
-	funcLiteralCaptures map[string][]closureCaptureSpec
-	localFuncCaptures   map[string][]closureCaptureBinding
-	activeCaptures      map[string]closureCaptureBinding
-	dotJoinCache        map[string]map[string]string // a → b → "a.b"
-	qualifyTypeCache    map[string]string            // "typeName\x00pkgPath" → qualified result
-	comptimeSeq         int
-	comptimeDisabled    bool
-	inComptimeFunc      bool
+	target               *common.Target
+	mod                  *Module
+	irmod                *ir.IRModule
+	curFunc              *ir.IRFunc
+	scopes               []map[string]int
+	labelSeq             int
+	breaks               []int
+	continues            []int
+	fallthroughs         []int
+	pendingStmtLabels    []string
+	breakLabelTargets    map[string][]int
+	continueLabelTargets map[string][]int
+	globals              map[string]int
+	types                map[string]*ir.TypeInfo
+	curPkg               *Package
+	errors               []string
+	funcRets             map[string]int      // function name → return count
+	funcParams           map[string]int      // function name → param count
+	funcParamTypes       map[string][]string // function name → param type names (receiver first for methods)
+	funcVariadic         map[string]int      // variadic function name → count of fixed params
+	funcVariadicIface    map[string]bool     // variadic function name → true if ...interface{}
+	funcVariadicElem     map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
+	funcIsInternal       map[string]bool     // function name → true if declared via //rtg:internal
+	funcIsLinkStatic     map[string]bool     // function name → true if declared via //rtg:linkstatic
+	comptimeFuncs        map[string]bool     // function/method name → true if marked //rtg:comptime
+	funcRetTypeNodes     map[string]*Node    // function name → first return type node (for comptime literal synthesis)
+	localElemSizes       map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
+	globalElemSizes      map[string]int      // qualified global name → slice element size
+	ifaceMethods         map[string][]string // interface name → method names
+	ifaceMethodRets      map[string]int      // iface+"\x00"+method → return count
+	methodTable          map[string]string   // "pkg.Type.Method" → qualified IR func name
+	typeIDs              map[string]int      // concrete type qualified name → unique int
+	nextTypeID           int
+	localTypes           map[string]string   // local var name → type name (for interface-typed locals)
+	localTypeDecls       map[string]*Node    // local type name → type declaration node (function scope)
+	localStringVars      map[string]bool     // local var name → true if the local is a string
+	localConcreteTypes   map[string]string   // local var name → qualified type name for method resolution
+	funcRetTypes         map[string][]string // function name → return type names
+	localMapVars         map[string]int      // local var name → keyKind (0=int, 1=string) if it's a map
+	localMapValueTypes   map[string]string   // local map var name → value type name (e.g. "*Package")
+	globalMapVars        map[string]int      // qualified global name → keyKind if it's a map
+	globalConcreteTypes  map[string]string   // qualified global name → qualified type name
+	constValues          map[string]int64    // qualified const name → precomputed value
+	constStringValues    map[string]string   // qualified const name → precomputed string value
+	localAddrOf          map[string]bool     // local var name → true if assigned from &var (pointer-to-pointer)
+	stackDepth           int                 // operand stack depth tracking for balance checks
+	deferNames           []string
+	deferArgStarts       []int
+	deferArgCounts       []int
+	deferRetCounts       []int
+	namedResultNames     []string
+	labelIDs             map[string]int
+	funcLitSeq           int
+	localFuncTargets     map[string]string
+	localMethodTargets   map[string]string
+	localMethodRecv      map[string]int
+	funcLiteralCaptures  map[string][]closureCaptureSpec
+	localFuncCaptures    map[string][]closureCaptureBinding
+	activeCaptures       map[string]closureCaptureBinding
+	dotJoinCache         map[string]map[string]string // a → b → "a.b"
+	qualifyTypeCache     map[string]string            // "typeName\x00pkgPath" → qualified result
+	comptimeSeq          int
+	comptimeDisabled     bool
+	inComptimeFunc       bool
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -1406,7 +1409,10 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.deferRetCounts = nil
 	c.namedResultNames = nil
 	c.fallthroughs = nil
+	c.pendingStmtLabels = nil
 	c.labelIDs = make(map[string]int)
+	c.breakLabelTargets = make(map[string][]int)
+	c.continueLabelTargets = make(map[string][]int)
 	c.localFuncTargets = make(map[string]string)
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
@@ -1833,6 +1839,10 @@ func (c *Compiler) compileStmt(node *Node) {
 	if node == nil {
 		return
 	}
+	stmtLabels := c.pendingStmtLabels
+	if node.Kind != NBranch || node.Name != "label" {
+		c.pendingStmtLabels = nil
+	}
 	switch node.Kind {
 	case NVarDecl:
 		if len(node.Nodes) > 0 {
@@ -1849,9 +1859,9 @@ func (c *Compiler) compileStmt(node *Node) {
 	case NIf:
 		c.compileIf(node)
 	case NFor:
-		c.compileFor(node)
+		c.compileFor(node, stmtLabels)
 	case NSwitch:
-		c.compileSwitch(node)
+		c.compileSwitch(node, stmtLabels)
 	case NExprStmt:
 		c.compileExpr(node.X)
 		// Drop return values left on the operand stack
@@ -1866,6 +1876,9 @@ func (c *Compiler) compileStmt(node *Node) {
 	case NDecStmt:
 		c.compileDec(node)
 	case NBranch:
+		if node.Name == "label" && node.X != nil && node.X.Kind == NIdent {
+			c.pendingStmtLabels = append(c.pendingStmtLabels, node.X.Name)
+		}
 		c.compileBranch(node)
 	case NDeferStmt:
 		if node.X != nil && node.X.Kind == NCallExpr {
@@ -2377,7 +2390,10 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	savedDefCounts := c.deferArgCounts
 	savedDefRetCounts := c.deferRetCounts
 	savedNamed := c.namedResultNames
+	savedPendingStmtLabels := c.pendingStmtLabels
 	savedLabelIDs := c.labelIDs
+	savedBreakLabelTargets := c.breakLabelTargets
+	savedContinueLabelTargets := c.continueLabelTargets
 	savedStackDepth := c.stackDepth
 	savedFuncTargets := c.localFuncTargets
 	savedMethodTargets := c.localMethodTargets
@@ -2404,7 +2420,10 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	c.deferArgCounts = savedDefCounts
 	c.deferRetCounts = savedDefRetCounts
 	c.namedResultNames = savedNamed
+	c.pendingStmtLabels = savedPendingStmtLabels
 	c.labelIDs = savedLabelIDs
+	c.breakLabelTargets = savedBreakLabelTargets
+	c.continueLabelTargets = savedContinueLabelTargets
 	c.stackDepth = savedStackDepth
 	c.localFuncTargets = savedFuncTargets
 	c.localMethodTargets = savedMethodTargets
@@ -3124,7 +3143,7 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 	}
 }
 
-func (c *Compiler) compileFor(node *Node) {
+func (c *Compiler) compileFor(node *Node, stmtLabels []string) {
 	savedDepth := c.stackDepth
 	loopLabel := c.newLabel()
 	continueLabel := c.newLabel()
@@ -3132,6 +3151,10 @@ func (c *Compiler) compileFor(node *Node) {
 
 	c.breaks = append(c.breaks, breakLabel)
 	c.continues = append(c.continues, continueLabel)
+	for _, name := range stmtLabels {
+		c.breakLabelTargets[name] = append(c.breakLabelTargets[name], breakLabel)
+		c.continueLabelTargets[name] = append(c.continueLabelTargets[name], continueLabel)
+	}
 
 	if node.Name == "range" {
 		c.compileForRange(node, loopLabel, continueLabel, breakLabel)
@@ -3178,6 +3201,12 @@ func (c *Compiler) compileFor(node *Node) {
 
 	c.breaks = c.breaks[0 : len(c.breaks)-1]
 	c.continues = c.continues[0 : len(c.continues)-1]
+	for _, name := range stmtLabels {
+		bt := c.breakLabelTargets[name]
+		c.breakLabelTargets[name] = bt[0 : len(bt)-1]
+		ct := c.continueLabelTargets[name]
+		c.continueLabelTargets[name] = ct[0 : len(ct)-1]
+	}
 	c.stackDepth = savedDepth // for loops should have net-zero effect
 }
 
@@ -3328,10 +3357,13 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 	c.popScope()
 }
 
-func (c *Compiler) compileSwitch(node *Node) {
+func (c *Compiler) compileSwitch(node *Node, stmtLabels []string) {
 	savedDepth := c.stackDepth
 	endLabel := c.newLabel()
 	c.breaks = append(c.breaks, endLabel)
+	for _, name := range stmtLabels {
+		c.breakLabelTargets[name] = append(c.breakLabelTargets[name], endLabel)
+	}
 	isTypeSwitch := node.Name == "typeswitch"
 	needsScope := node.X != nil
 	if needsScope {
@@ -3461,6 +3493,10 @@ func (c *Compiler) compileSwitch(node *Node) {
 		c.popScope()
 	}
 	c.breaks = c.breaks[0 : len(c.breaks)-1]
+	for _, name := range stmtLabels {
+		bt := c.breakLabelTargets[name]
+		c.breakLabelTargets[name] = bt[0 : len(bt)-1]
+	}
 	c.stackDepth = savedDepth // switch should have net-zero effect
 }
 
@@ -3590,11 +3626,21 @@ func (c *Compiler) compileDec(node *Node) {
 func (c *Compiler) compileBranch(node *Node) {
 	switch node.Name {
 	case "break":
-		if len(c.breaks) > 0 {
+		if node.X != nil && node.X.Kind == NIdent {
+			targets := c.breakLabelTargets[node.X.Name]
+			if len(targets) > 0 {
+				c.emit(ir.Inst{Op: ir.OP_JMP, Arg: targets[len(targets)-1]})
+			}
+		} else if len(c.breaks) > 0 {
 			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.breaks[len(c.breaks)-1]})
 		}
 	case "continue":
-		if len(c.continues) > 0 {
+		if node.X != nil && node.X.Kind == NIdent {
+			targets := c.continueLabelTargets[node.X.Name]
+			if len(targets) > 0 {
+				c.emit(ir.Inst{Op: ir.OP_JMP, Arg: targets[len(targets)-1]})
+			}
+		} else if len(c.continues) > 0 {
 			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.continues[len(c.continues)-1]})
 		}
 	case "fallthrough":
@@ -4905,7 +4951,10 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedDeferArgCounts := c.deferArgCounts
 	savedDeferRetCounts := c.deferRetCounts
 	savedNamedResultNames := c.namedResultNames
+	savedPendingStmtLabels := c.pendingStmtLabels
 	savedLabelIDs := c.labelIDs
+	savedBreakLabelTargets := c.breakLabelTargets
+	savedContinueLabelTargets := c.continueLabelTargets
 	savedStackDepth := c.stackDepth
 	savedLocalFuncTargets := c.localFuncTargets
 	savedLocalMethodTargets := c.localMethodTargets
@@ -4930,7 +4979,10 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.deferRetCounts = nil
 	c.namedResultNames = nil
 	c.fallthroughs = nil
+	c.pendingStmtLabels = nil
 	c.labelIDs = make(map[string]int)
+	c.breakLabelTargets = make(map[string][]int)
+	c.continueLabelTargets = make(map[string][]int)
 	c.stackDepth = 0
 	c.localFuncTargets = make(map[string]string)
 	c.localMethodTargets = make(map[string]string)
@@ -4958,7 +5010,10 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.deferArgCounts = savedDeferArgCounts
 	c.deferRetCounts = savedDeferRetCounts
 	c.namedResultNames = savedNamedResultNames
+	c.pendingStmtLabels = savedPendingStmtLabels
 	c.labelIDs = savedLabelIDs
+	c.breakLabelTargets = savedBreakLabelTargets
+	c.continueLabelTargets = savedContinueLabelTargets
 	c.stackDepth = savedStackDepth
 	c.localFuncTargets = savedLocalFuncTargets
 	c.localMethodTargets = savedLocalMethodTargets
