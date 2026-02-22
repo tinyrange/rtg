@@ -165,7 +165,7 @@ jobs:
           fail=0
           while IFS= read -r test_path; do
             case "$test_path" in
-              *_amd64.go)
+              *_amd64.go|*_386.go|*_arm64.go)
                 echo "SKIP_ARCH: $test_path"
                 continue
                 ;;

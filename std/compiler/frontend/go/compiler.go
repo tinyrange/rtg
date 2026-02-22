@@ -1760,7 +1760,7 @@ func (c *Compiler) compileAssembleFunc(node *Node, arch string) {
 	if !ok {
 		info = assembleInfo{Arch: arch}
 	}
-	if arch != "amd64" {
+	if assemblePkgForArch(arch) == "" {
 		c.errorf("%s: unsupported assemble arch %q", qname, arch)
 		return
 	}
@@ -5818,21 +5818,25 @@ func (c *Compiler) buildAssembleWrapper(runtimeName string, info assembleInfo) *
 	if dot >= 0 {
 		pkgPath = runtimeName[0:dot]
 	}
+	asmPkg := assemblePkgForArch(info.Arch)
+	if asmPkg == "" {
+		return nil
+	}
 	wrapName := fmt.Sprintf("%s.assemble$%d", pkgPath, c.comptimeSeq)
 	f := &ir.IRFunc{Name: wrapName, RetCount: 2}
 	f.Code = append(f.Code,
 		ir.Inst{Op: ir.OP_CONST_STR, Name: runtimeName},
 		ir.Inst{Op: ir.OP_CONST_I64, Val: int64(info.Params)},
 		ir.Inst{Op: ir.OP_CONST_I64, Val: int64(info.RetCount)},
-		ir.Inst{Op: ir.OP_CALL, Name: "j5.nz/rtg/x/asm/amd64.__rtg_asm_begin", Arg: 3},
+		ir.Inst{Op: ir.OP_CALL, Name: asmPkg + ".__rtg_asm_begin", Arg: 3},
 	)
 	for i := 0; i < info.Params; i++ {
 		f.Code = append(f.Code, ir.Inst{Op: ir.OP_CONST_I64, Val: int64(-1 - i)})
 	}
 	f.Code = append(f.Code,
 		ir.Inst{Op: ir.OP_CALL, Name: info.BuilderName, Arg: info.Params},
-		ir.Inst{Op: ir.OP_CALL, Name: "j5.nz/rtg/x/asm/amd64.__rtg_asm_take_code", Arg: 0},
-		ir.Inst{Op: ir.OP_CALL, Name: "j5.nz/rtg/x/asm/amd64.__rtg_asm_take_fixups", Arg: 0},
+		ir.Inst{Op: ir.OP_CALL, Name: asmPkg + ".__rtg_asm_take_code", Arg: 0},
+		ir.Inst{Op: ir.OP_CALL, Name: asmPkg + ".__rtg_asm_take_fixups", Arg: 0},
 		ir.Inst{Op: ir.OP_RETURN, Arg: 2},
 	)
 	return f
@@ -5840,12 +5844,6 @@ func (c *Compiler) buildAssembleWrapper(runtimeName string, info assembleInfo) *
 
 func (c *Compiler) compileAssembledFunctions() {
 	if len(c.assembleFuncs) == 0 {
-		return
-	}
-	if c.target.GOARCH != "amd64" {
-		for qname, info := range c.assembleFuncs {
-			c.errorf("%s: assemble %s used when target is %s", qname, info.Arch, c.target.GOARCH)
-		}
 		return
 	}
 	if c.target.Backend != "native" {
@@ -5859,6 +5857,14 @@ func (c *Compiler) compileAssembledFunctions() {
 	c.irmod.IfaceMethodRets = c.ifaceMethodRets
 
 	for qname, info := range c.assembleFuncs {
+		if info.Arch != c.target.GOARCH {
+			c.errorf("%s: assemble %s used when target is %s", qname, info.Arch, c.target.GOARCH)
+			continue
+		}
+		if assemblePkgForArch(info.Arch) == "" {
+			c.errorf("%s: unsupported assemble arch %q", qname, info.Arch)
+			continue
+		}
 		if info.BuilderName == "" {
 			continue
 		}
@@ -5868,6 +5874,10 @@ func (c *Compiler) compileAssembledFunctions() {
 			continue
 		}
 		wrap := c.buildAssembleWrapper(qname, info)
+		if wrap == nil {
+			c.errorf("%s: unsupported assemble arch %q", qname, info.Arch)
+			continue
+		}
 		c.irmod.Funcs = append(c.irmod.Funcs, wrap)
 		eval, err := vm.NewEvalStateNoInit(c.target, c.irmod)
 		if err != nil {
@@ -5919,6 +5929,19 @@ func (c *Compiler) compileAssembledFunctions() {
 			Code:   code,
 			Fixups: fixups,
 		}
+	}
+}
+
+func assemblePkgForArch(arch string) string {
+	switch arch {
+	case "amd64":
+		return "j5.nz/rtg/x/asm/amd64"
+	case "386":
+		return "j5.nz/rtg/x/asm/i386"
+	case "arm64":
+		return "j5.nz/rtg/x/asm/arm64"
+	default:
+		return ""
 	}
 }
 

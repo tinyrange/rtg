@@ -14,6 +14,23 @@ import (
 
 // CompileFuncArm64 generates ARM64 code for a single IR function.
 func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
+	if f.Native != nil {
+		if f.Native.Arch != "arm64" {
+			panic("ICE: arm64 backend received native function for arch " + f.Native.Arch)
+		}
+		funcStart := len(g.code)
+		g.code = append(g.code, f.Native.Code...)
+		for _, fx := range f.Native.Fixups {
+			if fx.Kind != ir.NativeFixupCallRel32 {
+				continue
+			}
+			g.callFixups = append(g.callFixups, CallFixup{
+				CodeOffset: funcStart + fx.Off,
+				Target:     fx.Target,
+			})
+		}
+		return
+	}
 	g.curFunc = f
 	g.ClearOperandCache()
 	g.curFrameSize = len(f.Locals)
