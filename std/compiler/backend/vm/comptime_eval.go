@@ -24,21 +24,23 @@ func NewEvalState(target *common.Target, irmod *ir.IRModule) (*EvalState, error)
 		guard = 0x100
 	}
 	vm := &VM{
-		config:      cfg,
-		stack:       make([]uint64, 0, 4096),
-		memory:      make([]byte, 256*1024),
-		memNext:     guard,
-		funcs:       make(map[string]*ir.IRFunc),
-		stringAddrs: make(map[string]uint64),
-		methodIDs:   make(map[string]int),
-		fdFiles:     make([]*os.File, 256),
-		fdUsed:      make([]bool, 256),
-		fdIsPopen:   make([]bool, 256),
-		nextFD:      3,
-		dirEntries:  make([][]os.DirEntry, 64),
-		dirPos:      make([]int, 64),
-		dirUsed:     make([]bool, 64),
-		nextDirID:   1,
+		config:       cfg,
+		targetGOOS:   target.GOOS,
+		targetGOARCH: target.GOARCH,
+		stack:        make([]uint64, 0, 4096),
+		memory:       make([]byte, 256*1024),
+		memNext:      guard,
+		funcs:        make(map[string]*ir.IRFunc),
+		stringAddrs:  make(map[string]uint64),
+		methodIDs:    make(map[string]int),
+		fdFiles:      make([]*os.File, 256),
+		fdUsed:       make([]bool, 256),
+		fdIsPopen:    make([]bool, 256),
+		nextFD:       3,
+		dirEntries:   make([][]os.DirEntry, 64),
+		dirPos:       make([]int, 64),
+		dirUsed:      make([]bool, 64),
+		nextDirID:    1,
 	}
 
 	vm.fdFiles[0] = os.Stdin
