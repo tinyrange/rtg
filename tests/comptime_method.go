@@ -98,11 +98,13 @@ func main() {
 	comptimeBuilder.Path = "tests/comptime_fixture_missing.txt"
 	fileText := comptimeBuilder.ReadLocalFile()
 	expected := "compile-time fixture data\n"
+	altExpected := "compile-time fixture data\r\n"
 	if runtime.GOOS == "wasi" || runtime.GOOS == "dos" {
 		// WASI/DOS compile-time file I/O currently resolves this path as missing.
 		expected = "ERR"
+		altExpected = "ERR"
 	}
-	if fileText != expected {
+	if fileText != expected && fileText != altExpected {
 		passed = false
 	}
 
