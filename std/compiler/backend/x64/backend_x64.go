@@ -164,7 +164,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	case ir.OP_LOCAL_GET:
 		g.compileLocalGet(inst.Arg)
 	case ir.OP_LOCAL_SET:
-		g.compileLocalSet(inst.Arg)
+		g.compileLocalSet(inst.Arg, inst.Width)
 	case ir.OP_LOCAL_ADD_IMM:
 		g.compileLocalAddImm(inst.Arg, int32(inst.Val))
 	case ir.OP_LOCAL_ADDR:
@@ -210,17 +210,17 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 		g.compileBinOp(inst)
 
 	case ir.OP_EQ:
-		g.compileCompare(0x94) // sete
+		g.compileCompare(inst, 0x94, 0x94) // sete
 	case ir.OP_NEQ:
-		g.compileCompare(0x95) // setne
+		g.compileCompare(inst, 0x95, 0x95) // setne
 	case ir.OP_LT:
-		g.compileCompare(0x9c) // setl
+		g.compileCompare(inst, 0x9c, 0x92) // setl / setb
 	case ir.OP_GT:
-		g.compileCompare(0x9f) // setg
+		g.compileCompare(inst, 0x9f, 0x97) // setg / seta
 	case ir.OP_LEQ:
-		g.compileCompare(0x9e) // setle
+		g.compileCompare(inst, 0x9e, 0x96) // setle / setbe
 	case ir.OP_GEQ:
-		g.compileCompare(0x9d) // setge
+		g.compileCompare(inst, 0x9d, 0x93) // setge / setae
 
 	case ir.OP_NOT:
 		g.opPop(REG_RAX)
@@ -261,33 +261,33 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 			CC:         CC_E,
 		})
 	case ir.OP_JMP_EQ:
-		g.compileCompareJump(CC_E, inst.Arg)
+		g.compileCompareJump(inst, CC_E, inst.Arg)
 	case ir.OP_JMP_NEQ:
-		g.compileCompareJump(CC_NE, inst.Arg)
+		g.compileCompareJump(inst, CC_NE, inst.Arg)
 	case ir.OP_JMP_LT:
 		cc := byte(CC_L)
 		if inst.Name == "unsigned" {
 			cc = CC_B
 		}
-		g.compileCompareJump(cc, inst.Arg)
+		g.compileCompareJump(inst, cc, inst.Arg)
 	case ir.OP_JMP_GT:
 		cc := byte(CC_G)
 		if inst.Name == "unsigned" {
 			cc = CC_A
 		}
-		g.compileCompareJump(cc, inst.Arg)
+		g.compileCompareJump(inst, cc, inst.Arg)
 	case ir.OP_JMP_LEQ:
 		cc := byte(CC_LE)
 		if inst.Name == "unsigned" {
 			cc = CC_BE
 		}
-		g.compileCompareJump(cc, inst.Arg)
+		g.compileCompareJump(inst, cc, inst.Arg)
 	case ir.OP_JMP_GEQ:
 		cc := byte(CC_GE)
 		if inst.Name == "unsigned" {
 			cc = CC_AE
 		}
-		g.compileCompareJump(cc, inst.Arg)
+		g.compileCompareJump(inst, cc, inst.Arg)
 
 	case ir.OP_CALL:
 		g.compileCall(inst)
@@ -392,8 +392,16 @@ func (g *CodeGen) compileLocalGet(idx int) {
 	g.opPush(REG_RAX)
 }
 
-func (g *CodeGen) compileLocalSet(idx int) {
+func (g *CodeGen) compileLocalSet(idx int, width int) {
 	g.opPop(REG_RAX)
+	switch width {
+	case 1:
+		g.movzxB(REG_RAX)
+	case 2:
+		g.movzxW(REG_RAX)
+	case 4:
+		g.clearHi32(REG_RAX)
+	}
 	offset := (idx + 1) * 8
 	g.emitStoreLocal(offset, REG_RAX)
 }
@@ -508,18 +516,55 @@ func (g *CodeGen) compileBinOp(inst ir.Inst) {
 
 // === Comparison operations ===
 
-func (g *CodeGen) compileCompare(setccOpcode byte) {
+func (g *CodeGen) normalizeCompareRegWidth(reg int, width int, signed bool) {
+	switch width {
+	case 1:
+		if signed {
+			g.movsxB(reg)
+		} else {
+			g.movzxB(reg)
+		}
+	case 2:
+		if signed {
+			g.movsxW(reg)
+		} else {
+			g.movzxW(reg)
+		}
+	case 4:
+		if signed {
+			g.movsxD(reg)
+		} else {
+			g.clearHi32(reg)
+		}
+	}
+}
+
+func (g *CodeGen) compileCompare(inst ir.Inst, signedSetccOpcode byte, unsignedSetccOpcode byte) {
 	g.opPop(REG_RAX)
 	g.opPop(REG_RCX)
+	if inst.Width > 0 && inst.Width < 8 {
+		signed := inst.Name != "unsigned" && (inst.Op == ir.OP_LT || inst.Op == ir.OP_GT || inst.Op == ir.OP_LEQ || inst.Op == ir.OP_GEQ)
+		g.normalizeCompareRegWidth(REG_RCX, inst.Width, signed)
+		g.normalizeCompareRegWidth(REG_RAX, inst.Width, signed)
+	}
 	g.cmpRR(REG_RCX, REG_RAX)
+	setccOpcode := signedSetccOpcode
+	if inst.Name == "unsigned" {
+		setccOpcode = unsignedSetccOpcode
+	}
 	g.emitBytes(0x0f, setccOpcode, 0xc1) // setCC cl
 	g.emitBytes(0x48, 0x0f, 0xb6, 0xc9)  // movzx rcx, cl
 	g.opPush(REG_RCX)
 }
 
-func (g *CodeGen) compileCompareJump(cc byte, label int) {
+func (g *CodeGen) compileCompareJump(inst ir.Inst, cc byte, label int) {
 	g.opPop(REG_RAX)
 	g.opPop(REG_RCX)
+	if inst.Width > 0 && inst.Width < 8 {
+		signed := inst.Name != "unsigned" && (inst.Op == ir.OP_JMP_LT || inst.Op == ir.OP_JMP_GT || inst.Op == ir.OP_JMP_LEQ || inst.Op == ir.OP_JMP_GEQ)
+		g.normalizeCompareRegWidth(REG_RCX, inst.Width, signed)
+		g.normalizeCompareRegWidth(REG_RAX, inst.Width, signed)
+	}
 	g.cmpRR(REG_RCX, REG_RAX)
 	fixup := g.jccRel32(cc)
 	g.jumpFixups = append(g.jumpFixups, JumpFixup{

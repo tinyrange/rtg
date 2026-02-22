@@ -714,7 +714,7 @@ func (c *Compiler) resolveExprType(node *Node) string {
 // Returns 0 for word-sized types (int, uintptr, pointers, etc).
 func typeWidth(name string) int {
 	switch name {
-	case "byte":
+	case "byte", "int8", "uint8":
 		return 1
 	case "int16", "uint16":
 		return 2
@@ -2026,7 +2026,7 @@ func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
 	c.compileLValueGet(node.X)
 	c.compileExpr(node.Y)
 	inst := ir.Inst{Op: op, Width: w}
-	if (op == ir.OP_SHR || op == ir.OP_DIV || op == ir.OP_MOD) && c.isUnsignedExpr(node.X) {
+	if (op == ir.OP_ADD || op == ir.OP_SUB || op == ir.OP_MUL || op == ir.OP_SHR || op == ir.OP_DIV || op == ir.OP_MOD) && c.isUnsignedExpr(node.X) {
 		inst.Name = "unsigned"
 	}
 	c.emit(inst)
@@ -3777,16 +3777,26 @@ func (c *Compiler) compileTypeAssertCommaOk(node *Node) {
 }
 
 func (c *Compiler) compileInc(node *Node) {
+	w := c.exprWidth(node.X)
 	c.compileLValueGet(node.X)
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
-	c.emit(ir.Inst{Op: ir.OP_ADD})
+	inst := ir.Inst{Op: ir.OP_ADD, Width: w}
+	if c.isUnsignedExpr(node.X) {
+		inst.Name = "unsigned"
+	}
+	c.emit(inst)
 	c.compileLValueSet(node.X)
 }
 
 func (c *Compiler) compileDec(node *Node) {
+	w := c.exprWidth(node.X)
 	c.compileLValueGet(node.X)
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
-	c.emit(ir.Inst{Op: ir.OP_SUB})
+	inst := ir.Inst{Op: ir.OP_SUB, Width: w}
+	if c.isUnsignedExpr(node.X) {
+		inst.Name = "unsigned"
+	}
+	c.emit(inst)
 	c.compileLValueSet(node.X)
 }
 
@@ -4304,11 +4314,23 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 
 	switch node.Name {
 	case "+":
-		c.emit(ir.Inst{Op: ir.OP_ADD, Width: w})
+		inst := ir.Inst{Op: ir.OP_ADD, Width: w}
+		if c.isUnsignedExpr(node.X) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case "-":
-		c.emit(ir.Inst{Op: ir.OP_SUB, Width: w})
+		inst := ir.Inst{Op: ir.OP_SUB, Width: w}
+		if c.isUnsignedExpr(node.X) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case "*":
-		c.emit(ir.Inst{Op: ir.OP_MUL, Width: w})
+		inst := ir.Inst{Op: ir.OP_MUL, Width: w}
+		if c.isUnsignedExpr(node.X) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case "/":
 		inst := ir.Inst{Op: ir.OP_DIV, Width: w}
 		if c.isUnsignedExpr(node.X) {
@@ -4340,13 +4362,29 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "!=":
 		c.emit(ir.Inst{Op: ir.OP_NEQ, Width: w})
 	case "<":
-		c.emit(ir.Inst{Op: ir.OP_LT, Width: w})
+		inst := ir.Inst{Op: ir.OP_LT, Width: w}
+		if c.isUnsignedComparison(node) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case ">":
-		c.emit(ir.Inst{Op: ir.OP_GT, Width: w})
+		inst := ir.Inst{Op: ir.OP_GT, Width: w}
+		if c.isUnsignedComparison(node) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case "<=":
-		c.emit(ir.Inst{Op: ir.OP_LEQ, Width: w})
+		inst := ir.Inst{Op: ir.OP_LEQ, Width: w}
+		if c.isUnsignedComparison(node) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	case ">=":
-		c.emit(ir.Inst{Op: ir.OP_GEQ, Width: w})
+		inst := ir.Inst{Op: ir.OP_GEQ, Width: w}
+		if c.isUnsignedComparison(node) {
+			inst.Name = "unsigned"
+		}
+		c.emit(inst)
 	default:
 		panic("ICE: unhandled binary operator in compileBinaryExpr")
 	}
