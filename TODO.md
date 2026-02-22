@@ -3,7 +3,7 @@
 Track compiler fixes using `tests/compiler_bugs/manifest.txt` and `./build/build test-compiler-bugs`.
 
 ## Control-flow and branch semantics
-- [ ] Fix `goto` and label jump lowering.
+- [x] Fix `goto` and label jump lowering.
 - [ ] Fix `fallthrough` in `switch`.
 - [ ] Fix `break` handling in `switch`.
 - [ ] Fix labeled `break`/`continue` targets.
