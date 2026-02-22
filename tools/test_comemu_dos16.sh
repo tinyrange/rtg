@@ -90,8 +90,8 @@ func main() {
 }
 EOF
 
-./build/rtg -T dos/8086 tests/dos_tiny_parser.go -o "$tiny_parser_com"
-./build/rtg -T dos/8086 -tags tiny_dos_backend,no_size_analysis tests/dos_tiny_backend.go -o "$tiny_backend_com"
+./build/rtg -T dos/8086 tests/dos_tiny/dos_tiny_parser.go -o "$tiny_parser_com"
+./build/rtg -T dos/8086 -tags tiny_dos_backend,no_size_analysis tests/dos_tiny/dos_tiny_backend.go -o "$tiny_backend_com"
 tiny_parser_size="$(wc -c <"$tiny_parser_com" | tr -d ' ')"
 tiny_backend_size="$(wc -c <"$tiny_backend_com" | tr -d ' ')"
 
