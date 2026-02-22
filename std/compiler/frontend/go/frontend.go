@@ -1005,6 +1005,10 @@ func parseInternalDirective(val string) string {
 	return val[len(prefix):len(val)]
 }
 
+func isComptimeDirective(val string) bool {
+	return strings.TrimSpace(val) == "comptime"
+}
+
 // LinkStaticDirective describes a static-link external symbol target.
 type LinkStaticDirective struct {
 	Library string

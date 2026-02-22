@@ -1798,6 +1798,23 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.storeN(vm.localGet(localsAddr, ws, 0), vm.localGet(localsAddr, ws, 1), 1)
 
 	default:
+		dot := -1
+		i := 0
+		for i < len(name) {
+			if name[i] == '.' {
+				dot = i
+			}
+			i = i + 1
+		}
+		if dot >= 0 && dot+1 < len(name) {
+			vm.execIntrinsic(name[dot+1:len(name)], localsAddr, ws)
+			return
+		}
+		if len(name) >= 4 && name[0] == 's' && name[1] == 'y' && name[2] == 's' {
+			mapped := "S" + name[1:len(name)]
+			vm.execIntrinsic(mapped, localsAddr, ws)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "vm: unknown intrinsic %q\n", name)
 		vm.exited = true
 		ExitCode = 2
