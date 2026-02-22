@@ -38,6 +38,7 @@ type Compiler struct {
 	labelSeq            int
 	breaks              []int
 	continues           []int
+	fallthroughs        []int
 	globals             map[string]int
 	types               map[string]*ir.TypeInfo
 	curPkg              *Package
@@ -1404,6 +1405,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.deferArgCounts = nil
 	c.deferRetCounts = nil
 	c.namedResultNames = nil
+	c.fallthroughs = nil
 	c.labelIDs = make(map[string]int)
 	c.localFuncTargets = make(map[string]string)
 	c.localMethodTargets = make(map[string]string)
@@ -3348,6 +3350,15 @@ func (c *Compiler) compileSwitch(node *Node) {
 		}
 	}
 	caseCheckDepth := c.stackDepth // depth with tag on stack (if any)
+	caseCount := len(node.Nodes)
+	caseBodyLabels := make([]int, caseCount)
+	caseExecLabels := make([]int, caseCount)
+	caseNextLabels := make([]int, caseCount)
+	for i := 0; i < caseCount; i++ {
+		caseBodyLabels[i] = c.newLabel()
+		caseExecLabels[i] = c.newLabel()
+		caseNextLabels[i] = c.newLabel()
+	}
 
 	// Detect string switch: check tag and first case value
 	isStringSwitch := false
@@ -3367,18 +3378,26 @@ func (c *Compiler) compileSwitch(node *Node) {
 		}
 	}
 
-	for _, cas := range node.Nodes {
-		bodyLabel := c.newLabel()
-		nextLabel := c.newLabel()
+	for i, cas := range node.Nodes {
+		bodyLabel := caseBodyLabels[i]
+		execLabel := caseExecLabels[i]
+		nextLabel := caseNextLabels[i]
+		fallthroughLabel := endLabel
+		if i+1 < caseCount {
+			fallthroughLabel = caseExecLabels[i+1]
+		}
 
 		if cas.Name == "default" {
 			c.emitLabel(bodyLabel)
 			if hasTag {
 				c.emit(ir.Inst{Op: ir.OP_DROP})
 			}
+			c.emitLabel(execLabel)
+			c.fallthroughs = append(c.fallthroughs, fallthroughLabel)
 			if cas.Body != nil {
 				c.compileBlock(cas.Body)
 			}
+			c.fallthroughs = c.fallthroughs[0 : len(c.fallthroughs)-1]
 			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 			c.stackDepth = caseCheckDepth // reset for next case
 		} else {
@@ -3420,9 +3439,12 @@ func (c *Compiler) compileSwitch(node *Node) {
 			if hasTag {
 				c.emit(ir.Inst{Op: ir.OP_DROP})
 			}
+			c.emitLabel(execLabel)
+			c.fallthroughs = append(c.fallthroughs, fallthroughLabel)
 			if cas.Body != nil {
 				c.compileBlock(cas.Body)
 			}
+			c.fallthroughs = c.fallthroughs[0 : len(c.fallthroughs)-1]
 			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 			// Reset depth for next case's check path
 			c.stackDepth = caseCheckDepth
@@ -3572,6 +3594,10 @@ func (c *Compiler) compileBranch(node *Node) {
 	case "continue":
 		if len(c.continues) > 0 {
 			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.continues[len(c.continues)-1]})
+		}
+	case "fallthrough":
+		if len(c.fallthroughs) > 0 {
+			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.fallthroughs[len(c.fallthroughs)-1]})
 		}
 	case "goto":
 		if node.X == nil || node.X.Kind != NIdent {
@@ -4901,6 +4927,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.deferArgCounts = nil
 	c.deferRetCounts = nil
 	c.namedResultNames = nil
+	c.fallthroughs = nil
 	c.labelIDs = make(map[string]int)
 	c.stackDepth = 0
 	c.localFuncTargets = make(map[string]string)
