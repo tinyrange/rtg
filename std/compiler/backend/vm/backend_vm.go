@@ -119,6 +119,11 @@ type VM struct {
 	intrinsicScratchAddr  uint64
 	intrinsicScratchWords int
 
+	// Compile-time assembler state for //rtg:assemble amd64 builders.
+	asmAmd64Code   []byte
+	asmAmd64Fixups []vmAsmFixup
+	asmAmd64Armed  bool
+
 	// Execution state
 	exited bool
 
@@ -145,6 +150,11 @@ type vmDispatchEntry struct {
 	typeID   int
 	methodID int
 	funcName string
+}
+
+type vmAsmFixup struct {
+	Off    int
+	Target string
 }
 
 // generateVM interprets the IR module directly.
@@ -579,6 +589,123 @@ func (vm *VM) loadWord(addr uint64) uint64 {
 
 func (vm *VM) storeWord(addr uint64, val uint64) {
 	vm.storeN(addr, val&vm.config.WordMask, vm.config.WordSize)
+}
+
+func (vm *VM) vmAsmEmit(b ...byte) {
+	vm.asmAmd64Code = append(vm.asmAmd64Code, b...)
+}
+
+func (vm *VM) vmAsmRex(w bool, r int, b int) byte {
+	rex := byte(0x40)
+	if w {
+		rex |= 0x08
+	}
+	if (r & 8) != 0 {
+		rex |= 0x04
+	}
+	if (b & 8) != 0 {
+		rex |= 0x01
+	}
+	return rex
+}
+
+func (vm *VM) vmAsmEmitMovRegImm64(dst int, imm int64) {
+	vm.vmAsmEmit(vm.vmAsmRex(true, 0, dst), byte(0xb8+(dst&7)))
+	u := uint64(imm)
+	i := 0
+	for i < 8 {
+		vm.vmAsmEmit(byte(u >> uint(i*8)))
+		i = i + 1
+	}
+}
+
+func (vm *VM) vmAsmEmitLoadParam(dst int, paramIdx int) {
+	off := (paramIdx + 1) * 8
+	rex := vm.vmAsmRex(true, dst, 5)
+	if off <= 127 {
+		vm.vmAsmEmit(rex, 0x8b, byte(0x45|((dst&7)<<3)), byte(int64(-off)))
+		return
+	}
+	vm.vmAsmEmit(rex, 0x8b, byte(0x85|((dst&7)<<3)))
+	d := uint32(uint32(^uint32(off)) + 1)
+	vm.vmAsmEmit(byte(d), byte(d>>8), byte(d>>16), byte(d>>24))
+}
+
+func (vm *VM) vmAsmEmitStoreLocal(src int, slot int) {
+	off := (slot + 1) * 8
+	rex := vm.vmAsmRex(true, src, 5)
+	if off <= 127 {
+		vm.vmAsmEmit(rex, 0x89, byte(0x45|((src&7)<<3)), byte(int64(-off)))
+		return
+	}
+	vm.vmAsmEmit(rex, 0x89, byte(0x85|((src&7)<<3)))
+	d := uint32(uint32(^uint32(off)) + 1)
+	vm.vmAsmEmit(byte(d), byte(d>>8), byte(d>>16), byte(d>>24))
+}
+
+func (vm *VM) vmAsmPushReg(reg int) {
+	vm.vmAsmEmit(0x4d, 0x8d, 0x7f, 0xf8)
+	rex := byte(0x49)
+	if reg >= 8 {
+		rex = 0x4d
+	}
+	vm.vmAsmEmit(rex, 0x89, byte(0x07|((reg&7)<<3)))
+}
+
+func (vm *VM) vmAsmPopReg(reg int) {
+	rex := byte(0x49)
+	if reg >= 8 {
+		rex = 0x4d
+	}
+	vm.vmAsmEmit(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+	vm.vmAsmEmit(0x4d, 0x8d, 0x7f, 0x08)
+}
+
+func (vm *VM) vmAsmBegin(params int) {
+	vm.asmAmd64Code = vm.asmAmd64Code[:0]
+	vm.asmAmd64Fixups = vm.asmAmd64Fixups[:0]
+	vm.asmAmd64Armed = true
+	vm.vmAsmEmit(0x55)
+	vm.vmAsmEmit(0x48, 0x89, 0xe5)
+	frameBytes := params * 8
+	if frameBytes > 0 {
+		if frameBytes <= 127 {
+			vm.vmAsmEmit(0x48, 0x83, 0xec, byte(frameBytes))
+		} else {
+			v := uint32(frameBytes)
+			vm.vmAsmEmit(0x48, 0x81, 0xec, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+		}
+	}
+	i := params - 1
+	for i >= 0 {
+		vm.vmAsmPopReg(0)
+		vm.vmAsmEmitStoreLocal(0, i)
+		i = i - 1
+	}
+}
+
+func (vm *VM) vmAsmByteSlice(data []byte, tag string) uint64 {
+	ws := uint64(vm.config.WordSize)
+	dataAddr := vm.alloc(uint64(len(data)), tag+"-data")
+	vm.copyToVM(int(dataAddr), data, len(data))
+	hdr := vm.alloc(4*ws, tag+"-hdr")
+	vm.storeWord(hdr, dataAddr)
+	vm.storeWord(hdr+ws, uint64(len(data)))
+	vm.storeWord(hdr+2*ws, uint64(len(data)))
+	vm.storeWord(hdr+3*ws, 1)
+	return hdr
+}
+
+func (vm *VM) vmAsmFixupBytes() []byte {
+	var out []byte
+	for _, fx := range vm.asmAmd64Fixups {
+		off := uint32(fx.Off)
+		out = append(out, byte(off), byte(off>>8), byte(off>>16), byte(off>>24))
+		n := uint32(len(fx.Target))
+		out = append(out, byte(n), byte(n>>8), byte(n>>16), byte(n>>24))
+		out = append(out, []byte(fx.Target)...)
+	}
+	return out
 }
 
 func (vm *VM) signExtend(val uint64) int64 {
@@ -1878,6 +2005,109 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		a4 := vm.localGet(localsAddr, ws, 5)
 		a5 := vm.localGet(localsAddr, ws, 6)
 		vm.execSyscallIntrinsic(num, ws, a0, a1, a2, a3, a4, a5)
+
+	case "AsmAmd64Begin":
+		params := int(vm.localGet(localsAddr, ws, 1))
+		vm.vmAsmBegin(params)
+
+	case "AsmAmd64Load":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		src := int(int64(vm.localGet(localsAddr, ws, 1)))
+		if src < 0 {
+			paramIdx := -1 - src
+			vm.vmAsmEmitLoadParam(dst, paramIdx)
+			return
+		}
+		vm.vmAsmEmitMovRegImm64(dst, int64(src))
+
+	case "AsmAmd64Add":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		src := int(vm.localGet(localsAddr, ws, 1))
+		vm.vmAsmEmit(vm.vmAsmRex(true, src, dst), 0x01, byte(0xc0|((src&7)<<3)|(dst&7)))
+
+	case "AsmAmd64Mul":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		imm := int32(vm.localGet(localsAddr, ws, 1))
+		vm.vmAsmEmit(vm.vmAsmRex(true, dst, dst), 0x69, byte(0xc0|((dst&7)<<3)|(dst&7)))
+		vm.vmAsmEmit(byte(imm), byte(imm>>8), byte(imm>>16), byte(imm>>24))
+
+	case "AsmAmd64Push":
+		src := int(vm.localGet(localsAddr, ws, 0))
+		vm.vmAsmPushReg(src)
+
+	case "AsmAmd64Pop":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		vm.vmAsmPopReg(dst)
+
+	case "AsmAmd64Call0":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		target := vm.readString(vm.localGet(localsAddr, ws, 1))
+		off := len(vm.asmAmd64Code) + 1
+		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
+		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
+		vm.vmAsmPopReg(dst)
+
+	case "AsmAmd64Call1":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		target := vm.readString(vm.localGet(localsAddr, ws, 1))
+		a0 := int(vm.localGet(localsAddr, ws, 2))
+		vm.vmAsmPushReg(a0)
+		off := len(vm.asmAmd64Code) + 1
+		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
+		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
+		vm.vmAsmPopReg(dst)
+
+	case "AsmAmd64Call2":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		target := vm.readString(vm.localGet(localsAddr, ws, 1))
+		a0 := int(vm.localGet(localsAddr, ws, 2))
+		a1 := int(vm.localGet(localsAddr, ws, 3))
+		vm.vmAsmPushReg(a0)
+		vm.vmAsmPushReg(a1)
+		off := len(vm.asmAmd64Code) + 1
+		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
+		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
+		vm.vmAsmPopReg(dst)
+
+	case "AsmAmd64Call3":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		target := vm.readString(vm.localGet(localsAddr, ws, 1))
+		a0 := int(vm.localGet(localsAddr, ws, 2))
+		a1 := int(vm.localGet(localsAddr, ws, 3))
+		a2 := int(vm.localGet(localsAddr, ws, 4))
+		vm.vmAsmPushReg(a0)
+		vm.vmAsmPushReg(a1)
+		vm.vmAsmPushReg(a2)
+		off := len(vm.asmAmd64Code) + 1
+		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
+		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
+		vm.vmAsmPopReg(dst)
+
+	case "AsmAmd64Call4":
+		dst := int(vm.localGet(localsAddr, ws, 0))
+		target := vm.readString(vm.localGet(localsAddr, ws, 1))
+		a0 := int(vm.localGet(localsAddr, ws, 2))
+		a1 := int(vm.localGet(localsAddr, ws, 3))
+		a2 := int(vm.localGet(localsAddr, ws, 4))
+		a3 := int(vm.localGet(localsAddr, ws, 5))
+		vm.vmAsmPushReg(a0)
+		vm.vmAsmPushReg(a1)
+		vm.vmAsmPushReg(a2)
+		vm.vmAsmPushReg(a3)
+		off := len(vm.asmAmd64Code) + 1
+		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
+		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
+		vm.vmAsmPopReg(dst)
+
+	case "AsmAmd64Ret":
+		vm.vmAsmEmit(0xc9, 0xc3)
+		vm.asmAmd64Armed = false
+
+	case "AsmAmd64TakeCode":
+		vm.push(vm.vmAsmByteSlice(vm.asmAmd64Code, "asm-code"))
+
+	case "AsmAmd64TakeFixups":
+		vm.push(vm.vmAsmByteSlice(vm.vmAsmFixupBytes(), "asm-fixups"))
 
 	// Memory intrinsics
 	case "Sliceptr":

@@ -87,6 +87,14 @@ func EliminateDeadFunctions(irmod *IRModule) {
 				continue
 			}
 			f := irmod.Funcs[idx]
+			if f.Native != nil {
+				for _, fx := range f.Native.Fixups {
+					if fx.Target != "" && !reachable[fx.Target] {
+						reachable[fx.Target] = true
+						worklist = append(worklist, fx.Target)
+					}
+				}
+			}
 
 			for _, inst := range f.Code {
 				if inst.Op == OP_CALL {

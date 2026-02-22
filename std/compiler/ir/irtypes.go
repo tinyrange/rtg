@@ -145,6 +145,23 @@ type IRFunc struct {
 	Locals   []IRLocal
 	RetCount int
 	Code     []Inst
+	Native   *NativeFunc
+}
+
+type NativeFixup struct {
+	Kind   int
+	Off    int
+	Target string
+}
+
+const (
+	NativeFixupCallRel32 = 1
+)
+
+type NativeFunc struct {
+	Arch   string
+	Code   []byte
+	Fixups []NativeFixup
 }
 
 // IRGlobal represents a global variable.

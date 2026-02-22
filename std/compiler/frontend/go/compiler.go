@@ -26,6 +26,13 @@ type closureCaptureBinding struct {
 	IsPtr    bool
 }
 
+type assembleInfo struct {
+	Arch        string
+	BuilderName string
+	Params      int
+	RetCount    int
+}
+
 // === Compiler ===
 
 // Compiler lowers AST from a Module into stack machine IR.
@@ -96,6 +103,8 @@ type Compiler struct {
 	inComptimeFunc       bool
 	inIfInit             bool
 	ifInitLeakedNames    map[string]bool
+	assembleFuncs       map[string]assembleInfo
+	inAssembleBuilder   bool
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -146,6 +155,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		localFuncCaptures:   make(map[string][]closureCaptureBinding),
 		dotJoinCache:        make(map[string]map[string]string),
 		qualifyTypeCache:    make(map[string]string),
+		assembleFuncs:       make(map[string]assembleInfo),
 	}
 	c.initBuiltinTypes()
 
@@ -231,6 +241,8 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		c.curPkg = pkg
 		c.compilePackage(pkg)
 	}
+
+	c.compileAssembledFunctions()
 
 	// Pass dispatch data to backend
 	c.irmod.TypeIDs = c.typeIDs
@@ -1139,9 +1151,13 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 			c.funcRetTypeNodes[qname] = firstRet
 			isComptimeFunc := false
+			assembleArch := ""
 			for _, d := range directives {
 				if isComptimeDirective(d) {
 					isComptimeFunc = true
+				}
+				if arch, ok := parseAssembleDirective(d); ok {
+					assembleArch = arch
 				}
 				if parseInternalDirective(d) != "" {
 					c.funcIsInternal[qname] = true
@@ -1193,6 +1209,13 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			c.funcParamTypes[qname] = paramTypeNames
 			if isComptimeFunc {
 				c.comptimeFuncs[qname] = true
+			}
+			if assembleArch != "" {
+				c.assembleFuncs[qname] = assembleInfo{
+					Arch:     assembleArch,
+					Params:   paramCount,
+					RetCount: len(retTypeNames),
+				}
 			}
 			if isVariadic {
 				c.funcVariadic[qname] = fixedParams
@@ -1499,6 +1522,7 @@ func (c *Compiler) compileTopDecl(node *Node) {
 			intern := ""
 			var linkspec LinkStaticDirective
 			hasLinkStatic := false
+			assembleArch := ""
 			for _, d := range directives {
 				in := parseInternalDirective(d)
 				if in != "" {
@@ -1509,11 +1533,16 @@ func (c *Compiler) compileTopDecl(node *Node) {
 					linkspec = ls
 					hasLinkStatic = true
 				}
+				if arch, ok := parseAssembleDirective(d); ok {
+					assembleArch = arch
+				}
 			}
 			if intern != "" {
 				c.compileIntrinsicFunc(base, intern)
 			} else if hasLinkStatic {
 				c.compileLinkStaticFunc(base, linkspec)
+			} else if assembleArch != "" {
+				c.compileAssembleFunc(base, assembleArch)
 			} else {
 				c.compileFunc(base)
 			}
@@ -1716,6 +1745,58 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.irmod.Funcs = append(c.irmod.Funcs, f)
 	c.curFunc = nil
 	c.inComptimeFunc = savedInComptimeFunc
+}
+
+func (c *Compiler) compileAssembleFunc(node *Node, arch string) {
+	if node == nil {
+		return
+	}
+	if node.X != nil {
+		c.errorf("assemble methods are not supported (%s)", node.Name)
+		return
+	}
+	qname := c.curPkg.QualName(node.Name)
+	info, ok := c.assembleFuncs[qname]
+	if !ok {
+		info = assembleInfo{Arch: arch}
+	}
+	if arch != "amd64" {
+		c.errorf("%s: unsupported assemble arch %q", qname, arch)
+		return
+	}
+	if c.target.GOARCH != arch {
+		c.errorf("%s: assemble %s used when target is %s", qname, arch, c.target.GOARCH)
+		return
+	}
+	if c.target.Backend != "native" {
+		c.errorf("%s: assemble functions require native backend (got %s)", qname, c.target.Backend)
+		return
+	}
+
+	stub := &ir.IRFunc{
+		Name:     qname,
+		Params:   info.Params,
+		RetCount: info.RetCount,
+		Code: []ir.Inst{
+			{Op: ir.OP_CONST_STR, Name: "native-only function called in VM: " + qname},
+			{Op: ir.OP_PANIC},
+		},
+	}
+	c.irmod.Funcs = append(c.irmod.Funcs, stub)
+
+	builderNode := cloneTypeNode(node)
+	builderNode.Name = "__rtg_asm_builder_" + node.Name
+	builderNode.Type = nil
+	builderQname := c.curPkg.QualName(builderNode.Name)
+
+	saved := c.inAssembleBuilder
+	c.inAssembleBuilder = true
+	c.compileFunc(builderNode)
+	c.inAssembleBuilder = saved
+
+	info.Arch = arch
+	info.BuilderName = builderQname
+	c.assembleFuncs[qname] = info
 }
 
 func (c *Compiler) compileIntrinsicFunc(node *Node, intern string) {
@@ -4185,6 +4266,10 @@ func (c *Compiler) compileIdent(node *Node) {
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 		return
 	}
+	if c.inAssembleBuilder && symOk && sym.Kind == SymFunc {
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: c.curPkg.QualName(node.Name)})
+		return
+	}
 	c.errorf("%s: undefined: %s", c.curFunc.Name, node.Name)
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 }
@@ -5669,6 +5754,174 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	return wrapName, f, nil
 }
 
+func (c *Compiler) findIRFunc(name string) *ir.IRFunc {
+	for _, f := range c.irmod.Funcs {
+		if f != nil && f.Name == name {
+			return f
+		}
+	}
+	return nil
+}
+
+func decodeAsmFixupBytes(data []byte) ([]ir.NativeFixup, error) {
+	var out []ir.NativeFixup
+	i := 0
+	for i < len(data) {
+		if i+8 > len(data) {
+			return nil, fmt.Errorf("truncated fixup record")
+		}
+		off := int(uint32(data[i]) | uint32(data[i+1])<<8 | uint32(data[i+2])<<16 | uint32(data[i+3])<<24)
+		i = i + 4
+		n := int(uint32(data[i]) | uint32(data[i+1])<<8 | uint32(data[i+2])<<16 | uint32(data[i+3])<<24)
+		i = i + 4
+		if n < 0 || i+n > len(data) {
+			return nil, fmt.Errorf("invalid fixup target length")
+		}
+		target := string(data[i : i+n])
+		i = i + n
+		out = append(out, ir.NativeFixup{
+			Kind:   ir.NativeFixupCallRel32,
+			Off:    off,
+			Target: target,
+		})
+	}
+	return out, nil
+}
+
+func evalSliceBytes(eval *vm.EvalState, raw uint64) ([]byte, error) {
+	if raw == 0 {
+		return nil, nil
+	}
+	ws := uint64(vm.EvalWordSize(eval))
+	dataPtr := vm.EvalLoadWord(eval, raw)
+	n := int(vm.EvalLoadWord(eval, raw+ws))
+	if n < 0 {
+		return nil, fmt.Errorf("negative slice length")
+	}
+	if n == 0 || dataPtr == 0 {
+		return []byte{}, nil
+	}
+	return vm.EvalLoadBytes(eval, dataPtr, n)
+}
+
+func (c *Compiler) buildAssembleWrapper(runtimeName string, info assembleInfo) *ir.IRFunc {
+	c.comptimeSeq = c.comptimeSeq + 1
+	pkgPath := runtimeName
+	dot := -1
+	i := 0
+	for i < len(runtimeName) {
+		if runtimeName[i] == '.' {
+			dot = i
+		}
+		i = i + 1
+	}
+	if dot >= 0 {
+		pkgPath = runtimeName[0:dot]
+	}
+	wrapName := fmt.Sprintf("%s.assemble$%d", pkgPath, c.comptimeSeq)
+	f := &ir.IRFunc{Name: wrapName, RetCount: 2}
+	f.Code = append(f.Code,
+		ir.Inst{Op: ir.OP_CONST_STR, Name: runtimeName},
+		ir.Inst{Op: ir.OP_CONST_I64, Val: int64(info.Params)},
+		ir.Inst{Op: ir.OP_CONST_I64, Val: int64(info.RetCount)},
+		ir.Inst{Op: ir.OP_CALL, Name: "j5.nz/rtg/x/asm/amd64.__rtg_asm_begin", Arg: 3},
+	)
+	for i := 0; i < info.Params; i++ {
+		f.Code = append(f.Code, ir.Inst{Op: ir.OP_CONST_I64, Val: int64(-1 - i)})
+	}
+	f.Code = append(f.Code,
+		ir.Inst{Op: ir.OP_CALL, Name: info.BuilderName, Arg: info.Params},
+		ir.Inst{Op: ir.OP_CALL, Name: "j5.nz/rtg/x/asm/amd64.__rtg_asm_take_code", Arg: 0},
+		ir.Inst{Op: ir.OP_CALL, Name: "j5.nz/rtg/x/asm/amd64.__rtg_asm_take_fixups", Arg: 0},
+		ir.Inst{Op: ir.OP_RETURN, Arg: 2},
+	)
+	return f
+}
+
+func (c *Compiler) compileAssembledFunctions() {
+	if len(c.assembleFuncs) == 0 {
+		return
+	}
+	if c.target.GOARCH != "amd64" {
+		for qname, info := range c.assembleFuncs {
+			c.errorf("%s: assemble %s used when target is %s", qname, info.Arch, c.target.GOARCH)
+		}
+		return
+	}
+	if c.target.Backend != "native" {
+		c.errorf("native assembled functions are not supported on backend %s", c.target.Backend)
+		return
+	}
+
+	c.irmod.TypeIDs = c.typeIDs
+	c.irmod.MethodTable = c.methodTable
+	c.irmod.IfaceMethods = c.ifaceMethods
+	c.irmod.IfaceMethodRets = c.ifaceMethodRets
+
+	for qname, info := range c.assembleFuncs {
+		if info.BuilderName == "" {
+			continue
+		}
+		runtimeFunc := c.findIRFunc(qname)
+		if runtimeFunc == nil {
+			c.errorf("%s: assemble placeholder function missing", qname)
+			continue
+		}
+		wrap := c.buildAssembleWrapper(qname, info)
+		c.irmod.Funcs = append(c.irmod.Funcs, wrap)
+		eval, err := vm.NewEvalStateNoInit(c.target, c.irmod)
+		if err != nil {
+			c.irmod.Funcs = c.irmod.Funcs[0 : len(c.irmod.Funcs)-1]
+			c.errorf("%s: assemble init failed: %v", qname, err)
+			continue
+		}
+		rets, err := vm.EvalCall(eval, wrap.Name, nil, 2)
+		c.irmod.Funcs = c.irmod.Funcs[0 : len(c.irmod.Funcs)-1]
+		if err != nil {
+			c.errorf("%s: assemble execution failed: %v", qname, err)
+			continue
+		}
+		if len(rets) != 2 {
+			c.errorf("%s: assemble execution returned %d values", qname, len(rets))
+			continue
+		}
+		code, err := evalSliceBytes(eval, rets[0])
+		if err != nil {
+			c.errorf("%s: assemble code decode failed: %v", qname, err)
+			continue
+		}
+		fixRaw, err := evalSliceBytes(eval, rets[1])
+		if err != nil {
+			c.errorf("%s: assemble fixup decode failed: %v", qname, err)
+			continue
+		}
+		fixups, err := decodeAsmFixupBytes(fixRaw)
+		if err != nil {
+			c.errorf("%s: assemble fixup parse failed: %v", qname, err)
+			continue
+		}
+		if len(code) == 0 {
+			c.errorf("%s: assembled function produced no code (missing Ret?)", qname)
+			continue
+		}
+		ok := true
+		for _, fx := range fixups {
+			if fx.Off < 0 || fx.Off+4 > len(code) {
+				c.errorf("%s: native fixup offset out of bounds (%d)", qname, fx.Off)
+				ok = false
+			}
+		}
+		if !ok {
+			continue
+		}
+		runtimeFunc.Native = &ir.NativeFunc{
+			Arch:   info.Arch,
+			Code:   code,
+			Fixups: fixups,
+		}
+	}
+}
+
 func (c *Compiler) exprUsesLocalIdentifier(node *Node) bool {
 	if node == nil {
 		return false
@@ -6452,6 +6705,12 @@ func (c *Compiler) compileSelectorExpr(node *Node) {
 				c.errorf("%s: %s.%s not found in package %s", c.curFunc.Name, node.X.Name, node.Name, pkg.Path)
 			}
 			qname := pkg.QualName(node.Name)
+			if c.inAssembleBuilder {
+				if sym, ok := pkg.Symbols[node.Name]; ok && sym.Kind == SymFunc {
+					c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: qname})
+					return
+				}
+			}
 			// Check if it's a precomputed constant
 			if val, ok := c.constValues[qname]; ok {
 				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})

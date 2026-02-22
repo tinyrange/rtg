@@ -1016,6 +1016,19 @@ func isComptimeDirective(val string) bool {
 	return strings.TrimSpace(val) == "comptime"
 }
 
+func parseAssembleDirective(val string) (string, bool) {
+	prefix := "assemble "
+	trimmed := strings.TrimSpace(val)
+	if len(trimmed) <= len(prefix) || trimmed[0:len(prefix)] != prefix {
+		return "", false
+	}
+	arch := strings.TrimSpace(trimmed[len(prefix):len(trimmed)])
+	if arch == "" {
+		return "", false
+	}
+	return arch, true
+}
+
 // LinkStaticDirective describes a static-link external symbol target.
 type LinkStaticDirective struct {
 	Library string
