@@ -56,9 +56,9 @@ without requiring a compiler fork.
 ## Bootstrapping Strategy
 
 - Stage0 host-Go build does not rely on RTG directive lowering.
-- The compiler loads built-in target definition files at startup from
-  `std/target/builtin/` using the same loader path as `-target-file` and
-  `-target-root`.
+- The compiler auto-discovers built-in target definition files by scanning
+  `std/target/**/target.go` at startup using the same loader path as
+  `-target-file` and `-target-root`.
 - This keeps the target definition model unified around single-file metadata
   instead of per-target `gc` bootstrap shims.
 

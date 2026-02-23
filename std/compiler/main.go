@@ -750,16 +750,31 @@ func loadBuiltinTargetDefinitions() error {
 	if err != nil {
 		return err
 	}
-	root := baseDir + "/std/target/builtin"
+	root := baseDir + "/std/target"
+	files := walkTargetDefinitionFiles(root, nil)
+	if len(files) == 0 {
+		return nil
+	}
+	return targetcfg.LoadTargetFiles(files)
+}
+
+func walkTargetDefinitionFiles(root string, out []string) []string {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		// Built-in target definitions are optional for non-repository layouts.
-		return nil
+		return out
 	}
-	if len(entries) == 0 {
-		return nil
+	for _, entry := range entries {
+		name := entry.Name()
+		path := root + "/" + name
+		if entry.IsDir() {
+			out = walkTargetDefinitionFiles(path, out)
+			continue
+		}
+		if name == "target.go" {
+			out = append(out, path)
+		}
 	}
-	return targetcfg.LoadTargetRoot(root)
+	return out
 }
 
 func possibleTargets() []string {

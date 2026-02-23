@@ -23,7 +23,6 @@ Typical files:
 - `target.go`: target spec + directive registrations
 - `generate.go`: `Driver.Generate` implementation
 - `disabled.go`: optional stub when backend is build-tag disabled
-- `std/target/builtin/<triple>.go`: single-file target metadata loaded at compiler startup
 
 ## Step 1: Define and register the target spec
 
@@ -111,16 +110,17 @@ If the backend can be excluded with a build tag, add `disabled.go` with matching
 
 For ABI in disabled mode, return `kind=none` (string) or `target.GenericABI{Kind: "none"}`.
 
-## Step 4: Add a built-in target definition file
+## Step 4: Make `target.go` loader-compatible
 
-Add a single-file target definition under `std/target/builtin/` for stage0 and runtime loading.
-This file should only contain directive functions and literal return values (same constraints as `-target-file`).
+Stage0 discovers targets by scanning `std/target/**/target.go` with the target-file loader.
+Your `target.go` directive functions must therefore remain loader-compatible:
+- literal composite return for `//rtg:target`
+- literal composite (or `nil`) return for `//rtg:targetabi`
+- literal string return for `//rtg:assembler` and `//rtg:binfmt`
 
-Example: `std/target/builtin/linux_riscv64.go`
+Example loader-compatible directive block:
 
 ```go
-package targetfile
-
 import "j5.nz/rtg/std/target"
 
 //rtg:target linux/riscv64
@@ -145,7 +145,7 @@ func linuxRiscv64ABI() target.GenericABI {
 }
 ```
 
-The compiler loads `std/target/builtin/` automatically at startup, so no per-target `gc` bootstrap shim is required.
+The compiler auto-loads discovered `target.go` files at startup, so no per-target `gc` bootstrap shim is required.
 
 ## Validation checklist
 
