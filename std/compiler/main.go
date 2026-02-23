@@ -17,7 +17,6 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 	"j5.nz/rtg/std/compiler/stdlib"
 	targetcfg "j5.nz/rtg/std/target"
-	_ "j5.nz/rtg/std/target/all"
 )
 
 // Target and build tag globals — defaults to host platform
@@ -134,6 +133,11 @@ func traceExit(code int) {
 }
 
 func main() {
+	if err := loadBuiltinTargetDefinitions(); err != nil {
+		fmt.Fprintf(os.Stderr, "rtg: failed to load built-in target definitions: %v\n", err)
+		os.Exit(1)
+	}
+
 	if len(os.Args) < 2 {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
@@ -739,6 +743,23 @@ func collectTargetRootArgs(args []string) ([]string, error) {
 		i = i + 1
 	}
 	return roots, nil
+}
+
+func loadBuiltinTargetDefinitions() error {
+	baseDir, err := detectStdlibBaseDir()
+	if err != nil {
+		return err
+	}
+	root := baseDir + "/std/target/builtin"
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		// Built-in target definitions are optional for non-repository layouts.
+		return nil
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return targetcfg.LoadTargetRoot(root)
 }
 
 func possibleTargets() []string {
