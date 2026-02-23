@@ -1063,6 +1063,32 @@ func parseAssembleDirective(val string) (string, bool) {
 	return arch, true
 }
 
+func parseTargetDirective(val string) (string, bool) {
+	prefix := "target "
+	trimmed := strings.TrimSpace(val)
+	if len(trimmed) <= len(prefix) || trimmed[0:len(prefix)] != prefix {
+		return "", false
+	}
+	triple := strings.TrimSpace(trimmed[len(prefix):len(trimmed)])
+	if triple == "" || strings.Index(triple, "/") < 0 {
+		return "", false
+	}
+	return triple, true
+}
+
+func parseTargetABIDirective(val string) (string, bool) {
+	prefix := "targetabi "
+	trimmed := strings.TrimSpace(val)
+	if len(trimmed) <= len(prefix) || trimmed[0:len(prefix)] != prefix {
+		return "", false
+	}
+	triple := strings.TrimSpace(trimmed[len(prefix):len(trimmed)])
+	if triple == "" || strings.Index(triple, "/") < 0 {
+		return "", false
+	}
+	return triple, true
+}
+
 // LinkStaticDirective describes a static-link external symbol target.
 type LinkStaticDirective struct {
 	Library string

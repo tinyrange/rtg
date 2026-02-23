@@ -32,6 +32,7 @@ type Spec struct {
 }
 
 var registered = map[string]Spec{}
+var registeredABI = map[string]interface{}{}
 
 func Register(spec Spec) {
 	if spec.Triple == "" {
@@ -40,10 +41,28 @@ func Register(spec Spec) {
 	if spec.PackagePath == "" {
 		panic("target.Register: empty PackagePath for " + spec.Triple)
 	}
-	if _, exists := registered[spec.Triple]; exists {
+	if prev, exists := registered[spec.Triple]; exists {
+		if prev.PackagePath == spec.PackagePath {
+			return
+		}
 		panic("target.Register: duplicate target registration for " + spec.Triple)
 	}
 	registered[spec.Triple] = spec
+}
+
+func RegisterABI(triple string, abi interface{}) {
+	if triple == "" {
+		panic("target.RegisterABI: empty Triple")
+	}
+	if _, exists := registeredABI[triple]; exists {
+		return
+	}
+	registeredABI[triple] = abi
+}
+
+func LookupABI(triple string) (interface{}, bool) {
+	abi, ok := registeredABI[triple]
+	return abi, ok
 }
 
 func Lookup(triple string) (Spec, bool) {

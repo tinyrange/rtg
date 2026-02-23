@@ -13,6 +13,9 @@ import (
 const (
 	comptimePkgPath   = "j5.nz/rtg/x/comptime"
 	comptimePkgPrefix = "j5.nz/rtg/x/comptime."
+	targetPkgPath     = "j5.nz/rtg/std/target"
+	targetRegisterFn  = targetPkgPath + ".Register"
+	targetRegisterABI = targetPkgPath + ".RegisterABI"
 )
 
 type closureCaptureSpec struct {
@@ -1424,6 +1427,103 @@ func (c *Compiler) collectMethodDecl(pkg *Package, node *Node) {
 	}
 }
 
+type targetDirectiveInit struct {
+	triple string
+	qname  string
+}
+
+func sortTargetDirectiveInits(inits []targetDirectiveInit) {
+	i := 1
+	for i < len(inits) {
+		j := i
+		for j > 0 {
+			prev := inits[j-1]
+			cur := inits[j]
+			if stringLess(cur.triple, prev.triple) {
+				inits[j-1] = cur
+				inits[j] = prev
+				j = j - 1
+				continue
+			}
+			if cur.triple == prev.triple && stringLess(cur.qname, prev.qname) {
+				inits[j-1] = cur
+				inits[j] = prev
+				j = j - 1
+				continue
+			}
+			break
+		}
+		i = i + 1
+	}
+}
+
+func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]targetDirectiveInit, []targetDirectiveInit) {
+	var targetInits []targetDirectiveInit
+	var abiInits []targetDirectiveInit
+	targetByTriple := make(map[string]string)
+	abiByTriple := make(map[string]string)
+
+	for _, file := range pkg.Files {
+		for _, node := range file.Nodes {
+			base, directives := unwrapDirectiveNode(node)
+			if base == nil || base.Kind != NFunc {
+				continue
+			}
+			qname := pkg.QualName(base.Name)
+			for _, d := range directives {
+				if triple, ok := parseTargetDirective(d); ok {
+					if base.X != nil {
+						c.errorf("%s: //rtg:target %s cannot be used on methods", qname, triple)
+						continue
+					}
+					if len(base.Nodes) != 0 {
+						c.errorf("%s: //rtg:target %s requires a zero-argument function", qname, triple)
+						continue
+					}
+					if retCount, found := c.funcRets[qname]; !found || retCount != 1 {
+						c.errorf("%s: //rtg:target %s requires exactly one return value", qname, triple)
+						continue
+					}
+					if prev, exists := targetByTriple[triple]; exists {
+						if prev != qname {
+							c.errorf("%s: duplicate //rtg:target %s (already declared by %s)", qname, triple, prev)
+						}
+						continue
+					}
+					targetByTriple[triple] = qname
+					targetInits = append(targetInits, targetDirectiveInit{triple: triple, qname: qname})
+				}
+				if triple, ok := parseTargetABIDirective(d); ok {
+					if base.X != nil {
+						c.errorf("%s: //rtg:targetabi %s cannot be used on methods", qname, triple)
+						continue
+					}
+					if len(base.Nodes) != 0 {
+						c.errorf("%s: //rtg:targetabi %s requires a zero-argument function", qname, triple)
+						continue
+					}
+					if retCount, found := c.funcRets[qname]; !found || retCount != 1 {
+						c.errorf("%s: //rtg:targetabi %s requires exactly one return value", qname, triple)
+						continue
+					}
+					if prev, exists := abiByTriple[triple]; exists {
+						if prev != qname {
+							c.errorf("%s: duplicate //rtg:targetabi %s (already declared by %s)", qname, triple, prev)
+						}
+						continue
+					}
+					abiByTriple[triple] = qname
+					abiInits = append(abiInits, targetDirectiveInit{triple: triple, qname: qname})
+				}
+			}
+		}
+	}
+
+	sortTargetDirectiveInits(targetInits)
+	sortTargetDirectiveInits(abiInits)
+	return targetInits, abiInits
+}
+
 func (c *Compiler) compileGlobalInits(pkg *Package) {
 	// Collect all global var decls with initializers
 	var inits []*Node
@@ -1464,8 +1564,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		}
 	}
 	sortEmbeds(embeds)
+	targetInits, abiInits := c.collectTargetDirectiveInits(pkg)
 
-	if len(inits) == 0 && len(embeds) == 0 {
+	if len(inits) == 0 && len(embeds) == 0 && len(targetInits) == 0 && len(abiInits) == 0 {
 		return
 	}
 	// Create a synthetic init function for global var initialization
@@ -1503,6 +1604,16 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 			continue
 		}
 		c.compileEmbedInit(pkg, gidx, emb.pattern)
+	}
+
+	for _, reg := range targetInits {
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: reg.qname, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: targetRegisterFn, Arg: 1})
+	}
+	for _, reg := range abiInits {
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(reg.triple)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: reg.qname, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: targetRegisterABI, Arg: 2})
 	}
 
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})

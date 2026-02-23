@@ -14,8 +14,9 @@ const packagePath = "j5.nz/rtg/std/target/darwin/arm64"
 
 type darwinArm64Driver struct{}
 
-func init() {
-	target.Register(target.Spec{
+//rtg:target darwin/arm64
+func darwinArm64TargetSpec() target.Spec {
+	return target.Spec{
 		Triple:      "darwin/arm64",
 		PackagePath: packagePath,
 		Defaults: target.Defaults{
@@ -26,8 +27,11 @@ func init() {
 			Backend:  "native",
 		},
 		Driver: darwinArm64Driver{},
-	})
+	}
 }
+
+//rtg:targetabi darwin/arm64
+func darwinArm64ABIConfigForTarget() interface{} { return nil }
 
 func (d darwinArm64Driver) Configure(_ *common.Target) error {
 	return nil
