@@ -16,6 +16,8 @@ import (
 	frontend "j5.nz/rtg/std/compiler/frontend/go"
 	"j5.nz/rtg/std/compiler/ir"
 	"j5.nz/rtg/std/compiler/stdlib"
+	targetcfg "j5.nz/rtg/std/target"
+	_ "j5.nz/rtg/std/target/all"
 )
 
 // Target and build tag globals — defaults to host platform
@@ -216,6 +218,15 @@ func main() {
 				bits := compileTarget.WordSize * 8
 				compileTarget.GOARCH = fmt.Sprintf("c%d", bits)
 			} else {
+				_, handledByTargetPkg, err := targetcfg.Apply(target, &compileTarget)
+				if handledByTargetPkg {
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "invalid target %q: %v\n", target, err)
+						os.Exit(1)
+					}
+					i = i + 2
+					continue
+				}
 				if target == "dos/8086" {
 					// DOS 8086 COM backend.
 					compileTarget.GOOS = "dos"
@@ -676,6 +687,9 @@ func possibleTargets() []string {
 	targets = common.AppendUnique(targets, "vm/16")
 	targets = common.AppendUnique(targets, "vm/32")
 	targets = common.AppendUnique(targets, "vm/64")
+	for _, target := range targetcfg.RegisteredTriples() {
+		targets = common.AppendUnique(targets, target)
+	}
 	return targets
 }
 

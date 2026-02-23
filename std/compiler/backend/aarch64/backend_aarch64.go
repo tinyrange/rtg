@@ -730,31 +730,34 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 	argCount := inst.Arg
 	methodName := inst.Name
 
+	// Materialize pending operand-stack state before reshuffling call arguments.
+	g.Flush()
+
 	// Save regular args to hardware stack
 	i := 0
 	for i < argCount {
-		g.opPop(REG_X0)
+		g.rawPop(REG_X0)
 		g.emitSubImm(REG_SP, REG_SP, 16)
 		g.EmitStr(REG_X0, REG_SP, 0)
 		i++
 	}
 
 	// Pop interface pointer
-	g.opPop(REG_X0)
+	g.rawPop(REG_X0)
 
 	// Load type_id and concrete value
 	g.emitLdr(REG_X1, REG_X0, 0) // type_id
 	g.emitLdr(REG_X2, REG_X0, 8) // concrete value
 
 	// Push receiver once and materialize it before branch dispatch.
-	g.opPush(REG_X2)
+	g.rawPush(REG_X2)
 
 	// Restore regular args
 	i = argCount - 1
 	for i >= 0 {
 		g.emitLdr(REG_X0, REG_SP, 0)
 		g.emitAddImm(REG_SP, REG_SP, 16)
-		g.opPush(REG_X0)
+		g.rawPush(REG_X0)
 		i = i - 1
 	}
 	// Ensure restored args are materialized for all dispatch branches.
