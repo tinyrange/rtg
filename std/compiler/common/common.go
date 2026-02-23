@@ -3,6 +3,7 @@ package common
 import "os"
 
 type Target struct {
+	Triple                string
 	GOOS                  string
 	GOARCH                string
 	PtrSize               int

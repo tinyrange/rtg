@@ -26,12 +26,20 @@ func darwinArm64TargetSpec() target.Spec {
 			WordSize: 8,
 			Backend:  "native",
 		},
-		Driver: darwinArm64Driver{},
+		Driver:    darwinArm64Driver{},
+		Assembler: "aarch64",
+		BinFormat: "macho64",
 	}
 }
 
+//rtg:assembler aarch64
+func darwinArm64AssemblerProvider() string { return "builtin.aarch64" }
+
+//rtg:binfmt macho64
+func darwinArm64BinFmtProvider() string { return "builtin.macho64" }
+
 //rtg:targetabi darwin/arm64
-func darwinArm64ABIConfigForTarget() interface{} { return nil }
+func darwinArm64ABIConfigForTarget() string { return "kind=none" }
 
 func (d darwinArm64Driver) Configure(_ *common.Target) error {
 	return nil

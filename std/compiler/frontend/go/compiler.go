@@ -16,6 +16,8 @@ const (
 	targetPkgPath     = "j5.nz/rtg/std/target"
 	targetRegisterFn  = targetPkgPath + ".Register"
 	targetRegisterABI = targetPkgPath + ".RegisterABI"
+	targetRegisterAsm = targetPkgPath + ".RegisterAssembler"
+	targetRegisterFmt = targetPkgPath + ".RegisterBinFormat"
 )
 
 type closureCaptureSpec struct {
@@ -1360,25 +1362,25 @@ func (c *Compiler) collectMethodDecl(pkg *Package, node *Node) {
 	}
 }
 
-type targetDirectiveInit struct {
-	triple string
-	qname  string
+type directiveInit struct {
+	key   string
+	qname string
 }
 
-func sortTargetDirectiveInits(inits []targetDirectiveInit) {
+func sortDirectiveInits(inits []directiveInit) {
 	i := 1
 	for i < len(inits) {
 		j := i
 		for j > 0 {
 			prev := inits[j-1]
 			cur := inits[j]
-			if stringLess(cur.triple, prev.triple) {
+			if stringLess(cur.key, prev.key) {
 				inits[j-1] = cur
 				inits[j] = prev
 				j = j - 1
 				continue
 			}
-			if cur.triple == prev.triple && stringLess(cur.qname, prev.qname) {
+			if cur.key == prev.key && stringLess(cur.qname, prev.qname) {
 				inits[j-1] = cur
 				inits[j] = prev
 				j = j - 1
@@ -1390,11 +1392,15 @@ func sortTargetDirectiveInits(inits []targetDirectiveInit) {
 	}
 }
 
-func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]targetDirectiveInit, []targetDirectiveInit) {
-	var targetInits []targetDirectiveInit
-	var abiInits []targetDirectiveInit
+func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]directiveInit, []directiveInit, []directiveInit, []directiveInit) {
+	var targetInits []directiveInit
+	var abiInits []directiveInit
+	var asmInits []directiveInit
+	var fmtInits []directiveInit
 	targetByTriple := make(map[string]string)
 	abiByTriple := make(map[string]string)
+	asmByName := make(map[string]string)
+	fmtByName := make(map[string]string)
 
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
@@ -1424,7 +1430,7 @@ func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]targetDirectiveI
 						continue
 					}
 					targetByTriple[triple] = qname
-					targetInits = append(targetInits, targetDirectiveInit{triple: triple, qname: qname})
+					targetInits = append(targetInits, directiveInit{key: triple, qname: qname})
 				}
 				if triple, ok := parseTargetABIDirective(d); ok {
 					if base.X != nil {
@@ -1439,6 +1445,11 @@ func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]targetDirectiveI
 						c.errorf("%s: //rtg:targetabi %s requires exactly one return value", qname, triple)
 						continue
 					}
+					retTypes := c.funcRetTypes[qname]
+					if len(retTypes) != 1 || retTypes[0] != "string" {
+						c.errorf("%s: //rtg:targetabi %s requires return type string", qname, triple)
+						continue
+					}
 					if prev, exists := abiByTriple[triple]; exists {
 						if prev != qname {
 							c.errorf("%s: duplicate //rtg:targetabi %s (already declared by %s)", qname, triple, prev)
@@ -1446,15 +1457,71 @@ func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]targetDirectiveI
 						continue
 					}
 					abiByTriple[triple] = qname
-					abiInits = append(abiInits, targetDirectiveInit{triple: triple, qname: qname})
+					abiInits = append(abiInits, directiveInit{key: triple, qname: qname})
+				}
+				if name, ok := parseAssemblerDirective(d); ok {
+					if base.X != nil {
+						c.errorf("%s: //rtg:assembler %s cannot be used on methods", qname, name)
+						continue
+					}
+					if len(base.Nodes) != 0 {
+						c.errorf("%s: //rtg:assembler %s requires a zero-argument function", qname, name)
+						continue
+					}
+					if retCount, found := c.funcRets[qname]; !found || retCount != 1 {
+						c.errorf("%s: //rtg:assembler %s requires exactly one return value", qname, name)
+						continue
+					}
+					retTypes := c.funcRetTypes[qname]
+					if len(retTypes) != 1 || retTypes[0] != "string" {
+						c.errorf("%s: //rtg:assembler %s requires return type string", qname, name)
+						continue
+					}
+					if prev, exists := asmByName[name]; exists {
+						if prev != qname {
+							c.errorf("%s: duplicate //rtg:assembler %s (already declared by %s)", qname, name, prev)
+						}
+						continue
+					}
+					asmByName[name] = qname
+					asmInits = append(asmInits, directiveInit{key: name, qname: qname})
+				}
+				if name, ok := parseBinFormatDirective(d); ok {
+					if base.X != nil {
+						c.errorf("%s: //rtg:binfmt %s cannot be used on methods", qname, name)
+						continue
+					}
+					if len(base.Nodes) != 0 {
+						c.errorf("%s: //rtg:binfmt %s requires a zero-argument function", qname, name)
+						continue
+					}
+					if retCount, found := c.funcRets[qname]; !found || retCount != 1 {
+						c.errorf("%s: //rtg:binfmt %s requires exactly one return value", qname, name)
+						continue
+					}
+					retTypes := c.funcRetTypes[qname]
+					if len(retTypes) != 1 || retTypes[0] != "string" {
+						c.errorf("%s: //rtg:binfmt %s requires return type string", qname, name)
+						continue
+					}
+					if prev, exists := fmtByName[name]; exists {
+						if prev != qname {
+							c.errorf("%s: duplicate //rtg:binfmt %s (already declared by %s)", qname, name, prev)
+						}
+						continue
+					}
+					fmtByName[name] = qname
+					fmtInits = append(fmtInits, directiveInit{key: name, qname: qname})
 				}
 			}
 		}
 	}
 
-	sortTargetDirectiveInits(targetInits)
-	sortTargetDirectiveInits(abiInits)
-	return targetInits, abiInits
+	sortDirectiveInits(targetInits)
+	sortDirectiveInits(abiInits)
+	sortDirectiveInits(asmInits)
+	sortDirectiveInits(fmtInits)
+	return targetInits, abiInits, asmInits, fmtInits
 }
 
 func (c *Compiler) compileGlobalInits(pkg *Package) {
@@ -1497,9 +1564,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		}
 	}
 	sortEmbeds(embeds)
-	targetInits, abiInits := c.collectTargetDirectiveInits(pkg)
+	targetInits, abiInits, asmInits, fmtInits := c.collectTargetDirectiveInits(pkg)
 
-	if len(inits) == 0 && len(embeds) == 0 && len(targetInits) == 0 && len(abiInits) == 0 {
+	if len(inits) == 0 && len(embeds) == 0 && len(targetInits) == 0 && len(abiInits) == 0 && len(asmInits) == 0 && len(fmtInits) == 0 {
 		return
 	}
 	// Create a synthetic init function for global var initialization
@@ -1544,9 +1611,19 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: targetRegisterFn, Arg: 1})
 	}
 	for _, reg := range abiInits {
-		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(reg.triple)})
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(reg.key)})
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: reg.qname, Arg: 0})
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: targetRegisterABI, Arg: 2})
+	}
+	for _, reg := range asmInits {
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(reg.key)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: reg.qname, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: targetRegisterAsm, Arg: 2})
+	}
+	for _, reg := range fmtInits {
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(reg.key)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: reg.qname, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: targetRegisterFmt, Arg: 2})
 	}
 
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})

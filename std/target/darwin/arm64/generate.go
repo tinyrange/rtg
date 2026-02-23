@@ -10,6 +10,7 @@ import (
 	aarch64macos "j5.nz/rtg/std/compiler/backend/aarch64/macos"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
+	"j5.nz/rtg/std/target"
 )
 
 type darwinArm64ABIConfig struct {
@@ -27,8 +28,40 @@ type darwinArm64ABIConfig struct {
 	ExitSymbol       string
 }
 
+func darwinArm64ABIConfigFromProvider(provider target.ABIProvider) darwinArm64ABIConfig {
+	cfg := darwinArm64ABIConfig{
+		ImageBase:        0x100000000,
+		ExtraGlobals:     3,
+		WithGOT:          true,
+		OperandStackSize: 1048576,
+		MmapProt:         3,
+		MmapFlags:        0x1002,
+		MmapFD:           -1,
+		MmapOffset:       0,
+		ExitCode:         0,
+		FixupSkipMask: aarch64.FixupSkipRodataHeader |
+			aarch64.FixupSkipDataAddr |
+			aarch64.FixupSkipGotAddr,
+		MmapSymbol: "_mmap",
+		ExitSymbol: "_exit",
+	}
+	cfg.ImageBase = target.ABIUint64(provider, "image_base", cfg.ImageBase)
+	cfg.ExtraGlobals = int(target.ABIInt64(provider, "extra_globals", int64(cfg.ExtraGlobals)))
+	cfg.WithGOT = target.ABIBool(provider, "with_got", cfg.WithGOT)
+	cfg.OperandStackSize = target.ABIInt64(provider, "operand_stack_size", cfg.OperandStackSize)
+	cfg.MmapProt = target.ABIInt64(provider, "mmap_prot", cfg.MmapProt)
+	cfg.MmapFlags = target.ABIInt64(provider, "mmap_flags", cfg.MmapFlags)
+	cfg.MmapFD = target.ABIInt64(provider, "mmap_fd", cfg.MmapFD)
+	cfg.MmapOffset = target.ABIInt64(provider, "mmap_offset", cfg.MmapOffset)
+	cfg.ExitCode = target.ABIInt64(provider, "exit_code", cfg.ExitCode)
+	cfg.FixupSkipMask = int(target.ABIInt64(provider, "fixup_skip_mask", int64(cfg.FixupSkipMask)))
+	cfg.MmapSymbol = target.ABIString(provider, "mmap_symbol", cfg.MmapSymbol)
+	cfg.ExitSymbol = target.ABIString(provider, "exit_symbol", cfg.ExitSymbol)
+	return cfg
+}
+
 func (d darwinArm64Driver) Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
-	abi := darwinArm64ABIConfigForTarget()
+	abi := darwinArm64ABIConfigFromProvider(darwinArm64ABIProviderForCodegen())
 	g := aarch64.NewCodeGen(tgt, irmod, abi.ImageBase, abi.ExtraGlobals, abi.WithGOT)
 
 	emitDarwinArm64Start(g, irmod, abi)
@@ -113,21 +146,46 @@ func emitDarwinArm64Start(g *aarch64.CodeGen, irmod *ir.IRModule, abi darwinArm6
 }
 
 //rtg:targetabi darwin/arm64
-func darwinArm64ABIConfigForTarget() darwinArm64ABIConfig {
-	return darwinArm64ABIConfig{
-		ImageBase:        0x100000000,
-		ExtraGlobals:     3,
-		WithGOT:          true,
-		OperandStackSize: 1048576,
-		MmapProt:         3,
-		MmapFlags:        0x1002,
-		MmapFD:           -1,
-		MmapOffset:       0,
-		ExitCode:         0,
-		FixupSkipMask: aarch64.FixupSkipRodataHeader |
-			aarch64.FixupSkipDataAddr |
-			aarch64.FixupSkipGotAddr,
-		MmapSymbol: "_mmap",
-		ExitSymbol: "_exit",
+func darwinArm64ABIConfigForTarget() string {
+	return "kind=darwin/arm64\n" +
+		"u:image_base=4294967296\n" +
+		"i:extra_globals=3\n" +
+		"i:operand_stack_size=1048576\n" +
+		"i:mmap_prot=3\n" +
+		"i:mmap_flags=4098\n" +
+		"i:mmap_fd=-1\n" +
+		"i:mmap_offset=0\n" +
+		"i:exit_code=0\n" +
+		"i:fixup_skip_mask=7\n" +
+		"s:mmap_symbol=_mmap\n" +
+		"s:exit_symbol=_exit\n" +
+		"b:with_got=true"
+}
+
+func darwinArm64ABIProviderForCodegen() target.ABIProvider {
+	return target.ABIProvider{
+		Kind: "darwin/arm64",
+		U64: map[string]uint64{
+			"image_base": 0x100000000,
+		},
+		I64: map[string]int64{
+			"extra_globals":      3,
+			"operand_stack_size": 1048576,
+			"mmap_prot":          3,
+			"mmap_flags":         0x1002,
+			"mmap_fd":            -1,
+			"mmap_offset":        0,
+			"exit_code":          0,
+			"fixup_skip_mask": int64(aarch64.FixupSkipRodataHeader |
+				aarch64.FixupSkipDataAddr |
+				aarch64.FixupSkipGotAddr),
+		},
+		Str: map[string]string{
+			"mmap_symbol": "_mmap",
+			"exit_symbol": "_exit",
+		},
+		Bool: map[string]bool{
+			"with_got": true,
+		},
 	}
 }

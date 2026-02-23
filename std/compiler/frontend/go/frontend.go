@@ -709,6 +709,12 @@ func parseFile(path string) *Node {
 	return file
 }
 
+// ParseFile is an exported wrapper used by non-frontend packages that need
+// RTG-compatible parsing of Go source files with //rtg: directives.
+func ParseFile(path string) *Node {
+	return parseFile(path)
+}
+
 // parseSource lexes and parses source code from a string.
 func parseSource(name string, src string) *Node {
 	lexer := NewLexer(src)
@@ -725,6 +731,11 @@ func parseSource(name string, src string) *Node {
 	}
 
 	return file
+}
+
+// ParseSource is an exported wrapper used by tooling that needs AST access.
+func ParseSource(name string, src string) *Node {
+	return parseSource(name, src)
 }
 
 // shouldIncludeContent checks if source content should be included based on build tags.
@@ -1053,6 +1064,32 @@ func parseTargetABIDirective(val string) (string, bool) {
 		return "", false
 	}
 	return triple, true
+}
+
+func parseAssemblerDirective(val string) (string, bool) {
+	prefix := "assembler "
+	trimmed := strings.TrimSpace(val)
+	if len(trimmed) <= len(prefix) || trimmed[0:len(prefix)] != prefix {
+		return "", false
+	}
+	name := strings.TrimSpace(trimmed[len(prefix):len(trimmed)])
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+func parseBinFormatDirective(val string) (string, bool) {
+	prefix := "binfmt "
+	trimmed := strings.TrimSpace(val)
+	if len(trimmed) <= len(prefix) || trimmed[0:len(prefix)] != prefix {
+		return "", false
+	}
+	name := strings.TrimSpace(trimmed[len(prefix):len(trimmed)])
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // LinkStaticDirective describes a static-link external symbol target.
