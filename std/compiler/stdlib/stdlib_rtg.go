@@ -6,7 +6,8 @@ import (
 	"embed"
 )
 
-//go:embed ../..
+// Embed the standard library tree and top-level x/ extensions.
+//go:embed ../.. ../../../x
 var embeddedStd embed.FS
 
 func HasEmbeddedStd() bool {
