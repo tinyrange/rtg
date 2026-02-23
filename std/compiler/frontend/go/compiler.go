@@ -515,6 +515,20 @@ func (c *Compiler) getStructFields(typeName string) []string {
 	return fields
 }
 
+func (c *Compiler) structFieldIsInterface(typeName string, fieldName string) bool {
+	if typeName == "" || fieldName == "" {
+		return false
+	}
+	qualifiedType := c.qualifyTypeName(typeName, "")
+	field, pkgPath := c.lookupStructField(qualifiedType, fieldName)
+	if field == nil || field.Type == nil {
+		return false
+	}
+	fieldTypeName := nodeTypeName(field.Type)
+	fieldTypeQualified := c.qualifyTypeName(fieldTypeName, pkgPath)
+	return c.isInterfaceTypeName(fieldTypeName) || c.isInterfaceTypeName(fieldTypeQualified)
+}
+
 // resolveFieldOffset looks up the byte offset of a struct field given a qualified type name and field name.
 func (c *Compiler) resolveFieldOffset(qualifiedType string, fieldName string) int {
 	if path, ok := c.resolveFieldPath(qualifiedType, fieldName); ok && len(path) > 0 {
@@ -595,8 +609,33 @@ func (c *Compiler) resolveMapValueType(mapExpr *Node) string {
 		if vt, ok := c.localMapValueTypes[mapExpr.Name]; ok {
 			return vt
 		}
+		if c.curPkg != nil {
+			if sym, ok := c.curPkg.Symbols[mapExpr.Name]; ok && sym.Kind == SymVar && sym.Node != nil {
+				if sym.Node.Type != nil && sym.Node.Type.Kind == NMapType && sym.Node.Type.Y != nil {
+					return nodeTypeName(sym.Node.Type.Y)
+				}
+				if sym.Node.X != nil && sym.Node.X.Kind == NCompositeLit && sym.Node.X.Type != nil &&
+					sym.Node.X.Type.Kind == NMapType && sym.Node.X.Type.Y != nil {
+					return nodeTypeName(sym.Node.X.Type.Y)
+				}
+			}
+		}
 	}
 	if mapExpr.Kind == NSelectorExpr && mapExpr.X != nil {
+		if mapExpr.X.Kind == NIdent {
+			pkg := c.resolvePackage(mapExpr.X.Name)
+			if pkg != nil {
+				if sym, ok := pkg.Symbols[mapExpr.Name]; ok && sym.Kind == SymVar && sym.Node != nil {
+					if sym.Node.Type != nil && sym.Node.Type.Kind == NMapType && sym.Node.Type.Y != nil {
+						return nodeTypeName(sym.Node.Type.Y)
+					}
+					if sym.Node.X != nil && sym.Node.X.Kind == NCompositeLit && sym.Node.X.Type != nil &&
+						sym.Node.X.Type.Kind == NMapType && sym.Node.X.Type.Y != nil {
+						return nodeTypeName(sym.Node.X.Type.Y)
+					}
+				}
+			}
+		}
 		recvType := c.resolveExprType(mapExpr.X)
 		if recvType == "" {
 			return ""
@@ -2658,9 +2697,15 @@ func (c *Compiler) compileAssign(node *Node) {
 
 	// Map index assignment: m[key] = val
 	if node.X != nil && node.X.Kind == NIndexExpr && c.isMapExpr(node.X.X) {
+		mapValueType := c.resolveMapValueType(node.X.X)
+		mapValueTypeQualified := c.qualifyTypeName(mapValueType, "")
+		mapValueIsInterface := c.isInterfaceTypeName(mapValueType) || c.isInterfaceTypeName(mapValueTypeQualified)
 		c.compileExpr(node.X.X) // push map
 		c.compileExpr(node.X.Y) // push key
 		c.compileExpr(node.Y)   // push value
+		if mapValueIsInterface {
+			c.maybeBoxValueForInterface(node.Y)
+		}
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapSet", Arg: 3})
 		c.emit(ir.Inst{Op: ir.OP_DROP}) // discard returned header (unchanged)
 		return
@@ -7089,6 +7134,12 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 	// Handle map composite literals: map[K]V{k1: v1, k2: v2, ...}
 	if node.Type != nil && node.Type.Kind == NMapType {
 		keyKind := c.mapKeyKind(node.Type.X)
+		valueTypeName := ""
+		if node.Type.Y != nil {
+			valueTypeName = nodeTypeName(node.Type.Y)
+		}
+		valueTypeQualified := c.qualifyTypeName(valueTypeName, "")
+		valueIsInterface := c.isInterfaceTypeName(valueTypeName) || c.isInterfaceTypeName(valueTypeQualified)
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapMake", Arg: 1})
 		// For each key-value pair, call MapSet
@@ -7099,6 +7150,9 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 				c.emit(ir.Inst{Op: ir.OP_DUP})
 				c.compileExpr(elem.X)
 				c.compileExpr(elem.Y)
+				if valueIsInterface {
+					c.maybeBoxValueForInterface(elem.Y)
+				}
 				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.MapSet", Arg: 3})
 				c.emit(ir.Inst{Op: ir.OP_DROP}) // drop the returned header (same as input)
 				// Original map_hdr still on stack
@@ -7158,6 +7212,9 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 				val, ok := fieldVals[fname]
 				if ok {
 					c.compileExpr(val)
+					if c.structFieldIsInterface(typeName, fname) {
+						c.maybeBoxValueForInterface(val)
+					}
 				} else {
 					c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 				}
@@ -7190,8 +7247,12 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "builtin.composite." + typeName, Arg: nfields})
 		} else {
 			// Positional: push values in literal order
-			for _, elem := range node.Nodes {
+			structFields := c.getStructFields(typeName)
+			for i, elem := range node.Nodes {
 				c.compileExpr(elem)
+				if i < len(structFields) && c.structFieldIsInterface(typeName, structFields[i]) {
+					c.maybeBoxValueForInterface(elem)
+				}
 			}
 			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "builtin.composite." + typeName, Arg: len(node.Nodes)})
 		}
