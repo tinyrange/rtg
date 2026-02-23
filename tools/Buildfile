@@ -20,8 +20,8 @@ selfhost-size-native-tags: build
   sh ./build/stage1 -o build/stage2 ./std/compiler/
   sh ./build/stage2 -size-analysis build/stage2.size.default.json -o build/rtg.stage2.default ./std/compiler/
   sh ./build/stage2 -s -size-analysis build/stage2.size.default.strip.json -o build/rtg.stage2.default.strip ./std/compiler/
-  sh ./build/stage2 -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_vm -size-analysis build/stage2.size.native_only.json -o build/rtg.stage2.native_only ./std/compiler/
-  sh ./build/stage2 -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir,no_backend_vm -size-analysis build/stage2.size.native_strict.json -o build/rtg.stage2.native_strict ./std/compiler/
+  sh ./build/stage2 -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386 -size-analysis build/stage2.size.native_only.json -o build/rtg.stage2.native_only ./std/compiler/
+  sh ./build/stage2 -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir -size-analysis build/stage2.size.native_strict.json -o build/rtg.stage2.native_strict ./std/compiler/
   sh ./build/rtg.stage2.default -h >/dev/null
   sh ./build/rtg.stage2.default.strip -h >/dev/null
   sh ./build/rtg.stage2.native_only -h >/dev/null
@@ -33,7 +33,7 @@ selfhost-size-native-tags: build
 test-tagset-windows386-only: build
   sh ./build/rtg -o build/stage1 ./std/compiler/
   sh ./build/stage1 -o build/stage2 ./std/compiler/
-  sh for t in windows/386 windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/arm64; do out=build/tagcheck_$(echo "$t" | tr / _)_windows_i386_only; ./build/stage2 -T "$t" -tags no_backend_linux_amd64,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386,no_backend_vm -o "$out" ./std/compiler/; done
+  sh for t in windows/386 windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/arm64; do out=build/tagcheck_$(echo "$t" | tr / _)_windows_i386_only; ./build/stage2 -T "$t" -tags no_backend_linux_amd64,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 -o "$out" ./std/compiler/; done
   sh echo "PASS: windows/386-only tag set builds for native targets"
 
 test-size-analysis-tagsets: build
@@ -41,7 +41,7 @@ test-size-analysis-tagsets: build
   sh ./build/stage1 -o build/stage2 ./std/compiler/
   sh rm -f build/*.go
   sh echo package build > build/_rtg_buildpkg.go
-  sh set -eu; for t in windows/386 windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/arm64 wasi/wasm32; do tid=$(echo "$t" | tr / _); case "$t" in windows/*) ext=.exe ;; wasi/wasm32) ext=.wasm ;; *) ext= ;; esac; for cfg in full no_embed_std backend_linux_amd64_only backend_windows_i386_only backend_windows_amd64_only backend_arm64_only backend_wasi_wasm32_only; do echo "matrix: $t / $cfg"; tags=; case "$cfg" in full) tags= ;; no_embed_std) tags=no_embed_std,no_backend_vm ;; backend_linux_amd64_only) tags=no_embed_std,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386,no_backend_vm ;; backend_windows_i386_only) tags=no_embed_std,no_backend_linux_amd64,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386,no_backend_vm ;; backend_windows_amd64_only) tags=no_embed_std,no_backend_linux_amd64,no_backend_windows_i386,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386,no_backend_vm ;; backend_arm64_only) tags=no_embed_std,no_backend_linux_amd64,no_backend_windows_i386,no_backend_windows_amd64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386,no_backend_vm ;; backend_wasi_wasm32_only) tags=no_embed_std,no_backend_linux_amd64,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_c,no_backend_dos_i386,no_backend_linux_i386,no_backend_vm ;; *) echo "unknown cfg $cfg" >&2; exit 1 ;; esac; out=build/sizecheck_${tid}_${cfg}${ext}; json=build/sizecheck_${tid}_${cfg}.json; if [ "$cfg" = full ]; then ./build/stage2 -T "$t" -size-analysis "$json" -o "$out" ./std/compiler/; else ./build/stage2 -T "$t" -tags "$tags" -size-analysis "$json" -o "$out" ./std/compiler/; fi; done; done
+  sh set -eu; for t in windows/386 windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/arm64 wasi/wasm32; do tid=$(echo "$t" | tr / _); case "$t" in windows/*) ext=.exe ;; wasi/wasm32) ext=.wasm ;; *) ext= ;; esac; for cfg in full no_embed_std backend_linux_amd64_only backend_windows_i386_only backend_windows_amd64_only backend_arm64_only backend_wasi_wasm32_only; do echo "matrix: $t / $cfg"; tags=; case "$cfg" in full) tags= ;; no_embed_std) tags=no_embed_std ;; backend_linux_amd64_only) tags=no_embed_std,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; backend_windows_i386_only) tags=no_embed_std,no_backend_linux_amd64,no_backend_windows_amd64,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; backend_windows_amd64_only) tags=no_embed_std,no_backend_linux_amd64,no_backend_windows_i386,no_backend_arm64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; backend_arm64_only) tags=no_embed_std,no_backend_linux_amd64,no_backend_windows_i386,no_backend_windows_amd64,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; backend_wasi_wasm32_only) tags=no_embed_std,no_backend_linux_amd64,no_backend_windows_i386,no_backend_windows_amd64,no_backend_arm64,no_backend_c,no_backend_dos_i386,no_backend_linux_i386 ;; *) echo "unknown cfg $cfg" >&2; exit 1 ;; esac; out=build/sizecheck_${tid}_${cfg}${ext}; json=build/sizecheck_${tid}_${cfg}.json; if [ "$cfg" = full ]; then ./build/stage2 -T "$t" -size-analysis "$json" -o "$out" ./std/compiler/; else ./build/stage2 -T "$t" -tags "$tags" -size-analysis "$json" -o "$out" ./std/compiler/; fi; done; done
   sh rm -f build/_rtg_buildpkg.go
   sh echo "PASS: size-analysis tagset matrix OK"
 
@@ -88,25 +88,25 @@ selfhost-win386: build
   sh cmp build/stage2.exe build/stage3.exe && echo "PASS: windows/386 self-hosting OK"
 
 selfhost-exp: selfhost
-  sh ./build/stage2 -tags exp_ir_binary,no_backend_vm -o build/stage2_exp ./std/compiler/
-  sh ./build/stage2_exp -tags no_frontend,exp_ir_binary,no_backend_vm -o build/stage2_exp_backend ./std/compiler/
+  sh ./build/stage2 -tags exp_ir_binary -o build/stage2_exp ./std/compiler/
+  sh ./build/stage2_exp -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend ./std/compiler/
   sh ./build/stage2_exp -emit-ir-binary build/selfhost_exp_native.irb tests/types_int.go
   sh ./build/stage2_exp_backend -from-ir-binary build/selfhost_exp_native.irb -o build/selfhost_exp_native
   sh ./build/selfhost_exp_native >/dev/null
   sh echo "PASS: self-hosting experimental IR binary roundtrip OK"
 
 selfhost-exp-i386: selfhost-i386
-  sh ./build/stage2_i386 -T linux/386 -tags exp_ir_binary,no_backend_vm -o build/stage2_i386_exp ./std/compiler/
-  sh ./build/stage2_i386_exp -T linux/386 -tags no_frontend,exp_ir_binary,no_backend_vm -o build/stage2_i386_exp_backend ./std/compiler/
+  sh ./build/stage2_i386 -T linux/386 -tags exp_ir_binary -o build/stage2_i386_exp ./std/compiler/
+  sh ./build/stage2_i386_exp -T linux/386 -tags no_frontend,exp_ir_binary -o build/stage2_i386_exp_backend ./std/compiler/
   sh ./build/stage2_i386_exp -T linux/386 -emit-ir-binary build/selfhost_exp_i386.irb tests/types_int.go
   sh ./build/stage2_i386_exp_backend -T linux/386 -from-ir-binary build/selfhost_exp_i386.irb -o build/selfhost_exp_i386
   sh ./build/selfhost_exp_i386 >/dev/null
   sh echo "PASS: i386 experimental IR binary roundtrip OK"
 
 selfhost-exp-c: selfhost-c
-  sh ./build/stage2_c -T c/64 -tags exp_ir_binary,no_backend_vm -o build/stage2_c_exp.c ./std/compiler/
+  sh ./build/stage2_c -T c/64 -tags exp_ir_binary -o build/stage2_c_exp.c ./std/compiler/
   sh ${CC:-cc} build/stage2_c_exp.c -o build/stage2_c_exp
-  sh ./build/stage2_c_exp -T c/64 -tags no_frontend,exp_ir_binary,no_backend_vm -o build/stage2_c_exp_backend.c ./std/compiler/
+  sh ./build/stage2_c_exp -T c/64 -tags no_frontend,exp_ir_binary -o build/stage2_c_exp_backend.c ./std/compiler/
   sh ${CC:-cc} build/stage2_c_exp_backend.c -o build/stage2_c_exp_backend
   sh ./build/stage2_c_exp -T c/64 -emit-ir-binary build/selfhost_exp_c.irb tests/types_int.go
   sh ./build/stage2_c_exp_backend -T c/64 -from-ir-binary build/selfhost_exp_c.irb -o build/selfhost_exp_c_out.c
@@ -115,16 +115,16 @@ selfhost-exp-c: selfhost-c
   sh echo "PASS: C experimental IR binary roundtrip OK"
 
 selfhost-exp-wasm: selfhost-wasm
-  sh wasmtime --dir=. build/stage2.wasm -T wasi/wasm32 -tags exp_ir_binary,no_backend_vm -o build/stage2_exp.wasm ./std/compiler/
-  sh wasmtime --dir=. build/stage2_exp.wasm -T wasi/wasm32 -tags no_frontend,exp_ir_binary,no_backend_vm -o build/stage2_exp_backend.wasm ./std/compiler/
+  sh wasmtime --dir=. build/stage2.wasm -T wasi/wasm32 -tags exp_ir_binary -o build/stage2_exp.wasm ./std/compiler/
+  sh wasmtime --dir=. build/stage2_exp.wasm -T wasi/wasm32 -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend.wasm ./std/compiler/
   sh wasmtime --dir=. build/stage2_exp.wasm -T wasi/wasm32 -emit-ir-binary build/selfhost_exp_wasm.irb tests/types_int.go
   sh wasmtime --dir=. build/stage2_exp_backend.wasm -T wasi/wasm32 -from-ir-binary build/selfhost_exp_wasm.irb -o build/selfhost_exp_wasm_out.wasm
   sh wasmtime --dir=. build/selfhost_exp_wasm_out.wasm >/dev/null
   sh echo "PASS: wasm experimental IR binary roundtrip OK"
 
 selfhost-exp-winarm64: selfhost-winarm64
-  sh ./build/stage2_winarm64.exe -T windows/arm64 -tags exp_ir_binary,no_backend_vm -o build/stage2_winarm64_exp.exe ./std/compiler/
-  sh ./build/stage2_winarm64_exp.exe -T windows/arm64 -tags no_frontend,exp_ir_binary,no_backend_vm -o build/stage2_winarm64_exp_backend.exe ./std/compiler/
+  sh ./build/stage2_winarm64.exe -T windows/arm64 -tags exp_ir_binary -o build/stage2_winarm64_exp.exe ./std/compiler/
+  sh ./build/stage2_winarm64_exp.exe -T windows/arm64 -tags no_frontend,exp_ir_binary -o build/stage2_winarm64_exp_backend.exe ./std/compiler/
   sh ./build/stage2_winarm64_exp.exe -T windows/arm64 -emit-ir-binary build/selfhost_exp_winarm64.irb tests/types_int.go
   sh ./build/stage2_winarm64_exp_backend.exe -T windows/arm64 -from-ir-binary build/selfhost_exp_winarm64.irb -o build/selfhost_exp_winarm64.exe
   sh chmod +x build/selfhost_exp_winarm64.exe
@@ -132,8 +132,8 @@ selfhost-exp-winarm64: selfhost-winarm64
   sh echo "PASS: windows/arm64 experimental IR binary roundtrip OK"
 
 selfhost-exp-winamd64: selfhost-winamd64
-  sh ./build/stage2_winamd64.exe -T windows/amd64 -tags exp_ir_binary,no_backend_vm -o build/stage2_winamd64_exp.exe ./std/compiler/
-  sh ./build/stage2_winamd64_exp.exe -T windows/amd64 -tags no_frontend,exp_ir_binary,no_backend_vm -o build/stage2_winamd64_exp_backend.exe ./std/compiler/
+  sh ./build/stage2_winamd64.exe -T windows/amd64 -tags exp_ir_binary -o build/stage2_winamd64_exp.exe ./std/compiler/
+  sh ./build/stage2_winamd64_exp.exe -T windows/amd64 -tags no_frontend,exp_ir_binary -o build/stage2_winamd64_exp_backend.exe ./std/compiler/
   sh ./build/stage2_winamd64_exp.exe -T windows/amd64 -emit-ir-binary build/selfhost_exp_winamd64.irb tests/types_int.go
   sh ./build/stage2_winamd64_exp_backend.exe -T windows/amd64 -from-ir-binary build/selfhost_exp_winamd64.irb -o build/selfhost_exp_winamd64.exe
   sh chmod +x build/selfhost_exp_winamd64.exe
@@ -141,8 +141,8 @@ selfhost-exp-winamd64: selfhost-winamd64
   sh echo "PASS: windows/amd64 experimental IR binary roundtrip OK"
 
 selfhost-exp-win386: selfhost-win386
-  sh wine build/stage2.exe -T windows/386 -tags exp_ir_binary,no_backend_vm -o build/stage2_exp.exe ./std/compiler/
-  sh wine build/stage2_exp.exe -T windows/386 -tags no_frontend,exp_ir_binary,no_backend_vm -o build/stage2_exp_backend.exe ./std/compiler/
+  sh wine build/stage2.exe -T windows/386 -tags exp_ir_binary -o build/stage2_exp.exe ./std/compiler/
+  sh wine build/stage2_exp.exe -T windows/386 -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend.exe ./std/compiler/
   sh wine build/stage2_exp.exe -T windows/386 -emit-ir-binary build/selfhost_exp_win386.irb tests/types_int.go
   sh wine build/stage2_exp_backend.exe -T windows/386 -from-ir-binary build/selfhost_exp_win386.irb -o build/selfhost_exp_win386.exe
   sh wine build/selfhost_exp_win386.exe >/dev/null
