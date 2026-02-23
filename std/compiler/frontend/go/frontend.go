@@ -1046,6 +1046,10 @@ func isComptimeDirective(val string) bool {
 	return strings.TrimSpace(val) == "comptime"
 }
 
+func isZeroCallDirective(val string) bool {
+	return strings.TrimSpace(val) == "zerocall"
+}
+
 func parseAssembleDirective(val string) (string, bool) {
 	prefix := "assemble "
 	trimmed := strings.TrimSpace(val)

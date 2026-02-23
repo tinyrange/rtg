@@ -61,6 +61,8 @@ type Compiler struct {
 	funcVariadicElem     map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
 	funcIsInternal       map[string]bool     // function name → true if declared via //rtg:internal
 	funcIsLinkStatic     map[string]bool     // function name → true if declared via //rtg:linkstatic
+	funcIsZeroCall       map[string]bool     // function/method name → true if calls must be inlined at callsites
+	typeIsZeroCall       map[string]bool     // qualified type name → true if methods default to zerocall
 	comptimeFuncs        map[string]bool     // function/method name → true if marked //rtg:comptime
 	funcRetTypeNodes     map[string]*Node    // function name → first return type node (for comptime literal synthesis)
 	localElemSizes       map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
@@ -138,6 +140,8 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		funcVariadicElem:    make(map[string]int),
 		funcIsInternal:      make(map[string]bool),
 		funcIsLinkStatic:    make(map[string]bool),
+		funcIsZeroCall:      make(map[string]bool),
+		typeIsZeroCall:      make(map[string]bool),
 		comptimeFuncs:       make(map[string]bool),
 		funcRetTypeNodes:    make(map[string]*Node),
 		globalElemSizes:     make(map[string]int),
@@ -249,7 +253,16 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
 	c.irmod.IfaceMethodRets = c.ifaceMethodRets
-	ir.OptimizeIRModule(c.target, c.irmod)
+	if len(c.funcIsZeroCall) > 0 {
+		c.irmod.ZeroCallFuncs = make(map[string]bool, len(c.funcIsZeroCall))
+		for qname := range c.funcIsZeroCall {
+			c.irmod.ZeroCallFuncs[qname] = true
+		}
+	}
+	optErrs := ir.OptimizeIRModule(c.target, c.irmod)
+	if len(optErrs) > 0 {
+		c.errors = append(c.errors, optErrs...)
+	}
 
 	return c.irmod, c.errors
 }
@@ -1105,7 +1118,48 @@ func (c *Compiler) checkTopLevelRedeclarations(pkg *Package) {
 	}
 }
 
+func receiverBaseTypeName(typeName string) string {
+	for len(typeName) > 0 && typeName[0] == '*' {
+		typeName = typeName[1:len(typeName)]
+	}
+	return typeName
+}
+
+func hasZeroCallDirective(directives []string) bool {
+	for _, d := range directives {
+		if isZeroCallDirective(d) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Compiler) collectZeroCallTypeDirectives(pkg *Package) {
+	for _, file := range pkg.Files {
+		for _, node := range file.Nodes {
+			base, directives := unwrapDirectiveNode(node)
+			if base == nil || !hasZeroCallDirective(directives) {
+				continue
+			}
+			switch base.Kind {
+			case NTypeDecl:
+				if base.Name != "" {
+					c.typeIsZeroCall[pkg.QualName(base.Name)] = true
+				}
+			case NBlock:
+				for _, child := range base.Nodes {
+					if child != nil && child.Kind == NTypeDecl && child.Name != "" {
+						c.typeIsZeroCall[pkg.QualName(child.Name)] = true
+					}
+				}
+			}
+		}
+	}
+}
+
 func (c *Compiler) collectFuncRetTypes(pkg *Package) {
+	c.collectZeroCallTypeDirectives(pkg)
+
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
 			fn, directives := unwrapDirectiveNode(node)
@@ -1151,10 +1205,14 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 			c.funcRetTypeNodes[qname] = firstRet
 			isComptimeFunc := false
+			isZeroCallFunc := false
 			assembleArch := ""
 			for _, d := range directives {
 				if isComptimeDirective(d) {
 					isComptimeFunc = true
+				}
+				if isZeroCallDirective(d) {
+					isZeroCallFunc = true
 				}
 				if arch, ok := parseAssembleDirective(d); ok {
 					assembleArch = arch
@@ -1164,6 +1222,12 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				}
 				if _, ok := parseLinkStaticDirective(d); ok {
 					c.funcIsLinkStatic[qname] = true
+				}
+			}
+			if !isZeroCallFunc && fn.X != nil && fn.X.Type != nil {
+				recvBase := receiverBaseTypeName(nodeTypeName(fn.X.Type))
+				if recvBase != "" && c.typeIsZeroCall[pkg.QualName(recvBase)] {
+					isZeroCallFunc = true
 				}
 			}
 
@@ -1209,6 +1273,9 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			c.funcParamTypes[qname] = paramTypeNames
 			if isComptimeFunc {
 				c.comptimeFuncs[qname] = true
+			}
+			if isZeroCallFunc {
+				c.funcIsZeroCall[qname] = true
 			}
 			if assembleArch != "" {
 				c.assembleFuncs[qname] = assembleInfo{
