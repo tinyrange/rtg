@@ -22,6 +22,7 @@ import (
 
 // Target and build tag globals — defaults to host platform
 var compileTarget = common.Target{
+	Triple:                runtime.GOOS + "/" + runtime.GOARCH,
 	GOOS:                  runtime.GOOS,
 	GOARCH:                runtime.GOARCH,
 	PtrSize:               defaultPtrSize(),
@@ -138,6 +139,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	targetFiles, err := collectTargetFileArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rtg: %v\n", err)
+		os.Exit(1)
+	}
+	targetRoots, err := collectTargetRootArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rtg: %v\n", err)
+		os.Exit(1)
+	}
+	if len(targetRoots) > 0 {
+		if err := targetcfg.LoadTargetRoots(targetRoots); err != nil {
+			fmt.Fprintf(os.Stderr, "rtg: failed to load target root: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if len(targetFiles) > 0 {
+		if err := targetcfg.LoadTargetFiles(targetFiles); err != nil {
+			fmt.Fprintf(os.Stderr, "rtg: failed to load target file: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	outputPath := "output"
 	var entryFiles []string
 	var extraTags string
@@ -167,6 +191,7 @@ func main() {
 		} else if os.Args[i] == "-T" && i+1 < len(os.Args) {
 			target := os.Args[i+1]
 			if target == "c" || strings.HasPrefix(target, "c/") {
+				compileTarget.Triple = target
 				compileTarget.Backend = "c"
 				compileTarget.CModel = 64
 				if strings.HasPrefix(target, "c/") {
@@ -193,8 +218,10 @@ func main() {
 				compileTarget.GOOS = "c"
 				compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
 			} else if target == "ir" {
+				compileTarget.Triple = target
 				compileTarget.Backend = "ir"
 			} else if strings.HasPrefix(target, "vm/") {
+				compileTarget.Triple = target
 				compileTarget.Backend = "vm"
 				model := target[3:]
 				if model == "8" {
@@ -224,11 +251,13 @@ func main() {
 						fmt.Fprintf(os.Stderr, "invalid target %q: %v\n", target, err)
 						os.Exit(1)
 					}
+					compileTarget.Triple = target
 					i = i + 2
 					continue
 				}
 				if target == "dos/8086" {
 					// DOS 8086 COM backend.
+					compileTarget.Triple = target
 					compileTarget.GOOS = "dos"
 					compileTarget.GOARCH = "dos16"
 					compileTarget.PtrSize = 2
@@ -243,6 +272,7 @@ func main() {
 				}
 				compileTarget.GOOS = target[0:slashIdx]
 				compileTarget.GOARCH = target[slashIdx+1:]
+				compileTarget.Triple = target
 				if compileTarget.GOARCH == "386" || compileTarget.GOARCH == "wasm32" {
 					compileTarget.PtrSize = 4
 				} else {
@@ -274,6 +304,10 @@ func main() {
 			i = i + 2
 		} else if os.Args[i] == "-tags" && i+1 < len(os.Args) {
 			extraTags = os.Args[i+1]
+			i = i + 2
+		} else if os.Args[i] == "-target-file" && i+1 < len(os.Args) {
+			i = i + 2
+		} else if os.Args[i] == "-target-root" && i+1 < len(os.Args) {
 			i = i + 2
 		} else if os.Args[i] == "-D" && i+1 < len(os.Args) {
 			key, value, ok := parseDefineArg(os.Args[i+1])
@@ -572,7 +606,7 @@ func main() {
 	if compileTarget.CompilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
 	}
-	err := backend.Generate(&compileTarget, irmod, outputPath)
+	err = backend.Generate(&compileTarget, irmod, outputPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		runCleanup()
@@ -631,6 +665,8 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -D <key=value>         Set a string value for a global variable symbol\n")
+	fmt.Fprintf(out, "  -target-file <path>    Load a single-file target definition before -T resolution\n")
+	fmt.Fprintf(out, "  -target-root <path>    Recursively load *.go target definitions from a directory\n")
 	fmt.Fprintf(out, "  -include <path|->      Add stdlib search root; first -include disables default embedded stdlib, -include - re-enables it\n")
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
@@ -663,6 +699,46 @@ func parseDefineArg(raw string) (string, string, bool) {
 		return "", "", false
 	}
 	return key, value, true
+}
+
+func collectTargetFileArgs(args []string) ([]string, error) {
+	var files []string
+	i := 0
+	for i < len(args) {
+		if args[i] == "--" {
+			break
+		}
+		if args[i] == "-target-file" {
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("missing value after -target-file")
+			}
+			files = common.AppendUnique(files, common.NormalizePath(args[i+1]))
+			i = i + 2
+			continue
+		}
+		i = i + 1
+	}
+	return files, nil
+}
+
+func collectTargetRootArgs(args []string) ([]string, error) {
+	var roots []string
+	i := 0
+	for i < len(args) {
+		if args[i] == "--" {
+			break
+		}
+		if args[i] == "-target-root" {
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("missing value after -target-root")
+			}
+			roots = common.AppendUnique(roots, common.NormalizePath(args[i+1]))
+			i = i + 2
+			continue
+		}
+		i = i + 1
+	}
+	return roots, nil
 }
 
 func possibleTargets() []string {

@@ -3,6 +3,22 @@
 Goal: let a target be shipped as one Go file (for example to NDA SDK holders)
 without requiring a compiler fork.
 
+## Implemented
+
+- `-target-file <path>`: load one or more target-definition source files at
+  compiler startup before `-T` resolution.
+- `-target-root <path>`: recursively load `.go` target-definition files from
+  a directory tree.
+- Directive registration supported in compiler init lowering:
+  - `//rtg:target <triple>`
+  - `//rtg:targetabi <triple>`
+  - `//rtg:assembler <name>`
+  - `//rtg:binfmt <name>`
+- Typed ABI registry (`target.ABIProvider`) with `target.GenericABI`.
+- Profile-based generation path (no custom driver object required) for:
+  - `Assembler: "aarch64"` + `BinFormat: "macho64"`
+  - provider aliases map to built-ins `builtin.aarch64` + `builtin.macho64`
+
 ## Requirements
 
 - Target should load with `-T <triple>` and be declared by directives.
@@ -44,6 +60,24 @@ without requiring a compiler fork.
   `target.Register(...)` and `target.RegisterABI(...)`.
 - RTG-built stages ignore the `gc` shim and use directive-generated init wiring.
 
+## Current Single-File Format
+
+The loader intentionally accepts a restricted subset for determinism:
+
+- Directive nodes must annotate top-level functions.
+- Functions must be zero-arg with a single `return <expr>` statement.
+- Supported expressions:
+  - `//rtg:target`: `target.Spec{...}` keyed composite literal.
+  - `//rtg:targetabi`: `nil` or `target.GenericABI{...}` keyed composite literal.
+  - `//rtg:assembler` / `//rtg:binfmt`: string literal return.
+- `Spec.Driver` is intentionally not supported in external target files; use
+  `Spec.Assembler` + `Spec.BinFormat` profile routing.
+
+Note on in-tree directive init wiring: `//rtg:targetabi`, `//rtg:assembler`,
+and `//rtg:binfmt` currently register through string payloads in generated init
+code for bootstrap/runtime stability. External `-target-file` loading keeps the
+typed `target.ABIProvider` representation internally.
+
 ## NDA Distribution Example (e.g., handheld console SDK)
 
 - Vendor ships `target_console.go` only to licensed developers.
@@ -57,8 +91,5 @@ without requiring a compiler fork.
 
 ## Near-Term Compiler Work
 
-- Add directive handlers for `//rtg:assembler` and `//rtg:binfmt`.
-- Add a typed ABI registry (`map[string]target.ABIProvider`) instead of
-  `interface{}`.
 - Add optional "external target package root" search to avoid editing `std/`.
 - Define a stable limited comptime API for SDK tool invocation/signing.

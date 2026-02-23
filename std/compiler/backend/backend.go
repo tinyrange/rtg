@@ -19,6 +19,10 @@ import (
 
 // Generate dispatches to the appropriate backend based on selected target.
 func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
+	triple := tgt.Triple
+	if triple == "" {
+		triple = tgt.GOOS + "/" + tgt.GOARCH
+	}
 	if tgt.Backend == "vm" {
 		return vm.Generate(tgt, irmod, outputPath)
 	}
@@ -28,8 +32,13 @@ func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 	if tgt.Backend == "ir" {
 		return irprint.Generate(irmod, outputPath)
 	}
-	if handled, err := targetcfg.Generate(tgt.GOOS+"/"+tgt.GOARCH, tgt, irmod, outputPath); handled {
+	if handled, err := targetcfg.Generate(triple, tgt, irmod, outputPath); handled {
 		return err
+	}
+	if spec, ok := targetcfg.Lookup(triple); ok {
+		if handled, err := generateRegisteredProfile(spec, tgt, irmod, outputPath); handled {
+			return err
+		}
 	}
 	switch tgt.GOARCH {
 	case "8086", "dos16":

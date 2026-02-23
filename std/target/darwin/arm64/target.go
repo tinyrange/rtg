@@ -27,6 +27,14 @@ func darwinArm64TargetSpec() target.Spec {
 			WordSize: 8,
 			Backend:  "native",
 		},
-		Driver: darwinArm64Driver{},
+		Driver:    darwinArm64Driver{},
+		Assembler: "aarch64",
+		BinFormat: "macho64",
 	}
 }
+
+//rtg:assembler aarch64
+func darwinArm64AssemblerProvider() string { return "builtin.aarch64" }
+
+//rtg:binfmt macho64
+func darwinArm64BinFmtProvider() string { return "builtin.macho64" }
