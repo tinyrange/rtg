@@ -82,22 +82,27 @@ type Console struct {
 	Handle uintptr
 }
 
+//rtg:zerocall
 func (s ScreenBufferInfo) AttributesValue() uint16 {
 	return s.Attributes
 }
 
+//rtg:zerocall
 func (s ScreenBufferInfo) WindowLeft() int16 {
 	return s.Window.Left
 }
 
+//rtg:zerocall
 func (s ScreenBufferInfo) WindowTop() int16 {
 	return s.Window.Top
 }
 
+//rtg:zerocall
 func (s ScreenBufferInfo) WindowRight() int16 {
 	return s.Window.Right
 }
 
+//rtg:zerocall
 func (c CursorInfo) SizeValue() uint32 {
 	return c.Size
 }
@@ -118,16 +123,19 @@ func LastError() Errno {
 	return lastError()
 }
 
+//rtg:zerocall
 func byteAt(addr uintptr) byte {
 	return byte(runtime.ReadPtr(addr) & 0xFF)
 }
 
+//rtg:zerocall
 func readU16(addr uintptr) uint16 {
 	b0 := uint16(byteAt(addr))
 	b1 := uint16(byteAt(addr + 1))
 	return b0 | (b1 << 8)
 }
 
+//rtg:zerocall
 func readU32(addr uintptr) uint32 {
 	b0 := uint32(byteAt(addr))
 	b1 := uint32(byteAt(addr + 1))
@@ -136,11 +144,13 @@ func readU32(addr uintptr) uint32 {
 	return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
 }
 
+//rtg:zerocall
 func writeU16(addr uintptr, v uint16) {
 	runtime.WriteByte(addr, byte(v))
 	runtime.WriteByte(addr+1, byte(v>>8))
 }
 
+//rtg:zerocall
 func writeU32(addr uintptr, v uint32) {
 	runtime.WriteByte(addr, byte(v))
 	runtime.WriteByte(addr+1, byte(v>>8))
@@ -148,11 +158,13 @@ func writeU32(addr uintptr, v uint32) {
 	runtime.WriteByte(addr+3, byte(v>>24))
 }
 
+//rtg:zerocall
 func writeCoord(addr uintptr, c Coord) {
 	writeU16(addr, uint16(c.X))
 	writeU16(addr+2, uint16(c.Y))
 }
 
+//rtg:zerocall
 func writeSmallRect(addr uintptr, r SmallRect) {
 	writeU16(addr, uint16(r.Left))
 	writeU16(addr+2, uint16(r.Top))
@@ -176,12 +188,14 @@ func readSmallRect(addr uintptr) SmallRect {
 	}
 }
 
+//rtg:zerocall
 func packCoord(c Coord) uintptr {
 	x := uintptr(uint16(c.X))
 	y := uintptr(uint16(c.Y))
 	return x | (y << 16)
 }
 
+//rtg:zerocall
 func boolPtr(v bool) uintptr {
 	if v {
 		return 1
