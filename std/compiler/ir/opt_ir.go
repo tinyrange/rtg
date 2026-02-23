@@ -3,10 +3,13 @@ package ir
 import "j5.nz/rtg/std/compiler/common"
 
 // OptimizeIRModule runs lightweight, backend-independent IR cleanups.
-func OptimizeIRModule(target *common.Target, irmod *IRModule) {
+func OptimizeIRModule(target *common.Target, irmod *IRModule) []string {
+	var errors []string
+	errors = append(errors, inlineZeroCallFuncs(irmod)...)
 	for _, f := range irmod.Funcs {
 		f.Code = optimizeIRFuncCode(target, f)
 	}
+	return errors
 }
 
 func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
