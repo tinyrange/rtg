@@ -80,6 +80,18 @@ const modulePathPrefix = "j5.nz/rtg/"
 
 var discoveredBuildTags []string
 
+func importPathCandidates(importPath string) []string {
+	candidates := []string{importPath}
+	if strings.HasPrefix(importPath, modulePathPrefix) {
+		stripped := importPath[len(modulePathPrefix):]
+		candidates = common.AppendUnique(candidates, stripped)
+		if strings.HasPrefix(stripped, "std/") {
+			candidates = common.AppendUnique(candidates, stripped[len("std/"):])
+		}
+	}
+	return candidates
+}
+
 func ResetDiscoveredBuildTags() {
 	discoveredBuildTags = nil
 }
@@ -248,11 +260,7 @@ func appendStdlibDirCandidates(candidates []string, root string, importPath stri
 // resolveImportDirs maps an import path to possible directories on disk.
 func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []string {
 	var dirs []string
-	importCandidates := []string{importPath}
-	if strings.HasPrefix(importPath, modulePathPrefix) {
-		stripped := importPath[len(modulePathPrefix):]
-		importCandidates = common.AppendUnique(importCandidates, stripped)
-	}
+	importCandidates := importPathCandidates(importPath)
 	if c.target.StdlibIncludeExplicit {
 		for _, include := range c.target.StdlibIncludePaths {
 			for _, candidate := range importCandidates {
@@ -268,17 +276,39 @@ func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []st
 }
 
 func (c *Preprocessor) parsePackageFromStdlibSources(baseDir string, importPath string) *Package {
+	importCandidates := importPathCandidates(importPath)
 	if ShouldUseEmbeddedStdlib(c.target) {
-		pkg := c.parsePackageFromEmbed(importPath)
-		if pkg != nil {
-			return pkg
+		for _, candidate := range importCandidates {
+			pkg := c.parsePackageFromEmbed(candidate)
+			if pkg != nil {
+				// Preserve canonical import path for symbol qualification while
+				// keeping embed-relative package directory for //go:embed patterns.
+				pkg.Path = importPath
+				return pkg
+			}
 		}
 	}
-	dirs := c.resolveImportDirs(baseDir, importPath)
-	for _, dir := range dirs {
-		pkg := c.parsePackageDir(dir, importPath)
-		if pkg != nil {
-			return pkg
+	if c.target.StdlibIncludeExplicit {
+		for _, include := range c.target.StdlibIncludePaths {
+			for _, candidate := range importCandidates {
+				dirs := appendStdlibDirCandidates(nil, include, candidate)
+				for _, dir := range dirs {
+					pkg := c.parsePackageDir(dir, importPath)
+					if pkg != nil {
+						return pkg
+					}
+				}
+			}
+		}
+		return nil
+	}
+	for _, candidate := range importCandidates {
+		dirs := appendStdlibDirCandidates(nil, baseDir, candidate)
+		for _, dir := range dirs {
+			pkg := c.parsePackageDir(dir, importPath)
+			if pkg != nil {
+				return pkg
+			}
 		}
 	}
 	return nil
