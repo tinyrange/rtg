@@ -315,7 +315,8 @@ func Apply(triple string, tgt *common.Target) (Spec, bool, error) {
 	tgt.WordSize = spec.Defaults.WordSize
 
 	if spec.Driver != nil {
-		err := spec.Driver.Configure(tgt)
+		driver := spec.Driver
+		err := driver.Configure(tgt)
 		if err != nil {
 			return Spec{}, true, fmt.Errorf("target %s (%s): %w", spec.Triple, spec.PackagePath, err)
 		}
@@ -328,7 +329,8 @@ func Generate(triple string, tgt *common.Target, irmod *ir.IRModule, outputPath 
 	if !ok || spec.Driver == nil {
 		return false, nil
 	}
-	return true, spec.Driver.Generate(tgt, irmod, outputPath)
+	driver := spec.Driver
+	return true, driver.Generate(tgt, irmod, outputPath)
 }
 
 func RegisteredTriples() []string {
