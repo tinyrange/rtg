@@ -11,13 +11,14 @@ import (
 )
 
 const (
-	comptimePkgPath   = "j5.nz/rtg/x/comptime"
-	comptimePkgPrefix = "j5.nz/rtg/x/comptime."
-	targetPkgPath     = "j5.nz/rtg/std/target"
-	targetRegisterFn  = targetPkgPath + ".Register"
-	targetRegisterABI = targetPkgPath + ".RegisterABI"
-	targetRegisterAsm = targetPkgPath + ".RegisterAssembler"
-	targetRegisterFmt = targetPkgPath + ".RegisterBinFormat"
+	comptimePkgPath           = "j5.nz/rtg/x/comptime"
+	comptimePkgPrefix         = "j5.nz/rtg/x/comptime."
+	targetPkgPath             = "j5.nz/rtg/std/target"
+	targetRegisterFn          = targetPkgPath + ".Register"
+	targetRegisterABI         = targetPkgPath + ".RegisterABI"
+	targetRegisterABIExternal = targetPkgPath + ".RegisterExternalABI"
+	targetRegisterAsm         = targetPkgPath + ".RegisterAssembler"
+	targetRegisterFmt         = targetPkgPath + ".RegisterBinFormat"
 )
 
 type closureCaptureSpec struct {
@@ -1363,8 +1364,9 @@ func (c *Compiler) collectMethodDecl(pkg *Package, node *Node) {
 }
 
 type directiveInit struct {
-	key   string
-	qname string
+	key      string
+	qname    string
+	registry string
 }
 
 func sortDirectiveInits(inits []directiveInit) {
@@ -1390,6 +1392,19 @@ func sortDirectiveInits(inits []directiveInit) {
 		}
 		i = i + 1
 	}
+}
+
+func abiDirectiveRegistry(retType string) (string, bool) {
+	if retType == "string" {
+		return targetRegisterABI, true
+	}
+	if retType == "ABIProvider" || retType == "GenericABI" {
+		return targetRegisterABIExternal, true
+	}
+	if strings.HasSuffix(retType, ".ABIProvider") || strings.HasSuffix(retType, ".GenericABI") {
+		return targetRegisterABIExternal, true
+	}
+	return "", false
 }
 
 func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]directiveInit, []directiveInit, []directiveInit, []directiveInit) {
@@ -1446,8 +1461,13 @@ func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]directiveInit, [
 						continue
 					}
 					retTypes := c.funcRetTypes[qname]
-					if len(retTypes) != 1 || retTypes[0] != "string" {
-						c.errorf("%s: //rtg:targetabi %s requires return type string", qname, triple)
+					if len(retTypes) != 1 {
+						c.errorf("%s: //rtg:targetabi %s requires exactly one return value", qname, triple)
+						continue
+					}
+					registry, ok := abiDirectiveRegistry(retTypes[0])
+					if !ok {
+						c.errorf("%s: //rtg:targetabi %s requires return type string, target.ABIProvider, or target.GenericABI", qname, triple)
 						continue
 					}
 					if prev, exists := abiByTriple[triple]; exists {
@@ -1457,7 +1477,7 @@ func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]directiveInit, [
 						continue
 					}
 					abiByTriple[triple] = qname
-					abiInits = append(abiInits, directiveInit{key: triple, qname: qname})
+					abiInits = append(abiInits, directiveInit{key: triple, qname: qname, registry: registry})
 				}
 				if name, ok := parseAssemblerDirective(d); ok {
 					if base.X != nil {
@@ -1611,9 +1631,13 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: targetRegisterFn, Arg: 1})
 	}
 	for _, reg := range abiInits {
+		registry := reg.registry
+		if registry == "" {
+			registry = targetRegisterABI
+		}
 		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(reg.key)})
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: reg.qname, Arg: 0})
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: targetRegisterABI, Arg: 2})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: registry, Arg: 2})
 	}
 	for _, reg := range asmInits {
 		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(reg.key)})

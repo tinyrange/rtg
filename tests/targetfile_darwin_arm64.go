@@ -1,4 +1,4 @@
-package targetfile
+package main
 
 import "j5.nz/rtg/std/target"
 
@@ -50,4 +50,8 @@ func darwinArm64ABI() target.GenericABI {
 			"with_got": true,
 		},
 	}
+}
+
+func main() {
+	println("PASS")
 }
