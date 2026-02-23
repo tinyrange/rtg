@@ -268,7 +268,8 @@ func (g *CodeGen) emitEXEStart(irmod *ir.IRModule) {
 	g.emitBytes(0x8E, 0xD8) // mov ds, ax
 	g.emitBytes(0x8E, 0xC0) // mov es, ax
 
-	g.emitMovImm16(REG16_DI, 0xFF00)
+	// Keep operand stack well below CPU call stack (SP starts near FFFE).
+	g.emitMovImm16(REG16_DI, 0xC000)
 
 	for _, f := range irmod.Funcs {
 		if ir.IsInitFunc(f.Name) {
