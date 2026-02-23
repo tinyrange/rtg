@@ -55,10 +55,12 @@ without requiring a compiler fork.
 
 ## Bootstrapping Strategy
 
-- Stage0 host-Go build cannot rely on RTG directive lowering.
-- Keep a `//go:build gc` bootstrap shim that manually calls
-  `target.Register(...)` and `target.RegisterABI(...)`.
-- RTG-built stages ignore the `gc` shim and use directive-generated init wiring.
+- Stage0 host-Go build does not rely on RTG directive lowering.
+- The compiler loads built-in target definition files at startup from
+  `std/target/builtin/` using the same loader path as `-target-file` and
+  `-target-root`.
+- This keeps the target definition model unified around single-file metadata
+  instead of per-target `gc` bootstrap shims.
 
 ## Current Single-File Format
 
@@ -73,10 +75,9 @@ The loader intentionally accepts a restricted subset for determinism:
 - `Spec.Driver` is intentionally not supported in external target files; use
   `Spec.Assembler` + `Spec.BinFormat` profile routing.
 
-Note on in-tree directive init wiring: `//rtg:targetabi`, `//rtg:assembler`,
-and `//rtg:binfmt` currently register through string payloads in generated init
-code for bootstrap/runtime stability. External `-target-file` loading keeps the
-typed `target.ABIProvider` representation internally.
+Note on in-tree directive init wiring: RTG-built packages still support
+directive-generated init registration. Built-in and external single-file target
+loading uses the typed `target.ABIProvider` representation directly.
 
 ## NDA Distribution Example (e.g., handheld console SDK)
 

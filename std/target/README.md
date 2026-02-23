@@ -23,7 +23,7 @@ Typical files:
 - `target.go`: target spec + directive registrations
 - `generate.go`: `Driver.Generate` implementation
 - `disabled.go`: optional stub when backend is build-tag disabled
-- `bootstrap_gc.go`: host Go bootstrap shim for stage0 registration
+- `std/target/builtin/<triple>.go`: single-file target metadata loaded at compiler startup
 
 ## Step 1: Define and register the target spec
 
@@ -111,39 +111,41 @@ If the backend can be excluded with a build tag, add `disabled.go` with matching
 
 For ABI in disabled mode, return `kind=none` (string) or `target.GenericABI{Kind: "none"}`.
 
-## Step 4: Add stage0 bootstrap shim
+## Step 4: Add a built-in target definition file
 
-Directive-based auto-registration is used in RTG-built stages.
-Host-Go stage0 still needs manual registration.
+Add a single-file target definition under `std/target/builtin/` for stage0 and runtime loading.
+This file should only contain directive functions and literal return values (same constraints as `-target-file`).
 
-Add `bootstrap_gc.go`:
+Example: `std/target/builtin/linux_riscv64.go`
 
 ```go
-//go:build gc
-
-package riscv64
+package targetfile
 
 import "j5.nz/rtg/std/target"
 
-func init() {
-	target.Register(linuxRiscv64TargetSpec())
-	target.RegisterABI("linux/riscv64", "kind=linux/riscv64")
+//rtg:target linux/riscv64
+func linuxRiscv64Spec() target.Spec {
+	return target.Spec{
+		Triple: "linux/riscv64",
+		Defaults: target.Defaults{
+			GOOS:     "linux",
+			GOARCH:   "riscv64",
+			PtrSize:  8,
+			WordSize: 8,
+			Backend:  "native",
+		},
+		Assembler: "riscv64",
+		BinFormat: "elf64",
+	}
+}
+
+//rtg:targetabi linux/riscv64
+func linuxRiscv64ABI() target.GenericABI {
+	return target.GenericABI{Kind: "linux/riscv64"}
 }
 ```
 
-If your primary ABI is typed, keep a small encoded string for bootstrap and parse the full typed form at runtime.
-
-## Step 5: Include the package in `std/target/all`
-
-Add a blank import in `std/target/all/all.go`:
-
-```go
-package all
-
-import _ "j5.nz/rtg/std/target/linux/riscv64"
-```
-
-Without this import, your in-tree target package will not auto-register in normal compiler builds.
+The compiler loads `std/target/builtin/` automatically at startup, so no per-target `gc` bootstrap shim is required.
 
 ## Validation checklist
 
