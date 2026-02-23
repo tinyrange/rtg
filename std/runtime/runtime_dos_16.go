@@ -19,9 +19,9 @@ var GOOS string = "dos"
 var GOARCH string = "dos16"
 
 func init() {
-	// Keep heap above large COM text/data while leaving headroom for stack.
+	// Keep heap above large EXE text/data while leaving headroom for stack.
 	heapChunk = 2048
-	dosMmapBase = 0xD000
+	dosMmapBase = dosInitMmapBase()
 }
 
 //rtg:internal Syscall
