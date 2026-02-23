@@ -1488,16 +1488,58 @@ func (c *Compiler) lookupDefineValue(qualifiedName string, shortName string) (st
 }
 
 func (c *Compiler) compileEmbedInit(pkg *Package, gidx int, pattern string) {
-	// Resolve the embed path relative to the package directory
-	embedDir := pkg.Dir + "/" + pattern
-	// Normalize .. in paths
-	embedDir = cleanPath(embedDir)
+	patterns := splitEmbedPatterns(pattern)
+	if len(patterns) == 0 {
+		patterns = []string{pattern}
+	}
 
-	// Try embedded FS first (when self-hosting from embedded std),
-	// then fall back to disk.
-	names, data := stdlib.WalkEmbedFromFS(embedDir)
-	if names == nil {
-		names, data = common.WalkDirectory(embedDir, embedDir)
+	var names []string
+	var data []string
+	seen := make(map[string]bool)
+	for _, pat := range patterns {
+		// Resolve each embed pattern relative to the package directory.
+		embedDir := cleanPath(pkg.Dir + "/" + pat)
+		prefix := embedPatternPrefix(pat)
+
+		// Try embedded FS first (when self-hosting from embedded std),
+		// then fall back to disk.
+		partNames, partData := stdlib.WalkEmbedFromFS(embedDir)
+		if partNames == nil {
+			partNames, partData = common.WalkDirectory(embedDir, embedDir)
+		}
+		// Embedded std package paths are often stored without the "std/" prefix
+		// (for example "compiler/stdlib"). Retry with a std-prefixed base so
+		// patterns like "../../../x" can still resolve to top-level x/.
+		if len(partNames) == 0 && !strings.HasPrefix(pkg.Dir, "std/") {
+			altDir := cleanPath("std/" + pkg.Dir + "/" + pat)
+			if altDir != embedDir {
+				altNames, altData := stdlib.WalkEmbedFromFS(altDir)
+				if altNames == nil {
+					altNames, altData = common.WalkDirectory(altDir, altDir)
+				}
+				if len(altNames) > 0 {
+					partNames = altNames
+					partData = altData
+				}
+			}
+		}
+		i := 0
+		for i < len(partNames) && i < len(partData) {
+			name := partNames[i]
+			if prefix != "" {
+				if name == "" {
+					name = prefix
+				} else if !strings.HasPrefix(name, prefix+"/") && name != prefix {
+					name = prefix + "/" + name
+				}
+			}
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+				data = append(data, partData[i])
+			}
+			i = i + 1
+		}
 	}
 
 	// Sort for deterministic order
@@ -1516,6 +1558,35 @@ func (c *Compiler) compileEmbedInit(pkg *Package, gidx int, pattern string) {
 		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(data[i])})
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "embed.AddFile", Arg: 3})
 	}
+}
+
+func splitEmbedPatterns(pattern string) []string {
+	fields := strings.Fields(pattern)
+	var out []string
+	i := 0
+	for i < len(fields) {
+		if fields[i] != "" {
+			out = append(out, fields[i])
+		}
+		i = i + 1
+	}
+	return out
+}
+
+func embedPatternPrefix(pattern string) string {
+	parts := strings.Split(pattern, "/")
+	var clean []string
+	i := 0
+	for i < len(parts) {
+		p := parts[i]
+		if p == "" || p == "." || p == ".." {
+			i = i + 1
+			continue
+		}
+		clean = append(clean, p)
+		i = i + 1
+	}
+	return strings.Join(clean, "/")
 }
 
 // cleanPath resolves . and .. in a path.

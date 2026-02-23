@@ -5,7 +5,7 @@ package main
 import (
 	"fmt"
 
-	"os/winconsole"
+	winconsole "x/os/windows/console"
 )
 
 func main() {

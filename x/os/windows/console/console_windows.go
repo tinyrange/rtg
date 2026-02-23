@@ -1,6 +1,6 @@
 //go:build windows
 
-package winconsole
+package console
 
 import "runtime"
 
