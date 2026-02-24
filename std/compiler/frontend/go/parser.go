@@ -1780,7 +1780,9 @@ func (p *Parser) parsePrimaryExpr() *Node {
 		node = &Node{Kind: NStringLit, Name: tok.Val, Pos: tok.Line}
 	case TOKEN_RAW_STRING:
 		tok := p.advance()
-		node = &Node{Kind: NStringLit, Name: tok.Val, Pos: tok.Line}
+		// Raw strings carry literal bytes; normalize to escaped form so
+		// backend string-literal decoding preserves those bytes verbatim.
+		node = &Node{Kind: NStringLit, Name: encodeStringLiteral(tok.Val), Pos: tok.Line}
 	case TOKEN_RUNE:
 		tok := p.advance()
 		node = &Node{Kind: NRuneLit, Name: tok.Val, Pos: tok.Line}
