@@ -7,7 +7,8 @@ import (
 	aarch64linux "j5.nz/rtg/std/compiler/backend/aarch64/linux"
 	aarch64windows "j5.nz/rtg/std/compiler/backend/aarch64/windows"
 	"j5.nz/rtg/std/compiler/backend/c"
-	"j5.nz/rtg/std/compiler/backend/i386"
+	i386linux "j5.nz/rtg/std/compiler/backend/i386/linux"
+	i386windows "j5.nz/rtg/std/compiler/backend/i386/windows"
 	"j5.nz/rtg/std/compiler/backend/irprint"
 	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/backend/wasm32"
@@ -55,9 +56,9 @@ func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 		return fmt.Errorf("unsupported OS for amd64: %s", tgt.GOOS)
 	case "386":
 		if tgt.GOOS == "windows" {
-			return i386.GenerateWinPE(tgt, irmod, outputPath)
+			return i386windows.Generate(tgt, irmod, outputPath)
 		} else if tgt.GOOS == "linux" {
-			return i386.GenerateELF(tgt, irmod, outputPath)
+			return i386linux.Generate(tgt, irmod, outputPath)
 		}
 		return fmt.Errorf("unsupported OS for i386: %s", tgt.GOOS)
 	case "wasm32":
