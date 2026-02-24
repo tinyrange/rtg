@@ -129,7 +129,12 @@ func (g *CodeGen) compileSyscallIntrinsic() {
 	g.loadLocal(4, REG16_AX)
 	g.emitBytes(0xB4, 0x4C)
 	g.emitBytes(0xCD, 0x21)
-	g.emitByte(0xCC)
+	// If the DOS exit interrupt ever returns unexpectedly, report success
+	// syscall return values instead of trapping.
+	g.compileConst(0)
+	g.compileConst(0)
+	g.compileConst(0)
+	exitJoin := g.jmpRel16()
 
 	g.patchRel16(fixMmap)
 	g.compileConst(0x7000)
@@ -143,6 +148,7 @@ func (g *CodeGen) compileSyscallIntrinsic() {
 	g.patchRel16(writeDone)
 	g.patchRel16(openJoin)
 	g.patchRel16(closeJoin)
+	g.patchRel16(exitJoin)
 	g.patchRel16(mmapJoin)
 	g.patchRel16(done)
 }

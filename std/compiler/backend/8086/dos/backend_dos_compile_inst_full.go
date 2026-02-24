@@ -150,7 +150,9 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 		g.ifaceCall(inst.Name, inst.Arg)
 
 	case ir.OP_PANIC:
-		g.emitByte(0xCC)
+		// Match non-zero panic termination semantics instead of trapping.
+		g.emitMovImm16(REG16_AX, 0x4C02) // AH=4Ch, AL=2
+		g.emitBytes(0xCD, 0x21)          // int 21h (Terminate with return code)
 
 	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// handled by intrinsics/builtins in your IR
