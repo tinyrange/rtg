@@ -22,10 +22,5 @@ Out-of-scope repro programs are kept in:
 - `/Users/joshua/dev/projects/rtg/tests/limitations/`
 
 ## Additional Deferred Repros
-The following repros are also kept in `tests/limitations/` because they do not
-currently pass the strict fullcompiler `PASS` output contract across targets:
-- `5` panic+defer output/exit behavior
-- `13` type switch behavior
-- `19` raw string literal behavior
-- `31` `print`/`println` cross-target behavior
-- `33` `clear` behavior
+There are currently no additional deferred repros for the strict fullcompiler
+`PASS` output contract.
