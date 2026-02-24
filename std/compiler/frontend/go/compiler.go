@@ -3968,12 +3968,13 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 			if c.boolOperandMismatch(cond.X, cond.Y) {
 				c.errorf("%s: invalid comparison between bool and non-bool", c.curFunc.Name)
 			}
-			if (cond.Name == "==" || cond.Name == "!=") && (c.isStringTypedExpr(cond.X) || c.isStringTypedExpr(cond.Y) || isStringExpr(cond.X) || isStringExpr(cond.Y)) {
-				c.emitStringEqualCall(cond.X, cond.Y)
-				if (cond.Name == "==" && jumpIfTrue) || (cond.Name == "!=" && !jumpIfTrue) {
-					c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: targetLabel})
-				} else {
-					c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: targetLabel})
+			if c.isStringTypedExpr(cond.X) || c.isStringTypedExpr(cond.Y) || isStringExpr(cond.X) || isStringExpr(cond.Y) {
+				if c.emitStringCompareResult(cond.Name, cond.X, cond.Y) {
+					if jumpIfTrue {
+						c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: targetLabel})
+					} else {
+						c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: targetLabel})
+					}
 				}
 				return
 			}
@@ -4953,6 +4954,42 @@ func (c *Compiler) emitStringEqualCall(x *Node, y *Node) {
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringEqual", Arg: 2})
 }
 
+func (c *Compiler) emitStringLessCall(x *Node, y *Node) {
+	c.compileExpr(x)
+	c.compileExpr(y)
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringLess", Arg: 2})
+}
+
+// emitStringCompareResult emits code that leaves a bool result on the stack for
+// string comparison op x <op> y.
+func (c *Compiler) emitStringCompareResult(op string, x *Node, y *Node) bool {
+	switch op {
+	case "==":
+		c.emitStringEqualCall(x, y)
+		return true
+	case "!=":
+		c.emitStringEqualCall(x, y)
+		c.emit(ir.Inst{Op: ir.OP_NOT})
+		return true
+	case "<":
+		c.emitStringLessCall(x, y)
+		return true
+	case ">":
+		c.emitStringLessCall(y, x)
+		return true
+	case "<=":
+		c.emitStringLessCall(y, x)
+		c.emit(ir.Inst{Op: ir.OP_NOT})
+		return true
+	case ">=":
+		c.emitStringLessCall(x, y)
+		c.emit(ir.Inst{Op: ir.OP_NOT})
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Compiler) compileLogicalBinary(node *Node, isAnd bool) {
 	branchLabel := c.newLabel()
 	endLabel := c.newLabel()
@@ -4996,13 +5033,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringConcat", Arg: 2})
 		return
 	}
-	if isStr && node.Name == "==" {
-		c.emitStringEqualCall(node.X, node.Y)
-		return
-	}
-	if isStr && node.Name == "!=" {
-		c.emitStringEqualCall(node.X, node.Y)
-		c.emit(ir.Inst{Op: ir.OP_NOT})
+	if isStr && c.emitStringCompareResult(node.Name, node.X, node.Y) {
 		return
 	}
 
