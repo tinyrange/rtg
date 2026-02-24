@@ -2,13 +2,12 @@
 // Generate targets with: tools/sync_i386_asm.sh
 //
 // Template variables:
-//   !no_backend_i386 && !no_backend_windows_i386
-//   windows
+//   __BUILD_TAG__
+//   __PACKAGE__
 
-//go:build !no_backend_i386 && !no_backend_windows_i386
+//go:build __BUILD_TAG__
 
-package windows
-
+package __PACKAGE__
 // === i386 Assembler: mnemonic-level instruction encoding ===
 
 // Register constants (i386 uses only 8 registers)
