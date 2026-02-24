@@ -2,14 +2,13 @@
 
 package x64
 
-func (g *CodeGen) emitStart(irmod *IRModule) {
-	panic("linux/amd64 backend disabled")
-}
+import (
+	"fmt"
 
-func (g *CodeGen) compileSyscallIntrinsic(paramCount int) {
-	panic("linux/amd64 backend disabled")
-}
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
+)
 
-func (g *CodeGen) compilePanic() {
-	panic("linux/amd64 backend disabled")
+func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return fmt.Errorf("linux/amd64 backend disabled (built with no_backend_linux_amd64 tag)")
 }

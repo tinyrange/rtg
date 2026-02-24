@@ -62,9 +62,6 @@ type CodeGen struct {
 	// Outlined intrinsic helpers
 	NeedTostringHelper bool
 	hasTostringHelper  bool
-
-	CompileCallIntrinsic func(g *CodeGen, inst ir.Inst)
-	CompilePanic         func(g *CodeGen)
 }
 
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *CodeGen {
@@ -95,6 +92,14 @@ type CallFixup struct {
 	CodeOffset int    // offset of the instruction(s) in code buffer
 	Target     string // function name to resolve
 	Value      uint64 // raw offset for ARM64 ADRP fixups (section-relative offset)
+}
+
+func CallFixupTarget(f CallFixup) string {
+	return f.Target
+}
+
+func CallFixupOffset(f CallFixup) int {
+	return f.CodeOffset
 }
 
 // JumpFixup records a location that needs a relative jump target patched.
@@ -157,6 +162,41 @@ func (g *CodeGen) AddCallFixup(target string) {
 		CodeOffset: len(g.Code),
 		Target:     target,
 	})
+}
+
+func (g *CodeGen) ResolveLinuxCallFixups() []string {
+	var unresolved []string
+	for _, fix := range g.callFixups {
+		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
+			continue
+		}
+		target, ok := g.MaybeGetFuncOffsets(fix.Target)
+		if !ok {
+			unresolved = append(unresolved, fix.Target)
+			continue
+		}
+		g.PatchRel32At(fix.CodeOffset, target)
+	}
+	return unresolved
+}
+
+func (g *CodeGen) PatchLinuxDataAndRodataFixups(rodataVAddr uint64, dataVAddr uint64) {
+	for _, fix := range g.callFixups {
+		if fix.Target == "$rodata_header$" {
+			headerOff := common.GetU64(g.Code[fix.CodeOffset : fix.CodeOffset+8])
+			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], rodataVAddr+headerOff)
+		} else if fix.Target == "$data_addr$" {
+			dataOff := common.GetU64(g.Code[fix.CodeOffset : fix.CodeOffset+8])
+			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], dataVAddr+dataOff)
+		}
+	}
+}
+
+func (g *CodeGen) PatchLinuxStringHeaders(rodataVAddr uint64) {
+	for _, headerOff := range g.stringMap {
+		dataOff := common.GetU64(g.Rodata[headerOff : headerOff+8])
+		common.PutU64(g.Rodata[headerOff:headerOff+8], rodataVAddr+dataOff)
+	}
 }
 
 // === Public Methods ===

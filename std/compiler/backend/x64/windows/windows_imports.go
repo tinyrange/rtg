@@ -58,11 +58,11 @@ func decodeIATFixupTarget(target string) (string, string, bool) {
 	return lib, sym, true
 }
 
-func collectWinImportsFromFixups(callFixups []core.CallFixup) []winImport {
+func collectWinImportsFromFixups(g *core.CodeGen) []winImport {
 	var imports []winImport
 	seen := make(map[string]bool)
-	for _, fix := range callFixups {
-		lib, sym, ok := decodeIATFixupTarget(fix.Target)
+	for _, fix := range g.CallFixups() {
+		lib, sym, ok := decodeIATFixupTarget(core.CallFixupTarget(fix))
 		if !ok {
 			continue
 		}
