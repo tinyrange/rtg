@@ -4239,48 +4239,6 @@ func (c *Compiler) compileSwitch(node *Node, stmtLabels []string) {
 	if typeSwitchVarName != "" {
 		typeSwitchVarIdx = c.addLocal(typeSwitchVarName)
 	}
-	bindTypeSwitchVar := func(caseExprs []*Node, isDefault bool) {
-		if typeSwitchVarIdx < 0 || typeSwitchIfaceIdx < 0 {
-			return
-		}
-		delete(c.localConcreteTypes, typeSwitchVarName)
-		delete(c.localStringVars, typeSwitchVarName)
-		delete(c.localMapVars, typeSwitchVarName)
-		delete(c.localMapValueTypes, typeSwitchVarName)
-		assignIface := isDefault || len(caseExprs) != 1
-		ifaceType := "interface{}"
-		if !assignIface {
-			caseType := nodeTypeName(caseExprs[0])
-			caseQType := c.qualifyTypeName(caseType, "")
-			if c.isInterfaceTypeName(caseType) || c.isInterfaceTypeName(caseQType) {
-				if caseQType != "" {
-					ifaceType = caseQType
-				}
-				assignIface = true
-			} else if caseQType != "" {
-				delete(c.localTypes, typeSwitchVarName)
-				c.localConcreteTypes[typeSwitchVarName] = caseQType
-				if caseQType == "string" {
-					c.localStringVars[typeSwitchVarName] = true
-				}
-				if len(caseQType) >= 4 && caseQType[0:4] == "map[" {
-					c.setLocalMapMetadataFromQualified(typeSwitchVarName, caseQType)
-				}
-				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: typeSwitchIfaceIdx})
-				c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: c.target.PtrSize})
-				c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
-				c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: typeSwitchVarIdx})
-				return
-			} else {
-				assignIface = true
-			}
-		}
-		if assignIface {
-			c.localTypes[typeSwitchVarName] = ifaceType
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: typeSwitchIfaceIdx})
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: typeSwitchVarIdx})
-		}
-	}
 
 	// Compile tag if present
 	hasTag := node.Y != nil
@@ -4340,7 +4298,7 @@ func (c *Compiler) compileSwitch(node *Node, stmtLabels []string) {
 				c.emit(ir.Inst{Op: ir.OP_DROP})
 			}
 			c.emitLabel(execLabel)
-			bindTypeSwitchVar(nil, true)
+			c.bindTypeSwitchVar(typeSwitchVarName, typeSwitchVarIdx, typeSwitchIfaceIdx, nil, true)
 			c.fallthroughs = append(c.fallthroughs, fallthroughLabel)
 			if cas.Body != nil {
 				c.compileBlock(cas.Body)
@@ -4388,7 +4346,7 @@ func (c *Compiler) compileSwitch(node *Node, stmtLabels []string) {
 				c.emit(ir.Inst{Op: ir.OP_DROP})
 			}
 			c.emitLabel(execLabel)
-			bindTypeSwitchVar(caseExprs, false)
+			c.bindTypeSwitchVar(typeSwitchVarName, typeSwitchVarIdx, typeSwitchIfaceIdx, caseExprs, false)
 			c.fallthroughs = append(c.fallthroughs, fallthroughLabel)
 			if cas.Body != nil {
 				c.compileBlock(cas.Body)
@@ -4414,6 +4372,48 @@ func (c *Compiler) compileSwitch(node *Node, stmtLabels []string) {
 		c.breakLabelTargets[name] = bt[0 : len(bt)-1]
 	}
 	c.stackDepth = savedDepth // switch should have net-zero effect
+}
+
+func (c *Compiler) bindTypeSwitchVar(typeSwitchVarName string, typeSwitchVarIdx int, typeSwitchIfaceIdx int, caseExprs []*Node, isDefault bool) {
+	if typeSwitchVarName == "" || typeSwitchVarIdx < 0 || typeSwitchIfaceIdx < 0 {
+		return
+	}
+	delete(c.localConcreteTypes, typeSwitchVarName)
+	delete(c.localStringVars, typeSwitchVarName)
+	delete(c.localMapVars, typeSwitchVarName)
+	delete(c.localMapValueTypes, typeSwitchVarName)
+	assignIface := isDefault || len(caseExprs) != 1
+	ifaceType := "interface{}"
+	if !assignIface {
+		caseType := nodeTypeName(caseExprs[0])
+		caseQType := c.qualifyTypeName(caseType, "")
+		if c.isInterfaceTypeName(caseType) || c.isInterfaceTypeName(caseQType) {
+			if caseQType != "" {
+				ifaceType = caseQType
+			}
+			assignIface = true
+		} else if caseQType != "" {
+			delete(c.localTypes, typeSwitchVarName)
+			c.localConcreteTypes[typeSwitchVarName] = caseQType
+			if caseQType == "string" {
+				c.localStringVars[typeSwitchVarName] = true
+			}
+			if len(caseQType) >= 4 && caseQType[0:4] == "map[" {
+				c.setLocalMapMetadataFromQualified(typeSwitchVarName, caseQType)
+			}
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: typeSwitchIfaceIdx})
+			c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: c.target.PtrSize})
+			c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: typeSwitchVarIdx})
+			return
+		}
+		assignIface = true
+	}
+	if assignIface {
+		c.localTypes[typeSwitchVarName] = ifaceType
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: typeSwitchIfaceIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: typeSwitchVarIdx})
+	}
 }
 
 func (c *Compiler) typeIDForTypeName(tname string) int {
