@@ -246,11 +246,11 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	case ir.OP_IFACE_CALL:
 		g.compileIfaceCall_i386(inst)
 	case ir.OP_PANIC:
-		hooks := hooksForGOOS(g.target.GOOS)
-		if hooks == nil {
-			panic("ICE: no i386 panic hook for GOOS " + g.target.GOOS)
+		if g.target.GOOS == "windows" {
+			g.compilePanic_win386()
+		} else {
+			g.compilePanic_linux386()
 		}
-		hooks.CompilePanic(g)
 
 	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// Handled by intrinsics or builtins
@@ -490,21 +490,15 @@ func (g *CodeGen) compileReturn_i386(inst ir.Inst) {
 
 func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	g.flush()
-	hooks := hooksForGOOS(g.target.GOOS)
-	if hooks != nil && hooks.CompileLinkStaticIntrinsic(g, inst) {
+	if g.compileLinkStaticIntrinsicWin386(inst) {
 		return
 	}
 	switch inst.Name {
 	case "Syscall":
-		if hooks == nil {
-			panic("ICE: no i386 syscall hook for GOOS " + g.target.GOOS)
-		}
-		hooks.CompileSyscallIntrinsic(g, inst.Arg)
+		// Linux i386 syscall lowering.
+		g.compileSyscallIntrinsic_linux386(inst.Arg)
 	case "SysGetdents64":
-		if hooks == nil {
-			panic("ICE: no i386 getdents hook for GOOS " + g.target.GOOS)
-		}
-		hooks.CompileSysGetdents64(g)
+		g.compileSyscallGetdents_win386()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic_i386()
 	case "Makeslice":

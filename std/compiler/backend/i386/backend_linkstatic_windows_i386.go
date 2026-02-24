@@ -1,20 +1,12 @@
 //go:build !no_backend_i386 && !no_backend_windows_i386
 
-package windows
+package i386
 
 import (
 	"strings"
 
 	"j5.nz/rtg/std/compiler/ir"
 )
-
-func canonicalWinImportLibrary(lib string) string {
-	lib = strings.TrimSpace(lib)
-	if lib == "" {
-		return "kernel32.dll"
-	}
-	return lib
-}
 
 func decodeLinkStaticSpecWin386(raw string) (string, string, string, bool) {
 	parts := strings.Split(raw, ",")
@@ -30,7 +22,7 @@ func decodeLinkStaticSpecWin386(raw string) (string, string, string, bool) {
 	return lib, sym, mode, true
 }
 
-func (g *winGen) emitGenericLinkStaticCallWin386(paramCount int, lib string, sym string) {
+func (g *CodeGen) emitGenericLinkStaticCallWin386(paramCount int, lib string, sym string) {
 	if paramCount < 0 {
 		panic("ICE: invalid linkstatic arg count")
 	}
@@ -41,7 +33,7 @@ func (g *winGen) emitGenericLinkStaticCallWin386(paramCount int, lib string, sym
 	g.emitCallIATInLib(lib, sym)
 }
 
-func (g *winGen) emitLinkStaticPtrReturnWin386() {
+func (g *CodeGen) emitLinkStaticPtrReturnWin386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixNonZero := g.jccRel32(CC32_NE)
 	g.compileConstI32(0)
@@ -65,7 +57,7 @@ func (g *winGen) emitLinkStaticPtrReturnWin386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *winGen) emitLinkStaticReturnWin386(mode string) {
+func (g *CodeGen) emitLinkStaticReturnWin386(mode string) {
 	switch mode {
 	case "syscall":
 		g.opPush(REG32_EAX)
@@ -84,11 +76,11 @@ func (g *winGen) emitLinkStaticReturnWin386(mode string) {
 	}
 }
 
-func (g *winGen) compileLinkStaticIntrinsicWin386(inst ir.Inst) bool {
-	if g.cg.TargetGOOS() != "windows" {
+func (g *CodeGen) compileLinkStaticIntrinsicWin386(inst ir.Inst) bool {
+	if g.target.GOOS != "windows" || g.irmod == nil || g.irmod.LinkStaticFuncs == nil {
 		return false
 	}
-	raw, ok := g.cg.LookupLinkStaticSpec(inst.Name)
+	raw, ok := g.irmod.LinkStaticFuncs[inst.Name]
 	if !ok {
 		return false
 	}
