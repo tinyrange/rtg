@@ -1,4 +1,6 @@
-package i386
+//go:build !no_backend_i386 && !no_backend_windows_i386
+
+package windows
 
 import (
 	"j5.nz/rtg/std/compiler/common"
