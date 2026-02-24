@@ -5,27 +5,51 @@ import (
 	"os"
 )
 
-var order string
+func appendDigit(dst *string, n int) {
+	*dst = *dst + string([]byte{byte('0' + n)})
+}
 
-func appendChar(c string) {
-	order = order + c
+func deferSimple() (order string) {
+	appendDigit(&order, 0)
+	defer appendDigit(&order, 3)
+	defer appendDigit(&order, 2)
+	defer appendDigit(&order, 1)
+	return
+}
+
+func deferLoop() (order string) {
+	i := 0
+	for i < 3 {
+		defer appendDigit(&order, i)
+		i++
+	}
+	return
+}
+
+func bump(v *int) {
+	*v = *v + 1
+}
+
+func deferNamedExplicit() (v int) {
+	defer bump(&v)
+	return 41
 }
 
 func main() {
 	passed := true
-	order = ""
-
-	defer appendChar("3")
-	defer appendChar("2")
-	defer appendChar("1")
-	appendChar("0")
-
-	// At this point, defers haven't run yet, so order is just "0"
-	// After main returns, defers run in LIFO: "1", "2", "3"
-	// So final order would be "0123"
-	// But we can't check after main returns, so let's check what we can
-	if order != "0" {
-		fmt.Printf("FAIL: before defer order=%s\n", order)
+	simple := deferSimple()
+	if simple != "0123" {
+		fmt.Printf("FAIL: defer simple got=%s\n", simple)
+		passed = false
+	}
+	loop := deferLoop()
+	if loop != "210" {
+		fmt.Printf("FAIL: defer loop got=%s\n", loop)
+		passed = false
+	}
+	named := deferNamedExplicit()
+	if named != 42 {
+		fmt.Printf("FAIL: defer named explicit got=%d\n", named)
 		passed = false
 	}
 

@@ -39,6 +39,17 @@ type assembleInfo struct {
 	RetCount    int
 }
 
+type deferSite struct {
+	callOp          ir.Opcode
+	callName        string
+	argCount        int
+	retCount        int
+	fixedCount      int
+	isVariadic      bool
+	variadicElemSz  int
+	variadicIsIface bool
+}
+
 // === Compiler ===
 
 // Compiler lowers AST from a Module into stack machine IR.
@@ -91,10 +102,8 @@ type Compiler struct {
 	constStringValues    map[string]string   // qualified const name → precomputed string value
 	localAddrOf          map[string]bool     // local var name → true if assigned from &var (pointer-to-pointer)
 	stackDepth           int                 // operand stack depth tracking for balance checks
-	deferNames           []string
-	deferArgStarts       []int
-	deferArgCounts       []int
-	deferRetCounts       []int
+	deferSites           []deferSite
+	deferHeadLocal       int
 	namedResultNames     []string
 	labelIDs             map[string]int
 	funcLitSeq           int
@@ -1963,6 +1972,29 @@ func (c *Compiler) compileTopDecl(node *Node) {
 	}
 }
 
+func containsDeferStmt(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	// Defer statements inside nested function literals belong to the nested
+	// function, not the current one.
+	if node.Kind == NFuncType && node.Body != nil {
+		return false
+	}
+	if node.Kind == NDeferStmt {
+		return true
+	}
+	if containsDeferStmt(node.X) || containsDeferStmt(node.Y) || containsDeferStmt(node.Body) || containsDeferStmt(node.Type) {
+		return true
+	}
+	for _, child := range node.Nodes {
+		if containsDeferStmt(child) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Compiler) compileFunc(node *Node) {
 	qname := c.curPkg.QualName(node.Name)
 	if node.X != nil {
@@ -1987,10 +2019,8 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localConcreteTypes = make(map[string]string)
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
-	c.deferNames = nil
-	c.deferArgStarts = nil
-	c.deferArgCounts = nil
-	c.deferRetCounts = nil
+	c.deferSites = nil
+	c.deferHeadLocal = -1
 	c.namedResultNames = nil
 	c.fallthroughs = nil
 	c.pendingStmtLabels = nil
@@ -2114,8 +2144,42 @@ func (c *Compiler) compileFunc(node *Node) {
 			f.RetCount = len(node.Type.Nodes)
 			for _, ret := range node.Type.Nodes {
 				if ret.Name != "" {
-					c.addLocal(ret.Name)
+					retIdx := c.addLocal(ret.Name)
 					c.namedResultNames = append(c.namedResultNames, ret.Name)
+					retTypeNode := ret.Type
+					if retTypeNode == nil {
+						retTypeNode = ret
+					}
+					if retTypeNode != nil {
+						if retTypeNode.Kind == NIdent {
+							if retTypeNode.Name == "uint64" || retTypeNode.Name == "int64" {
+								c.curFunc.Locals[retIdx].Is64 = true
+							}
+							if w := typeWidth(retTypeNode.Name); w > 0 {
+								c.curFunc.Locals[retIdx].Width = w
+							}
+							if retTypeNode.Name == "string" {
+								c.localStringVars[ret.Name] = true
+							}
+						}
+						typeName := nodeTypeName(retTypeNode)
+						if typeName != "" {
+							qualifiedType := c.qualifyTypeName(typeName, "")
+							if c.isInterfaceTypeName(typeName) || c.isInterfaceTypeName(qualifiedType) {
+								c.localTypes[ret.Name] = qualifiedType
+							}
+							c.localConcreteTypes[ret.Name] = qualifiedType
+							if retTypeNode.Kind == NSliceType {
+								c.localElemSizes[ret.Name] = c.sliceElemSize(retTypeNode)
+							}
+							if retTypeNode.Kind == NMapType {
+								c.localMapVars[ret.Name] = c.mapKeyKind(retTypeNode.X)
+								if retTypeNode.Y != nil {
+									c.localMapValueTypes[ret.Name] = nodeTypeName(retTypeNode.Y)
+								}
+							}
+						}
+					}
 				}
 			}
 		} else {
@@ -2127,6 +2191,23 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.funcRets[f.Name] = f.RetCount
 	c.stackDepth = 0
 
+	for _, name := range c.namedResultNames {
+		if idx, ok := c.lookupLocal(name); ok {
+			w := 0
+			if idx < len(c.curFunc.Locals) {
+				w = c.curFunc.Locals[idx].Width
+			}
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
+		}
+	}
+
+	if containsDeferStmt(node.Body) {
+		c.deferHeadLocal = c.addLocal("$defer_head")
+		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
+	}
+
 	// Compile body
 	if node.Body != nil {
 		c.compileBlock(node.Body)
@@ -2135,10 +2216,14 @@ func (c *Compiler) compileFunc(node *Node) {
 	// Ensure function ends with a return
 	codeLen := len(f.Code)
 	if codeLen == 0 || f.Code[codeLen-1].Op != ir.OP_RETURN {
-		if len(c.deferNames) > 0 {
-			c.emitDeferredCalls()
+		if len(c.namedResultNames) > 0 {
+			c.compileReturn(&Node{Kind: NReturn})
+		} else {
+			if len(c.deferSites) > 0 {
+				c.emitDeferredCalls()
+			}
+			c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 		}
-		c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 	}
 
 	c.popScope()
@@ -2533,45 +2618,7 @@ func (c *Compiler) compileStmt(node *Node) {
 		}
 		c.compileBranch(node)
 	case NDeferStmt:
-		if node.X != nil && node.X.Kind == NCallExpr {
-			name := c.resolveCallName(node.X.X)
-			if node.X.X != nil && node.X.X.Kind == NIdent {
-				if target, ok := c.localFuncTargets[node.X.X.Name]; ok {
-					name = target
-				} else if target, ok := c.localMethodTargets[node.X.X.Name]; ok {
-					name = target
-				}
-			}
-			fixedCount, isVariadic := c.funcVariadic[name]
-			isIfaceVar := isVariadic && c.funcVariadicIface[name]
-			argStart := -1
-			argCount := 0
-			for _, arg := range node.X.Nodes {
-				c.compileExpr(arg)
-				if isIfaceVar && argCount >= fixedCount {
-					if typeID := c.exprPrimitiveTypeID(arg); typeID > 0 {
-						c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
-					}
-				}
-				idx := c.addLocal(fmt.Sprintf("_defer_%d_%d", len(c.deferNames), argCount))
-				c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
-				if argStart < 0 {
-					argStart = idx
-				}
-				argCount++
-			}
-			if argStart < 0 {
-				argStart = 0
-			}
-			c.deferNames = append(c.deferNames, name)
-			c.deferArgStarts = append(c.deferArgStarts, argStart)
-			c.deferArgCounts = append(c.deferArgCounts, argCount)
-			retCount := 0
-			if n, ok := c.funcRets[name]; ok {
-				retCount = n
-			}
-			c.deferRetCounts = append(c.deferRetCounts, retCount)
-		}
+		c.compileDeferStmt(node)
 	case NConstDecl:
 		// Local const — treat like var
 		if len(node.Nodes) > 0 {
@@ -2589,6 +2636,162 @@ func (c *Compiler) compileStmt(node *Node) {
 	default:
 		panic("ICE: unhandled statement kind in compileStmt")
 	}
+}
+
+func (c *Compiler) compileDeferStmt(node *Node) {
+	if node == nil || node.X == nil || node.X.Kind != NCallExpr {
+		return
+	}
+	call := node.X
+	site := deferSite{
+		callOp:         ir.OP_CALL,
+		callName:       c.resolveCallName(call.X),
+		variadicElemSz: c.target.PtrSize,
+	}
+	calleeName := ""
+	localFuncTarget := ""
+	localMethodTarget := ""
+	var selectorRecv *Node
+	selectorIfaceRetCount := -1
+	if call.X != nil && call.X.Kind == NIdent {
+		calleeName = call.X.Name
+		if target, ok := c.localFuncTargets[calleeName]; ok {
+			localFuncTarget = target
+			site.callName = target
+		} else if target, ok := c.localMethodTargets[calleeName]; ok {
+			localMethodTarget = target
+			site.callName = target
+		}
+	} else if call.X != nil && call.X.Kind == NSelectorExpr && call.X.X != nil {
+		// Selector calls can be package-qualified functions (no receiver) or
+		// method calls (receiver is the selector base expression).
+		isPkgSelector := false
+		if call.X.X.Kind == NIdent && c.resolvePackage(call.X.X.Name) != nil {
+			isPkgSelector = true
+		}
+		if !isPkgSelector {
+			selectorRecv = call.X.X
+			recvType := c.resolveExprType(selectorRecv)
+			if recvType != "" {
+				if retCount, ok := c.ifaceMethodReturnCount(recvType, call.X.Name); ok {
+					site.callOp = ir.OP_IFACE_CALL
+					site.callName = c.dotJoin(recvType, call.X.Name)
+					selectorIfaceRetCount = retCount
+				} else if resolved, ok := c.resolveMethodByConcreteType(recvType, call.X.Name); ok {
+					site.callName = resolved
+				}
+			}
+		}
+	}
+	site.fixedCount, site.isVariadic = c.funcVariadic[site.callName]
+	site.variadicIsIface = site.isVariadic && c.funcVariadicIface[site.callName]
+	if esz, ok := c.funcVariadicElem[site.callName]; ok {
+		site.variadicElemSz = esz
+	}
+	if n, ok := c.funcRets[site.callName]; ok {
+		site.retCount = n
+	}
+	if selectorIfaceRetCount >= 0 {
+		site.retCount = selectorIfaceRetCount
+	}
+	site.argCount = len(call.Nodes)
+	captureArgs := c.localFuncCaptures[calleeName]
+	if localFuncTarget != "" {
+		site.argCount = site.argCount + len(captureArgs)
+	}
+	if localMethodTarget != "" {
+		site.argCount = site.argCount + 1
+	}
+	if selectorRecv != nil {
+		site.argCount = site.argCount + 1
+	}
+
+	if c.deferHeadLocal < 0 {
+		c.deferHeadLocal = c.addLocal("$defer_head")
+		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
+	}
+
+	siteID := len(c.deferSites)
+	c.deferSites = append(c.deferSites, site)
+	recIdx := c.addLocal(fmt.Sprintf("$defer_rec_%d", siteID))
+	recordSize := 2*c.target.PtrSize + site.argCount*c.target.PtrSize
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(recordSize)})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: recIdx})
+
+	// rec.next = head
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.deferHeadLocal})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recIdx})
+	c.emit(ir.Inst{Op: ir.OP_STORE, Arg: c.target.PtrSize})
+	// rec.siteID = siteID
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteID)})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recIdx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.target.PtrSize)})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_STORE, Arg: c.target.PtrSize})
+
+	argIndex := 0
+	if localFuncTarget != "" {
+		for _, capture := range captureArgs {
+			if capture.IsPtr {
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: capture.LocalIdx})
+			} else {
+				c.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: capture.LocalIdx})
+			}
+			c.emitStoreDeferredArg(recIdx, argIndex)
+			argIndex++
+		}
+	}
+	if localMethodTarget != "" {
+		recvIdx, ok := c.localMethodRecv[calleeName]
+		if !ok {
+			recvIdx, ok = c.lookupLocal(calleeName)
+		}
+		if ok {
+			w := 0
+			if recvIdx < len(c.curFunc.Locals) {
+				w = c.curFunc.Locals[recvIdx].Width
+			}
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recvIdx, Width: w})
+		} else {
+			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+		}
+		c.emitStoreDeferredArg(recIdx, argIndex)
+		argIndex++
+	}
+	if selectorRecv != nil {
+		c.compileExpr(selectorRecv)
+		c.emitStoreDeferredArg(recIdx, argIndex)
+		argIndex++
+	}
+	for _, arg := range call.Nodes {
+		c.compileExpr(arg)
+		if site.variadicIsIface && argIndex >= site.fixedCount {
+			if typeID := c.exprPrimitiveTypeID(arg); typeID > 0 {
+				c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
+			}
+		}
+		c.emitStoreDeferredArg(recIdx, argIndex)
+		argIndex++
+	}
+
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
+}
+
+func (c *Compiler) emitStoreDeferredArg(recLocal int, argIndex int) {
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recLocal})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(2*c.target.PtrSize + argIndex*c.target.PtrSize)})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_STORE, Arg: c.target.PtrSize})
+}
+
+func (c *Compiler) emitLoadDeferredArg(recLocal int, argIndex int) {
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recLocal})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(2*c.target.PtrSize + argIndex*c.target.PtrSize)})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 }
 
 func sharedVarDeclRHS(decls []*Node) (*Node, bool) {
@@ -3159,10 +3362,8 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	savedLocalConcrete := c.localConcreteTypes
 	savedLocalMapVars := c.localMapVars
 	savedLocalMapVals := c.localMapValueTypes
-	savedDefNames := c.deferNames
-	savedDefStarts := c.deferArgStarts
-	savedDefCounts := c.deferArgCounts
-	savedDefRetCounts := c.deferRetCounts
+	savedDeferSites := c.deferSites
+	savedDeferHeadLocal := c.deferHeadLocal
 	savedNamed := c.namedResultNames
 	savedPendingStmtLabels := c.pendingStmtLabels
 	savedLabelIDs := c.labelIDs
@@ -3191,10 +3392,8 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	c.localConcreteTypes = savedLocalConcrete
 	c.localMapVars = savedLocalMapVars
 	c.localMapValueTypes = savedLocalMapVals
-	c.deferNames = savedDefNames
-	c.deferArgStarts = savedDefStarts
-	c.deferArgCounts = savedDefCounts
-	c.deferRetCounts = savedDefRetCounts
+	c.deferSites = savedDeferSites
+	c.deferHeadLocal = savedDeferHeadLocal
 	c.namedResultNames = savedNamed
 	c.pendingStmtLabels = savedPendingStmtLabels
 	c.labelIDs = savedLabelIDs
@@ -3392,31 +3591,63 @@ func (c *Compiler) compileLValueGet(node *Node) {
 }
 
 func (c *Compiler) emitDeferredCalls() {
-	n := len(c.deferNames)
-	di := 0
-	for di < n {
-		idx := n - 1 - di
-		name := c.deferNames[idx]
-		argStart := c.deferArgStarts[idx]
-		argCount := c.deferArgCounts[idx]
-		fixedCount, isVariadic := c.funcVariadic[name]
-		if isVariadic {
-			if fixedCount > argCount {
-				fixedCount = argCount
-			}
-			k := 0
-			for k < fixedCount {
-				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argStart + k})
-				k++
-			}
-			variadicCount := argCount - fixedCount
-			if variadicCount < 0 {
-				variadicCount = 0
-			}
-			varElemSz := c.target.PtrSize
-			if esz, ok := c.funcVariadicElem[name]; ok {
-				varElemSz = esz
-			}
+	if len(c.deferSites) == 0 || c.deferHeadLocal < 0 {
+		return
+	}
+
+	recIdx := c.addLocal("$defer_pop_rec")
+	siteIdx := c.addLocal("$defer_pop_site")
+	loopLabel := c.newLabel()
+	doneLabel := c.newLabel()
+
+	c.emitLabel(loopLabel)
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.deferHeadLocal})
+	c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: doneLabel})
+
+	// rec = head; head = rec.next
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.deferHeadLocal})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: recIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recIdx})
+	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
+
+	// site = rec.siteID
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recIdx})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.target.PtrSize)})
+	c.emit(ir.Inst{Op: ir.OP_ADD})
+	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: siteIdx})
+
+	for idx, site := range c.deferSites {
+		nextCase := c.newLabel()
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: siteIdx})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(idx)})
+		c.emit(ir.Inst{Op: ir.OP_JMP_NEQ, Arg: nextCase})
+		c.emitDeferredSiteCall(site, recIdx)
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: loopLabel})
+		c.emitLabel(nextCase)
+	}
+	c.emit(ir.Inst{Op: ir.OP_JMP, Arg: loopLabel})
+	c.emitLabel(doneLabel)
+}
+
+func (c *Compiler) emitDeferredSiteCall(site deferSite, recIdx int) {
+	argCount := site.argCount
+	if site.isVariadic {
+		fixedCount := site.fixedCount
+		if fixedCount > argCount {
+			fixedCount = argCount
+		}
+		k := 0
+		for k < fixedCount {
+			c.emitLoadDeferredArg(recIdx, k)
+			k++
+		}
+		variadicCount := argCount - fixedCount
+		if variadicCount <= 0 {
+			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+		} else {
+			varElemSz := site.variadicElemSz
 			sliceHdrSize := 4 * c.target.PtrSize
 			allocSize := sliceHdrSize + variadicCount*varElemSz
 			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(allocSize)})
@@ -3445,7 +3676,7 @@ func (c *Compiler) emitDeferredCalls() {
 			c.emit(ir.Inst{Op: ir.OP_STORE})
 			j := 0
 			for j < variadicCount {
-				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argStart + fixedCount + j})
+				c.emitLoadDeferredArg(recIdx, fixedCount+j)
 				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
 				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(sliceHdrSize + j*varElemSz)})
 				c.emit(ir.Inst{Op: ir.OP_ADD})
@@ -3453,25 +3684,57 @@ func (c *Compiler) emitDeferredCalls() {
 				j++
 			}
 			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
-			c.emit(ir.Inst{Op: ir.OP_CALL, Name: name, Arg: fixedCount + 1})
-		} else {
-			k := 0
-			for k < argCount {
-				c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argStart + k})
-				k++
+		}
+		switch site.callOp {
+		case ir.OP_IFACE_CALL:
+			c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: site.callName, Arg: fixedCount})
+		default:
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: site.callName, Arg: fixedCount + 1})
+		}
+	} else {
+		k := 0
+		for k < argCount {
+			c.emitLoadDeferredArg(recIdx, k)
+			k++
+		}
+		switch site.callOp {
+		case ir.OP_IFACE_CALL:
+			if argCount > 0 {
+				c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: site.callName, Arg: argCount - 1})
+			} else {
+				c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: site.callName, Arg: 0})
 			}
-			c.emit(ir.Inst{Op: ir.OP_CALL, Name: name, Arg: argCount})
+		default:
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: site.callName, Arg: argCount})
 		}
-		dropCount := 0
-		if idx < len(c.deferRetCounts) {
-			dropCount = c.deferRetCounts[idx]
-		}
-		for dropCount > 0 {
-			c.emit(ir.Inst{Op: ir.OP_DROP})
-			dropCount--
-		}
-		di++
 	}
+	dropCount := site.retCount
+	for dropCount > 0 {
+		c.emit(ir.Inst{Op: ir.OP_DROP})
+		dropCount--
+	}
+}
+
+func (c *Compiler) emitNamedReturnValues(retTypes []string) int {
+	count := 0
+	for i, name := range c.namedResultNames {
+		idx, ok := c.lookupLocal(name)
+		if !ok {
+			continue
+		}
+		w := 0
+		if idx < len(c.curFunc.Locals) {
+			w = c.curFunc.Locals[idx].Width
+		}
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx, Width: w})
+		if i < len(retTypes) && c.isInterfaceTypeName(retTypes[i]) {
+			if typeID := c.typeIDForTypeName(c.localConcreteTypes[name]); typeID > 0 {
+				c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
+			}
+		}
+		count++
+	}
+	return count
 }
 
 func (c *Compiler) compileReturn(node *Node) {
@@ -3492,24 +3755,60 @@ func (c *Compiler) compileReturn(node *Node) {
 	if !bareReturn && explicitCount != expectedCount {
 		c.errorf("%s: wrong number of return values: got %d, want %d", c.curFunc.Name, explicitCount, expectedCount)
 	}
-	if bareReturn && len(c.namedResultNames) > 0 {
-		for i, name := range c.namedResultNames {
-			idx, ok := c.lookupLocal(name)
-			if !ok {
-				continue
+
+	if len(c.namedResultNames) > 0 {
+		if !bareReturn {
+			retExprs := make([]*Node, 0, 1+len(node.Nodes))
+			if node.X != nil {
+				retExprs = append(retExprs, node.X)
 			}
-			w := 0
-			if idx < len(c.curFunc.Locals) {
-				w = c.curFunc.Locals[idx].Width
-			}
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx, Width: w})
-			if i < len(retTypes) && c.isInterfaceTypeName(retTypes[i]) {
-				if typeID := c.typeIDForTypeName(c.localConcreteTypes[name]); typeID > 0 {
-					c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
+			retExprs = append(retExprs, node.Nodes...)
+			if len(retExprs) == len(c.namedResultNames) && len(retExprs) == expectedCount {
+				for i, retExpr := range retExprs {
+					c.compileExpr(retExpr)
+					c.maybeBoxInterface(retExpr, retTypes, i)
 				}
+				i := len(retExprs) - 1
+				for i >= 0 {
+					name := c.namedResultNames[i]
+					idx, ok := c.lookupLocal(name)
+					if ok {
+						w := 0
+						if idx < len(c.curFunc.Locals) {
+							w = c.curFunc.Locals[idx].Width
+						}
+						c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
+					} else {
+						c.emit(ir.Inst{Op: ir.OP_DROP})
+					}
+					i--
+				}
+			} else {
+				if node.X != nil {
+					retIdx := count
+					c.compileExpr(node.X)
+					c.maybeBoxInterface(node.X, retTypes, retIdx)
+					count++
+				}
+				for _, extra := range node.Nodes {
+					retIdx := count
+					c.compileExpr(extra)
+					c.maybeBoxInterface(extra, retTypes, retIdx)
+					count++
+				}
+				if len(c.deferSites) > 0 {
+					c.emitDeferredCalls()
+				}
+				c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
+				return
 			}
-			count++
 		}
+		if len(c.deferSites) > 0 {
+			c.emitDeferredCalls()
+		}
+		count = c.emitNamedReturnValues(retTypes)
+		c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
+		return
 	}
 
 	if node.X != nil {
@@ -3524,7 +3823,7 @@ func (c *Compiler) compileReturn(node *Node) {
 		c.maybeBoxInterface(extra, retTypes, retIdx)
 		count++
 	}
-	if len(c.deferNames) > 0 {
+	if len(c.deferSites) > 0 {
 		c.emitDeferredCalls()
 	}
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
@@ -5733,7 +6032,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			return
 		}
 		if name == "panic" {
-			if len(c.deferNames) > 0 {
+			if len(c.deferSites) > 0 {
 				c.emitDeferredCalls()
 			}
 			if len(node.Nodes) != 1 {
@@ -6166,10 +6465,8 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedLocalMapVars := c.localMapVars
 	savedLocalMapValueTypes := c.localMapValueTypes
 	savedLocalAddrOf := c.localAddrOf
-	savedDeferNames := c.deferNames
-	savedDeferArgStarts := c.deferArgStarts
-	savedDeferArgCounts := c.deferArgCounts
-	savedDeferRetCounts := c.deferRetCounts
+	savedDeferSites := c.deferSites
+	savedDeferHeadLocal := c.deferHeadLocal
 	savedNamedResultNames := c.namedResultNames
 	savedPendingStmtLabels := c.pendingStmtLabels
 	savedLabelIDs := c.labelIDs
@@ -6195,10 +6492,8 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
 	c.localAddrOf = make(map[string]bool)
-	c.deferNames = nil
-	c.deferArgStarts = nil
-	c.deferArgCounts = nil
-	c.deferRetCounts = nil
+	c.deferSites = nil
+	c.deferHeadLocal = -1
 	c.namedResultNames = nil
 	c.fallthroughs = nil
 	c.pendingStmtLabels = nil
@@ -6229,10 +6524,8 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localMapVars = savedLocalMapVars
 	c.localMapValueTypes = savedLocalMapValueTypes
 	c.localAddrOf = savedLocalAddrOf
-	c.deferNames = savedDeferNames
-	c.deferArgStarts = savedDeferArgStarts
-	c.deferArgCounts = savedDeferArgCounts
-	c.deferRetCounts = savedDeferRetCounts
+	c.deferSites = savedDeferSites
+	c.deferHeadLocal = savedDeferHeadLocal
 	c.namedResultNames = savedNamedResultNames
 	c.pendingStmtLabels = savedPendingStmtLabels
 	c.labelIDs = savedLabelIDs
