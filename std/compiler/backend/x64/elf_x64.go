@@ -272,3 +272,7 @@ func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 
 	return elf
 }
+
+func (g *CodeGen) BuildELF64(irmod *ir.IRModule) []byte {
+	return g.buildELF64(irmod)
+}

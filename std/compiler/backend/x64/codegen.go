@@ -63,6 +63,27 @@ type CodeGen struct {
 
 const outlinedTostringHelper = "$rtg.tostring$"
 
+// NewCodeGen creates a code generator configured for amd64 output.
+func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *CodeGen {
+	g := &CodeGen{
+		target:       target,
+		funcOffsets:  make(map[string]int),
+		labelOffsets: make(map[int]int),
+		stringMap:    make(map[string]int),
+		baseAddr:     baseAddr,
+		irmod:        irmod,
+		wordSize:     8,
+	}
+	if irmod != nil {
+		g.globalOffsets = make([]int, len(irmod.Globals))
+		for i := range irmod.Globals {
+			g.globalOffsets[i] = i * 8
+		}
+		g.data = make([]byte, len(irmod.Globals)*8)
+	}
+	return g
+}
+
 // CallFixup records a location in code that needs a relative call target patched.
 type CallFixup struct {
 	CodeOffset int    // offset of the instruction(s) in code buffer

@@ -11,7 +11,8 @@ import (
 	"j5.nz/rtg/std/compiler/backend/irprint"
 	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/backend/wasm32"
-	"j5.nz/rtg/std/compiler/backend/x64"
+	x64linux "j5.nz/rtg/std/compiler/backend/x64/linux"
+	x64windows "j5.nz/rtg/std/compiler/backend/x64/windows"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 	targetcfg "j5.nz/rtg/std/target"
@@ -48,9 +49,9 @@ func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 		return fmt.Errorf("unsupported OS for dos16: %s", tgt.GOOS)
 	case "amd64":
 		if tgt.GOOS == "windows" {
-			return x64.GenerateWinPE(tgt, irmod, outputPath)
+			return x64windows.Generate(tgt, irmod, outputPath)
 		} else if tgt.GOOS == "linux" {
-			return x64.GenerateELF(tgt, irmod, outputPath)
+			return x64linux.Generate(tgt, irmod, outputPath)
 		}
 		return fmt.Errorf("unsupported OS for amd64: %s", tgt.GOOS)
 	case "386":

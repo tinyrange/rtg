@@ -11,52 +11,25 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+const (
+	FixupSkipRodataHeader = 1 << iota
+	FixupSkipDataAddr
+	FixupSkipIAT
+)
+
 // GenerateELF compiles an IRModule to an x86-64 ELF binary.
 func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
-	g := &CodeGen{
-		target:        target,
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		baseAddr:      0x400000,
-		irmod:         irmod,
-		wordSize:      8,
-	}
-
-	// Allocate .data space for globals (8 bytes each)
-	for i := range irmod.Globals {
-		g.globalOffsets[i] = i * 8
-	}
-	g.data = make([]byte, len(irmod.Globals)*8)
+	g := NewCodeGen(target, irmod, 0x400000)
 
 	// Emit _start
 	g.emitStart(irmod)
-
-	// First pass: compile all functions to get their offsets
-	for _, f := range irmod.Funcs {
-		g.funcOffsets[f.Name] = len(g.code)
-		g.compileFunc(f)
+	g.CompileModuleFuncs(irmod)
+	g.CollectNativeFuncSizes(irmod)
+	if g.NeedTostringHelper() {
+		g.EmitTostringHelperX64()
 	}
 
-	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
-	if g.needTostringHelper {
-		g.emitTostringHelperX64()
-	}
-
-	// Resolve call fixups (skip special targets that are resolved in buildELF64)
-	var unresolved []string
-	for _, fix := range g.callFixups {
-		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
-			continue
-		}
-		target, ok := g.funcOffsets[fix.Target]
-		if !ok {
-			unresolved = append(unresolved, fix.Target)
-			continue
-		}
-		g.patchRel32At(fix.CodeOffset, target)
-	}
+	unresolved := g.ResolveCallFixups(FixupSkipRodataHeader | FixupSkipDataAddr)
 	if len(unresolved) > 0 {
 		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
 		seen := make(map[string]bool)
@@ -77,6 +50,49 @@ func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) e
 	}
 
 	return nil
+}
+
+func (g *CodeGen) CompileModuleFuncs(irmod *ir.IRModule) {
+	for _, f := range irmod.Funcs {
+		g.funcOffsets[f.Name] = len(g.code)
+		g.compileFunc(f)
+	}
+}
+
+func (g *CodeGen) CollectNativeFuncSizes(irmod *ir.IRModule) {
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
+}
+
+func (g *CodeGen) NeedTostringHelper() bool {
+	return g.needTostringHelper
+}
+
+func (g *CodeGen) EmitTostringHelperX64() {
+	g.emitTostringHelperX64()
+}
+
+func (g *CodeGen) ResolveCallFixups(skipMask int) []string {
+	var unresolved []string
+	for _, fix := range g.callFixups {
+		if (skipMask&FixupSkipRodataHeader) != 0 && fix.Target == "$rodata_header$" {
+			continue
+		}
+		if (skipMask&FixupSkipDataAddr) != 0 && fix.Target == "$data_addr$" {
+			continue
+		}
+		if (skipMask & FixupSkipIAT) != 0 {
+			if _, _, ok := decodeIATFixupTarget(fix.Target); ok {
+				continue
+			}
+		}
+		target, ok := g.funcOffsets[fix.Target]
+		if !ok {
+			unresolved = append(unresolved, fix.Target)
+			continue
+		}
+		g.patchRel32At(fix.CodeOffset, target)
+	}
+	return unresolved
 }
 
 // compileFunc generates x86-64 code for a single IR function.

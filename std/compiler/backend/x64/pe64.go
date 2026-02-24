@@ -425,6 +425,10 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	return pe
 }
 
+func (g *CodeGen) BuildPE64(irmod *ir.IRModule) []byte {
+	return g.buildPE64(irmod)
+}
+
 // buildIData64 builds the .idata section with 8-byte ILT/IAT entries for PE32+.
 func (g *CodeGen) buildIData64(imports []winImport) []byte {
 	groups := groupWinImports(imports)

@@ -53,6 +53,10 @@ func (g *CodeGen) emitStart(irmod *ir.IRModule) {
 	g.emitBytes(0x0f, 0x05)   // syscall
 }
 
+func (g *CodeGen) EmitStartLinux(irmod *ir.IRModule) {
+	g.emitStart(irmod)
+}
+
 func (g *CodeGen) compileSyscallIntrinsic(paramCount int) {
 	// Parameters are in locals 0-6: num, a0, a1, a2, a3, a4, a5
 	// Load them into registers for syscall
