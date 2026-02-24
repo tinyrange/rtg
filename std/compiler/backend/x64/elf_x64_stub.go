@@ -2,10 +2,12 @@
 
 package x64
 
-func (g *CodeGen) buildELF64(irmod *IRModule) []byte {
+import "j5.nz/rtg/std/compiler/ir"
+
+func (g *CodeGen) buildELF64(irmod *ir.IRModule) []byte {
 	panic("linux/amd64 backend disabled")
 }
 
-func (g *CodeGen) BuildELF64(irmod *IRModule) []byte {
+func (g *CodeGen) BuildELF64(irmod *ir.IRModule) []byte {
 	panic("linux/amd64 backend disabled")
 }

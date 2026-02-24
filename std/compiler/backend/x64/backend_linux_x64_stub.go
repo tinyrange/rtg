@@ -2,7 +2,9 @@
 
 package x64
 
-func (g *CodeGen) emitStart(irmod *IRModule) {
+import "j5.nz/rtg/std/compiler/ir"
+
+func (g *CodeGen) emitStart(irmod *ir.IRModule) {
 	panic("linux/amd64 backend disabled")
 }
 

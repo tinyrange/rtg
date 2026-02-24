@@ -13,6 +13,6 @@ func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) e
 	return fmt.Errorf("amd64 backend disabled (built with no_backend_linux_amd64 tag)")
 }
 
-func generateAmd64ELF(irmod *IRModule, outputPath string) error {
+func generateAmd64ELF(irmod *ir.IRModule, outputPath string) error {
 	return fmt.Errorf("amd64 backend disabled (built with no_backend_linux_amd64 tag)")
 }
