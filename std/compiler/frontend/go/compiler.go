@@ -2765,15 +2765,32 @@ func (c *Compiler) compileDeferStmt(node *Node) {
 		c.emitStoreDeferredArg(recIdx, argIndex)
 		argIndex++
 	}
+	fixedCallArgs := site.fixedCount
+	if localFuncTarget != "" {
+		fixedCallArgs -= len(captureArgs)
+	}
+	if localMethodTarget != "" {
+		fixedCallArgs--
+	}
+	// Concrete selector-method calls include receiver in fixedCount; interface
+	// method calls do not.
+	if selectorRecv != nil && site.callOp == ir.OP_CALL {
+		fixedCallArgs--
+	}
+	if fixedCallArgs < 0 {
+		fixedCallArgs = 0
+	}
+	callArgIndex := 0
 	for _, arg := range call.Nodes {
 		c.compileExpr(arg)
-		if site.variadicIsIface && argIndex >= site.fixedCount {
+		if site.variadicIsIface && callArgIndex >= fixedCallArgs {
 			if typeID := c.exprPrimitiveTypeID(arg); typeID > 0 {
 				c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
 			}
 		}
 		c.emitStoreDeferredArg(recIdx, argIndex)
 		argIndex++
+		callArgIndex++
 	}
 
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recIdx})

@@ -35,6 +35,31 @@ func deferNamedExplicit() (v int) {
 	return 41
 }
 
+func deferVariadicIfaceCapture() (out int) {
+	captured := 7
+	fn := func(fixed int, values ...interface{}) {
+		out = captured*100 + fixed*10 + len(values)
+	}
+	defer fn(3, 11, 22)
+	return
+}
+
+type deferRecorder struct {
+	out   *int
+	scale int
+}
+
+func (r deferRecorder) apply(fixed int, values ...interface{}) {
+	*r.out = r.scale*100 + fixed*10 + len(values)
+}
+
+func deferVariadicIfaceMethodValue() (out int) {
+	r := deferRecorder{out: &out, scale: 5}
+	method := r.apply
+	defer method(4, 11, 22, 33)
+	return
+}
+
 func main() {
 	passed := true
 	simple := deferSimple()
@@ -50,6 +75,16 @@ func main() {
 	named := deferNamedExplicit()
 	if named != 42 {
 		fmt.Printf("FAIL: defer named explicit got=%d\n", named)
+		passed = false
+	}
+	capture := deferVariadicIfaceCapture()
+	if capture != 732 {
+		fmt.Printf("FAIL: defer variadic iface capture got=%d\n", capture)
+		passed = false
+	}
+	method := deferVariadicIfaceMethodValue()
+	if method != 543 {
+		fmt.Printf("FAIL: defer variadic iface method got=%d\n", method)
 		passed = false
 	}
 
