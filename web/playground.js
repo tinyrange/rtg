@@ -381,17 +381,8 @@ function isGoosGoarchTag(tag) {
 }
 
 // --- Target helpers ---
-function isLegacyIRTarget(target) {
-  return target === "ir";
-}
-
-function getEffectiveTarget(target) {
-  if (isLegacyIRTarget(target)) return "wasi/wasm32";
-  return target;
-}
-
-function shouldEmitIR(target) {
-  return emitIRMode || isLegacyIRTarget(target);
+function shouldEmitIR() {
+  return emitIRMode;
 }
 
 function updateEmitIRButton() {
@@ -402,8 +393,8 @@ function updateEmitIRButton() {
 }
 
 function updateRunVisibility() {
-  const target = getEffectiveTarget(targetSelect.value);
-  const canRun = target === "wasi/wasm32" && !shouldEmitIR(targetSelect.value);
+  const target = targetSelect.value;
+  const canRun = target === "wasi/wasm32" && !shouldEmitIR();
   btnRun.classList.toggle("hidden", !canRun);
 }
 
@@ -526,7 +517,7 @@ async function discoverBuildTags() {
       fs.addFile(path, content);
     }
 
-    const args = ["rtg", "-T", getEffectiveTarget(targetSelect.value), "-parse-only", "-list-build-tags", "build-tags.txt"];
+    const args = ["rtg", "-T", targetSelect.value, "-parse-only", "-list-build-tags", "build-tags.txt"];
     appendTagArgs(args);
     args.push("user/");
 
@@ -566,9 +557,8 @@ async function compile() {
     return;
   }
 
-  const selectedTarget = targetSelect.value;
-  const target = getEffectiveTarget(selectedTarget);
-  const isIR = shouldEmitIR(selectedTarget);
+  const target = targetSelect.value;
+  const isIR = shouldEmitIR();
   const outputTarget = isIR ? "ir" : target;
   const outputFile = getOutputFilename(outputTarget);
 

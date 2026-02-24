@@ -881,7 +881,6 @@
           <option value="c/32">c/32</option>
           <option value="c/16">c/16</option>
           <option value="dos/8086">dos/8086</option>
-          <option value="ir">ir</option>
         </select>
         <button id="btn-emit-ir" class="btn btn-gray" aria-pressed="false" title="Emit textual IR for the selected target">Emit IR</button>
         <button id="btn-tags" class="btn btn-gray">Build Tags</button>
@@ -955,7 +954,7 @@
                   <span class="step-num">2</span>
                   <div class="step-body">
                     <strong>Choose a target</strong>
-                    <p>Select a compilation target from the toolbar. Use wasi/wasm32 to run in the browser.</p>
+                    <p>Select a compilation target from the toolbar. Use wasi/wasm32 to run in the browser, or toggle Emit IR to inspect textual IR for any target.</p>
                   </div>
                 </div>
                 <div class="step">
@@ -1012,7 +1011,6 @@
                 <div class="target-item"><span class="tgt-name">c/32</span></div>
                 <div class="target-item"><span class="tgt-name">c/16</span></div>
                 <div class="target-item"><span class="tgt-name">dos/8086</span></div>
-                <div class="target-item"><span class="tgt-name">ir</span></div>
               </div>
             </div>
           </div>
