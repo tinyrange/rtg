@@ -84,6 +84,48 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *Cod
 	return g
 }
 
+type PlatformHooks interface {
+	CompileIntrinsic(*CodeGen, string, int) bool
+	Panic(*CodeGen)
+	AlignFrameBytes(int) int
+	ShouldSkipCallFixup(target string, skipMask int) bool
+}
+
+var (
+	linuxPlatformHooks   PlatformHooks
+	windowsPlatformHooks PlatformHooks
+)
+
+func RegisterPlatformHooks(goos string, hooks PlatformHooks) {
+	if goos == "linux" {
+		linuxPlatformHooks = hooks
+	} else if goos == "windows" {
+		windowsPlatformHooks = hooks
+	}
+}
+
+func platformHooksFor(goos string) PlatformHooks {
+	if goos == "linux" {
+		return linuxPlatformHooks
+	}
+	if goos == "windows" {
+		return windowsPlatformHooks
+	}
+	return nil
+}
+
+func (g *CodeGen) Target() *common.Target {
+	return g.target
+}
+
+func (g *CodeGen) IRModule() *ir.IRModule {
+	return g.irmod
+}
+
+func (g *CodeGen) CodeLen() int {
+	return len(g.code)
+}
+
 // CallFixup records a location in code that needs a relative call target patched.
 type CallFixup struct {
 	CodeOffset int    // offset of the instruction(s) in code buffer

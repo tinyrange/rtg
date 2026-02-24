@@ -4,7 +4,6 @@ package x64
 
 import (
 	"fmt"
-	"os"
 
 	"j5.nz/rtg/std/compiler/backend/becommon"
 	"j5.nz/rtg/std/compiler/common"
@@ -19,37 +18,10 @@ const (
 
 // GenerateELF compiles an IRModule to an x86-64 ELF binary.
 func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
-	g := NewCodeGen(target, irmod, 0x400000)
-
-	// Emit _start
-	g.emitStart(irmod)
-	g.CompileModuleFuncs(irmod)
-	g.CollectNativeFuncSizes(irmod)
-	if g.NeedTostringHelper() {
-		g.EmitTostringHelperX64()
-	}
-
-	unresolved := g.ResolveCallFixups(FixupSkipRodataHeader | FixupSkipDataAddr)
-	if len(unresolved) > 0 {
-		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
-		seen := make(map[string]bool)
-		for _, name := range unresolved {
-			if !seen[name] {
-				fmt.Fprintf(os.Stderr, "  %s\n", name)
-				seen[name] = true
-			}
-		}
-		return fmt.Errorf("%d unresolved calls", len(unresolved))
-	}
-
-	// Build and write ELF
-	elf := g.buildELF64(irmod)
-	err := os.WriteFile(outputPath, elf, 0755)
-	if err != nil {
-		return fmt.Errorf("write output: %v", err)
-	}
-
-	return nil
+	_ = target
+	_ = irmod
+	_ = outputPath
+	return fmt.Errorf("x64.GenerateELF moved to backend/x64/linux.Generate")
 }
 
 func (g *CodeGen) CompileModuleFuncs(irmod *ir.IRModule) {
@@ -73,6 +45,7 @@ func (g *CodeGen) EmitTostringHelperX64() {
 
 func (g *CodeGen) ResolveCallFixups(skipMask int) []string {
 	var unresolved []string
+	hooks := platformHooksFor(g.target.GOOS)
 	for _, fix := range g.callFixups {
 		if (skipMask&FixupSkipRodataHeader) != 0 && fix.Target == "$rodata_header$" {
 			continue
@@ -80,10 +53,8 @@ func (g *CodeGen) ResolveCallFixups(skipMask int) []string {
 		if (skipMask&FixupSkipDataAddr) != 0 && fix.Target == "$data_addr$" {
 			continue
 		}
-		if (skipMask & FixupSkipIAT) != 0 {
-			if _, _, ok := decodeIATFixupTarget(fix.Target); ok {
-				continue
-			}
+		if hooks != nil && hooks.ShouldSkipCallFixup(fix.Target, skipMask) {
+			continue
 		}
 		target, ok := g.funcOffsets[fix.Target]
 		if !ok {
@@ -130,8 +101,8 @@ func (g *CodeGen) compileFunc(f *ir.IRFunc) {
 	g.movRR(REG_RBP, REG_RSP)
 
 	frameBytes := g.curFrameSize * 8
-	if g.target.GOOS == "windows" {
-		frameBytes = alignUp(frameBytes, 16)
+	if hooks := platformHooksFor(g.target.GOOS); hooks != nil {
+		frameBytes = hooks.AlignFrameBytes(frameBytes)
 	}
 	if frameBytes > 0 {
 		g.subRI(REG_RSP, int32(frameBytes))
@@ -350,11 +321,11 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	case ir.OP_IFACE_CALL:
 		g.compileIfaceCall(inst)
 	case ir.OP_PANIC:
-		if g.target.GOOS == "windows" {
-			g.compilePanicWin64()
-		} else {
-			g.compilePanic()
+		hooks := platformHooksFor(g.target.GOOS)
+		if hooks == nil {
+			panic("ICE: x64 panic hook not configured")
 		}
+		hooks.Panic(g)
 
 	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// These are handled by intrinsics or builtins
@@ -684,13 +655,7 @@ func (g *CodeGen) compileReturn(inst ir.Inst) {
 
 func (g *CodeGen) compileCallIntrinsic(inst ir.Inst) {
 	g.flush()
-	if g.target.GOOS == "windows" {
-		g.compileCallIntrinsicWin64(inst)
-		return
-	}
 	switch inst.Name {
-	case "Syscall":
-		g.compileSyscallIntrinsic(inst.Arg)
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic()
 	case "Makeslice":
@@ -708,6 +673,10 @@ func (g *CodeGen) compileCallIntrinsic(inst ir.Inst) {
 	case "WriteByte":
 		g.compileWriteByteIntrinsic()
 	default:
+		hooks := platformHooksFor(g.target.GOOS)
+		if hooks != nil && hooks.CompileIntrinsic(g, inst.Name, inst.Arg) {
+			return
+		}
 		panic("ICE: unknown intrinsic '" + inst.Name + "' in compileCallIntrinsic")
 	}
 }
@@ -784,8 +753,8 @@ func (g *CodeGen) emitTostringHelperX64() {
 	g.movRR(REG_RBP, REG_RSP)
 
 	frameBytes := 8
-	if g.target.GOOS == "windows" {
-		frameBytes = alignUp(frameBytes, 16)
+	if hooks := platformHooksFor(g.target.GOOS); hooks != nil {
+		frameBytes = hooks.AlignFrameBytes(frameBytes)
 	}
 	if frameBytes > 0 {
 		g.subRI(REG_RSP, int32(frameBytes))

@@ -1,28 +1,30 @@
 //go:build !no_backend_windows_amd64
 
-package x64
+package windows
 
 import (
 	"fmt"
 	"os"
 
+	"j5.nz/rtg/std/compiler/backend/x64"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
 // generateWinAmd64PE compiles an IRModule to a Windows PE32+ (x86-64) executable.
 func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
-	g := NewCodeGen(target, irmod, 0x400000)
+	core := x64.NewCodeGen(target, irmod, 0x400000)
+	g := wrap(core)
 
 	// Emit entry point
 	g.emitStart_win64(irmod)
-	g.CompileModuleFuncs(irmod)
-	g.CollectNativeFuncSizes(irmod)
-	if g.NeedTostringHelper() {
-		g.EmitTostringHelperX64()
+	core.CompileModuleFuncs(irmod)
+	core.CollectNativeFuncSizes(irmod)
+	if core.NeedTostringHelper() {
+		core.EmitTostringHelperX64()
 	}
 
-	unresolved := g.ResolveCallFixups(FixupSkipRodataHeader | FixupSkipDataAddr | FixupSkipIAT)
+	unresolved := core.ResolveCallFixups(x64.FixupSkipRodataHeader | x64.FixupSkipDataAddr | x64.FixupSkipIAT)
 	if len(unresolved) > 0 {
 		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
 		seen := make(map[string]bool)
@@ -46,7 +48,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 }
 
 // emitStart_win64 generates the Windows x64 entry point.
-func (g *CodeGen) emitStart_win64(irmod *ir.IRModule) {
+func (g *codegen) emitStart_win64(irmod *ir.IRModule) {
 	// Windows x64 entry point. RSP is 16-byte aligned + 8 on entry
 	// (the loader calls us via `call`, pushing a return address).
 	// We use R15 as the operand stack pointer (callee-saved, preserved by kernel32).
@@ -82,45 +84,26 @@ func (g *CodeGen) emitStart_win64(irmod *ir.IRModule) {
 	g.emitCallIAT("ExitProcess")
 }
 
-func (g *CodeGen) EmitStartWin64(irmod *ir.IRModule) {
-	g.emitStart_win64(irmod)
-}
-
 // === Intrinsic dispatcher for Windows x64 ===
 
-func (g *CodeGen) compileCallIntrinsicWin64(inst ir.Inst) {
+func (g *codegen) compileCallIntrinsicWin64(name string, arg int) bool {
 	g.flush()
-	if g.compileLinkStaticIntrinsicWin64(inst) {
-		return
+	if g.compileLinkStaticIntrinsicWin64(name, arg) {
+		return true
 	}
-	switch inst.Name {
+	switch name {
 	case "SysGetdents64":
 		g.compileSyscallGetdents_win64()
-	case "Sliceptr":
-		g.compileSliceptrIntrinsic()
-	case "Makeslice":
-		g.compileMakesliceIntrinsic()
-	case "Stringptr":
-		g.compileStringptrIntrinsic()
-	case "Makestring":
-		g.compileMakestringIntrinsic()
-	case "Tostring":
-		g.compileTostringIntrinsic()
-	case "ReadPtr":
-		g.compileReadPtrIntrinsic()
-	case "WritePtr":
-		g.compileWritePtrIntrinsic()
-	case "WriteByte":
-		g.compileWriteByteIntrinsic()
+		return true
 	default:
-		panic("ICE: unknown intrinsic '" + inst.Name + "' in compileCallIntrinsicWin64")
+		return false
 	}
 }
 
 // === Windows fd→handle translation (64-bit) ===
 // Loads fd from local, if 0/1/2 calls GetStdHandle, else uses as-is.
 // Result in RAX. Caller must have shadow space allocated.
-func (g *CodeGen) loadFdAsHandle64(localOffset int) {
+func (g *codegen) loadFdAsHandle64(localOffset int) {
 	g.emitLoadLocal(localOffset, REG_RAX) // fd
 
 	// if fd <= 2, call GetStdHandle(-10 - fd)
@@ -144,7 +127,7 @@ func (g *CodeGen) loadFdAsHandle64(localOffset int) {
 
 // === Syscall implementations ===
 
-func (g *CodeGen) compileSyscallMmap_win64() {
+func (g *codegen) compileSyscallMmap_win64() {
 	// VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
 	// 4 args in regs, needs 32-byte shadow space
 	g.subRI(REG_RSP, 32)
@@ -174,7 +157,7 @@ func (g *CodeGen) compileSyscallMmap_win64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallWrite_win64() {
+func (g *codegen) compileSyscallWrite_win64() {
 	// WriteFile(hFile, lpBuffer, nNumberOfBytesToWrite, &nwritten, NULL)
 	// 5 args: RCX, RDX, R8, R9, [RSP+32]
 	// Stack layout: 32 shadow + 8 (5th arg at [rsp+32]) + 8 nwritten at [rsp+40] = 48
@@ -217,7 +200,7 @@ func (g *CodeGen) compileSyscallWrite_win64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallRead_win64() {
+func (g *codegen) compileSyscallRead_win64() {
 	// ReadFile(hFile, lpBuffer, nNumberOfBytesToRead, &nread, NULL)
 	// 5 args: same layout as WriteFile
 	g.subRI(REG_RSP, 48)
@@ -254,7 +237,7 @@ func (g *CodeGen) compileSyscallRead_win64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallOpen_win64() {
+func (g *codegen) compileSyscallOpen_win64() {
 	// CreateFileA(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
 	//             dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile)
 	// 7 args: 4 in regs + 3 on stack
@@ -331,7 +314,7 @@ func (g *CodeGen) compileSyscallOpen_win64() {
 	g.patchRel32(fixOpenEnd)
 }
 
-func (g *CodeGen) compileSyscallClose_win64() {
+func (g *codegen) compileSyscallClose_win64() {
 	// CloseHandle(hObject)
 	g.emitLoadLocal(1*8, REG_RAX)
 
@@ -370,7 +353,7 @@ func (g *CodeGen) compileSyscallClose_win64() {
 	g.patchRel32(fixCloseDone)
 }
 
-func (g *CodeGen) compileSyscallExit_win64() {
+func (g *codegen) compileSyscallExit_win64() {
 	// ExitProcess(uExitCode)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(1*8, REG_RCX)
@@ -383,7 +366,7 @@ func (g *CodeGen) compileSyscallExit_win64() {
 	g.compileConstI64(0)
 }
 
-func (g *CodeGen) compileSyscallMkdir_win64() {
+func (g *codegen) compileSyscallMkdir_win64() {
 	// CreateDirectoryA(lpPathName, lpSecurityAttributes)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(1*8, REG_RCX) // lpPathName
@@ -421,7 +404,7 @@ func (g *CodeGen) compileSyscallMkdir_win64() {
 	g.patchRel32(fixDone2)
 }
 
-func (g *CodeGen) compileSyscallRmdir_win64() {
+func (g *codegen) compileSyscallRmdir_win64() {
 	// RemoveDirectoryA(lpPathName)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(1*8, REG_RCX)
@@ -431,7 +414,7 @@ func (g *CodeGen) compileSyscallRmdir_win64() {
 	g.emitWinApiReturn64()
 }
 
-func (g *CodeGen) compileSyscallUnlink_win64() {
+func (g *codegen) compileSyscallUnlink_win64() {
 	// DeleteFileA(lpFileName)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(1*8, REG_RCX)
@@ -442,7 +425,7 @@ func (g *CodeGen) compileSyscallUnlink_win64() {
 }
 
 // emitWinApiReturn64 checks RAX (nonzero=ok) and pushes (0,0,0) or (0,0,err).
-func (g *CodeGen) emitWinApiReturn64() {
+func (g *codegen) emitWinApiReturn64() {
 	g.testRR(REG_RAX, REG_RAX)
 	fixOk := g.jccRel32(CC_NE)
 	g.subRI(REG_RSP, 32)
@@ -461,7 +444,7 @@ func (g *CodeGen) emitWinApiReturn64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallGetcwd_win64() {
+func (g *codegen) compileSyscallGetcwd_win64() {
 	// GetCurrentDirectoryA(nBufferLength, lpBuffer)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(2*8, REG_RCX) // nBufferLength
@@ -489,7 +472,7 @@ func (g *CodeGen) compileSyscallGetcwd_win64() {
 
 	// Loop: replace '\' with '/'
 	g.xorRR(REG_RSI, REG_RSI) // i = 0
-	slashLoopStart := len(g.code)
+	slashLoopStart := g.CodeLen()
 	g.cmpRR(REG_RSI, REG_RCX)
 	fixSlashDone := g.jccRel32(CC_GE)
 	g.loadMemByte(REG_RAX, REG_RDX, 0)
@@ -512,14 +495,14 @@ func (g *CodeGen) compileSyscallGetcwd_win64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallGetdents_win64() {
+func (g *codegen) compileSyscallGetdents_win64() {
 	// Windows doesn't have getdents64. Return error.
 	g.compileConstI64(0)
 	g.compileConstI64(0)
 	g.compileConstI64(1) // ENOSYS
 }
 
-func (g *CodeGen) compileSyscallStat_win64() {
+func (g *codegen) compileSyscallStat_win64() {
 	// GetFileAttributesExA(lpFileName, fInfoLevelId, lpFileInformation)
 	// Allocate WIN32_FILE_ATTRIBUTE_DATA (36 bytes) on stack + shadow
 	// 32 shadow + 48 for struct + pad = 80 -> round to 80 (already 16-aligned)
@@ -535,7 +518,7 @@ func (g *CodeGen) compileSyscallStat_win64() {
 	g.emitWinApiReturn64()
 }
 
-func (g *CodeGen) compileSyscallGetCommandLine_win64() {
+func (g *codegen) compileSyscallGetCommandLine_win64() {
 	// GetCommandLineA() returns a pointer to the command line string
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetCommandLineA")
@@ -546,7 +529,7 @@ func (g *CodeGen) compileSyscallGetCommandLine_win64() {
 	g.compileConstI64(0)
 }
 
-func (g *CodeGen) compileSyscallGetEnvStrings_win64() {
+func (g *codegen) compileSyscallGetEnvStrings_win64() {
 	// GetEnvironmentStringsA() returns a pointer to the environment block
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetEnvironmentStringsA")
@@ -556,7 +539,7 @@ func (g *CodeGen) compileSyscallGetEnvStrings_win64() {
 	g.compileConstI64(0)
 }
 
-func (g *CodeGen) compileSyscallGetpid_win64() {
+func (g *codegen) compileSyscallGetpid_win64() {
 	// GetCurrentProcessId() returns DWORD (the process ID)
 	g.subRI(REG_RSP, 32)
 	g.emitCallIAT("GetCurrentProcessId")
@@ -566,7 +549,7 @@ func (g *CodeGen) compileSyscallGetpid_win64() {
 	g.compileConstI64(0)
 }
 
-func (g *CodeGen) compileSyscallFindFirstFile_win64() {
+func (g *codegen) compileSyscallFindFirstFile_win64() {
 	// FindFirstFileA(lpFileName, lpFindFileData)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(1*8, REG_RCX) // lpFileName
@@ -594,7 +577,7 @@ func (g *CodeGen) compileSyscallFindFirstFile_win64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallFindNextFile_win64() {
+func (g *codegen) compileSyscallFindNextFile_win64() {
 	// FindNextFileA(hFindFile, lpFindFileData)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(1*8, REG_RCX)
@@ -617,7 +600,7 @@ func (g *CodeGen) compileSyscallFindNextFile_win64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallFindClose_win64() {
+func (g *codegen) compileSyscallFindClose_win64() {
 	// FindClose(hFindFile)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(1*8, REG_RCX)
@@ -629,7 +612,7 @@ func (g *CodeGen) compileSyscallFindClose_win64() {
 	g.compileConstI64(0)
 }
 
-func (g *CodeGen) compileSyscallCreateProcess_win64() {
+func (g *codegen) compileSyscallCreateProcess_win64() {
 	// CreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes,
 	//                lpThreadAttributes, bInheritHandles, dwCreationFlags,
 	//                lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation)
@@ -680,7 +663,7 @@ func (g *CodeGen) compileSyscallCreateProcess_win64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallWaitProcess_win64() {
+func (g *codegen) compileSyscallWaitProcess_win64() {
 	// WaitForSingleObject(hHandle, INFINITE) then GetExitCodeProcess(hHandle, &exitCode)
 
 	// WaitForSingleObject(hProcess, INFINITE=0xFFFFFFFF)
@@ -704,7 +687,7 @@ func (g *CodeGen) compileSyscallWaitProcess_win64() {
 	g.compileConstI64(0)
 }
 
-func (g *CodeGen) compileSyscallCreatePipe_win64() {
+func (g *codegen) compileSyscallCreatePipe_win64() {
 	// CreatePipe(&hReadPipe, &hWritePipe, lpPipeAttributes, nSize)
 	// We need a SECURITY_ATTRIBUTES struct: {nLength=4, pad=4, lpSecurityDescriptor=8, bInheritHandle=4, pad=4} = 24 bytes
 	// Allocate: 32 shadow + 24 SECURITY_ATTRIBUTES + 8 pad = 64
@@ -747,7 +730,7 @@ func (g *CodeGen) compileSyscallCreatePipe_win64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallSetStdHandle_win64() {
+func (g *codegen) compileSyscallSetStdHandle_win64() {
 	// SetStdHandle(nStdHandle, hHandle)
 	g.subRI(REG_RSP, 32)
 	g.emitLoadLocal(1*8, REG_RCX)
@@ -761,7 +744,7 @@ func (g *CodeGen) compileSyscallSetStdHandle_win64() {
 }
 
 // compilePanicWin64 handles panic on Windows x64.
-func (g *CodeGen) compilePanicWin64() {
+func (g *codegen) compilePanicWin64() {
 	// Pop value from operand stack
 	g.opPop(REG_RAX)
 

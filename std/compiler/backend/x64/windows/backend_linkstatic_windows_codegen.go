@@ -1,12 +1,8 @@
 //go:build !no_backend_windows_amd64
 
-package x64
+package windows
 
-import (
-	"strings"
-
-	"j5.nz/rtg/std/compiler/ir"
-)
+import "strings"
 
 func decodeLinkStaticSpecWin64(raw string) (string, string, string, bool) {
 	parts := strings.Split(raw, ",")
@@ -22,7 +18,7 @@ func decodeLinkStaticSpecWin64(raw string) (string, string, string, bool) {
 	return lib, sym, mode, true
 }
 
-func (g *CodeGen) emitGenericLinkStaticCallWin64(paramCount int, lib string, sym string) {
+func (g *codegen) emitGenericLinkStaticCallWin64(paramCount int, lib string, sym string) {
 	if paramCount < 0 {
 		panic("ICE: invalid linkstatic arg count")
 	}
@@ -58,7 +54,7 @@ func (g *CodeGen) emitGenericLinkStaticCallWin64(paramCount int, lib string, sym
 	g.addRI(REG_RSP, int32(32+extra*8+alignPad))
 }
 
-func (g *CodeGen) emitLinkStaticPtrReturnWin64() {
+func (g *codegen) emitLinkStaticPtrReturnWin64() {
 	g.testRR(REG_RAX, REG_RAX)
 	fixNonZero := g.jccRel32(CC_NE)
 	g.compileConstI64(0)
@@ -83,7 +79,7 @@ func (g *CodeGen) emitLinkStaticPtrReturnWin64() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) emitLinkStaticReturnWin64(mode string) {
+func (g *codegen) emitLinkStaticReturnWin64(mode string) {
 	switch mode {
 	case "syscall":
 		g.opPush(REG_RAX)
@@ -102,23 +98,24 @@ func (g *CodeGen) emitLinkStaticReturnWin64(mode string) {
 	}
 }
 
-func (g *CodeGen) compileLinkStaticIntrinsicWin64(inst ir.Inst) bool {
-	if g.target.GOOS != "windows" || g.irmod == nil || g.irmod.LinkStaticFuncs == nil {
+func (g *codegen) compileLinkStaticIntrinsicWin64(name string, arg int) bool {
+	mod := g.cg.IRModule()
+	if g.cg.Target().GOOS != "windows" || mod == nil || mod.LinkStaticFuncs == nil {
 		return false
 	}
-	raw, ok := g.irmod.LinkStaticFuncs[inst.Name]
+	raw, ok := mod.LinkStaticFuncs[name]
 	if !ok {
 		return false
 	}
 	lib, sym, mode, ok := decodeLinkStaticSpecWin64(raw)
 	if !ok {
-		panic("ICE: invalid windows linkstatic metadata for '" + inst.Name + "'")
+		panic("ICE: invalid windows linkstatic metadata for '" + name + "'")
 	}
 	lib = canonicalWinImportLibrary(lib)
 	if mode == "" {
 		mode = "syscall"
 	}
-	g.emitGenericLinkStaticCallWin64(inst.Arg, lib, sym)
+	g.emitGenericLinkStaticCallWin64(arg, lib, sym)
 	g.emitLinkStaticReturnWin64(mode)
 	return true
 }
