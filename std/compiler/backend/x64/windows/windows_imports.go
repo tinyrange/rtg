@@ -1,6 +1,10 @@
 package x64
 
-import "strings"
+import (
+	"strings"
+
+	"j5.nz/rtg/std/compiler/backend/x64/core"
+)
 
 const (
 	winDefaultImportLibrary = "kernel32.dll"
@@ -54,7 +58,7 @@ func decodeIATFixupTarget(target string) (string, string, bool) {
 	return lib, sym, true
 }
 
-func collectWinImportsFromFixups(callFixups []CallFixup) []winImport {
+func collectWinImportsFromFixups(callFixups []core.CallFixup) []winImport {
 	var imports []winImport
 	seen := make(map[string]bool)
 	for _, fix := range callFixups {

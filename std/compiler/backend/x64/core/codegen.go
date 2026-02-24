@@ -1,6 +1,9 @@
-package x64
+package core
 
 import (
+	"fmt"
+	"os"
+
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
@@ -11,9 +14,9 @@ import (
 type CodeGen struct {
 	target *common.Target
 
-	code   []byte // .text section
-	rodata []byte // .rodata section (string data + headers)
-	data   []byte // .data section (globals)
+	Code   []byte // .text section
+	Rodata []byte // .rodata section (string data + headers)
+	Data   []byte // .data section (globals)
 
 	// Function table: name → offset in code
 	funcOffsets map[string]int
@@ -40,7 +43,7 @@ type CodeGen struct {
 	curFrameSize int
 
 	// ELF layout constants
-	baseAddr  uint64
+	BaseAddr  uint64
 	textStart uint64 // offset in file where .text begins
 
 	// Interface dispatch data from IR
@@ -57,8 +60,32 @@ type CodeGen struct {
 	wordSize int
 
 	// Outlined intrinsic helpers
-	needTostringHelper bool
+	NeedTostringHelper bool
 	hasTostringHelper  bool
+
+	CompileCallIntrinsic func(g *CodeGen, inst ir.Inst)
+	CompilePanic         func(g *CodeGen)
+}
+
+func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *CodeGen {
+	g := &CodeGen{
+		target:        target,
+		funcOffsets:   make(map[string]int),
+		labelOffsets:  make(map[int]int),
+		stringMap:     make(map[string]int),
+		globalOffsets: make([]int, len(irmod.Globals)),
+		BaseAddr:      0x400000,
+		irmod:         irmod,
+		wordSize:      8,
+	}
+
+	// Allocate .data space for globals (8 bytes each)
+	for i := range irmod.Globals {
+		g.globalOffsets[i] = i * 8
+	}
+	g.Data = make([]byte, len(irmod.Globals)*8)
+
+	return g
 }
 
 const outlinedTostringHelper = "$rtg.tostring$"
@@ -86,166 +113,158 @@ const (
 )
 
 // dispatchEntry pairs a type ID with a method function name for interface dispatch.
-type dispatchEntry struct {
+type DispatchEntry struct {
 	typeID   int
 	funcName string
 }
 
-// symEntry holds symbol table entry data for ELF output.
-type symEntry struct {
-	nameOff int
-	value   uint64
-	size    uint64
+// SymEntry holds symbol table entry data for ELF output.
+type SymEntry struct {
+	NameOff int
+	Value   uint64
+	Size    uint64
+}
+
+// === Accessors ===
+
+func (g *CodeGen) StringMap() map[string]int {
+	return g.stringMap
+}
+
+func (g *CodeGen) Target() *common.Target {
+	return g.target
+}
+
+func (g *CodeGen) IRModule() *ir.IRModule {
+	return g.irmod
+}
+
+func (g *CodeGen) GetFuncOffset(name string) int {
+	return g.funcOffsets[name]
+}
+
+func (g *CodeGen) MaybeGetFuncOffsets(name string) (int, bool) {
+	offset, ok := g.funcOffsets[name]
+	return offset, ok
+}
+
+func (g *CodeGen) CallFixups() []CallFixup {
+	return g.callFixups
+}
+
+func (g *CodeGen) AddCallFixup(target string) {
+	g.callFixups = append(g.callFixups, CallFixup{
+		CodeOffset: len(g.Code),
+		Target:     target,
+	})
+}
+
+// === Public Methods ===
+
+func (g *CodeGen) EmitAllFunctions(irmod *ir.IRModule) {
+	// Compile all functions
+	for _, f := range irmod.Funcs {
+		g.funcOffsets[f.Name] = len(g.Code)
+		g.CompileFunc(f)
+	}
+
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.Code))
+	if g.NeedTostringHelper {
+		g.EmitTostringHelperX64()
+	}
+}
+
+func (g *CodeGen) CheckUnresolvedCalls(unresolved []string) error {
+	if len(unresolved) > 0 {
+		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
+		seen := make(map[string]bool)
+		for _, name := range unresolved {
+			if !seen[name] {
+				fmt.Fprintf(os.Stderr, "  %s\n", name)
+				seen[name] = true
+			}
+		}
+		return fmt.Errorf("%d unresolved calls", len(unresolved))
+	}
+
+	return nil
 }
 
 // === Shared byte emission ===
 
-func (g *CodeGen) emitByte(b byte) {
-	g.code = append(g.code, b)
+func (g *CodeGen) EmitByte(b byte) {
+	g.Code = append(g.Code, b)
 }
 
-func (g *CodeGen) emitBytes(bytes ...byte) {
-	g.code = append(g.code, bytes...)
+func (g *CodeGen) EmitBytes(bytes ...byte) {
+	g.Code = append(g.Code, bytes...)
 }
 
-func (g *CodeGen) emitU32(v uint32) {
-	g.code = append(g.code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+func (g *CodeGen) EmitU32(v uint32) {
+	g.Code = append(g.Code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
-func (g *CodeGen) emitU16(v uint16) {
-	g.code = append(g.code, byte(v), byte(v>>8))
+func (g *CodeGen) EmitU16(v uint16) {
+	g.Code = append(g.Code, byte(v), byte(v>>8))
 }
 
-func (g *CodeGen) emitU64(v uint64) {
-	g.code = append(g.code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
+func (g *CodeGen) EmitU64(v uint64) {
+	g.Code = append(g.Code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
 		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
 }
 
-func (g *CodeGen) emitRodataU64(v uint64) {
-	g.rodata = append(g.rodata, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
+func (g *CodeGen) EmitRodataU64(v uint64) {
+	g.Rodata = append(g.Rodata, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
 		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
-}
-
-func putU64(buf []byte, v uint64) {
-	buf[0] = byte(v)
-	buf[1] = byte(v >> 8)
-	buf[2] = byte(v >> 16)
-	buf[3] = byte(v >> 24)
-	buf[4] = byte(v >> 32)
-	buf[5] = byte(v >> 40)
-	buf[6] = byte(v >> 48)
-	buf[7] = byte(v >> 56)
-}
-
-func getU64(b []byte) uint64 {
-	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
-		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
-}
-
-func putU16(b []byte, v uint16) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-}
-
-func putU32(b []byte, v uint32) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-}
-
-func getU32(b []byte) uint32 {
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
 
 // === Shared code emission helpers ===
 
-// emitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
-func (g *CodeGen) emitCallPlaceholder(target string) {
-	g.flush()
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		g.emitBytes(0xe8) // call rel16
-		g.callFixups = append(g.callFixups, CallFixup{
-			CodeOffset: len(g.code),
-			Target:     target,
-		})
-		g.emitU16(0)
-	} else {
-		g.emitBytes(0xe8) // call rel32
-		g.callFixups = append(g.callFixups, CallFixup{
-			CodeOffset: len(g.code),
-			Target:     target,
-		})
-		g.emitU32(0) // placeholder
-	}
+// EmitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
+func (g *CodeGen) EmitCallPlaceholder(target string) {
+	g.Flush()
+	g.EmitBytes(0xe8) // call rel32
+	g.callFixups = append(g.callFixups, CallFixup{
+		CodeOffset: len(g.Code),
+		Target:     target,
+	})
+	g.EmitU32(0) // placeholder
 }
 
-// patchRel32At patches the rel32 at fixupOff to jump to targetOff.
-func (g *CodeGen) patchRel32At(fixupOff int, targetOff int) {
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		rel := int16(targetOff - (fixupOff + 2))
-		g.code[fixupOff] = byte(rel)
-		g.code[fixupOff+1] = byte(rel >> 8)
-	} else {
-		rel := int32(targetOff - (fixupOff + 4))
-		g.code[fixupOff] = byte(rel)
-		g.code[fixupOff+1] = byte(rel >> 8)
-		g.code[fixupOff+2] = byte(rel >> 16)
-		g.code[fixupOff+3] = byte(rel >> 24)
-	}
+// PatchRel32At patches the rel32 at fixupOff to jump to targetOff.
+func (g *CodeGen) PatchRel32At(fixupOff int, targetOff int) {
+	rel := int32(targetOff - (fixupOff + 4))
+	g.Code[fixupOff] = byte(rel)
+	g.Code[fixupOff+1] = byte(rel >> 8)
+	g.Code[fixupOff+2] = byte(rel >> 16)
+	g.Code[fixupOff+3] = byte(rel >> 24)
 }
 
-// patchRel32 patches the rel32 at fixupOff to jump to the current code position.
-func (g *CodeGen) patchRel32(fixupOff int) {
-	target := len(g.code)
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		rel := int16(target - (fixupOff + 2))
-		g.code[fixupOff] = byte(rel)
-		g.code[fixupOff+1] = byte(rel >> 8)
-	} else {
-		rel := int32(target - (fixupOff + 4))
-		g.code[fixupOff] = byte(rel)
-		g.code[fixupOff+1] = byte(rel >> 8)
-		g.code[fixupOff+2] = byte(rel >> 16)
-		g.code[fixupOff+3] = byte(rel >> 24)
-	}
+// PatchRel32 patches the rel32 at fixupOff to jump to the current code position.
+func (g *CodeGen) PatchRel32(fixupOff int) {
+	target := len(g.Code)
+	rel := int32(target - (fixupOff + 4))
+	g.Code[fixupOff] = byte(rel)
+	g.Code[fixupOff+1] = byte(rel >> 8)
+	g.Code[fixupOff+2] = byte(rel >> 16)
+	g.Code[fixupOff+3] = byte(rel >> 24)
 }
 
-// jmpRel32 emits `jmp rel32` and returns the offset of the rel32 for fixup.
-func (g *CodeGen) jmpRel32() int {
-	g.flush()
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		g.emitByte(0xe9) // jmp rel16
-		off := len(g.code)
-		g.emitU16(0)
-		return off
-	}
-	g.emitByte(0xe9)
-	off := len(g.code)
-	g.emitU32(0) // placeholder
+// JmpRel32 emits `jmp rel32` and returns the offset of the rel32 for fixup.
+func (g *CodeGen) JmpRel32() int {
+	g.Flush()
+	g.EmitByte(0xe9)
+	off := len(g.Code)
+	g.EmitU32(0) // placeholder
 	return off
 }
 
-// jccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
-func (g *CodeGen) jccRel32(cc byte) int {
-	g.flush()
-	if g.target.GOOS == "dos" && g.wordSize == 2 {
-		// 8086 has only short conditional branches.
-		// Lower near Jcc as:
-		//   j!cc +3
-		//   jmp  rel16
-		inv := (cc & 0x0f) ^ 0x01
-		g.emitBytes(byte(0x70|inv), 0x03, 0xe9)
-		off := len(g.code)
-		g.emitU16(0)
-		return off
-	}
-	if g.target.GOOS == "dos" && g.wordSize == 4 {
-		g.emitByte(0x66) // jcc rel32 in 16-bit mode
-	}
-	g.emitBytes(0x0f, cc)
-	off := len(g.code)
-	g.emitU32(0) // placeholder
+// JccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
+func (g *CodeGen) JccRel32(cc byte) int {
+	g.Flush()
+	g.EmitBytes(0x0f, cc)
+	off := len(g.Code)
+	g.EmitU32(0) // placeholder
 	return off
 }
 
@@ -303,11 +322,11 @@ func (g *CodeGen) relaxCurrentFuncJumps() {
 					i++
 					continue
 				}
-				g.code[insPos] = 0xeb
+				g.Code[insPos] = 0xeb
 				g.jumpFixups[i].Kind = jumpFixupJmpRel8
 				g.jumpFixups[i].CodeOffset = insPos + 1
 				// Delete trailing bytes of old rel32 encoding.
-				g.code = append(g.code[:insPos+2], g.code[insPos+5:]...)
+				g.Code = append(g.Code[:insPos+2], g.Code[insPos+5:]...)
 				g.shiftOffsetsAfterDelete(insPos+1, 3)
 				changed = true
 				i++
@@ -319,11 +338,11 @@ func (g *CodeGen) relaxCurrentFuncJumps() {
 				i++
 				continue
 			}
-			g.code[insPos] = byte(0x70 | (fix.CC & 0x0f))
+			g.Code[insPos] = byte(0x70 | (fix.CC & 0x0f))
 			g.jumpFixups[i].Kind = jumpFixupJccRel8
 			g.jumpFixups[i].CodeOffset = insPos + 1
 			// Delete trailing bytes of old near-jcc encoding.
-			g.code = append(g.code[:insPos+2], g.code[insPos+6:]...)
+			g.Code = append(g.Code[:insPos+2], g.Code[insPos+6:]...)
 			g.shiftOffsetsAfterDelete(insPos+1, 4)
 			changed = true
 			i++
@@ -334,26 +353,26 @@ func (g *CodeGen) relaxCurrentFuncJumps() {
 // ret emits `ret`.
 func (g *CodeGen) ret() {
 	if g.target.GOOS == "dos" && g.wordSize == 4 {
-		g.emitByte(0x66)
+		g.EmitByte(0x66)
 	}
-	g.emitByte(0xc3)
+	g.EmitByte(0xc3)
 }
 
 // leave emits `leave`.
 func (g *CodeGen) leave() {
-	g.emitByte(0xc9)
+	g.EmitByte(0xc9)
 }
 
 // int3 emits `int3` (breakpoint trap).
 func (g *CodeGen) int3() {
-	g.emitByte(0xcc)
+	g.EmitByte(0xcc)
 }
 
 // === Word-size-aware operand stack ===
 // These methods work for both amd64 (R15-based, 8-byte slots)
 // and i386 (EDI-based, 4-byte slots).
 
-func (g *CodeGen) flush() {
+func (g *CodeGen) Flush() {
 	if len(g.cacheRegs) > 0 {
 		if len(g.cacheStack) == 0 && !g.hasPending {
 			return
@@ -378,10 +397,10 @@ func (g *CodeGen) flush() {
 
 func (g *CodeGen) configureOperandCache(regs ...int) {
 	g.cacheRegs = append(g.cacheRegs[:0], regs...)
-	g.clearOperandCache()
+	g.ClearOperandCache()
 }
 
-func (g *CodeGen) clearOperandCache() {
+func (g *CodeGen) ClearOperandCache() {
 	g.hasPending = false
 	g.cacheStack = g.cacheStack[:0]
 	g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
@@ -392,14 +411,14 @@ func (g *CodeGen) moveReg(dst, src int) {
 		return
 	}
 	if g.wordSize == 2 {
-		g.emitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+		g.EmitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		return
 	}
 	if g.wordSize == 4 {
 		if g.target.GOOS == "dos" {
-			g.emitBytes(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+			g.EmitBytes(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		} else {
-			g.emitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+			g.EmitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		}
 		return
 	}
@@ -410,7 +429,7 @@ func (g *CodeGen) moveReg(dst, src int) {
 	if dst >= 8 {
 		rex |= 0x01
 	}
-	g.emitBytes(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+	g.EmitBytes(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 }
 
 func (g *CodeGen) prepareForClobber(regs ...int) {
@@ -442,16 +461,16 @@ func (g *CodeGen) prepareForClobber(regs ...int) {
 		g.hasPending = false
 		return
 	}
-	g.flush()
+	g.Flush()
 }
 
 func (g *CodeGen) rawPush(reg int) {
-	g.emitBytes(0x4d, 0x8d, 0x7f, 0xf8) // lea r15, [r15-8] (preserves flags)
+	g.EmitBytes(0x4d, 0x8d, 0x7f, 0xf8) // lea r15, [r15-8] (preserves flags)
 	rex := byte(0x49)
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.emitBytes(rex, 0x89, byte(0x07|((reg&7)<<3)))
+	g.EmitBytes(rex, 0x89, byte(0x07|((reg&7)<<3)))
 }
 
 func (g *CodeGen) rawPop(reg int) {
@@ -459,8 +478,8 @@ func (g *CodeGen) rawPop(reg int) {
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.emitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
-	g.emitBytes(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8] (preserves flags)
+	g.EmitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+	g.EmitBytes(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8] (preserves flags)
 }
 
 func (g *CodeGen) rawLoad(reg int) {
@@ -468,14 +487,14 @@ func (g *CodeGen) rawLoad(reg int) {
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.emitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+	g.EmitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
 }
 
 func (g *CodeGen) rawDrop() {
-	g.emitBytes(0x49, 0x83, 0xc7, 0x08)
+	g.EmitBytes(0x49, 0x83, 0xc7, 0x08)
 }
 
-func (g *CodeGen) opPush(reg int) {
+func (g *CodeGen) OpPush(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
 			if len(g.cacheFree) == 0 {
@@ -494,12 +513,12 @@ func (g *CodeGen) opPush(reg int) {
 		g.pendingReg = reg
 		return
 	}
-	g.flush()
+	g.Flush()
 	g.hasPending = true
 	g.pendingReg = reg
 }
 
-func (g *CodeGen) opPop(reg int) {
+func (g *CodeGen) OpPop(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
 			g.hasPending = false
@@ -540,7 +559,7 @@ func (g *CodeGen) opLoad(reg int) {
 	}
 	if g.hasPending {
 		g.moveReg(reg, g.pendingReg)
-		g.flush()
+		g.Flush()
 		return
 	}
 	g.rawLoad(reg)
@@ -568,31 +587,16 @@ func (g *CodeGen) opDrop() {
 	g.rawDrop()
 }
 
-// emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.
-func (g *CodeGen) emitCallIAT(funcName string) {
-	g.emitCallIATInLib(winDefaultImportLibrary, funcName)
-}
-
-func (g *CodeGen) emitCallIATInLib(libName string, funcName string) {
-	g.flush()
-	g.emitBytes(0xFF, 0x15) // call dword ptr [abs32]
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code),
-		Target:     encodeIATFixupTarget(libName, funcName),
-	})
-	g.emitU32(0) // placeholder
-}
-
-// alignUp aligns v up to the next multiple of align.
-func alignUp(v, align int) int {
+// AlignUp aligns v up to the next multiple of align.
+func AlignUp(v, align int) int {
 	return (v + align - 1) & ^(align - 1)
 }
 
 // sectionSpan returns the in-memory RVA span for a section.
 // Even empty sections must consume one aligned slot so RVAs stay strictly increasing.
-func sectionSpan(size, align int) int {
+func SectionSpan(size, align int) int {
 	if size <= 0 {
 		return align
 	}
-	return alignUp(size, align)
+	return AlignUp(size, align)
 }
