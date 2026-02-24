@@ -497,8 +497,6 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	case "Syscall":
 		// Linux i386 syscall lowering.
 		g.compileSyscallIntrinsic_linux386(inst.Arg)
-	case "SysGetdents64":
-		g.compileSyscallGetdents_win386()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic_i386()
 	case "Makeslice":
