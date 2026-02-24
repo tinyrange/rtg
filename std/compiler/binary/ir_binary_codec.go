@@ -5,6 +5,8 @@ package binary
 import (
 	"fmt"
 	"os"
+
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 var irBinaryMagic = []byte{'R', 'T', 'G', 'I', 'R', 'B', '1', 0}
@@ -139,14 +141,14 @@ func (r *irBinReader) readString() (string, error) {
 	return s, nil
 }
 
-func typeIndex(idx map[*TypeInfo]int, t *TypeInfo) int {
+func typeIndex(idx map[*ir.TypeInfo]int, t *ir.TypeInfo) int {
 	if t == nil {
 		return -1
 	}
 	return idx[t]
 }
 
-func collectTypeInfo(t *TypeInfo, idx map[*TypeInfo]int, all *[]*TypeInfo) {
+func collectTypeInfo(t *ir.TypeInfo, idx map[*ir.TypeInfo]int, all *[]*ir.TypeInfo) {
 	if t == nil {
 		return
 	}
@@ -168,13 +170,13 @@ func collectTypeInfo(t *TypeInfo, idx map[*TypeInfo]int, all *[]*TypeInfo) {
 	}
 }
 
-func WriteIRBinary(irmod *IRModule, path string) error {
+func WriteIRBinary(irmod *ir.IRModule, path string) error {
 	if irmod == nil {
 		return fmt.Errorf("nil IR module")
 	}
 
-	typeIdx := make(map[*TypeInfo]int)
-	var allTypes []*TypeInfo
+	typeIdx := make(map[*ir.TypeInfo]int)
+	var allTypes []*ir.TypeInfo
 	for _, t := range irmod.Types {
 		collectTypeInfo(t, typeIdx, &allTypes)
 	}
@@ -313,15 +315,15 @@ func readIRMagic(r *irBinReader) error {
 	return nil
 }
 
-func readIRTypes(r *irBinReader) ([]*TypeInfo, error) {
+func readIRTypes(r *irBinReader) ([]*ir.TypeInfo, error) {
 	typeCountU32, err := r.readU32()
 	if err != nil {
 		return nil, err
 	}
 	typeCount := int(typeCountU32)
-	types := make([]*TypeInfo, typeCount)
+	types := make([]*ir.TypeInfo, typeCount)
 	for i := 0; i < typeCount; i++ {
-		types[i] = &TypeInfo{}
+		types[i] = &ir.TypeInfo{}
 	}
 	for i := 0; i < typeCount; i++ {
 		t := types[i]
@@ -329,7 +331,7 @@ func readIRTypes(r *irBinReader) ([]*TypeInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		t.Kind = TypeKind(kind)
+		t.Kind = ir.TypeKind(kind)
 		t.Name, err = r.readString()
 		if err != nil {
 			return nil, err
@@ -365,9 +367,9 @@ func readIRTypes(r *irBinReader) ([]*TypeInfo, error) {
 			return nil, err
 		}
 		fieldCount := int(fieldCountU32)
-		fields := make([]FieldInfo, 0, fieldCount)
+		fields := make([]ir.FieldInfo, 0, fieldCount)
 		for j := 0; j < fieldCount; j++ {
-			var f FieldInfo
+			var f ir.FieldInfo
 			name, err := r.readString()
 			if err != nil {
 				return nil, err
@@ -393,13 +395,13 @@ func readIRTypes(r *irBinReader) ([]*TypeInfo, error) {
 			return nil, err
 		}
 		paramCount := int(paramCountU32)
-		params := make([]*TypeInfo, 0, paramCount)
+		params := make([]*ir.TypeInfo, 0, paramCount)
 		for j := 0; j < paramCount; j++ {
 			typeIdx, err := r.readInt()
 			if err != nil {
 				return nil, err
 			}
-			var p *TypeInfo
+			var p *ir.TypeInfo
 			if typeIdx >= 0 && typeIdx < len(types) {
 				p = types[typeIdx]
 			}
@@ -411,13 +413,13 @@ func readIRTypes(r *irBinReader) ([]*TypeInfo, error) {
 			return nil, err
 		}
 		resultCount := int(resultCountU32)
-		results := make([]*TypeInfo, 0, resultCount)
+		results := make([]*ir.TypeInfo, 0, resultCount)
 		for j := 0; j < resultCount; j++ {
 			typeIdx, err := r.readInt()
 			if err != nil {
 				return nil, err
 			}
-			var res *TypeInfo
+			var res *ir.TypeInfo
 			if typeIdx >= 0 && typeIdx < len(types) {
 				res = types[typeIdx]
 			}
@@ -428,13 +430,13 @@ func readIRTypes(r *irBinReader) ([]*TypeInfo, error) {
 	return types, nil
 }
 
-func readIRRootTypes(r *irBinReader, types []*TypeInfo) ([]*TypeInfo, error) {
+func readIRRootTypes(r *irBinReader, types []*ir.TypeInfo) ([]*ir.TypeInfo, error) {
 	countU32, err := r.readU32()
 	if err != nil {
 		return nil, err
 	}
 	count := int(countU32)
-	rootTypes := make([]*TypeInfo, count)
+	rootTypes := make([]*ir.TypeInfo, count)
 	for i := 0; i < count; i++ {
 		idx, err := r.readInt()
 		if err != nil {
@@ -447,15 +449,15 @@ func readIRRootTypes(r *irBinReader, types []*TypeInfo) ([]*TypeInfo, error) {
 	return rootTypes, nil
 }
 
-func readIRGlobals(r *irBinReader, types []*TypeInfo) ([]IRGlobal, error) {
+func readIRGlobals(r *irBinReader, types []*ir.TypeInfo) ([]ir.IRGlobal, error) {
 	countU32, err := r.readU32()
 	if err != nil {
 		return nil, err
 	}
 	count := int(countU32)
-	globals := make([]IRGlobal, 0, count)
+	globals := make([]ir.IRGlobal, 0, count)
 	for i := 0; i < count; i++ {
-		var g IRGlobal
+		var g ir.IRGlobal
 		g.Name, err = r.readString()
 		if err != nil {
 			return nil, err
@@ -476,15 +478,15 @@ func readIRGlobals(r *irBinReader, types []*TypeInfo) ([]IRGlobal, error) {
 	return globals, nil
 }
 
-func readIRFuncs(r *irBinReader, types []*TypeInfo) ([]*IRFunc, error) {
+func readIRFuncs(r *irBinReader, types []*ir.TypeInfo) ([]*ir.IRFunc, error) {
 	countU32, err := r.readU32()
 	if err != nil {
 		return nil, err
 	}
 	count := int(countU32)
-	funcs := make([]*IRFunc, 0, count)
+	funcs := make([]*ir.IRFunc, 0, count)
 	for i := 0; i < count; i++ {
-		f := &IRFunc{}
+		f := &ir.IRFunc{}
 		f.Name, err = r.readString()
 		if err != nil {
 			return nil, err
@@ -502,9 +504,9 @@ func readIRFuncs(r *irBinReader, types []*TypeInfo) ([]*IRFunc, error) {
 			return nil, err
 		}
 		localCount := int(localCountU32)
-		locals := make([]IRLocal, 0, localCount)
+		locals := make([]ir.IRLocal, 0, localCount)
 		for j := 0; j < localCount; j++ {
-			var l IRLocal
+			var l ir.IRLocal
 			l.Name, err = r.readString()
 			if err != nil {
 				return nil, err
@@ -536,14 +538,14 @@ func readIRFuncs(r *irBinReader, types []*TypeInfo) ([]*IRFunc, error) {
 			return nil, err
 		}
 		instCount := int(instCountU32)
-		code := make([]Inst, 0, instCount)
+		code := make([]ir.Inst, 0, instCount)
 		for j := 0; j < instCount; j++ {
-			var in Inst
+			var in ir.Inst
 			op, err := r.readInt()
 			if err != nil {
 				return nil, err
 			}
-			in.Op = Opcode(op)
+			in.Op = ir.Opcode(op)
 			in.Arg, err = r.readInt()
 			if err != nil {
 				return nil, err
@@ -635,8 +637,22 @@ func readIfaceMethodsMap(r *irBinReader) (map[string][]string, error) {
 	return m, nil
 }
 
-func ReadIRBinary(path string) (*IRModule, error) {
+func readIRBinaryFile(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, nil
+	}
+	// Some RTG-emitted artifacts may be owner-write-only; try fixing mode then retry.
+	_ = os.Chmod(path, 0600)
+	data, err2 := os.ReadFile(path)
+	if err2 == nil {
+		return data, nil
+	}
+	return nil, err
+}
+
+func ReadIRBinary(path string) (*ir.IRModule, error) {
+	data, err := readIRBinaryFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
 	}
@@ -680,7 +696,7 @@ func ReadIRBinary(path string) (*IRModule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read iface method returns at %d: %w", r.off, err)
 	}
-	return &IRModule{
+	return &ir.IRModule{
 		Funcs:           funcs,
 		Globals:         globals,
 		Types:           rootTypes,

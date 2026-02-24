@@ -7,10 +7,16 @@ import (
 	"os"
 	"runtime"
 	"strings"
+
+	"j5.nz/rtg/std/compiler/backend"
+	"j5.nz/rtg/std/compiler/binary"
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
 )
 
 // Target and build tag globals — defaults to host platform
-var target.GOOS string = runtime.GOOS
+var targetTriple string = runtime.GOOS + "/" + runtime.GOARCH
+var targetGOOS string = runtime.GOOS
 var targetGOARCH string = runtime.GOARCH
 var targetPtrSize int = defaultPtrSize()
 
@@ -70,8 +76,9 @@ func main() {
 				} else {
 					targetPtrSize = 8
 				}
-				target.GOOS = "c"
+				targetGOOS = "c"
 				targetGOARCH = fmt.Sprintf("c%d", targetCModel)
+				targetTriple = target
 			} else if target == "ir" {
 				fmt.Fprintf(os.Stderr, "target %q is no longer supported in no_frontend builds\n", target)
 				os.Exit(1)
@@ -94,12 +101,14 @@ func main() {
 					fmt.Fprintf(os.Stderr, "invalid target %q: expected vm/8, vm/16, vm/32, or vm/64\n", target)
 					os.Exit(1)
 				}
-				target.GOOS = "c"
+				targetGOOS = "c"
 				bits := targetWordSize * 8
 				targetGOARCH = fmt.Sprintf("c%d", bits)
+				targetTriple = target
 			} else {
 				if target == "dos/8086" {
-					target.GOOS = "dos"
+					targetTriple = target
+					targetGOOS = "dos"
 					targetGOARCH = "dos16"
 					targetPtrSize = 2
 					i = i + 2
@@ -110,7 +119,8 @@ func main() {
 					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], or vm/<8|16|32|64>\n", target)
 					os.Exit(1)
 				}
-				target.GOOS = target[0:slashIdx]
+				targetTriple = target
+				targetGOOS = target[0:slashIdx]
 				targetGOARCH = target[slashIdx+1:]
 				if targetGOARCH == "386" || targetGOARCH == "wasm32" {
 					targetPtrSize = 4
@@ -123,7 +133,7 @@ func main() {
 			fromIRBinaryPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
-			sizeAnalysisPath = os.Args[i+1]
+			ir.SizeAnalysisPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-tags" && i+1 < len(os.Args) {
 			extraTags = os.Args[i+1]
@@ -149,11 +159,11 @@ func main() {
 	if targetBackend == "c" {
 		buildTags = append(buildTags, "c")
 		buildTags = append(buildTags, fmt.Sprintf("c%d", targetCModel))
-	} else if target.GOOS == "wasi" && targetGOARCH == "wasm32" {
+	} else if targetGOOS == "wasi" && targetGOARCH == "wasm32" {
 		buildTags = append(buildTags, "wasi")
 		buildTags = append(buildTags, "wasm32")
 	} else {
-		buildTags = append(buildTags, target.GOOS)
+		buildTags = append(buildTags, targetGOOS)
 		buildTags = append(buildTags, targetGOARCH)
 	}
 	if extraTags != "" {
@@ -165,30 +175,38 @@ func main() {
 		}
 	}
 	buildTags = append(buildTags, "rtg")
-	if sizeAnalysisPath != "" {
+	if ir.SizeAnalysisPath != "" {
 		stripBinary = true
 	}
 
-	initEmbeddedStd()
-
-	irmod, err := readIRBinary(fromIRBinaryPath)
+	irmod, err := binary.ReadIRBinary(fromIRBinaryPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading IR binary: %v\n", err)
 		os.Exit(1)
 	}
 	if compilerDebug {
 		fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
-		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, target.GOOS, targetGOARCH)
+		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, targetGOOS, targetGOARCH)
 	}
-	err = GenerateELF(irmod, outputPath)
+	compileTarget := common.Target{
+		Triple:        targetTriple,
+		GOOS:          targetGOOS,
+		GOARCH:        targetGOARCH,
+		PtrSize:       targetPtrSize,
+		Backend:       targetBackend,
+		CModel:        targetCModel,
+		WordSize:      targetWordSize,
+		BuildTags:     buildTags,
+		Defines:       map[string]string{},
+		CompilerDebug: compilerDebug,
+		StripBinary:   stripBinary,
+	}
+	err = backend.Generate(&compileTarget, irmod, outputPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		os.Exit(1)
 	}
-	writeSizeAnalysis()
-	if targetBackend == "vm" {
-		os.Exit(vmExitCode)
-	}
+	ir.WriteSizeAnalysis(compileTarget)
 }
 
 func printHelp(program string, out *os.File) {
