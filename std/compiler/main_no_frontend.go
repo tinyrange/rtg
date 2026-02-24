@@ -21,7 +21,7 @@ func defaultPtrSize() int {
 	return 8
 }
 
-var targetBackend string = "native"       // native, c, ir, or vm
+var targetBackend string = "native"       // native, c, or vm
 var targetCModel int = 0                  // 16/32/64 when targetBackend==c
 var targetWordSize int = defaultPtrSize() // word size in bytes
 var buildTags []string
@@ -73,7 +73,8 @@ func main() {
 				target.GOOS = "c"
 				targetGOARCH = fmt.Sprintf("c%d", targetCModel)
 			} else if target == "ir" {
-				targetBackend = "ir"
+				fmt.Fprintf(os.Stderr, "target %q is no longer supported in no_frontend builds\n", target)
+				os.Exit(1)
 			} else if strings.HasPrefix(target, "vm/") {
 				targetBackend = "vm"
 				model := target[3:]
@@ -106,7 +107,7 @@ func main() {
 				}
 				slashIdx := strings.Index(target, "/")
 				if slashIdx < 0 {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], ir, or vm/<8|16|32|64>\n", target)
+					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], or vm/<8|16|32|64>\n", target)
 					os.Exit(1)
 				}
 				target.GOOS = target[0:slashIdx]

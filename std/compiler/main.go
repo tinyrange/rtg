@@ -176,7 +176,6 @@ func main() {
 	var emitIRBinaryPath string
 	var fromIRBinaryPath string
 	var extractStdlibDest string
-	var deprecatedTargetIR bool
 	var runMode bool
 	var stdinInput bool
 	var showVersion bool
@@ -225,7 +224,8 @@ func main() {
 				compileTarget.GOOS = "c"
 				compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
 			} else if target == "ir" {
-				deprecatedTargetIR = true
+				fmt.Fprintf(os.Stderr, "target %q is no longer supported; use -emit-ir <path> with a concrete -T <target>\n", target)
+				os.Exit(1)
 			} else if strings.HasPrefix(target, "vm/") {
 				compileTarget.Triple = target
 				compileTarget.Backend = "vm"
@@ -273,7 +273,7 @@ func main() {
 				}
 				slashIdx := strings.Index(target, "/")
 				if slashIdx < 0 {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], ir, or vm/<8|16|32|64>\n", target)
+					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], or vm/<8|16|32|64>\n", target)
 					os.Exit(1)
 				}
 				compileTarget.GOOS = target[0:slashIdx]
@@ -407,12 +407,6 @@ func main() {
 
 		// Override output to temp binary
 		outputPath = runTmpBin
-	}
-	if deprecatedTargetIR {
-		if emitIRPath == "" {
-			emitIRPath = outputPath
-		}
-		fmt.Fprintf(os.Stderr, "warning: -T ir is deprecated; use -emit-ir <path> (optionally with -T <target>)\n")
 	}
 	if emitIRPath != "" && runMode {
 		fmt.Fprintf(os.Stderr, "-emit-ir cannot be combined with -run\n")
@@ -700,7 +694,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "Usage: %s [options] <file.go> [file2.go ...]\n", program)
 	fmt.Fprintf(out, "\nOptions:\n")
 	fmt.Fprintf(out, "  -o <path>              Output path (default: output)\n")
-	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode (legacy: ir)\n")
+	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -emit-ir <path>        Emit textual IR for the selected target instead of native/C/VM output\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -D <key=value>         Set a string value for a global variable symbol\n")
@@ -829,7 +823,6 @@ func possibleTargets() []string {
 	targets = common.AppendUnique(targets, "c/16")
 	targets = common.AppendUnique(targets, "c/32")
 	targets = common.AppendUnique(targets, "c/64")
-	targets = common.AppendUnique(targets, "ir")
 	targets = common.AppendUnique(targets, "vm/8")
 	targets = common.AppendUnique(targets, "vm/16")
 	targets = common.AppendUnique(targets, "vm/32")
