@@ -1,88 +1,78 @@
 //go:build !no_backend_i386 && !no_backend_windows_i386
 
-package i386
+package windows
 
 import (
-	"fmt"
-	"os"
-
-	"j5.nz/rtg/std/compiler/common"
+	i386 "j5.nz/rtg/std/compiler/backend/i386"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
-// GenerateWinPE compiles an IRModule to a Windows PE32 executable.
-func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
-	g := &CodeGen{
-		target:        target,
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		baseAddr:      0x400000,
-		irmod:         irmod,
-		wordSize:      4,
-	}
+const (
+	REG32_EAX = i386.REG32_EAX
+	REG32_ECX = i386.REG32_ECX
+	REG32_EDX = i386.REG32_EDX
+	REG32_EBX = i386.REG32_EBX
+	REG32_ESP = i386.REG32_ESP
+	REG32_EBP = i386.REG32_EBP
+	REG32_ESI = i386.REG32_ESI
+	REG32_EDI = i386.REG32_EDI
+)
 
-	// Allocate .data space for globals (4 bytes each)
-	for i := range irmod.Globals {
-		g.globalOffsets[i] = i * 4
-	}
-	g.data = make([]byte, len(irmod.Globals)*4)
+const (
+	CC32_E  = i386.CC32_E
+	CC32_NE = i386.CC32_NE
+	CC32_GE = i386.CC32_GE
+	CC32_AE = i386.CC32_AE
+)
 
-	// Emit entry point
-	g.emitStart_win386(irmod)
-
-	// Compile all functions
-	for _, f := range irmod.Funcs {
-		g.funcOffsets[f.Name] = len(g.code)
-		g.compileFunc_i386(f)
-	}
-
-	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.code))
-	if g.needTostringHelper {
-		g.emitTostringHelperI386()
-	}
-
-	// Resolve call fixups (skip $rodata_header$, $data_addr$, $iat$ — handled by buildPE32)
-	var unresolved []string
-	for _, fix := range g.callFixups {
-		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
-			continue
-		}
-		if len(fix.Target) > 5 && fix.Target[0:5] == "$iat$" {
-			continue
-		}
-		target, ok := g.funcOffsets[fix.Target]
-		if !ok {
-			unresolved = append(unresolved, fix.Target)
-			continue
-		}
-		g.patchRel32At(fix.CodeOffset, target)
-	}
-	if len(unresolved) > 0 {
-		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
-		seen := make(map[string]bool)
-		for _, name := range unresolved {
-			if !seen[name] {
-				fmt.Fprintf(os.Stderr, "  %s\n", name)
-				seen[name] = true
-			}
-		}
-		return fmt.Errorf("%d unresolved calls", len(unresolved))
-	}
-
-	// Build PE32
-	pe := g.buildPE32(irmod)
-	err := os.WriteFile(outputPath, pe, 0755)
-	if err != nil {
-		return fmt.Errorf("write output: %v", err)
-	}
-
-	return nil
+type winGen struct {
+	cg *i386.CodeGen
 }
 
+func wrap(g *i386.CodeGen) *winGen {
+	return &winGen{cg: g}
+}
+
+func (g *winGen) emitByte(b byte)                   { g.cg.EmitByte(b) }
+func (g *winGen) emitBytes(bytes ...byte)           { g.cg.EmitBytes(bytes...) }
+func (g *winGen) emitU32(v uint32)                  { g.cg.EmitU32(v) }
+func (g *winGen) emitCallPlaceholder(target string) { g.cg.EmitCallPlaceholder(target) }
+func (g *winGen) emitLoadLocal32(offset int, reg int) {
+	g.cg.EmitLoadLocal32(offset, reg)
+}
+func (g *winGen) emitMovRegImm32(reg int, val uint32) { g.cg.EmitMovRegImm32(reg, val) }
+func (g *winGen) pushR32(reg int)                     { g.cg.PushR32(reg) }
+func (g *winGen) popR32(reg int)                      { g.cg.PopR32(reg) }
+func (g *winGen) movRR32(dst, src int)                { g.cg.MovRR32(dst, src) }
+func (g *winGen) addRI32(reg int, val int32)          { g.cg.AddRI32(reg, val) }
+func (g *winGen) subRI32(reg int, val int32)          { g.cg.SubRI32(reg, val) }
+func (g *winGen) cmpRI32(reg int, val int32)          { g.cg.CmpRI32(reg, val) }
+func (g *winGen) cmpRR32(a, b int)                    { g.cg.CmpRR32(a, b) }
+func (g *winGen) xorRR32(dst, src int)                { g.cg.XorRR32(dst, src) }
+func (g *winGen) testRR32(a, b int)                   { g.cg.TestRR32(a, b) }
+func (g *winGen) negR32(reg int)                      { g.cg.NegR32(reg) }
+func (g *winGen) jmpRel32() int                       { return g.cg.JmpRel32() }
+func (g *winGen) jccRel32(cc byte) int                { return g.cg.JccRel32(cc) }
+func (g *winGen) patchRel32(fixupOff int)             { g.cg.PatchRel32(fixupOff) }
+func (g *winGen) patchRel32At(fixupOff, targetOff int) {
+	g.cg.PatchRel32At(fixupOff, targetOff)
+}
+func (g *winGen) loadMem32(dst, base, off int)      { g.cg.LoadMem32(dst, base, off) }
+func (g *winGen) storeMem32(base, off, src int)     { g.cg.StoreMem32(base, off, src) }
+func (g *winGen) loadMemByte32(dst, base, off int)  { g.cg.LoadMemByte32(dst, base, off) }
+func (g *winGen) storeMemByte32(base, off, src int) { g.cg.StoreMemByte32(base, off, src) }
+func (g *winGen) opPop(reg int)                     { g.cg.OpPop(reg) }
+func (g *winGen) opPush(reg int)                    { g.cg.OpPush(reg) }
+func (g *winGen) clearOperandCache()                { g.cg.ClearOperandCache() }
+func (g *winGen) compileConstI32(val int64)         { g.cg.CompileConstI32(val) }
+func (g *winGen) emitCallIAT(funcName string)       { g.cg.EmitCallIAT(funcName) }
+func (g *winGen) emitCallIATInLib(libName string, funcName string) {
+	g.cg.EmitCallIATInLib(libName, funcName)
+}
+func (g *winGen) codeLen() int { return g.cg.CodeLen() }
+
 // emitStart_win386 generates the Windows entry point.
-func (g *CodeGen) emitStart_win386(irmod *ir.IRModule) {
+func (g *winGen) emitStart_win386(irmod *ir.IRModule) {
 	// Windows entry point: no arguments passed, we use stdcall.
 	// EDI = operand stack pointer (callee-saved)
 	// EBP = frame pointer (callee-saved)
@@ -121,7 +111,7 @@ func (g *CodeGen) emitStart_win386(irmod *ir.IRModule) {
 }
 
 // pushImm32 emits `push imm32`
-func (g *CodeGen) pushImm32(val uint32) {
+func (g *winGen) pushImm32(val uint32) {
 	if val < 128 {
 		g.emitBytes(0x6a, byte(val)) // push imm8
 	} else {
@@ -133,7 +123,7 @@ func (g *CodeGen) pushImm32(val uint32) {
 // === Windows fd→handle translation ===
 // Loads fd from local, if 0/1/2 calls GetStdHandle, else uses as-is.
 // Result in EAX.
-func (g *CodeGen) loadFdAsHandle(localOffset int) {
+func (g *winGen) loadFdAsHandle(localOffset int) {
 	g.emitLoadLocal32(localOffset, REG32_EAX) // fd
 
 	// if fd <= 2, call GetStdHandle(-10 - fd)
@@ -157,7 +147,7 @@ func (g *CodeGen) loadFdAsHandle(localOffset int) {
 
 // === Syscall handlers ===
 
-func (g *CodeGen) compileSyscallMmap_win386() {
+func (g *winGen) compileSyscallMmap_win386() {
 	// VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
 	// param 1 = size (local 2)
 	g.pushImm32(0x04)   // PAGE_READWRITE
@@ -184,7 +174,7 @@ func (g *CodeGen) compileSyscallMmap_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallWrite_win386() {
+func (g *winGen) compileSyscallWrite_win386() {
 	// WriteFile(hFile, lpBuffer, nNumberOfBytesToWrite, &lpNumberOfBytesWritten, NULL)
 	// param 0=fd (local 1), param 1=buf (local 2), param 2=count (local 3)
 
@@ -227,7 +217,7 @@ func (g *CodeGen) compileSyscallWrite_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallRead_win386() {
+func (g *winGen) compileSyscallRead_win386() {
 	// ReadFile(hFile, lpBuffer, nNumberOfBytesToRead, &lpNumberOfBytesRead, NULL)
 	// param 0=fd (local 1), param 1=buf (local 2), param 2=count (local 3)
 
@@ -264,7 +254,7 @@ func (g *CodeGen) compileSyscallRead_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallOpen_win386() {
+func (g *winGen) compileSyscallOpen_win386() {
 	// CreateFileA(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
 	//             dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile)
 	// param 0=path (local 1), param 1=flags (local 2), param 2=mode (local 3)
@@ -324,7 +314,7 @@ func (g *CodeGen) compileSyscallOpen_win386() {
 	g.patchRel32(fixOpenEnd)
 }
 
-func (g *CodeGen) compileSyscallClose_win386() {
+func (g *winGen) compileSyscallClose_win386() {
 	// CloseHandle(hObject)
 	// param 0=fd/handle (local 1)
 	g.emitLoadLocal32(1*4, REG32_EAX)
@@ -360,7 +350,7 @@ func (g *CodeGen) compileSyscallClose_win386() {
 	g.patchRel32(fixCloseDone)
 }
 
-func (g *CodeGen) compileSyscallExit_win386() {
+func (g *winGen) compileSyscallExit_win386() {
 	// ExitProcess(uExitCode)
 	// param 0=code (local 1)
 	g.emitLoadLocal32(1*4, REG32_EAX)
@@ -373,7 +363,7 @@ func (g *CodeGen) compileSyscallExit_win386() {
 	g.compileConstI32(0)
 }
 
-func (g *CodeGen) compileSyscallMkdir_win386() {
+func (g *winGen) compileSyscallMkdir_win386() {
 	// CreateDirectoryA(lpPathName, lpSecurityAttributes)
 	// param 0=path (local 1)
 	g.pushImm32(0) // lpSecurityAttributes = NULL
@@ -411,7 +401,7 @@ func (g *CodeGen) compileSyscallMkdir_win386() {
 	g.patchRel32(fixDone2)
 }
 
-func (g *CodeGen) compileSyscallRmdir_win386() {
+func (g *winGen) compileSyscallRmdir_win386() {
 	// RemoveDirectoryA(lpPathName)
 	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)
@@ -433,7 +423,7 @@ func (g *CodeGen) compileSyscallRmdir_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallUnlink_win386() {
+func (g *winGen) compileSyscallUnlink_win386() {
 	// DeleteFileA(lpFileName)
 	g.emitLoadLocal32(1*4, REG32_EAX)
 	g.pushR32(REG32_EAX)
@@ -455,7 +445,7 @@ func (g *CodeGen) compileSyscallUnlink_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallGetcwd_win386() {
+func (g *winGen) compileSyscallGetcwd_win386() {
 	// GetCurrentDirectoryA(nBufferLength, lpBuffer)
 	// param 0=buf (local 1), param 1=bufsize (local 2)
 	g.emitLoadLocal32(1*4, REG32_EAX)
@@ -486,7 +476,7 @@ func (g *CodeGen) compileSyscallGetcwd_win386() {
 
 	// Loop: replace '\' with '/'
 	g.xorRR32(REG32_ESI, REG32_ESI) // i = 0
-	slashLoopStart := len(g.code)
+	slashLoopStart := g.codeLen()
 	g.cmpRR32(REG32_ESI, REG32_ECX)
 	fixSlashDone := g.jccRel32(CC32_GE)
 	g.loadMemByte32(REG32_EAX, REG32_EDX, 0)
@@ -508,7 +498,7 @@ func (g *CodeGen) compileSyscallGetcwd_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallGetdents_win386() {
+func (g *winGen) compileSyscallGetdents_win386() {
 	// Windows doesn't have getdents64. The os_windows.go uses FindFirstFile/FindNextFile instead.
 	// For the pseudo-syscall compatibility, return error.
 	g.compileConstI32(0)
@@ -516,7 +506,7 @@ func (g *CodeGen) compileSyscallGetdents_win386() {
 	g.compileConstI32(1) // ENOSYS
 }
 
-func (g *CodeGen) compileSyscallGetCommandLine_win386() {
+func (g *winGen) compileSyscallGetCommandLine_win386() {
 	// GetCommandLineA() returns a pointer to the command line string
 	g.emitCallIAT("GetCommandLineA")
 	// r1 = ptr to command line, r2 = 0, err = 0
@@ -525,7 +515,7 @@ func (g *CodeGen) compileSyscallGetCommandLine_win386() {
 	g.compileConstI32(0)
 }
 
-func (g *CodeGen) compileSyscallGetEnvStrings_win386() {
+func (g *winGen) compileSyscallGetEnvStrings_win386() {
 	// GetEnvironmentStringsA() returns a pointer to the environment block
 	g.emitCallIAT("GetEnvironmentStringsA")
 	g.opPush(REG32_EAX)
@@ -533,7 +523,7 @@ func (g *CodeGen) compileSyscallGetEnvStrings_win386() {
 	g.compileConstI32(0)
 }
 
-func (g *CodeGen) compileSyscallGetpid_win386() {
+func (g *winGen) compileSyscallGetpid_win386() {
 	// GetCurrentProcessId() returns DWORD (the process ID)
 	g.emitCallIAT("GetCurrentProcessId")
 	g.opPush(REG32_EAX)
@@ -541,7 +531,7 @@ func (g *CodeGen) compileSyscallGetpid_win386() {
 	g.compileConstI32(0)
 }
 
-func (g *CodeGen) compileSyscallFindFirstFile_win386() {
+func (g *winGen) compileSyscallFindFirstFile_win386() {
 	// FindFirstFileA(lpFileName, lpFindFileData)
 	// param 0=pattern (local 1), param 1=buf (local 2)
 	g.emitLoadLocal32(2*4, REG32_EAX)
@@ -568,7 +558,7 @@ func (g *CodeGen) compileSyscallFindFirstFile_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallFindNextFile_win386() {
+func (g *winGen) compileSyscallFindNextFile_win386() {
 	// FindNextFileA(hFindFile, lpFindFileData)
 	// param 0=handle (local 1), param 1=buf (local 2)
 	g.emitLoadLocal32(2*4, REG32_EAX)
@@ -594,7 +584,7 @@ func (g *CodeGen) compileSyscallFindNextFile_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallFindClose_win386() {
+func (g *winGen) compileSyscallFindClose_win386() {
 	// FindClose(hFindFile)
 	// param 0=handle (local 1)
 	g.emitLoadLocal32(1*4, REG32_EAX)
@@ -606,7 +596,7 @@ func (g *CodeGen) compileSyscallFindClose_win386() {
 	g.compileConstI32(0)
 }
 
-func (g *CodeGen) compileSyscallCreateProcess_win386() {
+func (g *winGen) compileSyscallCreateProcess_win386() {
 	// CreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes,
 	//                lpThreadAttributes, bInheritHandles, dwCreationFlags,
 	//                lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation)
@@ -647,7 +637,7 @@ func (g *CodeGen) compileSyscallCreateProcess_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallWaitProcess_win386() {
+func (g *winGen) compileSyscallWaitProcess_win386() {
 	// WaitForSingleObject(hHandle, INFINITE) then GetExitCodeProcess(hHandle, &exitCode)
 	// param 0=hProcess (local 1), param 1=exitCodeBuf (local 2)
 
@@ -676,7 +666,7 @@ func (g *CodeGen) compileSyscallWaitProcess_win386() {
 	g.compileConstI32(0)
 }
 
-func (g *CodeGen) compileSyscallCreatePipe_win386() {
+func (g *winGen) compileSyscallCreatePipe_win386() {
 	// CreatePipe(&hReadPipe, &hWritePipe, lpPipeAttributes, nSize)
 	// param 0=readBuf (local 1), param 1=writeBuf (local 2)
 	// We need a SECURITY_ATTRIBUTES struct for inheritable handles
@@ -717,7 +707,7 @@ func (g *CodeGen) compileSyscallCreatePipe_win386() {
 	g.patchRel32(fixDone)
 }
 
-func (g *CodeGen) compileSyscallSetStdHandle_win386() {
+func (g *winGen) compileSyscallSetStdHandle_win386() {
 	// SetStdHandle(nStdHandle, hHandle)
 	// param 0=nStdHandle (local 1), param 1=hHandle (local 2)
 	g.emitLoadLocal32(2*4, REG32_EAX)
@@ -732,7 +722,7 @@ func (g *CodeGen) compileSyscallSetStdHandle_win386() {
 	g.compileConstI32(0)
 }
 
-func (g *CodeGen) compileSyscallStat_win386() {
+func (g *winGen) compileSyscallStat_win386() {
 	// GetFileAttributesExA(lpFileName, fInfoLevelId, lpFileInformation)
 	// param 0=path (local 1)
 	// Allocate WIN32_FILE_ATTRIBUTE_DATA (36 bytes) on stack
@@ -765,7 +755,7 @@ func (g *CodeGen) compileSyscallStat_win386() {
 }
 
 // compilePanic_win386 handles panic on Windows.
-func (g *CodeGen) compilePanic_win386() {
+func (g *winGen) compilePanic_win386() {
 	// Pop value from operand stack
 	g.opPop(REG32_EAX)
 
