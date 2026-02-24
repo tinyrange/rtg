@@ -260,10 +260,7 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 	iatOffsets := buildIATOffsets64(g, imports)
 
 	// x64: string headers are in .rodata section
-	for _, headerOff := range g.StringMap() {
-		dataOff := common.GetU64(g.Rodata[headerOff : headerOff+8])
-		common.PutU64(g.Rodata[headerOff:headerOff+8], uint64(imageBase+rdataRVA)+dataOff)
-	}
+	g.PatchLinuxStringHeaders(uint64(imageBase + rdataRVA))
 
 	// Fix up code references (movabs imm64 and RIP-relative call)
 	for _, fix := range g.CallFixups() {
