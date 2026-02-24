@@ -1,6 +1,6 @@
-//go:build !no_backend_i386 && !no_backend_linux_i386
+//go:build !no_backend_i386 && (!no_backend_linux_i386 || !no_backend_windows_i386)
 
-package linux
+package i386
 
 import (
 	"j5.nz/rtg/std/compiler/backend/becommon"

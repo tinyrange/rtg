@@ -1,6 +1,6 @@
 //go:build !no_backend_i386 && !no_backend_windows_i386
 
-package windows
+package i386
 
 // emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.
 func (g *CodeGen) emitCallIAT(funcName string) {

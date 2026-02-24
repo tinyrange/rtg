@@ -1,6 +1,6 @@
-//go:build !no_backend_i386 && !no_backend_windows_i386
+//go:build !no_backend_i386 && (!no_backend_linux_i386 || !no_backend_windows_i386)
 
-package windows
+package i386
 
 // === i386 Assembler: mnemonic-level instruction encoding ===
 
