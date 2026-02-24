@@ -25,7 +25,6 @@ Out-of-scope repro programs are kept in:
 The following repros are also kept in `tests/limitations/` because they do not
 currently pass the strict fullcompiler `PASS` output contract across targets:
 - `5` panic+defer output/exit behavior
-- `11` fallthrough semantics
 - `13` type switch behavior
 - `19` raw string literal behavior
 - `31` `print`/`println` cross-target behavior
