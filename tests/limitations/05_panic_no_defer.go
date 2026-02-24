@@ -1,8 +1,16 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
+
+func done() {
+	fmt.Print("PASS")
+	os.Exit(0)
+}
 
 func main() {
-	defer fmt.Println("deferred")
+	defer done()
 	panic("boom")
 }
