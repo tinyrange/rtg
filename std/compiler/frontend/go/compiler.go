@@ -7068,7 +7068,7 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 		// Builtins that return nothing
 		if node.X != nil && node.X.Kind == NIdent {
 			bname := node.X.Name
-			if bname == "delete" || bname == "close" {
+			if bname == "delete" || bname == "close" || bname == "clear" || bname == "panic" || bname == "print" || bname == "println" {
 				return 0
 			}
 		}
