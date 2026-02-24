@@ -43,22 +43,11 @@ func buildELF64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 	rodataVAddr := g.BaseAddr + uint64(rodataOffset)
 	dataVAddr := g.BaseAddr + uint64(dataOffset)
 
-	// x86-64: fix up string headers in rodata with absolute virtual addresses
-	for _, headerOff := range g.StringMap() {
-		dataOff := common.GetU64(g.Rodata[headerOff : headerOff+8])
-		common.PutU64(g.Rodata[headerOff:headerOff+8], rodataVAddr+dataOff)
-	}
+	// x86-64: fix up string headers in rodata with absolute virtual addresses.
+	g.PatchLinuxStringHeaders(rodataVAddr)
 
-	// Fix up code references to rodata headers and data section
-	for _, fix := range g.CallFixups() {
-		if fix.Target == "$rodata_header$" {
-			headerOff := common.GetU64(g.Code[fix.CodeOffset : fix.CodeOffset+8])
-			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], rodataVAddr+headerOff)
-		} else if fix.Target == "$data_addr$" {
-			dataOff := common.GetU64(g.Code[fix.CodeOffset : fix.CodeOffset+8])
-			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], dataVAddr+dataOff)
-		}
-	}
+	// Fix up code references to rodata headers and data section.
+	g.PatchLinuxDataAndRodataFixups(rodataVAddr, dataVAddr)
 
 	// === Build .strtab (symbol name strings) ===
 	var strtab []byte

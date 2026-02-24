@@ -23,18 +23,19 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	// Resolve call fixups (skip $rodata_header$, $data_addr$, $iat$ — handled by buildPE64)
 	var unresolved []string
 	for _, fix := range g.CallFixups() {
-		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
+		targetName := core.CallFixupTarget(fix)
+		if targetName == "$rodata_header$" || targetName == "$data_addr$" {
 			continue
 		}
-		if len(fix.Target) > 5 && fix.Target[0:5] == "$iat$" {
+		if len(targetName) > 5 && targetName[0:5] == "$iat$" {
 			continue
 		}
-		target, ok := g.MaybeGetFuncOffsets(fix.Target)
+		target, ok := g.MaybeGetFuncOffsets(targetName)
 		if !ok {
-			unresolved = append(unresolved, fix.Target)
+			unresolved = append(unresolved, targetName)
 			continue
 		}
-		g.PatchRel32At(fix.CodeOffset, target)
+		g.PatchRel32At(core.CallFixupOffset(fix), target)
 	}
 
 	if err := g.CheckUnresolvedCalls(unresolved); err != nil {

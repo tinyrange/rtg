@@ -261,10 +261,10 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	case ir.OP_IFACE_CALL:
 		g.compileIfaceCall(inst)
 	case ir.OP_PANIC:
-		g.CompilePanic(g)
+		compilePanicTarget(g)
 	case ir.OP_CALL_INTRINSIC:
 		g.Flush()
-		g.CompileCallIntrinsic(g, inst)
+		compileCallIntrinsicTarget(g, inst)
 	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 		// These are handled by intrinsics or builtins
 

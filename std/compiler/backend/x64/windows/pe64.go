@@ -186,7 +186,7 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 	rdataRawSize := core.AlignUp(len(rdataContent), fileAlignment)
 	dataRawSize := core.AlignUp(len(dataContent), fileAlignment)
 
-	imports := collectWinImportsFromFixups(g.CallFixups())
+	imports := collectWinImportsFromFixups(g)
 
 	// Build .idata section with 8-byte ILT/IAT entries
 	idataContent := buildIData64(g, imports)
@@ -267,24 +267,26 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 
 	// Fix up code references (movabs imm64 and RIP-relative call)
 	for _, fix := range g.CallFixups() {
-		if fix.Target == "$rodata_header$" {
+		targetName := core.CallFixupTarget(fix)
+		codeOffset := core.CallFixupOffset(fix)
+		if targetName == "$rodata_header$" {
 			// Patch 8-byte movabs immediate with rodata VA
-			headerOff := common.GetU64(g.Code[fix.CodeOffset : fix.CodeOffset+8])
-			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], uint64(imageBase+rdataRVA)+headerOff)
-		} else if fix.Target == "$data_addr$" {
+			headerOff := common.GetU64(g.Code[codeOffset : codeOffset+8])
+			common.PutU64(g.Code[codeOffset:codeOffset+8], uint64(imageBase+rdataRVA)+headerOff)
+		} else if targetName == "$data_addr$" {
 			// Patch 8-byte movabs immediate with data VA
-			dataOff := common.GetU64(g.Code[fix.CodeOffset : fix.CodeOffset+8])
-			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], uint64(imageBase+dataRVA)+dataOff)
-		} else if libName, funcName, ok := decodeIATFixupTarget(fix.Target); ok {
+			dataOff := common.GetU64(g.Code[codeOffset : codeOffset+8])
+			common.PutU64(g.Code[codeOffset:codeOffset+8], uint64(imageBase+dataRVA)+dataOff)
+		} else if libName, funcName, ok := decodeIATFixupTarget(targetName); ok {
 			iatOff, ok := iatOffsets[winImportKey(libName, funcName)]
 			if !ok {
 				continue
 			}
 			// Patch RIP-relative disp32: target = iatVA, rip = textVA + codeOffset + 4
 			iatVA := uint64(imageBase+idataRVA) + uint64(iatOff)
-			rip := uint64(imageBase+textRVA) + uint64(fix.CodeOffset) + 4
+			rip := uint64(imageBase+textRVA) + uint64(codeOffset) + 4
 			disp32 := int32(int64(iatVA) - int64(rip))
-			common.PutU32(g.Code[fix.CodeOffset:fix.CodeOffset+4], uint32(disp32))
+			common.PutU32(g.Code[codeOffset:codeOffset+4], uint32(disp32))
 		}
 	}
 

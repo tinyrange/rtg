@@ -142,19 +142,7 @@ func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) e
 
 	g.EmitAllFunctions(irmod)
 
-	// Resolve call fixups (skip special targets that are resolved in buildELF64)
-	var unresolved []string
-	for _, fix := range g.CallFixups() {
-		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
-			continue
-		}
-		target, ok := g.MaybeGetFuncOffsets(fix.Target)
-		if !ok {
-			unresolved = append(unresolved, fix.Target)
-			continue
-		}
-		g.PatchRel32At(fix.CodeOffset, target)
-	}
+	unresolved := g.ResolveLinuxCallFixups()
 
 	if err := g.CheckUnresolvedCalls(unresolved); err != nil {
 		return err
