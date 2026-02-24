@@ -1,10 +1,3 @@
-// Canonical i386 assembler source shared by linux/windows backends.
-// Generate targets with: tools/sync_i386_asm.sh
-//
-// Template variables:
-//   !no_backend_i386 && !no_backend_linux_i386
-//   linux
-
 //go:build !no_backend_i386 && !no_backend_linux_i386
 
 package linux
