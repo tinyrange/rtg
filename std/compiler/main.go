@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"j5.nz/rtg/std/compiler/backend"
+	"j5.nz/rtg/std/compiler/backend/irprint"
 	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/binary"
 	"j5.nz/rtg/std/compiler/common"
@@ -25,7 +26,7 @@ var compileTarget = common.Target{
 	GOOS:                  runtime.GOOS,
 	GOARCH:                runtime.GOARCH,
 	PtrSize:               defaultPtrSize(),
-	Backend:               "native",         // native, c, ir, or vm
+	Backend:               "native",         // native, c, or vm
 	CModel:                0,                // 16/32/64 when targetBackend==c
 	WordSize:              defaultPtrSize(), // word size in bytes
 	BuildTags:             []string{},
@@ -171,9 +172,11 @@ func main() {
 	var extraTags string
 	var parseOnly bool
 	var buildTagsPath string
+	var emitIRPath string
 	var emitIRBinaryPath string
 	var fromIRBinaryPath string
 	var extractStdlibDest string
+	var deprecatedTargetIR bool
 	var runMode bool
 	var stdinInput bool
 	var showVersion bool
@@ -222,8 +225,7 @@ func main() {
 				compileTarget.GOOS = "c"
 				compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
 			} else if target == "ir" {
-				compileTarget.Triple = target
-				compileTarget.Backend = "ir"
+				deprecatedTargetIR = true
 			} else if strings.HasPrefix(target, "vm/") {
 				compileTarget.Triple = target
 				compileTarget.Backend = "vm"
@@ -291,6 +293,9 @@ func main() {
 		} else if os.Args[i] == "-parse-only" {
 			parseOnly = true
 			i = i + 1
+		} else if os.Args[i] == "-emit-ir" && i+1 < len(os.Args) {
+			emitIRPath = os.Args[i+1]
+			i = i + 2
 		} else if (os.Args[i] == "-emit-ir-binary" || os.Args[i] == "-from-ir-binary") && i+1 < len(os.Args) {
 			if !binary.IrBinaryEnabled {
 				fmt.Fprintf(os.Stderr, "IR binary I/O is experimental; rebuild with -tags exp_ir_binary\n")
@@ -403,6 +408,22 @@ func main() {
 		// Override output to temp binary
 		outputPath = runTmpBin
 	}
+	if deprecatedTargetIR {
+		if emitIRPath == "" {
+			emitIRPath = outputPath
+		}
+		fmt.Fprintf(os.Stderr, "warning: -T ir is deprecated; use -emit-ir <path> (optionally with -T <target>)\n")
+	}
+	if emitIRPath != "" && runMode {
+		fmt.Fprintf(os.Stderr, "-emit-ir cannot be combined with -run\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if emitIRPath != "" && emitIRBinaryPath != "" {
+		fmt.Fprintf(os.Stderr, "-emit-ir cannot be combined with -emit-ir-binary\n")
+		runCleanup()
+		os.Exit(1)
+	}
 
 	if fromIRBinaryPath != "" && len(entryFiles) > 0 {
 		fmt.Fprintf(os.Stderr, "cannot combine source files with -from-ir-binary\n")
@@ -445,7 +466,7 @@ func main() {
 	traceExit(10)
 
 	if extractStdlibDest != "" {
-		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || stdinInput || parseOnly || emitIRBinaryPath != "" || buildTagsPath != "" {
+		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || stdinInput || parseOnly || emitIRPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
 			fmt.Fprintf(os.Stderr, "-extract-stdlib cannot be combined with compilation inputs/options\n")
 			runCleanup()
 			os.Exit(1)
@@ -537,6 +558,11 @@ func main() {
 		}
 
 		if parseOnly {
+			if emitIRPath != "" {
+				fmt.Fprintf(os.Stderr, "-emit-ir is not valid with -parse-only\n")
+				runCleanup()
+				os.Exit(1)
+			}
 			runCleanup()
 			os.Exit(0)
 		}
@@ -592,7 +618,7 @@ func main() {
 	var vmArgs []string
 
 	// Set VM program arguments if using VM backend
-	if compileTarget.Backend == "vm" {
+	if compileTarget.Backend == "vm" && emitIRPath == "" {
 		// argv[0] is the program name, followed by actual args
 		vmArgs = append(vmArgs, "rtg")
 		if len(programArgs) > 0 {
@@ -608,9 +634,17 @@ func main() {
 	}
 
 	if compileTarget.CompilerDebug {
-		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
+		if emitIRPath != "" {
+			fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s, emit=ir)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
+		} else {
+			fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
+		}
 	}
-	err = backend.Generate(&compileTarget, irmod, outputPath)
+	if emitIRPath != "" {
+		err = irprint.Generate(irmod, emitIRPath)
+	} else {
+		err = backend.Generate(&compileTarget, irmod, outputPath)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		runCleanup()
@@ -625,7 +659,7 @@ func main() {
 	ir.WriteSizeAnalysis(compileTarget)
 
 	// VM backend executes directly — no binary to run
-	if compileTarget.Backend == "vm" {
+	if compileTarget.Backend == "vm" && emitIRPath == "" {
 		runCleanup()
 		os.Exit(vm.ExitCode)
 	}
@@ -666,7 +700,8 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "Usage: %s [options] <file.go> [file2.go ...]\n", program)
 	fmt.Fprintf(out, "\nOptions:\n")
 	fmt.Fprintf(out, "  -o <path>              Output path (default: output)\n")
-	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
+	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode (legacy: ir)\n")
+	fmt.Fprintf(out, "  -emit-ir <path>        Emit textual IR for the selected target instead of native/C/VM output\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -D <key=value>         Set a string value for a global variable symbol\n")
 	fmt.Fprintf(out, "  -target-file <path>    Load a single-file target definition before -T resolution\n")
