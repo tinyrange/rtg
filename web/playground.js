@@ -9,6 +9,7 @@ let compiledTarget = null; // target the last compile was for
 let compilerModule = null; // cached WebAssembly.Module for the compiler
 let saveTimer = null;
 let dirty = true;         // files changed since last compile
+let emitIRMode = false;   // emit textual IR instead of target artifact
 let availableBuildTags = [];
 let enabledBuildTags = loadEnabledBuildTags();
 
@@ -27,6 +28,7 @@ const btnDownload = document.getElementById("btn-download");
 const btnNewFile = document.getElementById("btn-new-file");
 const btnClearOutput = document.getElementById("btn-clear-output");
 const targetSelect = document.getElementById("target-select");
+const btnEmitIR = document.getElementById("btn-emit-ir");
 const panelOutput = document.getElementById("panel-output");
 const irViewer = document.getElementById("ir-viewer");
 const irContent = document.getElementById("ir-content");
@@ -257,11 +259,21 @@ function setupButtons() {
 
   btnDownload.addEventListener("click", downloadBinary);
 
+  btnEmitIR.addEventListener("click", () => {
+    emitIRMode = !emitIRMode;
+    updateEmitIRButton();
+    updateRunVisibility();
+    markDirty();
+    compiledWasm = null;
+    btnDownload.disabled = true;
+    btnDownload.classList.add("hidden");
+    showIRViewer(false);
+    discoverBuildTags();
+  });
+
   targetSelect.addEventListener("change", () => {
     // Target change means recompile is needed
-    const target = targetSelect.value;
-    const canRun = target === "wasi/wasm32";
-    btnRun.classList.toggle("hidden", !canRun);
+    updateRunVisibility();
     markDirty();
     compiledWasm = null;
     btnRun.disabled = true;
@@ -295,6 +307,9 @@ function setupButtons() {
     renderFileTree();
     openFile("user/main.go");
   });
+
+  updateEmitIRButton();
+  updateRunVisibility();
 }
 
 function setupTagPanel() {
@@ -366,6 +381,32 @@ function isGoosGoarchTag(tag) {
 }
 
 // --- Target helpers ---
+function isLegacyIRTarget(target) {
+  return target === "ir";
+}
+
+function getEffectiveTarget(target) {
+  if (isLegacyIRTarget(target)) return "wasi/wasm32";
+  return target;
+}
+
+function shouldEmitIR(target) {
+  return emitIRMode || isLegacyIRTarget(target);
+}
+
+function updateEmitIRButton() {
+  btnEmitIR.classList.toggle("btn-blue", emitIRMode);
+  btnEmitIR.classList.toggle("btn-gray", !emitIRMode);
+  btnEmitIR.textContent = emitIRMode ? "Emit IR On" : "Emit IR";
+  btnEmitIR.setAttribute("aria-pressed", emitIRMode ? "true" : "false");
+}
+
+function updateRunVisibility() {
+  const target = getEffectiveTarget(targetSelect.value);
+  const canRun = target === "wasi/wasm32" && !shouldEmitIR(targetSelect.value);
+  btnRun.classList.toggle("hidden", !canRun);
+}
+
 function getOutputFilename(target) {
   switch (target) {
     case "wasi/wasm32": return "output.wasm";
@@ -485,7 +526,7 @@ async function discoverBuildTags() {
       fs.addFile(path, content);
     }
 
-    const args = ["rtg", "-T", targetSelect.value, "-parse-only", "-list-build-tags", "build-tags.txt"];
+    const args = ["rtg", "-T", getEffectiveTarget(targetSelect.value), "-parse-only", "-list-build-tags", "build-tags.txt"];
     appendTagArgs(args);
     args.push("user/");
 
@@ -525,8 +566,11 @@ async function compile() {
     return;
   }
 
-  const target = targetSelect.value;
-  const outputFile = getOutputFilename(target);
+  const selectedTarget = targetSelect.value;
+  const target = getEffectiveTarget(selectedTarget);
+  const isIR = shouldEmitIR(selectedTarget);
+  const outputTarget = isIR ? "ir" : target;
+  const outputFile = getOutputFilename(outputTarget);
 
   outputContent.innerHTML = "";
   compiledWasm = null;
@@ -552,11 +596,14 @@ async function compile() {
     }
 
     const entryFile = "user/main.go";
-    const isIR = target === "ir";
     const args = ["rtg", "-T", target];
     appendTagArgs(args);
-    if (!isIR) args.push("-size-analysis", "size-analysis.json");
-    args.push("-o", outputFile, entryFile);
+    if (isIR) {
+      args.push("-emit-ir", outputFile, entryFile);
+    } else {
+      args.push("-size-analysis", "size-analysis.json");
+      args.push("-o", outputFile, entryFile);
+    }
 
     const exitCode = await runCompilerInWasi(fs, args, {
       onStdout: (data) => appendOutput(new TextDecoder().decode(data), "stdout"),
@@ -574,7 +621,7 @@ async function compile() {
     const output = fs.readFile(outputFile);
     if (output && output.length > 0) {
       compiledWasm = output;
-      compiledTarget = target;
+      compiledTarget = outputTarget;
       markClean();
 
       if (isIR) {
@@ -589,6 +636,7 @@ async function compile() {
         showIRViewer(false);
         const canRun = target === "wasi/wasm32";
         btnRun.disabled = !canRun;
+        btnRun.classList.toggle("hidden", !canRun);
         btnDownload.disabled = false;
         btnDownload.classList.remove("hidden");
 
