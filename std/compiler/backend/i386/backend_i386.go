@@ -25,34 +25,34 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 		if f.Native.Arch != "386" {
 			panic("ICE: i386 backend received native function for arch " + f.Native.Arch)
 		}
-		funcStart := g.funcOffsets[f.Name]
-		g.code = append(g.code, f.Native.Code...)
+		funcStart := g.FuncOffsets[f.Name]
+		g.Code = append(g.Code, f.Native.Code...)
 		for _, fx := range f.Native.Fixups {
 			if fx.Kind != ir.NativeFixupCallRel32 {
 				continue
 			}
-			g.callFixups = append(g.callFixups, CallFixup{
+			g.CallFixups = append(g.CallFixups, CallFixup{
 				CodeOffset: funcStart + fx.Off,
 				Target:     fx.Target,
 			})
 		}
 		return
 	}
-	g.curFunc = f
+	g.CurFunc = f
 	g.initOperandCache_i386()
-	g.curFrameSize = len(f.Locals)
-	if f.Params > g.curFrameSize {
-		g.curFrameSize = f.Params
+	g.CurFrameSize = len(f.Locals)
+	if f.Params > g.CurFrameSize {
+		g.CurFrameSize = f.Params
 	}
-	g.labelOffsets = make(map[int]int)
-	g.jumpFixups = nil
+	g.LabelOffsets = make(map[int]int)
+	g.JumpFixups = nil
 
 	slot := g.slotBytes_i386()
 	// Prologue: push ebp; mov ebp, esp; sub esp, frameBytes
 	g.pushR32(REG32_EBP)
 	g.movRR32(REG32_EBP, REG32_ESP)
 
-	frameBytes := g.curFrameSize * slot
+	frameBytes := g.CurFrameSize * slot
 	if frameBytes > 0 {
 		g.subRI32(REG32_ESP, int32(frameBytes))
 	}
@@ -75,21 +75,21 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 
 	// Resolve jump fixups within this function
 	g.relaxCurrentFuncJumps()
-	for _, fix := range g.jumpFixups {
-		labelOff, ok := g.labelOffsets[fix.LabelID]
+	for _, fix := range g.JumpFixups {
+		labelOff, ok := g.LabelOffsets[fix.LabelID]
 		if !ok {
 			continue
 		}
 		switch fix.Kind {
 		case jumpFixupJmpRel8, jumpFixupJccRel8:
 			rel := labelOff - (fix.CodeOffset + 1)
-			g.code[fix.CodeOffset] = byte(rel)
+			g.Code[fix.CodeOffset] = byte(rel)
 		default:
 			g.patchRel32At(fix.CodeOffset, labelOff)
 		}
 	}
 
-	g.curFunc = nil
+	g.CurFunc = nil
 }
 
 // compileInst_i386 generates code for a single IR instruction (i386).
@@ -176,11 +176,11 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 
 	case ir.OP_LABEL:
 		g.flush()
-		g.labelOffsets[inst.Arg] = len(g.code)
+		g.LabelOffsets[inst.Arg] = len(g.Code)
 	case ir.OP_JMP:
 		g.flush()
 		fixup := g.jmpRel32()
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
+		g.JumpFixups = append(g.JumpFixups, JumpFixup{
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 			Kind:       jumpFixupJmpRel32,
@@ -189,7 +189,7 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 		g.opPop(REG32_EAX)
 		g.testRR32(REG32_EAX, REG32_EAX)
 		fixup := g.jccRel32(CC32_NE)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
+		g.JumpFixups = append(g.JumpFixups, JumpFixup{
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 			Kind:       jumpFixupJccRel32,
@@ -199,7 +199,7 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 		g.opPop(REG32_EAX)
 		g.testRR32(REG32_EAX, REG32_EAX)
 		fixup := g.jccRel32(CC32_E)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
+		g.JumpFixups = append(g.JumpFixups, JumpFixup{
 			CodeOffset: fixup,
 			LabelID:    inst.Arg,
 			Kind:       jumpFixupJccRel32,
@@ -246,7 +246,7 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	case ir.OP_IFACE_CALL:
 		g.compileIfaceCall_i386(inst)
 	case ir.OP_PANIC:
-		if g.target.GOOS == "windows" {
+		if g.Target.GOOS == "windows" {
 			g.compilePanic_win386()
 		} else {
 			g.compilePanic_linux386()
@@ -277,26 +277,26 @@ func (g *CodeGen) compileConstStr_i386(s string) {
 	g.prepareForClobber(REG32_EAX)
 	decoded := becommon.DecodeStringLiteral(s)
 
-	headerOff, ok := g.stringMap[decoded]
+	headerOff, ok := g.StringMap[decoded]
 	if !ok {
 		// Store string bytes in rodata
-		dataOff := len(g.rodata)
-		g.rodata = append(g.rodata, []byte(decoded)...)
+		dataOff := len(g.Rodata)
+		g.Rodata = append(g.Rodata, []byte(decoded)...)
 
 		// Store header {data_ptr, len} in rodata.
-		headerOff = len(g.rodata)
+		headerOff = len(g.Rodata)
 		g.emitRodataU32(0)                    // data_ptr placeholder (4 bytes)
 		g.emitRodataU32(uint32(len(decoded))) // len (4 bytes)
 
-		g.stringMap[decoded] = headerOff
+		g.StringMap[decoded] = headerOff
 		// Store dataOff in the placeholder temporarily
-		putU32(g.rodata[headerOff:headerOff+4], uint32(dataOff))
+		putU32(g.Rodata[headerOff:headerOff+4], uint32(dataOff))
 	}
 
 	// Push header address onto operand stack: mov eax, imm32
 	g.emitMovRegImm32(REG32_EAX, uint32(headerOff))
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 4,
+	g.CallFixups = append(g.CallFixups, CallFixup{
+		CodeOffset: len(g.Code) - 4,
 		Target:     "$rodata_header$",
 	})
 	g.opPush(REG32_EAX)
@@ -336,8 +336,8 @@ func (g *CodeGen) compileLocalAddr_i386(idx int) {
 func (g *CodeGen) compileGlobalGet_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX, REG32_ECX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 4,
+	g.CallFixups = append(g.CallFixups, CallFixup{
+		CodeOffset: len(g.Code) - 4,
 		Target:     "$data_addr$",
 	})
 	g.loadMem32(REG32_EAX, REG32_ECX, 0)
@@ -347,8 +347,8 @@ func (g *CodeGen) compileGlobalGet_i386(inst ir.Inst) {
 func (g *CodeGen) compileGlobalSet_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 4,
+	g.CallFixups = append(g.CallFixups, CallFixup{
+		CodeOffset: len(g.Code) - 4,
 		Target:     "$data_addr$",
 	})
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
@@ -357,8 +357,8 @@ func (g *CodeGen) compileGlobalSet_i386(inst ir.Inst) {
 func (g *CodeGen) compileGlobalAddr_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX)
 	g.emitMovRegImm32(REG32_EAX, uint32(inst.Arg*g.slotBytes_i386()))
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code) - 4,
+	g.CallFixups = append(g.CallFixups, CallFixup{
+		CodeOffset: len(g.Code) - 4,
 		Target:     "$data_addr$",
 	})
 	g.opPush(REG32_EAX)
@@ -428,7 +428,7 @@ func (g *CodeGen) compileCompareJump_i386(cc byte, label int) {
 	g.opPop(REG32_ECX)
 	g.cmpRR32(REG32_ECX, REG32_EAX)
 	fixup := g.jccRel32(cc)
-	g.jumpFixups = append(g.jumpFixups, JumpFixup{
+	g.JumpFixups = append(g.JumpFixups, JumpFixup{
 		CodeOffset: fixup,
 		LabelID:    label,
 		Kind:       jumpFixupJccRel32,
@@ -578,11 +578,11 @@ func (g *CodeGen) compileTostringIntrinsic_i386() {
 }
 
 func (g *CodeGen) emitTostringHelperI386() {
-	if g.hasTostringHelper {
+	if g.HasTostringHelper {
 		return
 	}
-	g.hasTostringHelper = true
-	g.funcOffsets[outlinedTostringHelper] = len(g.code)
+	g.HasTostringHelper = true
+	g.FuncOffsets[outlinedTostringHelper] = len(g.Code)
 	g.initOperandCache_i386()
 
 	slot := g.slotBytes_i386()
@@ -617,15 +617,15 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 
 	// Generate dispatch chain for Error/String methods
 	var entries []becommon.DispatchEntry
-	if g.irmod != nil && g.irmod.TypeIDs != nil {
-		for typeName, tid := range g.irmod.TypeIDs {
+	if g.IRMod != nil && g.IRMod.TypeIDs != nil {
+		for typeName, tid := range g.IRMod.TypeIDs {
 			candidate := typeName + ".Error"
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
+			if _, ok := g.IRMod.MethodTable[candidate]; ok {
 				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 				continue
 			}
 			candidate = typeName + ".String"
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
+			if _, ok := g.IRMod.MethodTable[candidate]; ok {
 				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 			}
 		}
@@ -672,7 +672,7 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 	g.opPush(REG32_EAX)
 	g.flush()
 
-	doneAddr := len(g.code)
+	doneAddr := len(g.Code)
 	for _, fixup := range doneFixups {
 		g.patchRel32At(fixup, doneAddr)
 	}
@@ -776,10 +776,10 @@ func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 
 	// Collect dispatch entries
 	var entries []becommon.DispatchEntry
-	if g.irmod != nil && g.irmod.TypeIDs != nil {
-		for typeName, tid := range g.irmod.TypeIDs {
+	if g.IRMod != nil && g.IRMod.TypeIDs != nil {
+		for typeName, tid := range g.IRMod.TypeIDs {
 			candidate := typeName + "." + bareMethod
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
+			if _, ok := g.IRMod.MethodTable[candidate]; ok {
 				entries = append(entries, becommon.DispatchEntry{tid, candidate})
 			}
 		}
@@ -799,7 +799,7 @@ func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 			g.patchRel32(nextFixup)
 		}
 		g.int3()
-		endAddr := len(g.code)
+		endAddr := len(g.Code)
 		for _, fixup := range endFixups {
 			g.patchRel32At(fixup, endAddr)
 		}

@@ -236,13 +236,13 @@ func (g *CodeGen) loadMem32(dst, base, off int) {
 	} else if off >= -128 && off <= 127 {
 		g.emitBytes(0x8b, byte(0x40|(dst&7)<<3|(base&7)), byte(off))
 		if (base & 7) == REG32_ESP {
-			g.code = g.code[0 : len(g.code)-2]
+			g.Code = g.Code[0 : len(g.Code)-2]
 			g.emitBytes(byte(0x44|(dst&7)<<3), 0x24, byte(off))
 		}
 	} else {
 		g.emitBytes(0x8b, byte(0x80|(dst&7)<<3|(base&7)))
 		if (base & 7) == REG32_ESP {
-			g.code = g.code[0 : len(g.code)-1]
+			g.Code = g.Code[0 : len(g.Code)-1]
 			g.emitBytes(byte(0x84|(dst&7)<<3), 0x24)
 		}
 		g.emitU32(uint32(int32(off)))
@@ -259,13 +259,13 @@ func (g *CodeGen) storeMem32(base, off, src int) {
 	} else if off >= -128 && off <= 127 {
 		g.emitBytes(0x89, byte(0x40|(src&7)<<3|(base&7)), byte(off))
 		if (base & 7) == REG32_ESP {
-			g.code = g.code[0 : len(g.code)-2]
+			g.Code = g.Code[0 : len(g.Code)-2]
 			g.emitBytes(byte(0x44|(src&7)<<3), 0x24, byte(off))
 		}
 	} else {
 		g.emitBytes(0x89, byte(0x80|(src&7)<<3|(base&7)))
 		if (base & 7) == REG32_ESP {
-			g.code = g.code[0 : len(g.code)-1]
+			g.Code = g.Code[0 : len(g.Code)-1]
 			g.emitBytes(byte(0x84|(src&7)<<3), 0x24)
 		}
 		g.emitU32(uint32(int32(off)))

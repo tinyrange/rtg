@@ -77,10 +77,10 @@ func (g *CodeGen) emitLinkStaticReturnWin386(mode string) {
 }
 
 func (g *CodeGen) compileLinkStaticIntrinsicWin386(inst ir.Inst) bool {
-	if g.target.GOOS != "windows" || g.irmod == nil || g.irmod.LinkStaticFuncs == nil {
+	if g.Target.GOOS != "windows" || g.IRMod == nil || g.IRMod.LinkStaticFuncs == nil {
 		return false
 	}
-	raw, ok := g.irmod.LinkStaticFuncs[inst.Name]
+	raw, ok := g.IRMod.LinkStaticFuncs[inst.Name]
 	if !ok {
 		return false
 	}
@@ -95,4 +95,67 @@ func (g *CodeGen) compileLinkStaticIntrinsicWin386(inst ir.Inst) bool {
 	g.emitGenericLinkStaticCallWin386(inst.Arg, lib, sym)
 	g.emitLinkStaticReturnWin386(mode)
 	return true
+}
+
+func (g *CodeGen) pushImm32(val uint32) {
+	if val < 128 {
+		g.emitBytes(0x6a, byte(val))
+		return
+	}
+	g.emitByte(0x68)
+	g.emitU32(val)
+}
+
+func (g *CodeGen) compilePanic_win386() {
+	g.opPop(REG32_EAX)
+
+	// Tostring heuristic: if first dword < 256, it's an interface box
+	g.loadMem32(REG32_ECX, REG32_EAX, 0)
+	g.cmpRI32(REG32_ECX, int32(256))
+	g.emitBytes(0x73, 0x03)
+	g.loadMem32(REG32_EAX, REG32_EAX, 4)
+
+	// EAX = string header ptr {data_ptr:4, len:4}
+	g.pushR32(REG32_ESI)
+	g.pushR32(REG32_EBX)
+	g.loadMem32(REG32_ESI, REG32_EAX, 0)
+	g.loadMem32(REG32_EBX, REG32_EAX, 4)
+
+	g.emitMovRegImm32(REG32_EAX, 0xFFFFFFF4)
+	g.pushR32(REG32_EAX)
+	g.emitCallIAT("GetStdHandle")
+	g.movRR32(REG32_ECX, REG32_EAX)
+
+	g.subRI32(REG32_ESP, 4)
+	g.movRR32(REG32_EDX, REG32_ESP)
+	g.pushImm32(0)
+	g.pushR32(REG32_EDX)
+	g.pushR32(REG32_EBX)
+	g.pushR32(REG32_ESI)
+	g.pushR32(REG32_ECX)
+	g.emitCallIAT("WriteFile")
+	g.addRI32(REG32_ESP, 4)
+
+	g.emitBytes(0x6a, 0x0a)
+	g.movRR32(REG32_ESI, REG32_ESP)
+	g.emitMovRegImm32(REG32_EAX, 0xFFFFFFF4)
+	g.pushR32(REG32_EAX)
+	g.emitCallIAT("GetStdHandle")
+	g.movRR32(REG32_ECX, REG32_EAX)
+
+	g.subRI32(REG32_ESP, 4)
+	g.movRR32(REG32_EDX, REG32_ESP)
+	g.pushImm32(0)
+	g.pushR32(REG32_EDX)
+	g.pushImm32(1)
+	g.pushR32(REG32_ESI)
+	g.pushR32(REG32_ECX)
+	g.emitCallIAT("WriteFile")
+	g.addRI32(REG32_ESP, 8)
+
+	g.popR32(REG32_EBX)
+	g.popR32(REG32_ESI)
+
+	g.pushImm32(2)
+	g.emitCallIAT("ExitProcess")
 }
