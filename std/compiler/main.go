@@ -39,7 +39,7 @@ var compileTarget = common.Target{
 }
 
 func defaultPtrSize() int {
-	if runtime.GOARCH == "386" || runtime.GOARCH == "wasm32" {
+	if runtime.GOARCH == "386" || runtime.GOARCH == "wasm32" || runtime.GOARCH == "armv8m" {
 		return 4
 	}
 	return 8
@@ -279,7 +279,7 @@ func main() {
 				compileTarget.GOOS = target[0:slashIdx]
 				compileTarget.GOARCH = target[slashIdx+1:]
 				compileTarget.Triple = target
-				if compileTarget.GOARCH == "386" || compileTarget.GOARCH == "wasm32" {
+				if compileTarget.GOARCH == "386" || compileTarget.GOARCH == "wasm32" || compileTarget.GOARCH == "armv8m" {
 					compileTarget.PtrSize = 4
 				} else {
 					compileTarget.PtrSize = 8

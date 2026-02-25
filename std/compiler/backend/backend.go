@@ -7,6 +7,7 @@ import (
 	aarch64linux "j5.nz/rtg/std/compiler/backend/aarch64/linux"
 	aarch64macos "j5.nz/rtg/std/compiler/backend/aarch64/macos"
 	aarch64windows "j5.nz/rtg/std/compiler/backend/aarch64/windows"
+	armv8melf "j5.nz/rtg/std/compiler/backend/armv8m/elf"
 	"j5.nz/rtg/std/compiler/backend/c"
 	i386linux "j5.nz/rtg/std/compiler/backend/i386/linux"
 	i386windows "j5.nz/rtg/std/compiler/backend/i386/windows"
@@ -74,6 +75,11 @@ func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 			return aarch64windows.Generate(tgt, irmod, outputPath)
 		}
 		return fmt.Errorf("unsupported OS for arm64: %s", tgt.GOOS)
+	case "armv8m":
+		if tgt.Triple == "elf/armv8m" || tgt.GOOS == "elf" || tgt.GOOS == "baremetal" {
+			return armv8melf.Generate(tgt, irmod, outputPath)
+		}
+		return fmt.Errorf("unsupported OS for armv8m: %s", tgt.GOOS)
 	default:
 		return fmt.Errorf("unsupported target architecture: %s", tgt.GOARCH)
 	}
