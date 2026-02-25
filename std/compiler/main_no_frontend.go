@@ -21,7 +21,7 @@ var targetGOARCH string = runtime.GOARCH
 var targetPtrSize int = defaultPtrSize()
 
 func defaultPtrSize() int {
-	if runtime.GOARCH == "386" || runtime.GOARCH == "wasm32" {
+	if runtime.GOARCH == "386" || runtime.GOARCH == "wasm32" || runtime.GOARCH == "armv8m" {
 		return 4
 	}
 	return 8
@@ -122,7 +122,7 @@ func main() {
 				targetTriple = target
 				targetGOOS = target[0:slashIdx]
 				targetGOARCH = target[slashIdx+1:]
-				if targetGOARCH == "386" || targetGOARCH == "wasm32" {
+				if targetGOARCH == "386" || targetGOARCH == "wasm32" || targetGOARCH == "armv8m" {
 					targetPtrSize = 4
 				} else {
 					targetPtrSize = 8

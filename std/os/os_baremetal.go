@@ -1,0 +1,364 @@
+//go:build baremetal
+
+package os
+
+import "runtime"
+
+type FileMode int
+
+type File struct {
+	fd int
+}
+
+var Stdout *File = &File{fd: 1}
+var Stderr *File = &File{fd: 2}
+var Stdin *File = &File{fd: 0}
+
+var Args []string
+
+func (f *File) Write(p []byte) (n int, err error) {
+	wrote, _, errn := runtime.SysWrite(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
+	if errn != 0 {
+		return int(wrote), Errno(errn)
+	}
+	return int(wrote), nil
+}
+
+func (f *File) Read(p []byte) (int, error) {
+	n, _, errn := runtime.SysRead(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
+	if errn != 0 {
+		return int(n), Errno(errn)
+	}
+	return int(n), nil
+}
+
+func (f *File) Close() error {
+	_, _, errn := runtime.SysClose(uintptr(f.fd))
+	if errn != 0 {
+		return Errno(errn)
+	}
+	return nil
+}
+
+func (f *File) Fd() int {
+	return f.fd
+}
+
+func NewFile(fd int) *File {
+	return &File{fd: fd}
+}
+
+func Write(f *File, p []byte) (int, error) {
+	wrote, _, errn := runtime.SysWrite(uintptr(f.fd), runtime.Sliceptr(p), uintptr(len(p)))
+	if errn != 0 {
+		return int(wrote), Errno(errn)
+	}
+	return int(wrote), nil
+}
+
+func Exit(code int) {
+	runtime.SysExit(uintptr(code))
+}
+
+func makeCString(s string) []byte {
+	buf := make([]byte, len(s)+1)
+	i := 0
+	for i < len(s) {
+		buf[i] = s[i]
+		i++
+	}
+	return buf
+}
+
+func Open(name string) (*File, error) {
+	return OpenFile(name, int(O_RDONLY), FileMode(0))
+}
+
+func OpenFile(name string, flag int, perm FileMode) (*File, error) {
+	buf := makeCString(name)
+	fd, _, errn := runtime.SysOpen(runtime.Sliceptr(buf), uintptr(flag), uintptr(perm))
+	if errn != 0 {
+		return nil, Errno(errn)
+	}
+	return &File{fd: int(fd)}, nil
+}
+
+func ReadFile(filename string) ([]byte, error) {
+	buf := makeCString(filename)
+
+	fd, _, errn := runtime.SysOpen(runtime.Sliceptr(buf), uintptr(O_RDONLY), 0)
+	if errn != 0 {
+		return nil, Errno(errn)
+	}
+
+	var data []byte
+	chunk := make([]byte, 4096)
+	for {
+		n, _, errn := runtime.SysRead(fd, runtime.Sliceptr(chunk), 4096)
+		if errn != 0 {
+			runtime.SysClose(fd)
+			return nil, Errno(errn)
+		}
+		if n == 0 {
+			break
+		}
+		data = append(data, chunk[0:int(n)]...)
+	}
+
+	runtime.SysClose(fd)
+	return data, nil
+}
+
+func WriteFile(name string, data []byte, perm int) error {
+	buf := makeCString(name)
+	flags := O_WRONLY + O_CREAT + O_TRUNC
+	fd, _, errn := runtime.SysOpen(runtime.Sliceptr(buf), uintptr(flags), uintptr(perm))
+	if errn != 0 {
+		return Errno(errn)
+	}
+	for len(data) > 0 {
+		n, _, errn := runtime.SysWrite(fd, runtime.Sliceptr(data), uintptr(len(data)))
+		if errn != 0 {
+			runtime.SysClose(fd)
+			return Errno(errn)
+		}
+		data = data[int(n):len(data)]
+	}
+	runtime.SysClose(fd)
+	return nil
+}
+
+func MkdirAll(path string, perm FileMode) error {
+	buf := makeCString(path)
+	_, _, errn := runtime.SysMkdir(runtime.Sliceptr(buf), uintptr(perm))
+	if errn == 0 || errn == 17 {
+		return nil
+	}
+
+	i := 0
+	if len(path) > 0 && path[0] == '/' {
+		i = 1
+	}
+	for i < len(path) {
+		j := i
+		for j < len(path) && path[j] != '/' {
+			j++
+		}
+		prefix := path[0:j]
+		pbuf := makeCString(prefix)
+		_, _, errn = runtime.SysMkdir(runtime.Sliceptr(pbuf), uintptr(perm))
+		if errn != 0 && errn != 17 {
+			return Errno(errn)
+		}
+		i = j + 1
+	}
+	return nil
+}
+
+func RemoveAll(path string) error {
+	buf := makeCString(path)
+	_, _, errn := runtime.SysUnlink(runtime.Sliceptr(buf))
+	if errn == 0 {
+		return nil
+	}
+
+	entries, err := ListDir(path)
+	if err != nil {
+		return nil
+	}
+
+	i := 0
+	for i < len(entries) {
+		child := path + "/" + entries[i]
+		rerr := RemoveAll(child)
+		if rerr != nil {
+			return rerr
+		}
+		i++
+	}
+
+	buf = makeCString(path)
+	_, _, errn = runtime.SysRmdir(runtime.Sliceptr(buf))
+	if errn != 0 {
+		return Errno(errn)
+	}
+	return nil
+}
+
+func Getenv(key string) string {
+	// WASI doesn't have /proc/self/environ, but we still use the same
+	// syscall interface. The WASM backend handles getcwd specially.
+	// For environ, we'll return empty for now.
+	// TODO: use WASI environ_get
+	return ""
+}
+
+func Environ() []string {
+	return nil
+}
+
+func ListDir(dirname string) ([]string, error) {
+	f, err := OpenFile(dirname, int(O_RDONLY+O_DIRECTORY), FileMode(0))
+	if err != nil {
+		return nil, err
+	}
+	// WASI fd_readdir returns entries differently from Linux getdents64
+	// For now, use the same syscall interface and the backend translates
+	buf := make([]byte, 4096)
+	n, _, errn := runtime.SysGetdents64(uintptr(f.fd), runtime.Sliceptr(buf), 4096)
+	if errn != 0 {
+		f.Close()
+		return nil, Errno(errn)
+	}
+	f.Close()
+
+	// Parse WASI fd_readdir entries:
+	// Each entry: d_next(8) + d_ino(8) + d_namlen(4) + d_type(1) + name(d_namlen)
+	var names []string
+	offset := 0
+	for offset+24 < int(n) {
+		// d_namlen at offset+16 (4 bytes LE)
+		namlen := int(buf[offset+16]) + int(buf[offset+17])*256
+		// d_type at offset+20
+		nameStart := offset + 24
+		nameEnd := nameStart + namlen
+		if nameEnd > int(n) {
+			break
+		}
+		name := string(buf[nameStart:nameEnd])
+		if name != "." && name != ".." {
+			names = append(names, name)
+		}
+		offset = nameEnd
+	}
+	return names, nil
+}
+
+type DirEntry struct {
+	name  string
+	isDir bool
+}
+
+func (d DirEntry) Name() string {
+	return d.name
+}
+
+func (d DirEntry) IsDir() bool {
+	return d.isDir
+}
+
+func ReadDir(dirname string) ([]DirEntry, error) {
+	f, err := OpenFile(dirname, int(O_RDONLY+O_DIRECTORY), FileMode(0))
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, 4096)
+	n, _, errn := runtime.SysGetdents64(uintptr(f.fd), runtime.Sliceptr(buf), 4096)
+	if errn != 0 {
+		f.Close()
+		return nil, Errno(errn)
+	}
+	f.Close()
+
+	var entries []DirEntry
+	offset := 0
+	for offset+24 < int(n) {
+		namlen := int(buf[offset+16]) + int(buf[offset+17])*256
+		dtype := buf[offset+20]
+		nameStart := offset + 24
+		nameEnd := nameStart + namlen
+		if nameEnd > int(n) {
+			break
+		}
+		name := string(buf[nameStart:nameEnd])
+		if name != "." && name != ".." {
+			entries = append(entries, DirEntry{name: name, isDir: dtype == 3})
+		}
+		offset = nameEnd
+	}
+	return entries, nil
+}
+
+func Getwd() (string, error) {
+	return ".", nil
+}
+
+func Chmod(name string, mode int) error {
+	return nil
+}
+
+func Stat(name string) error {
+	// Try to open and close the file to check if it exists
+	f, err := Open(name)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return nil
+}
+
+func Getpid() int {
+	pid, _, _ := runtime.SysGetpid()
+	return int(pid)
+}
+
+func init() {
+	// Baremetal semihosting may provide a command line via SYS_GET_CMDLINE.
+	// Always provide argv[0] so callers can safely read os.Args[0].
+	Args = []string{"rtg"}
+	cmdPtr, _, errn := runtime.SysGetCommandLine()
+	if errn != 0 || cmdPtr == 0 {
+		return
+	}
+
+	var line []byte
+	i := 0
+	for i < 1024 {
+		b := byte(runtime.ReadPtr(cmdPtr + uintptr(i)))
+		if b == 0 {
+			break
+		}
+		line = append(line, b)
+		i++
+	}
+	if len(line) == 0 {
+		return
+	}
+
+	var parsed []string
+	i = 0
+	for i < len(line) {
+		for i < len(line) && (line[i] == ' ' || line[i] == '\t' || line[i] == '\n' || line[i] == '\r') {
+			i++
+		}
+		if i >= len(line) {
+			break
+		}
+		var arg []byte
+		inQuote := false
+		for i < len(line) {
+			c := line[i]
+			if c == '"' {
+				inQuote = !inQuote
+				i++
+				continue
+			}
+			if !inQuote && (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+				break
+			}
+			arg = append(arg, c)
+			i++
+		}
+		if len(arg) > 0 {
+			parsed = append(parsed, string(arg))
+		}
+	}
+	if len(parsed) > 0 {
+		if len(parsed[0]) >= 4 && parsed[0][len(parsed[0])-4:] == ".elf" {
+			parsed = parsed[1:len(parsed)]
+		}
+	}
+	if len(parsed) > 0 {
+		Args = append(Args, parsed...)
+	}
+}
