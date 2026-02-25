@@ -3,7 +3,7 @@
 package x64
 
 import (
-	"j5.nz/rtg/std/compiler/backend/x64/core"
+	core "j5.nz/rtg/std/compiler/backend/x64"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )

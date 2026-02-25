@@ -1,4 +1,4 @@
-package core
+package x64
 
 import (
 	"fmt"

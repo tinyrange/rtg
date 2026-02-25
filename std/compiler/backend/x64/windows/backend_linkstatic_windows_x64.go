@@ -5,7 +5,7 @@ package x64
 import (
 	"strings"
 
-	"j5.nz/rtg/std/compiler/backend/x64/core"
+	core "j5.nz/rtg/std/compiler/backend/x64"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
