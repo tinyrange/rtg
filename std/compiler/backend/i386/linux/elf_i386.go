@@ -5,13 +5,8 @@ package linux
 import (
 	core "j5.nz/rtg/std/compiler/backend/i386"
 	"j5.nz/rtg/std/compiler/ir"
+	objelf "j5.nz/rtg/std/compiler/object/elf"
 )
-
-type symEntry struct {
-	nameOff int
-	value   uint64
-	size    uint64
-}
 
 // BuildELF32 assembles an ELF32 executable from the generated i386 module.
 func BuildELF32(g *core.CodeGen, irmod *ir.IRModule) []byte {
@@ -46,56 +41,10 @@ func BuildELF32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		}
 	}
 
-	var strtab []byte
-	strtab = append(strtab, 0)
-	startNameOff := len(strtab)
-	strtab = append(strtab, []byte("_start")...)
-	strtab = append(strtab, 0)
-
-	var syms []symEntry
-	startSize := uint64(0)
-	if len(irmod.Funcs) > 0 {
-		startSize = uint64(g.FuncOffsets[irmod.Funcs[0].Name])
-	} else {
-		startSize = uint64(textSize)
-	}
-	syms = append(syms, symEntry{startNameOff, textVAddr, startSize})
-
-	for i, f := range irmod.Funcs {
-		nameOff := len(strtab)
-		strtab = append(strtab, []byte(f.Name)...)
-		strtab = append(strtab, 0)
-
-		funcStart := g.FuncOffsets[f.Name]
-		var funcSize int
-		if i+1 < len(irmod.Funcs) {
-			funcSize = g.FuncOffsets[irmod.Funcs[i+1].Name] - funcStart
-		} else {
-			funcSize = textSize - funcStart
-		}
-		syms = append(syms, symEntry{nameOff, textVAddr + uint64(funcStart), uint64(funcSize)})
-	}
-
+	symtab, strtab := objelf.BuildSymtabAndStrtab32(irmod, textVAddr, textSize, g.FuncOffsets)
 	symEntrySize := 16
-	symtabSize := (1 + len(syms)) * symEntrySize
-	symtab := make([]byte, symtabSize)
-	for i, sym := range syms {
-		off := (i + 1) * symEntrySize
-		putU32(symtab[off:], uint32(sym.nameOff))
-		putU32(symtab[off+4:], uint32(sym.value))
-		putU32(symtab[off+8:], uint32(sym.size))
-		symtab[off+12] = 0x12
-		symtab[off+13] = 0
-		putU16(symtab[off+14:], 1)
-	}
-
-	shstrtab := []byte("\x00.text\x00.rodata\x00.data\x00.symtab\x00.strtab\x00.shstrtab\x00")
-	shNameText := 1
-	shNameRodata := 7
-	shNameData := 15
-	shNameSymtab := 21
-	shNameStrtab := 29
-	shNameShstrtab := 37
+	symtabSize := len(symtab)
+	shstrtab, shNames := objelf.DefaultShStrtab()
 
 	symtabOffset := loadedSize
 	strtabOffset := symtabOffset + symtabSize
@@ -165,7 +114,7 @@ func BuildELF32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		shdr := elf[shdrOffset:]
 
 		s := shdr[1*shdrEntrySize:]
-		putU32(s[0:], uint32(shNameText))
+		putU32(s[0:], uint32(shNames.Text))
 		putU32(s[4:], 1)
 		putU32(s[8:], 6)
 		putU32(s[12:], uint32(textVAddr))
@@ -177,7 +126,7 @@ func BuildELF32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		putU32(s[36:], 0)
 
 		s = shdr[2*shdrEntrySize:]
-		putU32(s[0:], uint32(shNameRodata))
+		putU32(s[0:], uint32(shNames.Rodata))
 		putU32(s[4:], 1)
 		putU32(s[8:], 2)
 		putU32(s[12:], uint32(rodataVAddr))
@@ -186,7 +135,7 @@ func BuildELF32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		putU32(s[32:], 4)
 
 		s = shdr[3*shdrEntrySize:]
-		putU32(s[0:], uint32(shNameData))
+		putU32(s[0:], uint32(shNames.Data))
 		putU32(s[4:], 1)
 		putU32(s[8:], 3)
 		putU32(s[12:], uint32(dataVAddr))
@@ -195,7 +144,7 @@ func BuildELF32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		putU32(s[32:], 4)
 
 		s = shdr[4*shdrEntrySize:]
-		putU32(s[0:], uint32(shNameSymtab))
+		putU32(s[0:], uint32(shNames.Symtab))
 		putU32(s[4:], 2)
 		putU32(s[8:], 0)
 		putU32(s[12:], 0)
@@ -207,7 +156,7 @@ func BuildELF32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		putU32(s[36:], uint32(symEntrySize))
 
 		s = shdr[5*shdrEntrySize:]
-		putU32(s[0:], uint32(shNameStrtab))
+		putU32(s[0:], uint32(shNames.Strtab))
 		putU32(s[4:], 3)
 		putU32(s[8:], 0)
 		putU32(s[12:], 0)
@@ -216,7 +165,7 @@ func BuildELF32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		putU32(s[32:], 1)
 
 		s = shdr[6*shdrEntrySize:]
-		putU32(s[0:], uint32(shNameShstrtab))
+		putU32(s[0:], uint32(shNames.Shstrtab))
 		putU32(s[4:], 3)
 		putU32(s[8:], 0)
 		putU32(s[12:], 0)

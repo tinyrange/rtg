@@ -163,6 +163,10 @@ func (g *CodeGen) LookupFuncOffset(name string) (int, bool) {
 	return v, ok
 }
 
+func (g *CodeGen) FuncOffsets() map[string]int {
+	return g.funcOffsets
+}
+
 // CompileModuleFuncs compiles all IR functions and records deterministic function offsets.
 func (g *CodeGen) CompileModuleFuncs(irmod *ir.IRModule) {
 	for _, f := range irmod.Funcs {

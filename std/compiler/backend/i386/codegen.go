@@ -102,6 +102,11 @@ type machoSymEntry struct {
 	ntype   byte
 }
 
+func (g *CodeGen) LookupFuncOffset(name string) (int, bool) {
+	off, ok := g.FuncOffsets[name]
+	return off, ok
+}
+
 // === Shared byte emission ===
 
 func (g *CodeGen) emitByte(b byte) {

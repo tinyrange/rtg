@@ -148,6 +148,10 @@ func (g *CodeGen) GetFuncOffset(name string) int {
 	return g.funcOffsets[name]
 }
 
+func (g *CodeGen) FuncOffsets() map[string]int {
+	return g.funcOffsets
+}
+
 func (g *CodeGen) MaybeGetFuncOffsets(name string) (int, bool) {
 	offset, ok := g.funcOffsets[name]
 	return offset, ok
