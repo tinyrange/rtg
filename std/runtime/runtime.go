@@ -519,20 +519,6 @@ func SliceResliceFull(hdr uintptr, low int, high int, max int) uintptr {
 // Map header (SliceHdrSize bytes): {data_ptr, len, cap, keyKind}
 // Each entry is MapEntrySize bytes: {key, value}
 
-func mapHeaderSanity(hdr uintptr) (uintptr, int, int, int) {
-	if hdr == 0 {
-		return 0, 0, 0, 0
-	}
-	data := ReadPtr(hdr)
-	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
-	mcap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
-	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
-	if mlen < 0 || mcap < 0 || mlen > mcap || mcap > 1<<20 {
-		runtimePanic("map header corrupt")
-	}
-	return data, mlen, mcap, keyKind
-}
-
 // mapStrEqual compares two string header pointers by content.
 func mapStrEqual(a uintptr, b uintptr) bool {
 	if a == b {
@@ -543,10 +529,6 @@ func mapStrEqual(a uintptr, b uintptr) bool {
 	}
 	alen := int(ReadPtr(a + uintptr(PtrSize)))
 	blen := int(ReadPtr(b + uintptr(PtrSize)))
-	// Corrupt headers can produce absurd lengths and cause pathological compare loops.
-	if alen < 0 || blen < 0 || alen > 1<<20 || blen > 1<<20 {
-		return false
-	}
 	if alen != blen {
 		return false
 	}
@@ -555,9 +537,6 @@ func mapStrEqual(a uintptr, b uintptr) bool {
 	}
 	aptr := ReadPtr(a)
 	bptr := ReadPtr(b)
-	if aptr == 0 || bptr == 0 {
-		return false
-	}
 	ab := Makeslice(aptr, alen, alen)
 	bb := Makeslice(bptr, blen, blen)
 	j := 0
@@ -586,7 +565,9 @@ func MapGet(hdr uintptr, key uintptr) (uintptr, bool) {
 	if hdr == 0 {
 		return 0, false
 	}
-	data, mlen, _, keyKind := mapHeaderSanity(hdr)
+	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
+	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
+	data := ReadPtr(hdr)
 	i := 0
 	for i < mlen {
 		entryAddr := data + uintptr(i*MapEntrySize)
@@ -611,7 +592,9 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 	if hdr == 0 {
 		hdr = MapMake(0)
 	}
-	data, mlen, mcap, keyKind := mapHeaderSanity(hdr)
+	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
+	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
+	data := ReadPtr(hdr)
 	// Search for existing key
 	i := 0
 	for i < mlen {
@@ -631,6 +614,7 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 		i = i + 1
 	}
 	// Not found — append
+	mcap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
 	if mlen >= mcap {
 		newCap := mcap * 2
 		if newCap < 8 {
@@ -656,7 +640,9 @@ func MapDelete(hdr uintptr, key uintptr) {
 	if hdr == 0 {
 		return
 	}
-	data, mlen, _, keyKind := mapHeaderSanity(hdr)
+	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
+	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
+	data := ReadPtr(hdr)
 	i := 0
 	for i < mlen {
 		entryAddr := data + uintptr(i*MapEntrySize)
