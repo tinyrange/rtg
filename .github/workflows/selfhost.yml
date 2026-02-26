@@ -194,6 +194,59 @@ jobs:
           RENODE_BIN="$(find "$HOME/renode" -type f -name renode | head -n 1)"
           RENODE_PATH="$RENODE_BIN" ./build/build test-fullcompiler-armv8m-renode
 
+      - name: Renode bare UART smoke (armv8m)
+        run: |
+          set -euo pipefail
+          RENODE_BIN="$(find "$HOME/renode" -type f -name renode | head -n 1)"
+          cat > build/renode_bare_probe.go <<'EOF'
+          package main
+          import "runtime"
+          func main() {
+            s := "PASS"
+            runtime.SysWrite(1, runtime.Stringptr(s), uintptr(len(s)))
+          }
+          EOF
+          ./build/rtg -T bare/armv8m -o build/renode_bare_probe build/renode_bare_probe.go
+          cat > build/renode_bare_probe.repl <<'EOF'
+          nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+              priorityMask: 0xF0
+              systickFrequency: 32000000
+              IRQ -> cpu@0
+
+          cpu: CPU.CortexM @ sysbus
+              cpuType: "cortex-m33"
+              nvic: nvic
+
+          uart0: UART.NS16550 @ sysbus 0x40004000
+
+          flash: Memory.MappedMemory @ sysbus 0x10000000
+              size: 0x01000000
+
+          sram: Memory.MappedMemory @ sysbus 0x20000000
+              size: 0x00002000
+
+          sram_alt: Memory.MappedMemory @ sysbus 0x28000000
+              size: 0x00070000
+
+          sram_stack: Memory.MappedMemory @ sysbus 0x283E0000
+              size: 0x00010000
+          EOF
+          cat > build/renode_bare_probe.resc <<'EOF'
+          mach create "rtg_bare_probe"
+          machine LoadPlatformDescription @build/renode_bare_probe.repl
+          sysbus LoadELF @build/renode_bare_probe
+          showAnalyzer uart0
+          uart0 CreateFileBackend @build/renode_bare_probe.out true
+          cpu VectorTableOffset 0x10000000
+          cpu PC 0x10000000
+          cpu SP 0x283EF000
+          start
+          emulation RunFor "2.0"
+          quit
+          EOF
+          timeout 30s "$RENODE_BIN" --disable-xwt -P 0 build/renode_bare_probe.resc
+          grep -q "PASS" build/renode_bare_probe.out
+
       - name: Fullcompiler suite (RTG backend, bare/armv8m)
         continue-on-error: true
         run: RTG_TARGET=bare/armv8m ./build/build test-fullcompiler-rtg
