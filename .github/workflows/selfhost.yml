@@ -141,6 +141,29 @@ jobs:
       - name: Fullcompiler suite (WASM backend)
         run: ./build/build test-fullcompiler-wasm
 
+  fullcompiler-armv8m:
+    name: Fullcompiler suite (baremetal/armv8m)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install QEMU ARM system emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm
+
+      - name: Build bootstrap compiler
+        run: go build -o build/rtg ./std/compiler/
+
+      - name: Build Buildfile runner
+        run: go build -o build/build ./tools/build.go
+
+      - name: Fullcompiler suite (RTG backend, baremetal/armv8m)
+        run: RTG_TARGET=baremetal/armv8m ./build/build test-fullcompiler-rtg
+
   comemu-dos:
     name: DOS COMEMU sweep (tests/*.go)
     runs-on: ubuntu-latest
