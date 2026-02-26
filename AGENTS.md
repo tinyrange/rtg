@@ -69,3 +69,4 @@ For each feature/change:
 
 - Backend selection is primarily controlled by file build constraints; special tags like `no_backend_*` and `no_embed_std` are used in targeted flows.
 - Keep `tools/Buildfile` targets and backend/tag assumptions aligned when adding/removing backends.
+- For `gh` commands that pass markdown/text (PR title/body/comments), avoid inline shell-quoted text when it may contain backticks, `<`, `>`, or `$`; prefer `--body-file` (or another file-based flag) with a quoted heredoc (`<<'EOF'`) to prevent shell mangling.
