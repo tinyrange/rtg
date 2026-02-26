@@ -179,6 +179,10 @@ test-fullcompiler-c: build
 test-fullcompiler-wasm: build
   fullcompiler wasm
 
+test-fullcompiler-armv8m-renode: build
+  sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"
+  fullcompiler rtg semihost/armv8m
+
 test: test-fullcompiler-rtg selfhost selfhost-wasm
 
 test-dosbox-smoke: build

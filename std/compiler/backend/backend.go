@@ -76,7 +76,7 @@ func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 		}
 		return fmt.Errorf("unsupported OS for arm64: %s", tgt.GOOS)
 	case "armv8m":
-		if tgt.Triple == "elf/armv8m" || tgt.GOOS == "elf" || tgt.GOOS == "baremetal" {
+		if tgt.Triple == "elf/armv8m" || tgt.GOOS == "elf" || tgt.GOOS == "semihost" || tgt.GOOS == "bare" {
 			return armv8melf.Generate(tgt, irmod, outputPath)
 		}
 		return fmt.Errorf("unsupported OS for armv8m: %s", tgt.GOOS)

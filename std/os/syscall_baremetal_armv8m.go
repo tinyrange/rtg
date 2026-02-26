@@ -1,4 +1,4 @@
-//go:build baremetal && armv8m
+//go:build (bare || semihost) && armv8m
 
 package os
 

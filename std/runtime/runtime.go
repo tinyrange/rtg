@@ -135,8 +135,8 @@ var heapChunkMax int = 1048576
 // growth-sized regions to avoid per-allocation syscall overhead while
 // keeping startup memory lower.
 func Alloc(size int) uintptr {
-	// Round up to 8-byte alignment
-	size = (size + 7) / 8 * 8
+	// Round up to 8-byte alignment without division (important on no-div backends).
+	size = (size + 7) &^ 7
 
 	needGrow := heapPtr == 0
 	if !needGrow {
@@ -184,12 +184,21 @@ func Memcopy(dst uintptr, src uintptr, n int) {
 	if src == 0 {
 		runtimePanic("Memcopy: nil src")
 	}
-	d := Makeslice(dst, n, n)
-	s := Makeslice(src, n, n)
-	i := 0
-	for i < n {
-		d[i] = s[i]
-		i++
+	// Copy words first to reduce instruction count on no-div/no-libc backends.
+	for n >= 4 {
+		WritePtr(dst, ReadPtr(src))
+		dst = dst + 4
+		src = src + 4
+		n = n - 4
+	}
+	if n > 0 {
+		d := Makeslice(dst, n, n)
+		s := Makeslice(src, n, n)
+		i := 0
+		for i < n {
+			d[i] = s[i]
+			i++
+		}
 	}
 }
 
@@ -201,11 +210,18 @@ func Memzero(ptr uintptr, n int) {
 	if ptr == 0 {
 		runtimePanic("Memzero: nil ptr")
 	}
-	b := Makeslice(ptr, n, n)
-	i := 0
-	for i < n {
-		b[i] = 0
-		i++
+	for n >= 4 {
+		WritePtr(ptr, 0)
+		ptr = ptr + 4
+		n = n - 4
+	}
+	if n > 0 {
+		b := Makeslice(ptr, n, n)
+		i := 0
+		for i < n {
+			b[i] = 0
+			i++
+		}
 	}
 }
 

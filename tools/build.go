@@ -752,7 +752,7 @@ func (e *Executor) handleFullCompiler(args []string) error {
 			fmt.Printf("SKIP: %s/%s (known 32-bit comptime VM allocation issue)\n", backend, name)
 			continue
 		}
-		if backend == "rtg" && targetOS == "baremetal" && targetArch == "armv8m" && name == "04_defer_no_effect" {
+		if backend == "rtg" && targetOS == "semihost" && targetArch == "armv8m" && name == "04_defer_no_effect" {
 			fmt.Printf("SKIP: %s/%s (known armv8m defer runtime issue)\n", backend, name)
 			continue
 		}
@@ -776,6 +776,7 @@ func (e *Executor) handleFullCompiler(args []string) error {
 			runBin := out
 			runArgs := []string{}
 			captureCombined := false
+			executedDirectly := false
 			switch {
 			case targetOS == runtime.GOOS:
 				if targetArch != runtime.GOARCH {
@@ -798,7 +799,15 @@ func (e *Executor) handleFullCompiler(args []string) error {
 				}
 				runBin = "cmd.exe"
 				runArgs = []string{"/c", quoteForCmd(winOut)}
-			case runtime.GOOS == "linux" && targetOS == "baremetal" && targetArch == "armv8m":
+			case runtime.GOOS == "linux" && (targetOS == "semihost" || targetOS == "bare") && targetArch == "armv8m":
+				if renodePath := strings.TrimSpace(os.Getenv("RENODE_PATH")); renodePath != "" {
+					got, err = e.runArmv8mWithRenode(renodePath, out, targetOS)
+					if err != nil {
+						return err
+					}
+					executedDirectly = true
+					break
+				}
 				runBin = "qemu-system-arm"
 				runArgs = []string{
 					"-M", "mps2-an505",
@@ -812,13 +821,15 @@ func (e *Executor) handleFullCompiler(args []string) error {
 			default:
 				return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
 			}
-			if captureCombined {
-				got, err = e.runAndCaptureCombined(runBin, runArgs...)
-			} else {
-				got, err = e.runAndCapture(runBin, runArgs...)
-			}
-			if err != nil {
-				return err
+			if !executedDirectly {
+				if captureCombined {
+					got, err = e.runAndCaptureCombined(runBin, runArgs...)
+				} else {
+					got, err = e.runAndCapture(runBin, runArgs...)
+				}
+				if err != nil {
+					return err
+				}
 			}
 		case "c":
 			csrc := filepath.Join("build", "fullcompiler_"+name+".c")
@@ -858,6 +869,113 @@ func (e *Executor) handleFullCompiler(args []string) error {
 	}
 
 	return nil
+}
+
+func resolveRenodeExecutable(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("RENODE_PATH is empty")
+	}
+	candidates := []string{path, filepath.Join(path, "renode")}
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("RENODE_PATH %q is not an executable file and does not contain renode binary", path)
+}
+
+func renodeArmv8mRepl() string {
+	return "" +
+		"nvic: IRQControllers.NVIC @ sysbus 0xE000E000\n" +
+		"    priorityMask: 0xF0\n" +
+		"    systickFrequency: 32000000\n" +
+		"    IRQ -> cpu@0\n" +
+		"\n" +
+		"cpu: CPU.CortexM @ sysbus\n" +
+		"    cpuType: \"cortex-m33\"\n" +
+		"    nvic: nvic\n" +
+		"\n" +
+		"uartSemihosting: UART.SemihostingUart @ cpu\n" +
+		"uart0: UART.NS16550 @ sysbus 0x40004000\n" +
+		"\n" +
+		"flash: Memory.MappedMemory @ sysbus 0x10000000\n" +
+		"    size: 0x01000000\n" +
+		"\n" +
+		// RP2350-like RAM budget: 8KB + 448KB + 64KB = 520KB total.
+		"sram: Memory.MappedMemory @ sysbus 0x20000000\n" +
+		"    size: 0x00002000\n" +
+		"\n" +
+		"sram_alt: Memory.MappedMemory @ sysbus 0x28000000\n" +
+		"    size: 0x00070000\n" +
+		"\n" +
+		"sram_stack: Memory.MappedMemory @ sysbus 0x283E0000\n" +
+		"    size: 0x00010000\n"
+}
+
+func (e *Executor) runArmv8mWithRenode(renodePath string, elfPath string, targetOS string) (string, error) {
+	renodeBin, err := resolveRenodeExecutable(renodePath)
+	if err != nil {
+		return "", err
+	}
+	replPath := filepath.Join("build", "fullcompiler_armv8m_renode.repl")
+	if err := os.WriteFile(replPath, []byte(renodeArmv8mRepl()), 0644); err != nil {
+		return "", err
+	}
+	replAbs, err := filepath.Abs(replPath)
+	if err != nil {
+		return "", err
+	}
+	elfAbs, err := filepath.Abs(elfPath)
+	if err != nil {
+		return "", err
+	}
+	logPath := filepath.Join("build", filepath.Base(elfPath)+".renode.uart.log")
+	_ = os.Remove(logPath)
+	logAbs, err := filepath.Abs(logPath)
+	if err != nil {
+		return "", err
+	}
+	rescPath := filepath.Join("build", filepath.Base(elfPath)+".renode.resc")
+	backendAttach := "cpu.uartSemihosting CreateFileBackend @" + logAbs + " true\n"
+	if targetOS == "bare" {
+		backendAttach = "uart0 CreateFileBackend @" + logAbs + " true\n"
+	}
+	resc := "" +
+		"using sysbus\n" +
+		"mach create\n" +
+		"machine LoadPlatformDescription @" + replAbs + "\n" +
+		backendAttach +
+		"sysbus LoadELF @" + elfAbs + "\n" +
+		"cpu PerformanceInMips 200\n" +
+		"cpu SP 0x283EF000\n" +
+		"cpu PC 0x10000101\n" +
+		"emulation RunFor \"10.0\"\n" +
+		"quit\n"
+	if err := os.WriteFile(rescPath, []byte(resc), 0644); err != nil {
+		return "", err
+	}
+	out, err := e.runAndCaptureCombined(renodeBin, "--disable-xwt", "-P", "0", rescPath)
+	if err != nil {
+		return "", err
+	}
+	logData, _ := os.ReadFile(logPath)
+	lines := strings.Split(strings.TrimSpace(string(logData)), "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "PASS" {
+			return "PASS", nil
+		}
+	}
+	if strings.TrimSpace(string(logData)) != "" {
+		return strings.TrimSpace(string(logData)), nil
+	}
+	lines = strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "PASS" {
+			return "PASS", nil
+		}
+	}
+	return out, nil
 }
 
 // ============================================================================
