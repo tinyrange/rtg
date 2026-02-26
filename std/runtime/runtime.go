@@ -501,6 +501,34 @@ func SliceClone(hdr uintptr) uintptr {
 	return newHdr
 }
 
+// SliceCloneArray clones a fixed-array header/backing store and recursively
+// clones nested array elements when nestedDepth > 0.
+func SliceCloneArray(hdr uintptr, nestedDepth int) uintptr {
+	cloned := SliceClone(hdr)
+	if cloned == 0 || nestedDepth <= 0 {
+		return cloned
+	}
+	elemSize := int(ReadPtr(cloned + uintptr(SliceOffEsz)))
+	if elemSize != PtrSize {
+		return cloned
+	}
+	data := ReadPtr(cloned)
+	if data == 0 {
+		return cloned
+	}
+	slen := int(ReadPtr(cloned + uintptr(SliceOffLen)))
+	i := 0
+	for i < slen {
+		slot := data + uintptr(i*PtrSize)
+		elemHdr := ReadPtr(slot)
+		if elemHdr != 0 {
+			WritePtr(slot, SliceCloneArray(elemHdr, nestedDepth-1))
+		}
+		i++
+	}
+	return cloned
+}
+
 // SliceReslice creates a new slice header for s[low:high].
 func SliceReslice(hdr uintptr, low int, high int) uintptr {
 	if hdr == 0 {
