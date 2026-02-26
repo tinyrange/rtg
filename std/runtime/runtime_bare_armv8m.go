@@ -21,10 +21,23 @@ var GOARCH string = "armv8m"
 const (
 	// Renode/UART mapping for bare armv8m runs.
 	bareUART0Base = uintptr(0x40004000)
-	bareUARTTHR   = uintptr(0x00) // Transmit Holding Register
-	bareUARTLSR   = uintptr(0x05) // Line Status Register
+	// NS16550 register index stride in bytes. Renode's model is byte-strided.
+	// Use 2 for 32-bit aligned implementations where register N is at N*4.
+	bareUARTRegShift = uintptr(0)
+	bareUARTTHR      = uintptr(0) // Transmit Holding Register index
+	bareUARTLSR      = uintptr(5) // Line Status Register index
 	bareUARTTHRE  = uintptr(0x20) // LSR bit 5: THR empty
 )
+
+func bareUARTRegAddr(index uintptr) uintptr {
+	return bareUART0Base + (index << bareUARTRegShift)
+}
+
+func mmioRead8(addr uintptr) uintptr {
+	aligned := addr &^ uintptr(3)
+	shift := (addr & uintptr(3)) * 8
+	return (ReadPtr(aligned) >> shift) & 0xFF
+}
 
 var bareHeapCur uintptr = 0
 var bareHeapEnd uintptr = 0
@@ -62,9 +75,9 @@ func SysWrite(fd, buf, count uintptr) (uintptr, uintptr, int32) {
 		b := Makeslice(buf, int(count), int(count))
 		i := 0
 		for i < len(b) {
-			for (ReadPtr(bareUART0Base+bareUARTLSR) & bareUARTTHRE) == 0 {
+			for (mmioRead8(bareUARTRegAddr(bareUARTLSR)) & bareUARTTHRE) == 0 {
 			}
-			WriteByte(bareUART0Base+bareUARTTHR, uintptr(b[i]))
+			WriteByte(bareUARTRegAddr(bareUARTTHR), uintptr(b[i]))
 			i++
 		}
 		return uintptr(len(b)), 0, 0
