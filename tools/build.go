@@ -876,6 +876,13 @@ func resolveRenodeExecutable(path string) (string, error) {
 		return "", fmt.Errorf("RENODE_PATH is empty")
 	}
 	candidates := []string{path, filepath.Join(path, "renode")}
+	if entries, err := os.ReadDir(path); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				candidates = append(candidates, filepath.Join(path, entry.Name(), "renode"))
+			}
+		}
+	}
 	for _, candidate := range candidates {
 		info, err := os.Stat(candidate)
 		if err == nil && !info.IsDir() {
