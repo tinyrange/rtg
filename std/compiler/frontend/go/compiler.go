@@ -1932,6 +1932,8 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	}
 	// Create a synthetic init function for global var initialization
 	f := &ir.IRFunc{Name: pkg.Path + ".init$globals"}
+	savedPanicUnwindLabel := c.panicUnwindLabel
+	savedNamedResultNames := c.namedResultNames
 	c.curFunc = f
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
@@ -1941,6 +1943,8 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
 	c.stackDepth = 0
+	c.namedResultNames = nil
+	c.panicUnwindLabel = c.newLabel()
 	c.pushScope()
 	for _, node := range inits {
 		qname := pkg.QualName(node.Name)
@@ -1997,11 +2001,24 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	}
 
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
+	if c.panicUnwindLabel >= 0 {
+		// Panic-unwind path shared by call-site panic propagation checks.
+		c.emitLabel(c.panicUnwindLabel)
+		recoveredLabel := c.newLabel()
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicWasRecovered", Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: recoveredLabel})
+		c.emitRecoveredPanicReturn()
+		c.emitLabel(recoveredLabel)
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicReset", Arg: 0})
+		c.emitRecoveredPanicReturn()
+	}
 	if c.stackDepth != 0 {
 		panic("ICE: stack not balanced at end of function")
 	}
 	c.irmod.Funcs = append(c.irmod.Funcs, f)
 	c.curFunc = nil
+	c.panicUnwindLabel = savedPanicUnwindLabel
+	c.namedResultNames = savedNamedResultNames
 }
 
 func (c *Compiler) lookupDefineValue(qualifiedName string, shortName string) (string, bool) {
