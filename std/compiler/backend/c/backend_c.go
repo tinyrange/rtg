@@ -164,6 +164,106 @@ func cEmitIntrinsicHostCall(bp *strings.Builder, name string) bool {
 	return true
 }
 
+func cEmitSignedBinaryOp(bp *strings.Builder, op ir.Opcode) bool {
+	switch op {
+	case ir.OP_ADD:
+		bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c + (rtg_sword)a));\n")
+	case ir.OP_SUB:
+		bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c - (rtg_sword)a));\n")
+	case ir.OP_MUL:
+		bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c * (rtg_sword)a));\n")
+	default:
+		return false
+	}
+	return true
+}
+
+func cEmitSignedComparePush(bp *strings.Builder, op ir.Opcode) bool {
+	var tok string
+	switch op {
+	case ir.OP_EQ:
+		tok = "=="
+	case ir.OP_NEQ:
+		tok = "!="
+	case ir.OP_LT:
+		tok = "<"
+	case ir.OP_GT:
+		tok = ">"
+	case ir.OP_LEQ:
+		tok = "<="
+	case ir.OP_GEQ:
+		tok = ">="
+	default:
+		return false
+	}
+	cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) %s ((rtg_sword)a)));\n", tok)
+	return true
+}
+
+func cEmitSignedCompareJump(bp *strings.Builder, op ir.Opcode, label int) bool {
+	var tok string
+	switch op {
+	case ir.OP_JMP_EQ:
+		tok = "=="
+	case ir.OP_JMP_NEQ:
+		tok = "!="
+	case ir.OP_JMP_LT:
+		tok = "<"
+	case ir.OP_JMP_GT:
+		tok = ">"
+	case ir.OP_JMP_LEQ:
+		tok = "<="
+	case ir.OP_JMP_GEQ:
+		tok = ">="
+	default:
+		return false
+	}
+	cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) %s ((rtg_sword)a)) goto L_%d;\n", tok, label)
+	return true
+}
+
+const cRuntimeIntrinsicPtr = "  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n"
+
+const cRuntimeIntrinsicMakeSlice = `  {
+    rtg_word h = rtg_alloc((rtg_word)(4 * RTG_WORD_BYTES));
+    rtg_store(h + 0 * RTG_WORD_BYTES, locals[0], RTG_WORD_BYTES);
+    rtg_store(h + 1 * RTG_WORD_BYTES, locals[1], RTG_WORD_BYTES);
+    rtg_store(h + 2 * RTG_WORD_BYTES, locals[2], RTG_WORD_BYTES);
+    rtg_store(h + 3 * RTG_WORD_BYTES, 1, RTG_WORD_BYTES);
+    rtg_push(h);
+  }
+`
+
+const cRuntimeIntrinsicMakeString = `  {
+    rtg_word h = rtg_alloc((rtg_word)(2 * RTG_WORD_BYTES));
+    rtg_store(h + 0 * RTG_WORD_BYTES, locals[0], RTG_WORD_BYTES);
+    rtg_store(h + 1 * RTG_WORD_BYTES, locals[1], RTG_WORD_BYTES);
+    rtg_push(h);
+  }
+`
+
+func cEmitRuntimeIntrinsicCall(bp *strings.Builder, name string) bool {
+	switch name {
+	case "Sliceptr", "Stringptr":
+		bp.WriteString(cRuntimeIntrinsicPtr)
+	case "Makeslice":
+		bp.WriteString(cRuntimeIntrinsicMakeSlice)
+	case "Makestring":
+		bp.WriteString(cRuntimeIntrinsicMakeString)
+	case "Tostring":
+		bp.WriteString("  rtg_push(rtg_tostring(locals[0]));\n")
+	case "ReadPtr":
+		bp.WriteString("  rtg_push(rtg_load(locals[0], RTG_WORD_BYTES));\n")
+	case "WritePtr":
+		bp.WriteString("  rtg_store(locals[0], locals[1], RTG_WORD_BYTES);\n")
+	case "WriteByte":
+		bp.WriteString("  rtg_store(locals[0], locals[1], 1);\n")
+	default:
+		return false
+	}
+	return true
+}
+
 const cDefaultHostCore = `#define RTG_FD_MAX 1024
 static FILE* rtg_fd_table[RTG_FD_MAX];
 static int rtg_fd_hint = 3;
@@ -1021,11 +1121,11 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				bp.WriteString("  t = rtg_pop(); rtg_push(t); rtg_push(t);\n")
 
 			case ir.OP_ADD:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c + (rtg_sword)a));\n")
+				cEmitSignedBinaryOp(bp, in.Op)
 			case ir.OP_SUB:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c - (rtg_sword)a));\n")
+				cEmitSignedBinaryOp(bp, in.Op)
 			case ir.OP_MUL:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)((rtg_sword)c * (rtg_sword)a));\n")
+				cEmitSignedBinaryOp(bp, in.Op)
 			case ir.OP_DIV:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((a == 0) ? 0 : (rtg_word)((rtg_sword)c / (rtg_sword)a));\n")
 			case ir.OP_MOD:
@@ -1043,17 +1143,17 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			case ir.OP_SHR:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) >> (a & RTG_SHIFT_MASK)));\n")
 			case ir.OP_EQ:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) == ((rtg_sword)a)));\n")
+				cEmitSignedComparePush(bp, in.Op)
 			case ir.OP_NEQ:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) != ((rtg_sword)a)));\n")
+				cEmitSignedComparePush(bp, in.Op)
 			case ir.OP_LT:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) < ((rtg_sword)a)));\n")
+				cEmitSignedComparePush(bp, in.Op)
 			case ir.OP_GT:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) > ((rtg_sword)a)));\n")
+				cEmitSignedComparePush(bp, in.Op)
 			case ir.OP_LEQ:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) <= ((rtg_sword)a)));\n")
+				cEmitSignedComparePush(bp, in.Op)
 			case ir.OP_GEQ:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) >= ((rtg_sword)a)));\n")
+				cEmitSignedComparePush(bp, in.Op)
 			case ir.OP_NOT:
 				bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(a == 0));\n")
 
@@ -1085,17 +1185,17 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			case ir.OP_JMP_IF_NOT:
 				cWritef(bp, "  a = rtg_pop(); if (a == 0) goto L_%d;\n", in.Arg)
 			case ir.OP_JMP_EQ:
-				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) == ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+				cEmitSignedCompareJump(bp, in.Op, in.Arg)
 			case ir.OP_JMP_NEQ:
-				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) != ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+				cEmitSignedCompareJump(bp, in.Op, in.Arg)
 			case ir.OP_JMP_LT:
-				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) < ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+				cEmitSignedCompareJump(bp, in.Op, in.Arg)
 			case ir.OP_JMP_GT:
-				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) > ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+				cEmitSignedCompareJump(bp, in.Op, in.Arg)
 			case ir.OP_JMP_LEQ:
-				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) <= ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+				cEmitSignedCompareJump(bp, in.Op, in.Arg)
 			case ir.OP_JMP_GEQ:
-				cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (((rtg_sword)c) >= ((rtg_sword)a)) goto L_%d;\n", in.Arg)
+				cEmitSignedCompareJump(bp, in.Op, in.Arg)
 
 			case ir.OP_CALL:
 				if strings.HasPrefix(in.Name, "builtin.composite.") {
@@ -1112,36 +1212,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				if cEmitIntrinsicHostCall(bp, in.Name) {
 					break
 				}
-				switch in.Name {
-				case "Sliceptr":
-					bp.WriteString("  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n")
-				case "Makeslice":
-					bp.WriteString("  {\n")
-					bp.WriteString("    rtg_word h = rtg_alloc((rtg_word)(4 * RTG_WORD_BYTES));\n")
-					bp.WriteString("    rtg_store(h + 0 * RTG_WORD_BYTES, locals[0], RTG_WORD_BYTES);\n")
-					bp.WriteString("    rtg_store(h + 1 * RTG_WORD_BYTES, locals[1], RTG_WORD_BYTES);\n")
-					bp.WriteString("    rtg_store(h + 2 * RTG_WORD_BYTES, locals[2], RTG_WORD_BYTES);\n")
-					bp.WriteString("    rtg_store(h + 3 * RTG_WORD_BYTES, 1, RTG_WORD_BYTES);\n")
-					bp.WriteString("    rtg_push(h);\n")
-					bp.WriteString("  }\n")
-				case "Stringptr":
-					bp.WriteString("  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n")
-				case "Makestring":
-					bp.WriteString("  {\n")
-					bp.WriteString("    rtg_word h = rtg_alloc((rtg_word)(2 * RTG_WORD_BYTES));\n")
-					bp.WriteString("    rtg_store(h + 0 * RTG_WORD_BYTES, locals[0], RTG_WORD_BYTES);\n")
-					bp.WriteString("    rtg_store(h + 1 * RTG_WORD_BYTES, locals[1], RTG_WORD_BYTES);\n")
-					bp.WriteString("    rtg_push(h);\n")
-					bp.WriteString("  }\n")
-				case "Tostring":
-					bp.WriteString("  rtg_push(rtg_tostring(locals[0]));\n")
-				case "ReadPtr":
-					bp.WriteString("  rtg_push(rtg_load(locals[0], RTG_WORD_BYTES));\n")
-				case "WritePtr":
-					bp.WriteString("  rtg_store(locals[0], locals[1], RTG_WORD_BYTES);\n")
-				case "WriteByte":
-					bp.WriteString("  rtg_store(locals[0], locals[1], 1);\n")
-				default:
+				if !cEmitRuntimeIntrinsicCall(bp, in.Name) {
 					return fmt.Errorf("unknown intrinsic %q", in.Name)
 				}
 
