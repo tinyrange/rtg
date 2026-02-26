@@ -433,6 +433,161 @@ static rtg_sword rtg_host_pclose(rtg_word fdw) {
 
 `
 
+const cHostDispatchAndRuntimeHelpers = `static rtg_sword rtg_host_call(rtg_word num, rtg_word a0, rtg_word a1, rtg_word a2, rtg_word a3, rtg_word a4, rtg_word a5) {
+  (void)a4; (void)a5;
+  switch ((int)num) {
+  case 0:  return rtg_host_read(a0, a1, a2);
+  case 1:  return rtg_host_write(a0, a1, a2);
+  case 2:  return rtg_host_open(a0, a1);
+  case 3:  return rtg_host_close(a0);
+  case 4:  return rtg_host_stat(a0);
+  case 5:  return rtg_host_mkdir(a0);
+  case 6:  return rtg_host_rmdir(a0);
+  case 7:  return rtg_host_unlink(a0);
+  case 8:  return rtg_host_getcwd(a0, a1);
+  case 9:  rtg_host_exit((int)a0); return 0;
+  case 10: return rtg_host_alloc(a1);
+  case 11: return (rtg_sword)g_argc;
+  case 12: return ((int)a0 >= g_argc) ? 0 : (rtg_sword)(rtg_size)g_argv[(int)a0];
+  case 13: return rtg_host_getenv(a0);
+  case 14: return rtg_host_opendir(a0);
+  case 15: return rtg_host_readdir(a0, a1, a2, a3);
+  case 16: return rtg_host_closedir(a0);
+  case 17: return rtg_host_system(a0);
+  case 18: return rtg_host_popen(a0);
+  case 19: return rtg_host_pclose(a0);
+  case 20: return rtg_host_chmod(a0, a1);
+  default: return -1;
+  }
+}
+
+static void rtg_write_str(const char* s) {
+  rtg_host_write_str(s, rtg_strlen(s));
+}
+
+static void rtg_check_ptr_bits(void) {
+#if !defined(__SIZEOF_POINTER__)
+  if (((int)(sizeof(void*) * 8)) != RTG_PTR_BITS) {
+    rtg_write_str("rtg pointer-width mismatch: compiler does not expose __SIZEOF_POINTER__; regenerate with matching -T c/<bits> profile\n");
+    rtg_host_exit(1);
+  }
+#endif
+}
+
+static void rtg_fail(const char* msg) {
+  rtg_write_str("rtg c backend error: ");
+  rtg_write_str(msg);
+  rtg_write_str("\n");
+  rtg_host_exit(1);
+}
+
+static void rtg_push(rtg_word v) {
+  if (g_sp >= RTG_STACK_MAX) rtg_fail("operand stack overflow");
+  g_stack[g_sp++] = v;
+}
+
+static rtg_word rtg_pop(void) {
+  if (g_sp <= 0) rtg_fail("operand stack underflow");
+  return g_stack[--g_sp];
+}
+
+static rtg_word rtg_alloc(rtg_word sz) {
+  char* p;
+  if (sz == 0) sz = 1;
+  p = malloc((rtg_size)sz);
+  if (!p) rtg_fail("malloc failed");
+  return (rtg_word)(rtg_size)p;
+}
+
+static rtg_word rtg_load(rtg_word addr, int size) {
+  if (addr == 0) return 0;
+  if (size == 1) return (rtg_word)(*(unsigned char*)(rtg_size)addr);
+  {
+    rtg_word v = 0;
+    int i;
+    unsigned char* p = (unsigned char*)(rtg_size)addr;
+    unsigned char* out = (unsigned char*)&v;
+    for (i = 0; i < RTG_WORD_BYTES; i++) out[i] = p[i];
+    return v;
+  }
+}
+
+static void rtg_memzero(rtg_word addr, int n) {
+  int i;
+  unsigned char* p = (unsigned char*)(rtg_size)addr;
+  for (i = 0; i < n; i++) p[i] = 0;
+}
+
+static void rtg_store(rtg_word addr, rtg_word v, int size) {
+  if (addr == 0) return;
+  if (size == 1) { *(unsigned char*)(rtg_size)addr = (unsigned char)(v & 0xffu); return; }
+  {
+    int i;
+    unsigned char* p = (unsigned char*)(rtg_size)addr;
+    unsigned char* in = (unsigned char*)&v;
+    for (i = 0; i < RTG_WORD_BYTES; i++) p[i] = in[i];
+  }
+}
+
+static int rtg_prefix(const char* s, const char* p) {
+  while (*p) { if (*s != *p) return 0; s++; p++; }
+  return 1;
+}
+
+`
+
+const cInterfaceRuntimeHelpers = `static int rtg_find_dispatch(int typeID, int methodID) {
+  int i;
+  for (i = 0; i < g_dispatch_count; i++) {
+    if (g_dispatch[i].type_id == typeID && g_dispatch[i].method_id == methodID) return g_dispatch[i].func_id;
+  }
+  return -1;
+}
+
+static rtg_word rtg_tostring(rtg_word v) {
+  rtg_word first;
+  rtg_word concrete;
+  int fi;
+  if (v == 0) return 0;
+  if (v < 4096) {
+    if (g_int_to_string_idx < 0) return 0;
+    rtg_push(v);
+    rtg_call_func(g_int_to_string_idx);
+    return rtg_pop();
+  }
+  first = rtg_load(v, RTG_WORD_BYTES);
+  if (first >= 256) return v;
+  concrete = rtg_load(v + RTG_WORD_BYTES, RTG_WORD_BYTES);
+  if (first == 1) {
+    if (g_int_to_string_idx < 0) return 0;
+    rtg_push(concrete);
+    rtg_call_func(g_int_to_string_idx);
+    return rtg_pop();
+  }
+  if (first == 2) return concrete;
+  fi = rtg_find_dispatch((int)first, g_error_method_id);
+  if (fi >= 0) { rtg_push(concrete); rtg_call_func(fi); return rtg_pop(); }
+  fi = rtg_find_dispatch((int)first, g_string_method_id);
+  if (fi >= 0) { rtg_push(concrete); rtg_call_func(fi); return rtg_pop(); }
+  return 0;
+}
+
+static void rtg_builtin_composite(int fieldCount) {
+  rtg_word* tmp;
+  rtg_word p;
+  int i;
+  if (fieldCount <= 0) { rtg_push(0); return; }
+  tmp = (rtg_word*)malloc((rtg_size)fieldCount * (rtg_size)sizeof(rtg_word));
+  if (!tmp) rtg_fail("composite temp alloc failed");
+  for (i = 0; i < fieldCount; i++) tmp[i] = rtg_pop();
+  p = rtg_alloc((rtg_word)fieldCount * RTG_WORD_BYTES);
+  for (i = 0; i < fieldCount; i++) rtg_store(p + (rtg_word)i * RTG_WORD_BYTES, tmp[fieldCount-1-i], RTG_WORD_BYTES);
+  rtg_push(p);
+  free(tmp);
+}
+
+`
+
 func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	bits := target.CModel
 	if bits == 0 {
@@ -673,99 +828,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	bp.WriteString(cDefaultHostDirOps)
 	bp.WriteString(cDefaultHostProcessOps)
 
-	// ------ Dispatch function: calls individual rtg_host_* functions ------
-	bp.WriteString("static rtg_sword rtg_host_call(rtg_word num, rtg_word a0, rtg_word a1, rtg_word a2, rtg_word a3, rtg_word a4, rtg_word a5) {\n")
-	bp.WriteString("  (void)a4; (void)a5;\n")
-	bp.WriteString("  switch ((int)num) {\n")
-	bp.WriteString("  case 0:  return rtg_host_read(a0, a1, a2);\n")
-	bp.WriteString("  case 1:  return rtg_host_write(a0, a1, a2);\n")
-	bp.WriteString("  case 2:  return rtg_host_open(a0, a1);\n")
-	bp.WriteString("  case 3:  return rtg_host_close(a0);\n")
-	bp.WriteString("  case 4:  return rtg_host_stat(a0);\n")
-	bp.WriteString("  case 5:  return rtg_host_mkdir(a0);\n")
-	bp.WriteString("  case 6:  return rtg_host_rmdir(a0);\n")
-	bp.WriteString("  case 7:  return rtg_host_unlink(a0);\n")
-	bp.WriteString("  case 8:  return rtg_host_getcwd(a0, a1);\n")
-	bp.WriteString("  case 9:  rtg_host_exit((int)a0); return 0;\n")
-	bp.WriteString("  case 10: return rtg_host_alloc(a1);\n")
-	bp.WriteString("  case 11: return (rtg_sword)g_argc;\n")
-	bp.WriteString("  case 12: return ((int)a0 >= g_argc) ? 0 : (rtg_sword)(rtg_size)g_argv[(int)a0];\n")
-	bp.WriteString("  case 13: return rtg_host_getenv(a0);\n")
-	bp.WriteString("  case 14: return rtg_host_opendir(a0);\n")
-	bp.WriteString("  case 15: return rtg_host_readdir(a0, a1, a2, a3);\n")
-	bp.WriteString("  case 16: return rtg_host_closedir(a0);\n")
-	bp.WriteString("  case 17: return rtg_host_system(a0);\n")
-	bp.WriteString("  case 18: return rtg_host_popen(a0);\n")
-	bp.WriteString("  case 19: return rtg_host_pclose(a0);\n")
-	bp.WriteString("  case 20: return rtg_host_chmod(a0, a1);\n")
-	bp.WriteString("  default: return -1;\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("}\n\n")
-
-	// ------ Helper functions that use rtg_host_* ------
-	bp.WriteString("static void rtg_write_str(const char* s) {\n")
-	bp.WriteString("  rtg_host_write_str(s, rtg_strlen(s));\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static void rtg_check_ptr_bits(void) {\n")
-	bp.WriteString("#if !defined(__SIZEOF_POINTER__)\n")
-	bp.WriteString("  if (((int)(sizeof(void*) * 8)) != RTG_PTR_BITS) {\n")
-	bp.WriteString("    rtg_write_str(\"rtg pointer-width mismatch: compiler does not expose __SIZEOF_POINTER__; regenerate with matching -T c/<bits> profile\\n\");\n")
-	bp.WriteString("    rtg_host_exit(1);\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("#endif\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static void rtg_fail(const char* msg) {\n")
-	bp.WriteString("  rtg_write_str(\"rtg c backend error: \");\n")
-	bp.WriteString("  rtg_write_str(msg);\n")
-	bp.WriteString("  rtg_write_str(\"\\n\");\n")
-	bp.WriteString("  rtg_host_exit(1);\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static void rtg_push(rtg_word v) {\n")
-	bp.WriteString("  if (g_sp >= RTG_STACK_MAX) rtg_fail(\"operand stack overflow\");\n")
-	bp.WriteString("  g_stack[g_sp++] = v;\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static rtg_word rtg_pop(void) {\n")
-	bp.WriteString("  if (g_sp <= 0) rtg_fail(\"operand stack underflow\");\n")
-	bp.WriteString("  return g_stack[--g_sp];\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static rtg_word rtg_alloc(rtg_word sz) {\n")
-	bp.WriteString("  char* p;\n")
-	bp.WriteString("  if (sz == 0) sz = 1;\n")
-	bp.WriteString("  p = malloc((rtg_size)sz);\n")
-	bp.WriteString("  if (!p) rtg_fail(\"malloc failed\");\n")
-	bp.WriteString("  return (rtg_word)(rtg_size)p;\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static rtg_word rtg_load(rtg_word addr, int size) {\n")
-	bp.WriteString("  if (addr == 0) return 0;\n")
-	bp.WriteString("  if (size == 1) return (rtg_word)(*(unsigned char*)(rtg_size)addr);\n")
-	bp.WriteString("  {\n")
-	bp.WriteString("    rtg_word v = 0;\n")
-	bp.WriteString("    int i;\n")
-	bp.WriteString("    unsigned char* p = (unsigned char*)(rtg_size)addr;\n")
-	bp.WriteString("    unsigned char* out = (unsigned char*)&v;\n")
-	bp.WriteString("    for (i = 0; i < RTG_WORD_BYTES; i++) out[i] = p[i];\n")
-	bp.WriteString("    return v;\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static void rtg_memzero(rtg_word addr, int n) {\n")
-	bp.WriteString("  int i;\n")
-	bp.WriteString("  unsigned char* p = (unsigned char*)(rtg_size)addr;\n")
-	bp.WriteString("  for (i = 0; i < n; i++) p[i] = 0;\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static void rtg_store(rtg_word addr, rtg_word v, int size) {\n")
-	bp.WriteString("  if (addr == 0) return;\n")
-	bp.WriteString("  if (size == 1) { *(unsigned char*)(rtg_size)addr = (unsigned char)(v & 0xffu); return; }\n")
-	bp.WriteString("  {\n")
-	bp.WriteString("    int i;\n")
-	bp.WriteString("    unsigned char* p = (unsigned char*)(rtg_size)addr;\n")
-	bp.WriteString("    unsigned char* in = (unsigned char*)&v;\n")
-	bp.WriteString("    for (i = 0; i < RTG_WORD_BYTES; i++) p[i] = in[i];\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("}\n\n")
-	bp.WriteString("static int rtg_prefix(const char* s, const char* p) {\n")
-	bp.WriteString("  while (*p) { if (*s != *p) return 0; s++; p++; }\n")
-	bp.WriteString("  return 1;\n")
-	bp.WriteString("}\n\n")
+	bp.WriteString(cHostDispatchAndRuntimeHelpers)
 
 	bp.WriteString("struct rtg_strhdr { rtg_word data; rtg_word len; };\n")
 	for i, lit := range literals {
@@ -827,55 +890,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	}
 	bp.WriteString("};\n\n")
 
-	bp.WriteString("static int rtg_find_dispatch(int typeID, int methodID) {\n")
-	bp.WriteString("  int i;\n")
-	bp.WriteString("  for (i = 0; i < g_dispatch_count; i++) {\n")
-	bp.WriteString("    if (g_dispatch[i].type_id == typeID && g_dispatch[i].method_id == methodID) return g_dispatch[i].func_id;\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("  return -1;\n")
-	bp.WriteString("}\n\n")
-
-	bp.WriteString("static rtg_word rtg_tostring(rtg_word v) {\n")
-	bp.WriteString("  rtg_word first;\n")
-	bp.WriteString("  rtg_word concrete;\n")
-	bp.WriteString("  int fi;\n")
-	bp.WriteString("  if (v == 0) return 0;\n")
-	bp.WriteString("  if (v < 4096) {\n")
-	bp.WriteString("    if (g_int_to_string_idx < 0) return 0;\n")
-	bp.WriteString("    rtg_push(v);\n")
-	bp.WriteString("    rtg_call_func(g_int_to_string_idx);\n")
-	bp.WriteString("    return rtg_pop();\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("  first = rtg_load(v, RTG_WORD_BYTES);\n")
-	bp.WriteString("  if (first >= 256) return v;\n")
-	bp.WriteString("  concrete = rtg_load(v + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
-	bp.WriteString("  if (first == 1) {\n")
-	bp.WriteString("    if (g_int_to_string_idx < 0) return 0;\n")
-	bp.WriteString("    rtg_push(concrete);\n")
-	bp.WriteString("    rtg_call_func(g_int_to_string_idx);\n")
-	bp.WriteString("    return rtg_pop();\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("  if (first == 2) return concrete;\n")
-	bp.WriteString("  fi = rtg_find_dispatch((int)first, g_error_method_id);\n")
-	bp.WriteString("  if (fi >= 0) { rtg_push(concrete); rtg_call_func(fi); return rtg_pop(); }\n")
-	bp.WriteString("  fi = rtg_find_dispatch((int)first, g_string_method_id);\n")
-	bp.WriteString("  if (fi >= 0) { rtg_push(concrete); rtg_call_func(fi); return rtg_pop(); }\n")
-	bp.WriteString("  return 0;\n")
-	bp.WriteString("}\n\n")
-
-	bp.WriteString("static void rtg_builtin_composite(int fieldCount) {\n")
-	bp.WriteString("  rtg_word* tmp;\n")
-	bp.WriteString("  rtg_word p;\n")
-	bp.WriteString("  int i;\n")
-	bp.WriteString("  if (fieldCount <= 0) { rtg_push(0); return; }\n")
-	bp.WriteString("  tmp = (rtg_word*)malloc((rtg_size)fieldCount * (rtg_size)sizeof(rtg_word));\n")
-	bp.WriteString("  if (!tmp) rtg_fail(\"composite temp alloc failed\");\n")
-	bp.WriteString("  for (i = 0; i < fieldCount; i++) tmp[i] = rtg_pop();\n")
-	bp.WriteString("  p = rtg_alloc((rtg_word)fieldCount * RTG_WORD_BYTES);\n")
-	bp.WriteString("  for (i = 0; i < fieldCount; i++) rtg_store(p + (rtg_word)i * RTG_WORD_BYTES, tmp[fieldCount-1-i], RTG_WORD_BYTES);\n")
-	bp.WriteString("  rtg_push(p);\n")
-	bp.WriteString("  free(tmp);\n")
-	bp.WriteString("}\n\n")
+	bp.WriteString(cInterfaceRuntimeHelpers)
 
 	for fi, f := range irmod.Funcs {
 		if target.CompilerDebug && fi%100 == 0 {
