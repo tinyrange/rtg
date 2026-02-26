@@ -245,10 +245,10 @@ func (g *WasmGen) setupWASIImports() {
 
 func (g *WasmGen) setupMemoryLayout() {
 	// 0x0000 - 0x03FF: Null guard (1024 bytes)
-	// 0x0400 - 0x04FF: WASI scratch (256 bytes for iovec etc.)
-	// 0x0500+: Global variables
+	// 0x0400 - 0x07FF: Scratch space (WASI structs + transient stack spills)
+	// 0x0800+: Global variables
 	g.scratchAddr = 0x0400
-	g.globalsAddr = 0x0500
+	g.globalsAddr = 0x0800
 
 	numGlobals := len(g.irmod.Globals)
 	g.globalsSize = int32(numGlobals * 4)
@@ -717,10 +717,59 @@ func detectShortCircuit(code []ir.Inst, jumpPos int, end int) (targetLabel int, 
 	return 0, 0, 0, false
 }
 
+// detectPanicUnwindCheck matches panic propagation checks emitted around calls:
+//
+//	JMP_IF_NOT continueLabel
+//	DROP...
+//	JMP panicLabel
+//	LABEL continueLabel
+//
+// The condition is produced by a prior runtime.PanicShouldUnwind call.
+func detectPanicUnwindCheck(code []ir.Inst, jumpPos int, end int) (continueLabel int, panicLabel int, dropCount int, continuePos int, ok bool) {
+	if code[jumpPos].Op != ir.OP_JMP_IF_NOT {
+		return 0, 0, 0, 0, false
+	}
+	if jumpPos <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	prev := code[jumpPos-1]
+	if prev.Op != ir.OP_CALL || prev.Name != "runtime.PanicShouldUnwind" {
+		return 0, 0, 0, 0, false
+	}
+
+	continueLabel = code[jumpPos].Arg
+	continuePos = -1
+	for j := jumpPos + 1; j < end; j++ {
+		if code[j].Op == ir.OP_LABEL && code[j].Arg == continueLabel {
+			continuePos = j
+			break
+		}
+	}
+	if continuePos < 0 || continuePos <= jumpPos+1 {
+		return 0, 0, 0, 0, false
+	}
+
+	jmpPos := continuePos - 1
+	if code[jmpPos].Op != ir.OP_JMP {
+		return 0, 0, 0, 0, false
+	}
+	panicLabel = code[jmpPos].Arg
+
+	dropCount = 0
+	for j := jumpPos + 1; j < jmpPos; j++ {
+		if code[j].Op != ir.OP_DROP {
+			return 0, 0, 0, 0, false
+		}
+		dropCount++
+	}
+	return continueLabel, panicLabel, dropCount, continuePos, true
+}
+
 func (g *WasmGen) stackify(code []ir.Inst) {
 	// Pass 1: analyze labels using two separate maps
 	loopHeaders := make(map[int]bool)
 	blockTargets := make(map[int]bool)
+	panicTargets := make(map[int]bool)
 	for i, inst := range code {
 		switch inst.Op {
 		case ir.OP_JMP, ir.OP_JMP_IF, ir.OP_JMP_IF_NOT, ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
@@ -745,13 +794,19 @@ func (g *WasmGen) stackify(code []ir.Inst) {
 				blockTargets[targetLabel] = true
 			}
 		}
+		if inst.Op == ir.OP_JMP_IF_NOT {
+			_, panicLabel, _, _, ok := detectPanicUnwindCheck(code, i, len(code))
+			if ok {
+				panicTargets[panicLabel] = true
+			}
+		}
 	}
 
 	// Pass 2: emit WASM structured control flow
-	g.emitStructured(code, 0, len(code), loopHeaders, blockTargets)
+	g.emitStructured(code, 0, len(code), loopHeaders, blockTargets, panicTargets)
 }
 
-func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders map[int]bool, blockTargets map[int]bool) {
+func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders map[int]bool, blockTargets map[int]bool, panicTargets map[int]bool) {
 	// --- Phase 1: Pre-open blocks for forward jump targets ---
 	// Collect all forward jump targets at this level, skipping loop bodies
 	// and short-circuit (||/&&) patterns.
@@ -780,7 +835,16 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 			}
 		}
 
-		// Detect short-circuit patterns and exclude their labels
+		// Detect panic-check patterns and short-circuit patterns, and exclude
+		// labels handled by custom lowering.
+		if inst.Op == ir.OP_JMP_IF_NOT {
+			continueLabel, _, _, _, panicOk := detectPanicUnwindCheck(code, scanPos, end)
+			if panicOk {
+				excludedLabels[continueLabel] = true
+				scanPos++
+				continue
+			}
+		}
 		if inst.Op == ir.OP_JMP_IF || inst.Op == ir.OP_JMP_IF_NOT {
 			tgtLabel, endLabel, _, scOk := detectShortCircuit(code, scanPos, end)
 			if scOk {
@@ -821,6 +885,34 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 			}
 		}
 		scanPos++
+	}
+
+	// Ensure panic-unwind labels are available as branch targets even when
+	// checks appear in nested loop bodies.
+	for panicLabel := range panicTargets {
+		if excludedLabels[panicLabel] {
+			continue
+		}
+		labelPos := -1
+		for j := start; j < end; j++ {
+			if code[j].Op == ir.OP_LABEL && code[j].Arg == panicLabel {
+				labelPos = j
+				break
+			}
+		}
+		if labelPos <= start {
+			continue
+		}
+		dup := false
+		for _, t := range fwdTargets {
+			if t.labelID == panicLabel {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			fwdTargets = append(fwdTargets, fwdTarget{labelID: panicLabel, labelPos: labelPos})
+		}
 	}
 
 	// Sort by label position DESCENDING (furthest first = outermost block)
@@ -866,7 +958,7 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 					}
 				}
 
-				g.emitStructured(code, i+1, loopEnd, loopHeaders, blockTargets)
+				g.emitStructured(code, i+1, loopEnd, loopHeaders, blockTargets, panicTargets)
 
 				g.w.end() // end loop
 				g.blockStack = g.blockStack[0 : len(g.blockStack)-1]
@@ -958,7 +1050,7 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 				// else: right side
 				g.w.elseOp()
 				g.valTypes = savedTypes
-				g.emitStructured(code, i+1, jmpToEndPos, loopHeaders, blockTargets)
+				g.emitStructured(code, i+1, jmpToEndPos, loopHeaders, blockTargets, panicTargets)
 				// end if
 				g.w.end()
 				g.blockStack = g.blockStack[0 : len(g.blockStack)-1]
@@ -981,6 +1073,19 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 				i++
 				continue
 			}
+			// Panic-check pattern:
+			//   jmp_if_not continue
+			//   drop...
+			//   jmp panic
+			//   label continue
+			// Lower to a conditional br_if panic with explicit spill/restore
+			// of the known transient values.
+			_, panicLabel, dropCount, continuePos, panicOk := detectPanicUnwindCheck(code, i, end)
+			if panicOk {
+				g.compilePanicUnwindCheckBranch(panicLabel, dropCount)
+				i = continuePos + 1
+				continue
+			}
 			// Check for && short-circuit pattern
 			tgtLabel, _, jmpToEndPos, scOk := detectShortCircuit(code, i, end)
 			if scOk {
@@ -998,7 +1103,7 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 				g.w.ifOp(WASM_TYPE_I32)
 				g.blockStack = append(g.blockStack, wasmCtrl{kind: WASM_CTRL_IF, labelID: -1})
 				// then: right side
-				g.emitStructured(code, i+1, jmpToEndPos, loopHeaders, blockTargets)
+				g.emitStructured(code, i+1, jmpToEndPos, loopHeaders, blockTargets, panicTargets)
 				// else: short-circuit value
 				g.w.elseOp()
 				g.valTypes = savedTypes
@@ -1083,6 +1188,88 @@ func (g *WasmGen) markLiveBreak(depth int) {
 	idx := len(g.blockStack) - 1 - depth
 	if idx >= 0 && idx < len(g.blockStack) {
 		g.blockStack[idx].hasLiveBreak = true
+	}
+}
+
+// compilePanicUnwindCheckBranch lowers the panic propagation pattern while
+// preserving exactly dropCount transient values on the non-branch path.
+func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) {
+	g.popType() // PanicShouldUnwind result consumed by br_if
+
+	if dropCount <= 0 {
+		depth := g.findBlockDepth(targetLabel)
+		if depth >= 0 {
+			g.markLiveBreak(depth)
+			g.w.brIf(uint32(depth))
+		}
+		return
+	}
+
+	savedTypes := make([]byte, dropCount)
+	base := len(g.valTypes) - dropCount
+	i := 0
+	for i < dropCount {
+		savedTypes[i] = WASM_TYPE_I32
+		idx := base + i
+		if idx >= 0 && idx < len(g.valTypes) {
+			savedTypes[i] = g.valTypes[idx]
+		}
+		i++
+	}
+
+	offsets := make([]int32, dropCount)
+	spillAddr := g.scratchAddr + 128
+	i = 0
+	for i < dropCount {
+		offsets[i] = spillAddr
+		if savedTypes[i] == WASM_TYPE_I64 {
+			spillAddr = spillAddr + 8
+		} else {
+			spillAddr = spillAddr + 4
+		}
+		i++
+	}
+
+	// Save condition, then spill transient values from top to bottom.
+	g.w.localSet(uint32(g.tempLocal))
+	i = dropCount - 1
+	for i >= 0 {
+		t := savedTypes[i]
+		if len(g.valTypes) > 0 {
+			t = g.popType()
+		}
+		if t == WASM_TYPE_I64 {
+			g.w.localSet(uint32(g.tempLocal64))
+			g.w.i32Const(offsets[i])
+			g.w.localGet(uint32(g.tempLocal64))
+			g.w.i64Store(3, 0)
+		} else {
+			g.w.localSet(uint32(g.tempLocal + 1))
+			g.w.i32Const(offsets[i])
+			g.w.localGet(uint32(g.tempLocal + 1))
+			g.w.i32Store(2, 0)
+		}
+		i = i - 1
+	}
+
+	g.w.localGet(uint32(g.tempLocal))
+	depth := g.findBlockDepth(targetLabel)
+	if depth >= 0 {
+		g.markLiveBreak(depth)
+		g.w.brIf(uint32(depth))
+	}
+
+	// Restore values for the non-branch path.
+	i = 0
+	for i < dropCount {
+		g.w.i32Const(offsets[i])
+		if savedTypes[i] == WASM_TYPE_I64 {
+			g.w.i64Load(3, 0)
+		} else {
+			g.w.i32Load(2, 0)
+		}
+		g.pushType(savedTypes[i])
+		i++
 	}
 }
 
