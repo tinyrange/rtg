@@ -264,6 +264,52 @@ func cEmitRuntimeIntrinsicCall(bp *strings.Builder, name string) bool {
 	return true
 }
 
+func cEmitSymbolCall(bp *strings.Builder, sym string) {
+	bp.WriteString("  ")
+	bp.WriteString(sym)
+	bp.WriteString("();\n")
+}
+
+func cEmitCallOp(bp *strings.Builder, in ir.Inst, funcIdx map[string]int, funcSyms []string) error {
+	if strings.HasPrefix(in.Name, "builtin.composite.") {
+		cWritef(bp, "  rtg_builtin_composite(%d);\n", in.Arg)
+		return nil
+	}
+	idx, ok := funcIdx[in.Name]
+	if !ok {
+		return fmt.Errorf("unresolved call target for C backend: %s", in.Name)
+	}
+	cEmitSymbolCall(bp, funcSyms[idx])
+	return nil
+}
+
+func cEmitConvertOp(bp *strings.Builder, name string, funcSyms []string, bytesToStringIdx int, stringToBytesIdx int) {
+	switch name {
+	case "string":
+		if bytesToStringIdx >= 0 {
+			cEmitSymbolCall(bp, funcSyms[bytesToStringIdx])
+		}
+	case "[]byte":
+		if stringToBytesIdx >= 0 {
+			cEmitSymbolCall(bp, funcSyms[stringToBytesIdx])
+		}
+	case "byte", "uint8":
+		bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
+	case "int8":
+		bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(signed char)(unsigned char)a);\n")
+	case "uint16":
+		bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffffu);\n")
+	case "int16":
+		bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i16)(rtg_u16)a);\n")
+	case "int32":
+		bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i32)(rtg_u32)a);\n")
+	case "uint32":
+		bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_u32)a);\n")
+	default:
+		bp.WriteString("  /* no-op conversion */\n")
+	}
+}
+
 const cDefaultHostCore = `#define RTG_FD_MAX 1024
 static FILE* rtg_fd_table[RTG_FD_MAX];
 static int rtg_fd_hint = 3;
@@ -686,6 +732,34 @@ static void rtg_builtin_composite(int fieldCount) {
   free(tmp);
 }
 
+`
+
+const cIfaceCallTemplate = `  {
+    int ac = %d;
+    rtg_word* argv = 0;
+    int k;
+    if (ac > 0) { argv = (rtg_word*)malloc((rtg_size)ac * (rtg_size)sizeof(rtg_word)); if (!argv) rtg_fail("iface argv alloc"); }
+    for (k = 0; k < ac; k++) argv[k] = rtg_pop();
+    a = rtg_pop();
+    c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);
+    t = (a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);
+    rtg_push(t);
+    for (k = ac - 1; k >= 0; k--) rtg_push(argv[k]);
+    if (argv) free(argv);
+    i = rtg_find_dispatch((int)c, %d);
+    if (i < 0) rtg_fail("interface dispatch failed");
+    rtg_call_func(i);
+  }
+`
+
+const cPanicTemplate = `  a = rtg_pop();
+  c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);
+  if (c < 256) a = rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);
+  c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);
+  t = (a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);
+  if (c != 0 && t != 0) rtg_host_write_str((const char*)(rtg_size)c, (rtg_size)t);
+  rtg_host_write_str("\n", 1);
+  rtg_host_exit(2);
 `
 
 func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
@@ -1198,14 +1272,8 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				cEmitSignedCompareJump(bp, in.Op, in.Arg)
 
 			case ir.OP_CALL:
-				if strings.HasPrefix(in.Name, "builtin.composite.") {
-					cWritef(bp, "  rtg_builtin_composite(%d);\n", in.Arg)
-				} else if idx, ok := funcIdx[in.Name]; ok {
-					bp.WriteString("  ")
-					bp.WriteString(funcSyms[idx])
-					bp.WriteString("();\n")
-				} else {
-					return fmt.Errorf("unresolved call target for C backend: %s", in.Name)
+				if err := cEmitCallOp(bp, in, funcIdx, funcSyms); err != nil {
+					return err
 				}
 
 			case ir.OP_CALL_INTRINSIC:
@@ -1220,68 +1288,17 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				bp.WriteString("  return;\n")
 
 			case ir.OP_CONVERT:
-				switch in.Name {
-				case "string":
-					if bytesToStringIdx >= 0 {
-						bp.WriteString("  ")
-						bp.WriteString(funcSyms[bytesToStringIdx])
-						bp.WriteString("();\n")
-					}
-				case "[]byte":
-					if stringToBytesIdx >= 0 {
-						bp.WriteString("  ")
-						bp.WriteString(funcSyms[stringToBytesIdx])
-						bp.WriteString("();\n")
-					}
-				case "byte":
-					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
-				case "uint8":
-					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
-				case "int8":
-					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(signed char)(unsigned char)a);\n")
-				case "uint16":
-					bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffffu);\n")
-				case "int16":
-					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i16)(rtg_u16)a);\n")
-				case "int32":
-					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i32)(rtg_u32)a);\n")
-				case "uint32":
-					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_u32)a);\n")
-				default:
-					bp.WriteString("  /* no-op conversion */\n")
-				}
+				cEmitConvertOp(bp, in.Name, funcSyms, bytesToStringIdx, stringToBytesIdx)
 
 			case ir.OP_IFACE_BOX:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_alloc((rtg_word)(2 * RTG_WORD_BYTES)); rtg_store(c, (rtg_word)%d, RTG_WORD_BYTES); rtg_store(c + RTG_WORD_BYTES, a, RTG_WORD_BYTES); rtg_push(c);\n", in.Arg)
 
 			case ir.OP_IFACE_CALL:
 				mid := methodID[cBareMethod(in.Name)]
-				cWritef(bp, "  {\n")
-				cWritef(bp, "    int ac = %d;\n", in.Arg)
-				bp.WriteString("    rtg_word* argv = 0;\n")
-				bp.WriteString("    int k;\n")
-				bp.WriteString("    if (ac > 0) { argv = (rtg_word*)malloc((rtg_size)ac * (rtg_size)sizeof(rtg_word)); if (!argv) rtg_fail(\"iface argv alloc\"); }\n")
-				bp.WriteString("    for (k = 0; k < ac; k++) argv[k] = rtg_pop();\n")
-				bp.WriteString("    a = rtg_pop();\n")
-				bp.WriteString("    c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);\n")
-				bp.WriteString("    t = (a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
-				bp.WriteString("    rtg_push(t);\n")
-				bp.WriteString("    for (k = ac - 1; k >= 0; k--) rtg_push(argv[k]);\n")
-				bp.WriteString("    if (argv) free(argv);\n")
-				cWritef(bp, "    i = rtg_find_dispatch((int)c, %d);\n", mid)
-				bp.WriteString("    if (i < 0) rtg_fail(\"interface dispatch failed\");\n")
-				bp.WriteString("    rtg_call_func(i);\n")
-				bp.WriteString("  }\n")
+				cWritef(bp, cIfaceCallTemplate, in.Arg, mid)
 
 			case ir.OP_PANIC:
-				bp.WriteString("  a = rtg_pop();\n")
-				bp.WriteString("  c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);\n")
-				bp.WriteString("  if (c < 256) a = rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
-				bp.WriteString("  c = (a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES);\n")
-				bp.WriteString("  t = (a == 0) ? 0 : rtg_load(a + RTG_WORD_BYTES, RTG_WORD_BYTES);\n")
-				bp.WriteString("  if (c != 0 && t != 0) rtg_host_write_str((const char*)(rtg_size)c, (rtg_size)t);\n")
-				bp.WriteString("  rtg_host_write_str(\"\\n\", 1);\n")
-				bp.WriteString("  rtg_host_exit(2);\n")
+				bp.WriteString(cPanicTemplate)
 
 			case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
 				bp.WriteString("  rtg_fail(\"unexpected unsupported opcode\");\n")
@@ -1302,14 +1319,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	bp.WriteString("  rtg_init_literals();\n")
 	for i, f := range irmod.Funcs {
 		if ir.IsInitFunc(f.Name) {
-			bp.WriteString("  ")
-			bp.WriteString(funcSyms[i])
-			bp.WriteString("();\n")
+			cEmitSymbolCall(bp, funcSyms[i])
 		}
 	}
-	bp.WriteString("  ")
-	bp.WriteString(funcSyms[mainIdx])
-	bp.WriteString("();\n")
+	cEmitSymbolCall(bp, funcSyms[mainIdx])
 	bp.WriteString("  return 0;\n")
 	bp.WriteString("}\n")
 
