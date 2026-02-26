@@ -3157,6 +3157,11 @@ func (c *Compiler) maybeCloneArrayForLValue(node *Node) {
 	c.maybeCloneArrayForTypeName(c.lvalueTypeName(node))
 }
 
+func (c *Compiler) emitLocalZeroSet(localIdx int, width int) {
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: localIdx, Width: width})
+}
+
 func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
 	if op == ir.OP_ADD || op == ir.OP_SUB || op == ir.OP_MUL || op == ir.OP_DIV || op == ir.OP_MOD || op == ir.OP_AND || op == ir.OP_OR || op == ir.OP_XOR || op == ir.OP_SHL || op == ir.OP_SHR {
 		c.strictCheckPointerArithmetic("+", node.X, node.Y)
@@ -3185,6 +3190,49 @@ func (c *Compiler) setLocalMapMetadataFromQualified(name string, qtype string) {
 	if keyType, valType, ok := parseMapTypeName(qtype); ok {
 		c.setLocalMapMetadata(name, keyType, valType)
 	}
+}
+
+func (c *Compiler) setLocalMapMetadataFromMapType(name string, mapType *Node) {
+	if mapType == nil || mapType.Kind != NMapType || name == "" {
+		return
+	}
+	c.localMapVars[name] = c.mapKeyKind(mapType.X)
+	if mapType.Y != nil {
+		c.localMapValueTypes[name] = nodeTypeName(mapType.Y)
+	}
+}
+
+func (c *Compiler) isShortDeclNameNew(scope map[string]int, name string) bool {
+	if scope == nil || name == "" {
+		return false
+	}
+	if _, exists := scope[name]; !exists {
+		return true
+	}
+	return c.ifInitLeakedNames != nil && c.ifInitLeakedNames[name]
+}
+
+func (c *Compiler) bindLocalFuncValue(localName string, rhs *Node, localIdx int, width int, allowMethod bool) bool {
+	if localName == "" {
+		return false
+	}
+	if allowMethod && c.registerMethodValueBinding(localName, rhs, localIdx) {
+		return true
+	}
+	if c.registerFuncValueBinding(localName, rhs) {
+		c.emitLocalZeroSet(localIdx, width)
+		return true
+	}
+	if rhs != nil && rhs.Kind == NFuncType && rhs.Body != nil {
+		target := c.compileFuncLiteral(rhs)
+		c.localFuncTargets[localName] = target
+		c.bindFuncCaptures(localName, target)
+		delete(c.localMethodTargets, localName)
+		delete(c.localMethodRecv, localName)
+		c.emitLocalZeroSet(localIdx, width)
+		return true
+	}
+	return false
 }
 
 func (c *Compiler) compileVarDecl(node *Node) {
@@ -3224,12 +3272,7 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		c.localStringVars[node.Name] = true
 	}
 	// Track map-typed variables
-	if node.Type != nil && node.Type.Kind == NMapType {
-		c.localMapVars[node.Name] = c.mapKeyKind(node.Type.X)
-		if node.Type.Y != nil {
-			c.localMapValueTypes[node.Name] = nodeTypeName(node.Type.Y)
-		}
-	}
+	c.setLocalMapMetadataFromMapType(node.Name, node.Type)
 	// Track interface-typed variables
 	if node.Type != nil {
 		typeName := nodeTypeName(node.Type)
@@ -3241,20 +3284,7 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		c.localConcreteTypes[node.Name] = ct
 	}
 	if node.X != nil {
-		if c.registerFuncValueBinding(node.Name, node.X) {
-			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
-			return
-		}
-		// Lower function literals to generated package-scope functions.
-		if node.X.Kind == NFuncType && node.X.Body != nil {
-			target := c.compileFuncLiteral(node.X)
-			c.localFuncTargets[node.Name] = target
-			c.bindFuncCaptures(node.Name, target)
-			delete(c.localMethodTargets, node.Name)
-			delete(c.localMethodRecv, node.Name)
-			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
+		if c.bindLocalFuncValue(node.Name, node.X, idx, c.curFunc.Locals[idx].Width, false) {
 			return
 		}
 		c.compileExpr(node.X)
@@ -3342,11 +3372,7 @@ func (c *Compiler) compileAssign(node *Node) {
 				if lhs == nil || lhs.Kind != NIdent || lhs.Name == "_" {
 					continue
 				}
-				if _, exists := scope[lhs.Name]; !exists {
-					hasNew = true
-					break
-				}
-				if c.ifInitLeakedNames != nil && c.ifInitLeakedNames[lhs.Name] {
+				if c.isShortDeclNameNew(scope, lhs.Name) {
 					hasNew = true
 					break
 				}
@@ -3457,7 +3483,7 @@ func (c *Compiler) compileAssign(node *Node) {
 			if idx, exists := scope[node.X.Name]; exists {
 				isCommaOkForm := node.Y != nil && ((node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X)) || node.Y.Kind == NTypeAssertExpr)
 				isParam := idx >= 0 && idx < c.curFunc.Params
-				if !isParam && !isCommaOkForm && (c.ifInitLeakedNames == nil || !c.ifInitLeakedNames[node.X.Name]) {
+				if !isParam && !isCommaOkForm && !c.isShortDeclNameNew(scope, node.X.Name) {
 					c.errorf("%s: no new variables on left side of :=", c.curFunc.Name)
 					return
 				}
@@ -3525,11 +3551,8 @@ func (c *Compiler) compileAssign(node *Node) {
 			}
 		}
 		// Track map variables from composite literals: m := map[K]V{...}
-		if node.Y != nil && node.Y.Kind == NCompositeLit && node.Y.Type != nil && node.Y.Type.Kind == NMapType {
-			c.localMapVars[node.X.Name] = c.mapKeyKind(node.Y.Type.X)
-			if node.Y.Type.Y != nil {
-				c.localMapValueTypes[node.X.Name] = nodeTypeName(node.Y.Type.Y)
-			}
+		if node.Y != nil && node.Y.Kind == NCompositeLit {
+			c.setLocalMapMetadataFromMapType(node.X.Name, node.Y.Type)
 		}
 		// Track slice and map variables from make() calls
 		if node.Y != nil && node.Y.Kind == NCallExpr && node.Y.X != nil && node.Y.X.Kind == NIdent && node.Y.X.Name == "make" {
@@ -3542,32 +3565,16 @@ func (c *Compiler) compileAssign(node *Node) {
 			}
 			if len(node.Y.Nodes) > 0 && node.Y.Nodes[0].Kind == NMapType {
 				keyType := nodeTypeName(node.Y.Nodes[0].X)
-				c.localMapVars[node.X.Name] = c.mapKeyKind(node.Y.Nodes[0].X)
+				c.setLocalMapMetadataFromMapType(node.X.Name, node.Y.Nodes[0])
 				if node.Y.Nodes[0].Y != nil {
 					valType := nodeTypeName(node.Y.Nodes[0].Y)
-					c.localMapValueTypes[node.X.Name] = valType
 					c.localConcreteTypes[node.X.Name] = "map[" + c.qualifyTypeName(keyType, "") + "]" + c.qualifyTypeName(valType, "")
 				}
 			}
 		}
 		// Function literals are lowered to private named functions and bound
 		// through localFuncTargets; the local slot stores a placeholder value.
-		if c.registerMethodValueBinding(node.X.Name, node.Y, idx) {
-			return
-		}
-		if c.registerFuncValueBinding(node.X.Name, node.Y) {
-			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
-			return
-		}
-		if node.Y != nil && node.Y.Kind == NFuncType && node.Y.Body != nil {
-			target := c.compileFuncLiteral(node.Y)
-			c.localFuncTargets[node.X.Name] = target
-			c.bindFuncCaptures(node.X.Name, target)
-			delete(c.localMethodTargets, node.X.Name)
-			delete(c.localMethodRecv, node.X.Name)
-			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
+		if c.bindLocalFuncValue(node.X.Name, node.Y, idx, w, true) {
 			return
 		}
 		c.compileExpr(node.Y)
