@@ -623,6 +623,7 @@ const (
 	NKeyValue
 	NPointerType
 	NSliceType
+	NArrayType
 	NMapType
 	NFuncType
 	NStructType
@@ -1164,16 +1165,17 @@ func (p *Parser) parseSliceOrArrayType() *Node {
 		elem := p.parseType()
 		return &Node{Kind: NSliceType, X: elem, Pos: pos}
 	}
-	// Accept fixed/ellipsis array forms as slice-compatible for now.
 	var arrayLen *Node
+	name := ""
 	if p.at(TOKEN_ELLIPSIS) {
 		p.advance()
+		name = "..."
 	} else {
 		arrayLen = p.parseExpr()
 	}
 	p.expect(TOKEN_RBRACK)
 	elem := p.parseType()
-	return &Node{Kind: NSliceType, X: elem, Y: arrayLen, Pos: pos}
+	return &Node{Kind: NArrayType, X: elem, Y: arrayLen, Name: name, Pos: pos}
 }
 
 func (p *Parser) parseMapType() *Node {
@@ -1830,7 +1832,7 @@ func (p *Parser) parsePrimaryExpr() *Node {
 }
 
 func (p *Parser) isTypeLikeNode(node *Node) bool {
-	if node.Kind == NIdent || node.Kind == NSliceType || node.Kind == NMapType || node.Kind == NPointerType {
+	if node.Kind == NIdent || node.Kind == NSliceType || node.Kind == NArrayType || node.Kind == NMapType || node.Kind == NPointerType {
 		return true
 	}
 	if node.Kind == NSelectorExpr {
@@ -1944,7 +1946,7 @@ func (p *Parser) canParseCompositeLit(node *Node) bool {
 		// composite literals with unambiguous non-identifier type forms.
 		// Do NOT allow selector expressions here, because values like
 		// `tok.Kind` in `switch tok.Kind { ... }` are ambiguous.
-		if node.Kind == NSliceType || node.Kind == NMapType {
+		if node.Kind == NSliceType || node.Kind == NArrayType || node.Kind == NMapType {
 			allowCompLit = true
 		}
 	}
@@ -1957,7 +1959,7 @@ func (p *Parser) parseCompositeLit(typeNode *Node) *Node {
 	node := &Node{Kind: NCompositeLit, Type: typeNode, Pos: pos}
 	// Infer element type for nested composite literals
 	var elemType *Node
-	if typeNode.Kind == NSliceType {
+	if typeNode.Kind == NSliceType || typeNode.Kind == NArrayType {
 		elemType = typeNode.X
 	} else if typeNode.Kind == NMapType {
 		elemType = typeNode.Y
