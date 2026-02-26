@@ -21,6 +21,10 @@ const (
 	targetRegisterFmt         = targetPkgPath + ".RegisterBinFormat"
 )
 
+// defer lowering can be re-enabled later, but it is currently unsupported by
+// project policy and should emit a clear compile-time error when used.
+var featureDeferEnabled = false
+
 type closureCaptureSpec struct {
 	Name  string
 	Width int
@@ -2202,7 +2206,7 @@ func (c *Compiler) compileFunc(node *Node) {
 		}
 	}
 
-	if containsDeferStmt(node.Body) {
+	if featureDeferEnabled && containsDeferStmt(node.Body) {
 		c.deferHeadLocal = c.addLocal("$defer_head")
 		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
@@ -2639,7 +2643,15 @@ func (c *Compiler) compileStmt(node *Node) {
 }
 
 func (c *Compiler) compileDeferStmt(node *Node) {
-	if node == nil || node.X == nil || node.X.Kind != NCallExpr {
+	if node == nil {
+		return
+	}
+	if !featureDeferEnabled {
+		c.errorf("%s: line %d: defer is not supported", c.curFunc.Name, node.Pos)
+		return
+	}
+	if node.X == nil || node.X.Kind != NCallExpr {
+		c.errorf("%s: line %d: defer expects a function call", c.curFunc.Name, node.Pos)
 		return
 	}
 	call := node.X
