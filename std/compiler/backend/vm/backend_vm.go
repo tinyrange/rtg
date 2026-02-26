@@ -1782,6 +1782,50 @@ func (vm *VM) builtinComposite(fieldCount int) {
 
 // === Intrinsics ===
 
+func (vm *VM) vmSysRemoveAll(pathAddr uint64) {
+	path := vm.readCString(pathAddr)
+	err := os.RemoveAll(path)
+	if err != nil {
+		vm.vmSysReturn(-1)
+	} else {
+		vm.vmSysReturn(0)
+	}
+}
+
+func (vm *VM) vmSysReaddir(localsAddr uint64, ws uint64, withType bool) {
+	handle := int(vm.localGet(localsAddr, ws, 0))
+	nameBuf := vm.localGet(localsAddr, ws, 1)
+	nameBufSize := int(vm.localGet(localsAddr, ws, 2))
+	var isDirBuf uint64
+	if withType {
+		isDirBuf = vm.localGet(localsAddr, ws, 3)
+	}
+	if handle < 0 || handle >= 64 || !vm.dirUsed[handle] {
+		vm.vmSysReturn(0)
+		return
+	}
+	if vm.dirPos[handle] >= len(vm.dirEntries[handle]) {
+		vm.vmSysReturn(0)
+		return
+	}
+	entry := vm.dirEntries[handle][vm.dirPos[handle]]
+	vm.dirPos[handle] = vm.dirPos[handle] + 1
+	ename := entry.Name()
+	n := len(ename)
+	if n > nameBufSize {
+		n = nameBufSize
+	}
+	vm.copyStringToVM(int(nameBuf), ename, n)
+	if withType && isDirBuf != 0 {
+		if entry.IsDir() {
+			vm.storeN(isDirBuf, 1, 1)
+		} else {
+			vm.storeN(isDirBuf, 0, 1)
+		}
+	}
+	vm.vmSysReturn(int64(n))
+}
+
 func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 	switch name {
 	case "SysRead":
@@ -1891,24 +1935,10 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		}
 
 	case "SysRmdir":
-		pathAddr := vm.localGet(localsAddr, ws, 0)
-		path := vm.readCString(pathAddr)
-		err := os.RemoveAll(path)
-		if err != nil {
-			vm.vmSysReturn(-1)
-		} else {
-			vm.vmSysReturn(0)
-		}
+		vm.vmSysRemoveAll(vm.localGet(localsAddr, ws, 0))
 
 	case "SysUnlink":
-		pathAddr := vm.localGet(localsAddr, ws, 0)
-		path := vm.readCString(pathAddr)
-		err := os.RemoveAll(path)
-		if err != nil {
-			vm.vmSysReturn(-1)
-		} else {
-			vm.vmSysReturn(0)
-		}
+		vm.vmSysRemoveAll(vm.localGet(localsAddr, ws, 0))
 
 	case "SysGetcwd":
 		bufAddr := vm.localGet(localsAddr, ws, 0)
@@ -2041,56 +2071,10 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.vmSysReturn(int64(id))
 
 	case "SysReaddir":
-		handle := int(vm.localGet(localsAddr, ws, 0))
-		nameBuf := vm.localGet(localsAddr, ws, 1)
-		nameBufSize := int(vm.localGet(localsAddr, ws, 2))
-		if handle < 0 || handle >= 64 || !vm.dirUsed[handle] {
-			vm.vmSysReturn(0)
-			return
-		}
-		if vm.dirPos[handle] >= len(vm.dirEntries[handle]) {
-			vm.vmSysReturn(0)
-			return
-		}
-		entry := vm.dirEntries[handle][vm.dirPos[handle]]
-		vm.dirPos[handle] = vm.dirPos[handle] + 1
-		ename := entry.Name()
-		n := len(ename)
-		if n > nameBufSize {
-			n = nameBufSize
-		}
-		vm.copyStringToVM(int(nameBuf), ename, n)
-		vm.vmSysReturn(int64(n))
+		vm.vmSysReaddir(localsAddr, ws, false)
 
 	case "SysReaddirWithType":
-		handle := int(vm.localGet(localsAddr, ws, 0))
-		nameBuf := vm.localGet(localsAddr, ws, 1)
-		nameBufSize := int(vm.localGet(localsAddr, ws, 2))
-		isDirBuf := vm.localGet(localsAddr, ws, 3)
-		if handle < 0 || handle >= 64 || !vm.dirUsed[handle] {
-			vm.vmSysReturn(0)
-			return
-		}
-		if vm.dirPos[handle] >= len(vm.dirEntries[handle]) {
-			vm.vmSysReturn(0)
-			return
-		}
-		entry := vm.dirEntries[handle][vm.dirPos[handle]]
-		vm.dirPos[handle] = vm.dirPos[handle] + 1
-		ename := entry.Name()
-		n := len(ename)
-		if n > nameBufSize {
-			n = nameBufSize
-		}
-		vm.copyStringToVM(int(nameBuf), ename, n)
-		if isDirBuf != 0 {
-			if entry.IsDir() {
-				vm.storeN(isDirBuf, 1, 1)
-			} else {
-				vm.storeN(isDirBuf, 0, 1)
-			}
-		}
-		vm.vmSysReturn(int64(n))
+		vm.vmSysReaddir(localsAddr, ws, true)
 
 	case "SysClosedir":
 		handle := int(vm.localGet(localsAddr, ws, 0))
