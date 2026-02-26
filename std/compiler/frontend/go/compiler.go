@@ -6191,6 +6191,75 @@ func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName s
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: len(args) + 1})
 }
 
+func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType string, methodName string) {
+	paramTypes := c.funcParamTypes[c.dotJoin(ifaceType, methodName)]
+	c.compileExpr(recvExpr)
+	for i, arg := range args {
+		c.compileExpr(arg)
+		if i < len(paramTypes) {
+			c.maybeCloneArrayForTypeName(paramTypes[i])
+		}
+	}
+	c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(args)})
+}
+
+func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promotedMethodMatch) {
+	c.compileExpr(recvExpr)
+	i := 0
+	for i < len(pm.Offsets) {
+		c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: pm.Offsets[i]})
+		c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
+		i++
+	}
+	paramTypes := c.funcParamTypes[pm.Target]
+	if len(paramTypes) > 0 {
+		c.maybeCloneArrayForTypeName(paramTypes[0])
+	}
+	for i, arg := range args {
+		c.compileExpr(arg)
+		if i+1 < len(paramTypes) {
+			c.maybeCloneArrayForTypeName(paramTypes[i+1])
+		}
+	}
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: pm.Target, Arg: len(args) + 1})
+}
+
+func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedName string) {
+	fixedCount, isVariadic := c.funcVariadic[resolvedName]
+	isSpread := node.Name == "spread"
+	if isVariadic && !isSpread {
+		c.compileExpr(recvExpr)
+		paramTypes := c.funcParamTypes[resolvedName]
+		if len(paramTypes) > 0 {
+			c.maybeCloneArrayForTypeName(paramTypes[0])
+		}
+		fixedArgCount := fixedCount - 1
+		if fixedArgCount < 0 {
+			fixedArgCount = 0
+		}
+		i := 0
+		for i < fixedArgCount && i < len(node.Nodes) {
+			c.compileExpr(node.Nodes[i])
+			if i+1 < len(paramTypes) {
+				c.maybeCloneArrayForTypeName(paramTypes[i+1])
+			}
+			i++
+		}
+		variadicCount := len(node.Nodes) - fixedArgCount
+		if variadicCount < 0 {
+			variadicCount = 0
+		}
+		mVarElemSz := c.target.PtrSize
+		if mesz, ok := c.funcVariadicElem[resolvedName]; ok {
+			mVarElemSz = mesz
+		}
+		c.packVariadicSlice(node.Nodes, fixedArgCount, variadicCount, mVarElemSz, resolvedName)
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: resolvedName, Arg: fixedCount + 1})
+		return
+	}
+	c.emitCallWithReceiver(recvExpr, node.Nodes, resolvedName)
+}
+
 func runtimeMemBuiltinReturnCount(name string) (int, bool) {
 	if name == "runtime.ReadPtr" {
 		return 1, true
@@ -6525,16 +6594,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		methodName := node.X.Name
 		if ifaceType, ok := c.localTypes[recvName]; ok {
 			if _, hasMethod := c.ifaceMethodReturnCount(ifaceType, methodName); hasMethod {
-				paramTypes := c.funcParamTypes[c.dotJoin(ifaceType, methodName)]
-				// Push receiver (interface pointer) then args
-				c.compileExpr(node.X.X)
-				for i, arg := range node.Nodes {
-					c.compileExpr(arg)
-					if i < len(paramTypes) {
-						c.maybeCloneArrayForTypeName(paramTypes[i])
-					}
-				}
-				c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(node.Nodes)})
+				c.emitIfaceMethodCall(node.X.X, node.Nodes, ifaceType, methodName)
 				return
 			}
 		}
@@ -6557,25 +6617,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					if !c.isComptimeCallAllowed(pm.Target) {
 						return
 					}
-					// Build receiver from embedded field path.
-					c.compileExpr(node.X.X)
-					i := 0
-					for i < len(pm.Offsets) {
-						c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: pm.Offsets[i]})
-						c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
-						i++
-					}
-					paramTypes := c.funcParamTypes[pm.Target]
-					if len(paramTypes) > 0 {
-						c.maybeCloneArrayForTypeName(paramTypes[0])
-					}
-					for i, arg := range node.Nodes {
-						c.compileExpr(arg)
-						if i+1 < len(paramTypes) {
-							c.maybeCloneArrayForTypeName(paramTypes[i+1])
-						}
-					}
-					c.emit(ir.Inst{Op: ir.OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
+					c.emitPromotedMethodCall(node.X.X, node.Nodes, pm)
 					return
 				}
 			}
@@ -6586,40 +6628,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				if c.tryCompileComptimeCall(node, resolvedName) {
 					return
 				}
-				// Check if this method is variadic
-				fixedCount, isVariadic := c.funcVariadic[resolvedName]
-				isSpread := node.Name == "spread"
-				if isVariadic && !isSpread {
-					// Push receiver (counts as first fixed arg)
-					c.compileExpr(node.X.X)
-					paramTypes := c.funcParamTypes[resolvedName]
-					if len(paramTypes) > 0 {
-						c.maybeCloneArrayForTypeName(paramTypes[0])
-					}
-					// Compile other fixed args (fixedCount includes receiver)
-					i := 0
-					for i < fixedCount-1 && i < len(node.Nodes) {
-						c.compileExpr(node.Nodes[i])
-						if i+1 < len(paramTypes) {
-							c.maybeCloneArrayForTypeName(paramTypes[i+1])
-						}
-						i++
-					}
-					// Package variadic args into a slice
-					variadicCount := len(node.Nodes) - (fixedCount - 1)
-					if variadicCount < 0 {
-						variadicCount = 0
-					}
-					mVarElemSz := c.target.PtrSize
-					if mesz, ok := c.funcVariadicElem[resolvedName]; ok {
-						mVarElemSz = mesz
-					}
-					c.packVariadicSlice(node.Nodes, fixedCount-1, variadicCount, mVarElemSz, resolvedName)
-					c.emit(ir.Inst{Op: ir.OP_CALL, Name: resolvedName, Arg: fixedCount + 1})
-				} else {
-					// Non-variadic or spread: push receiver first, then args
-					c.emitCallWithReceiver(node.X.X, node.Nodes, resolvedName)
-				}
+				c.emitResolvedMethodCall(node, node.X.X, resolvedName)
 				return
 			}
 		}
@@ -6636,15 +6645,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			recvType := c.resolveExprType(recvExpr)
 			if recvType != "" {
 				if _, hasMethod := c.ifaceMethodReturnCount(recvType, methodName); hasMethod {
-					paramTypes := c.funcParamTypes[c.dotJoin(recvType, methodName)]
-					c.compileExpr(recvExpr)
-					for i, arg := range node.Nodes {
-						c.compileExpr(arg)
-						if i < len(paramTypes) {
-							c.maybeCloneArrayForTypeName(paramTypes[i])
-						}
-					}
-					c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: c.dotJoin(recvType, methodName), Arg: len(node.Nodes)})
+					c.emitIfaceMethodCall(recvExpr, node.Nodes, recvType, methodName)
 					return
 				}
 
@@ -6654,24 +6655,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 						if !c.isComptimeCallAllowed(pm.Target) {
 							return
 						}
-						c.compileExpr(recvExpr)
-						i := 0
-						for i < len(pm.Offsets) {
-							c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: pm.Offsets[i]})
-							c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
-							i++
-						}
-						paramTypes := c.funcParamTypes[pm.Target]
-						if len(paramTypes) > 0 {
-							c.maybeCloneArrayForTypeName(paramTypes[0])
-						}
-						for i, arg := range node.Nodes {
-							c.compileExpr(arg)
-							if i+1 < len(paramTypes) {
-								c.maybeCloneArrayForTypeName(paramTypes[i+1])
-							}
-						}
-						c.emit(ir.Inst{Op: ir.OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
+						c.emitPromotedMethodCall(recvExpr, node.Nodes, pm)
 						return
 					}
 				}
@@ -6682,35 +6666,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					if c.tryCompileComptimeCall(node, resolvedName) {
 						return
 					}
-					fixedCount, isVariadic := c.funcVariadic[resolvedName]
-					isSpread := node.Name == "spread"
-					if isVariadic && !isSpread {
-						c.compileExpr(recvExpr)
-						paramTypes := c.funcParamTypes[resolvedName]
-						if len(paramTypes) > 0 {
-							c.maybeCloneArrayForTypeName(paramTypes[0])
-						}
-						i := 0
-						for i < fixedCount-1 && i < len(node.Nodes) {
-							c.compileExpr(node.Nodes[i])
-							if i+1 < len(paramTypes) {
-								c.maybeCloneArrayForTypeName(paramTypes[i+1])
-							}
-							i++
-						}
-						variadicCount := len(node.Nodes) - (fixedCount - 1)
-						if variadicCount < 0 {
-							variadicCount = 0
-						}
-						mVarElemSz := c.target.PtrSize
-						if mesz, ok := c.funcVariadicElem[resolvedName]; ok {
-							mVarElemSz = mesz
-						}
-						c.packVariadicSlice(node.Nodes, fixedCount-1, variadicCount, mVarElemSz, resolvedName)
-						c.emit(ir.Inst{Op: ir.OP_CALL, Name: resolvedName, Arg: fixedCount + 1})
-					} else {
-						c.emitCallWithReceiver(recvExpr, node.Nodes, resolvedName)
-					}
+					c.emitResolvedMethodCall(node, recvExpr, resolvedName)
 					return
 				}
 			}
