@@ -184,12 +184,13 @@ func Memcopy(dst uintptr, src uintptr, n int) {
 	if src == 0 {
 		runtimePanic("Memcopy: nil src")
 	}
-	// Copy words first to reduce instruction count on no-div/no-libc backends.
-	for n >= 4 {
+	// Copy pointer-sized words first, then tail bytes.
+	step := PtrSize
+	for n >= step {
 		WritePtr(dst, ReadPtr(src))
-		dst = dst + 4
-		src = src + 4
-		n = n - 4
+		dst = dst + uintptr(step)
+		src = src + uintptr(step)
+		n = n - step
 	}
 	if n > 0 {
 		d := Makeslice(dst, n, n)
@@ -210,10 +211,11 @@ func Memzero(ptr uintptr, n int) {
 	if ptr == 0 {
 		runtimePanic("Memzero: nil ptr")
 	}
-	for n >= 4 {
+	step := PtrSize
+	for n >= step {
 		WritePtr(ptr, 0)
-		ptr = ptr + 4
-		n = n - 4
+		ptr = ptr + uintptr(step)
+		n = n - step
 	}
 	if n > 0 {
 		b := Makeslice(ptr, n, n)
