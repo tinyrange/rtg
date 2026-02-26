@@ -190,7 +190,9 @@ jobs:
             | tar -xz -C "$HOME/renode"
 
       - name: Fullcompiler suite (RTG backend, semihost/armv8m on Renode)
-        run: RENODE_PATH="$HOME/renode" ./build/build test-fullcompiler-armv8m-renode
+        run: |
+          RENODE_BIN="$(find "$HOME/renode" -type f -name renode | head -n 1)"
+          RENODE_PATH="$RENODE_BIN" ./build/build test-fullcompiler-armv8m-renode
 
       - name: Fullcompiler suite (RTG backend, baremetal/armv8m)
         continue-on-error: true
