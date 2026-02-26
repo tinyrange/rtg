@@ -142,7 +142,7 @@ jobs:
         run: ./build/build test-fullcompiler-wasm
 
   fullcompiler-armv8m:
-    name: Fullcompiler suite (baremetal/armv8m)
+    name: Fullcompiler suite (armv8m)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -194,9 +194,9 @@ jobs:
           RENODE_BIN="$(find "$HOME/renode" -type f -name renode | head -n 1)"
           RENODE_PATH="$RENODE_BIN" ./build/build test-fullcompiler-armv8m-renode
 
-      - name: Fullcompiler suite (RTG backend, baremetal/armv8m)
+      - name: Fullcompiler suite (RTG backend, bare/armv8m)
         continue-on-error: true
-        run: RTG_TARGET=baremetal/armv8m ./build/build test-fullcompiler-rtg
+        run: RTG_TARGET=bare/armv8m ./build/build test-fullcompiler-rtg
 
   comemu-dos:
     name: DOS COMEMU sweep (tests/*.go)
