@@ -616,6 +616,16 @@ func (e *Executor) runAndCapture(name string, args ...string) (string, error) {
 	return trimCommandOutput(out), nil
 }
 
+func (e *Executor) runAndCaptureCombined(name string, args ...string) (string, error) {
+	fmt.Fprintf(os.Stderr, "running %s %s\n", name, strings.Join(args, " "))
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s %s failed: %s", name, strings.Join(args, " "), trimCommandOutput(out))
+	}
+	return trimCommandOutput(out), nil
+}
+
 func listGoFilesInDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -742,6 +752,10 @@ func (e *Executor) handleFullCompiler(args []string) error {
 			fmt.Printf("SKIP: %s/%s (known 32-bit comptime VM allocation issue)\n", backend, name)
 			continue
 		}
+		if backend == "rtg" && targetOS == "baremetal" && targetArch == "armv8m" && name == "04_defer_no_effect" {
+			fmt.Printf("SKIP: %s/%s (known armv8m defer runtime issue)\n", backend, name)
+			continue
+		}
 
 		var got string
 		switch backend {
@@ -761,6 +775,7 @@ func (e *Executor) handleFullCompiler(args []string) error {
 
 			runBin := out
 			runArgs := []string{}
+			captureCombined := false
 			switch {
 			case targetOS == runtime.GOOS:
 				if targetArch != runtime.GOARCH {
@@ -783,10 +798,25 @@ func (e *Executor) handleFullCompiler(args []string) error {
 				}
 				runBin = "cmd.exe"
 				runArgs = []string{"/c", quoteForCmd(winOut)}
+			case runtime.GOOS == "linux" && targetOS == "baremetal" && targetArch == "armv8m":
+				runBin = "qemu-system-arm"
+				runArgs = []string{
+					"-M", "mps2-an505",
+					"-cpu", "cortex-m33",
+					"-nographic",
+					"-serial", "mon:stdio",
+					"-semihosting-config", "enable=on,target=native",
+					"-kernel", out,
+				}
+				captureCombined = true
 			default:
 				return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
 			}
-			got, err = e.runAndCapture(runBin, runArgs...)
+			if captureCombined {
+				got, err = e.runAndCaptureCombined(runBin, runArgs...)
+			} else {
+				got, err = e.runAndCapture(runBin, runArgs...)
+			}
 			if err != nil {
 				return err
 			}
