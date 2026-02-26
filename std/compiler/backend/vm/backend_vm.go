@@ -1826,6 +1826,63 @@ func (vm *VM) vmSysReaddir(localsAddr uint64, ws uint64, withType bool) {
 	vm.vmSysReturn(int64(n))
 }
 
+func (vm *VM) vmAsmEmitBytes(localsAddr uint64, ws uint64, name string) {
+	n := int(vm.localGet(localsAddr, ws, 0))
+	if n < 0 {
+		panic(name + ": negative length")
+	}
+	if n > 8 {
+		panic(name + ": length exceeds 8")
+	}
+	i := 0
+	for i < n {
+		vm.vmAsmEmit(byte(vm.localGet(localsAddr, ws, 1+i)))
+		i = i + 1
+	}
+}
+
+func (vm *VM) vmAsmCallAmd64(localsAddr uint64, ws uint64, argc int) {
+	dst := int(vm.localGet(localsAddr, ws, 0))
+	target := vm.readString(vm.localGet(localsAddr, ws, 1))
+	i := 0
+	for i < argc {
+		vm.vmAsmPushReg(int(vm.localGet(localsAddr, ws, 2+i)))
+		i = i + 1
+	}
+	off := len(vm.asmAmd64Code) + 1
+	vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
+	vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
+	vm.vmAsmPopReg(dst)
+}
+
+func (vm *VM) vmAsmCallI386(localsAddr uint64, ws uint64, argc int) {
+	dst := int(vm.localGet(localsAddr, ws, 0))
+	target := vm.readString(vm.localGet(localsAddr, ws, 1))
+	i := 0
+	for i < argc {
+		vm.vmAsmI386PushReg(int(vm.localGet(localsAddr, ws, 2+i)))
+		i = i + 1
+	}
+	off := len(vm.asmAmd64Code) + 1
+	vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
+	vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
+	vm.vmAsmI386PopReg(dst)
+}
+
+func (vm *VM) vmAsmCallArm64(localsAddr uint64, ws uint64, argc int) {
+	dst := int(vm.localGet(localsAddr, ws, 0))
+	target := vm.readString(vm.localGet(localsAddr, ws, 1))
+	i := 0
+	for i < argc {
+		vm.vmAsmArm64PushReg(int(vm.localGet(localsAddr, ws, 2+i)))
+		i = i + 1
+	}
+	off := len(vm.asmAmd64Code)
+	vm.vmAsmArm64Emit(0x94000000)
+	vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
+	vm.vmAsmArm64PopReg(dst)
+}
+
 func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 	switch name {
 	case "SysRead":
@@ -2193,18 +2250,7 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.vmAsmEmitMovRegImm64(dst, int64(src))
 
 	case "AsmAmd64Emit":
-		n := int(vm.localGet(localsAddr, ws, 0))
-		if n < 0 {
-			panic("AsmAmd64Emit: negative length")
-		}
-		if n > 8 {
-			panic("AsmAmd64Emit: length exceeds 8")
-		}
-		i := 0
-		for i < n {
-			vm.vmAsmEmit(byte(vm.localGet(localsAddr, ws, 1+i)))
-			i = i + 1
-		}
+		vm.vmAsmEmitBytes(localsAddr, ws, "AsmAmd64Emit")
 
 	case "AsmAmd64Push":
 		src := int(vm.localGet(localsAddr, ws, 0))
@@ -2215,64 +2261,19 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.vmAsmPopReg(dst)
 
 	case "AsmAmd64Call0":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmPopReg(dst)
+		vm.vmAsmCallAmd64(localsAddr, ws, 0)
 
 	case "AsmAmd64Call1":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		vm.vmAsmPushReg(a0)
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmPopReg(dst)
+		vm.vmAsmCallAmd64(localsAddr, ws, 1)
 
 	case "AsmAmd64Call2":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		vm.vmAsmPushReg(a0)
-		vm.vmAsmPushReg(a1)
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmPopReg(dst)
+		vm.vmAsmCallAmd64(localsAddr, ws, 2)
 
 	case "AsmAmd64Call3":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		a2 := int(vm.localGet(localsAddr, ws, 4))
-		vm.vmAsmPushReg(a0)
-		vm.vmAsmPushReg(a1)
-		vm.vmAsmPushReg(a2)
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmPopReg(dst)
+		vm.vmAsmCallAmd64(localsAddr, ws, 3)
 
 	case "AsmAmd64Call4":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		a2 := int(vm.localGet(localsAddr, ws, 4))
-		a3 := int(vm.localGet(localsAddr, ws, 5))
-		vm.vmAsmPushReg(a0)
-		vm.vmAsmPushReg(a1)
-		vm.vmAsmPushReg(a2)
-		vm.vmAsmPushReg(a3)
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmPopReg(dst)
+		vm.vmAsmCallAmd64(localsAddr, ws, 4)
 
 	case "AsmAmd64Ret":
 		vm.vmAsmEmit(0xc9, 0xc3)
@@ -2299,18 +2300,7 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.vmAsmI386EmitMovRegImm32(dst, int32(src))
 
 	case "AsmI386Emit":
-		n := int(vm.localGet(localsAddr, ws, 0))
-		if n < 0 {
-			panic("AsmI386Emit: negative length")
-		}
-		if n > 8 {
-			panic("AsmI386Emit: length exceeds 8")
-		}
-		i := 0
-		for i < n {
-			vm.vmAsmEmit(byte(vm.localGet(localsAddr, ws, 1+i)))
-			i = i + 1
-		}
+		vm.vmAsmEmitBytes(localsAddr, ws, "AsmI386Emit")
 
 	case "AsmI386Push":
 		src := int(vm.localGet(localsAddr, ws, 0))
@@ -2321,64 +2311,19 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.vmAsmI386PopReg(dst)
 
 	case "AsmI386Call0":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmI386PopReg(dst)
+		vm.vmAsmCallI386(localsAddr, ws, 0)
 
 	case "AsmI386Call1":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		vm.vmAsmI386PushReg(a0)
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmI386PopReg(dst)
+		vm.vmAsmCallI386(localsAddr, ws, 1)
 
 	case "AsmI386Call2":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		vm.vmAsmI386PushReg(a0)
-		vm.vmAsmI386PushReg(a1)
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmI386PopReg(dst)
+		vm.vmAsmCallI386(localsAddr, ws, 2)
 
 	case "AsmI386Call3":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		a2 := int(vm.localGet(localsAddr, ws, 4))
-		vm.vmAsmI386PushReg(a0)
-		vm.vmAsmI386PushReg(a1)
-		vm.vmAsmI386PushReg(a2)
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmI386PopReg(dst)
+		vm.vmAsmCallI386(localsAddr, ws, 3)
 
 	case "AsmI386Call4":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		a2 := int(vm.localGet(localsAddr, ws, 4))
-		a3 := int(vm.localGet(localsAddr, ws, 5))
-		vm.vmAsmI386PushReg(a0)
-		vm.vmAsmI386PushReg(a1)
-		vm.vmAsmI386PushReg(a2)
-		vm.vmAsmI386PushReg(a3)
-		off := len(vm.asmAmd64Code) + 1
-		vm.vmAsmEmit(0xe8, 0x00, 0x00, 0x00, 0x00)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmI386PopReg(dst)
+		vm.vmAsmCallI386(localsAddr, ws, 4)
 
 	case "AsmI386Ret":
 		vm.vmAsmEmit(0xc9, 0xc3)
@@ -2416,64 +2361,19 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.vmAsmArm64PopReg(dst)
 
 	case "AsmArm64Call0":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		off := len(vm.asmAmd64Code)
-		vm.vmAsmArm64Emit(0x94000000)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmArm64PopReg(dst)
+		vm.vmAsmCallArm64(localsAddr, ws, 0)
 
 	case "AsmArm64Call1":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		vm.vmAsmArm64PushReg(a0)
-		off := len(vm.asmAmd64Code)
-		vm.vmAsmArm64Emit(0x94000000)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmArm64PopReg(dst)
+		vm.vmAsmCallArm64(localsAddr, ws, 1)
 
 	case "AsmArm64Call2":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		vm.vmAsmArm64PushReg(a0)
-		vm.vmAsmArm64PushReg(a1)
-		off := len(vm.asmAmd64Code)
-		vm.vmAsmArm64Emit(0x94000000)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmArm64PopReg(dst)
+		vm.vmAsmCallArm64(localsAddr, ws, 2)
 
 	case "AsmArm64Call3":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		a2 := int(vm.localGet(localsAddr, ws, 4))
-		vm.vmAsmArm64PushReg(a0)
-		vm.vmAsmArm64PushReg(a1)
-		vm.vmAsmArm64PushReg(a2)
-		off := len(vm.asmAmd64Code)
-		vm.vmAsmArm64Emit(0x94000000)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmArm64PopReg(dst)
+		vm.vmAsmCallArm64(localsAddr, ws, 3)
 
 	case "AsmArm64Call4":
-		dst := int(vm.localGet(localsAddr, ws, 0))
-		target := vm.readString(vm.localGet(localsAddr, ws, 1))
-		a0 := int(vm.localGet(localsAddr, ws, 2))
-		a1 := int(vm.localGet(localsAddr, ws, 3))
-		a2 := int(vm.localGet(localsAddr, ws, 4))
-		a3 := int(vm.localGet(localsAddr, ws, 5))
-		vm.vmAsmArm64PushReg(a0)
-		vm.vmAsmArm64PushReg(a1)
-		vm.vmAsmArm64PushReg(a2)
-		vm.vmAsmArm64PushReg(a3)
-		off := len(vm.asmAmd64Code)
-		vm.vmAsmArm64Emit(0x94000000)
-		vm.asmAmd64Fixups = append(vm.asmAmd64Fixups, vmAsmFixup{Off: off, Target: target})
-		vm.vmAsmArm64PopReg(dst)
+		vm.vmAsmCallArm64(localsAddr, ws, 4)
 
 	case "AsmArm64Ret":
 		vm.vmAsmArm64MovReg(31, 29)
