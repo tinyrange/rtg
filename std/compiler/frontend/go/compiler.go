@@ -214,11 +214,12 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 			idx := len(c.irmod.Globals)
 			c.globals[qname] = idx
 			c.irmod.Globals = append(c.irmod.Globals, ir.IRGlobal{Name: qname, Index: idx})
-			if sym.Node != nil && sym.Node.Type != nil && sym.Node.Type.Kind == NSliceType {
+			if sym.Node != nil && sym.Node.Type != nil && (sym.Node.Type.Kind == NSliceType || sym.Node.Type.Kind == NArrayType) {
 				c.globalElemSizes[qname] = c.sliceElemSize(sym.Node.Type)
 			}
 			// Also detect slice composite literal initializers (no explicit type on var)
-			if sym.Node != nil && sym.Node.X != nil && sym.Node.X.Kind == NCompositeLit && sym.Node.X.Type != nil && sym.Node.X.Type.Kind == NSliceType {
+			if sym.Node != nil && sym.Node.X != nil && sym.Node.X.Kind == NCompositeLit && sym.Node.X.Type != nil &&
+				(sym.Node.X.Type.Kind == NSliceType || sym.Node.X.Type.Kind == NArrayType) {
 				c.globalElemSizes[qname] = c.sliceElemSize(sym.Node.X.Type)
 			}
 			// Track map globals
@@ -601,7 +602,7 @@ func (c *Compiler) resolveFieldElemSize(qualifiedType string, fieldName string) 
 	if field == nil || field.Type == nil {
 		return 0
 	}
-	if field.Type.Kind == NSliceType && field.Type.X != nil {
+	if (field.Type.Kind == NSliceType || field.Type.Kind == NArrayType) && field.Type.X != nil {
 		return c.sliceElemSize(field.Type)
 	}
 	if field.Type.Kind == NIdent && field.Type.X == nil {
@@ -685,13 +686,40 @@ func (c *Compiler) resolveFieldMapValueType(qualifiedType string, fieldName stri
 	return nodeTypeName(field.Type.Y)
 }
 
-// resolveFieldSliceElemType returns the qualified element type of a struct field that is a slice.
+// resolveFieldSliceElemType returns the qualified element type of a struct field that is a slice or array.
 func (c *Compiler) resolveFieldSliceElemType(qualifiedType string, fieldName string) string {
 	field, pkgPath := c.lookupStructField(qualifiedType, fieldName)
-	if field == nil || field.Type == nil || field.Type.Kind != NSliceType || field.Type.X == nil {
+	if field == nil || field.Type == nil || field.Type.X == nil {
+		return ""
+	}
+	if field.Type.Kind != NSliceType && field.Type.Kind != NArrayType {
 		return ""
 	}
 	return c.qualifyTypeName(nodeTypeName(field.Type.X), pkgPath)
+}
+
+func splitBracketType(typeName string) (string, bool) {
+	if len(typeName) < 3 || typeName[0] != '[' {
+		return "", false
+	}
+	if typeName[1] == ']' {
+		return typeName[2:], true
+	}
+	i := 1
+	for i < len(typeName) && typeName[i] != ']' {
+		i++
+	}
+	if i >= len(typeName) || i == 1 {
+		return "", false
+	}
+	return typeName[i+1:], true
+}
+
+func isArrayTypeName(typeName string) bool {
+	if len(typeName) < 3 || typeName[0] != '[' {
+		return false
+	}
+	return typeName[1] != ']'
 }
 
 // resolveExprType returns the concrete qualified type of an expression, or "" if unknown.
@@ -712,9 +740,8 @@ func (c *Compiler) resolveExprType(node *Node) string {
 	// Index expression: determine element type from collection type
 	if node.Kind == NIndexExpr && node.X != nil {
 		collType := c.resolveExprType(node.X)
-		if len(collType) > 2 && collType[0] == '[' && collType[1] == ']' {
-			// Slice element type: strip []
-			return collType[2:len(collType)]
+		if elemType, ok := splitBracketType(collType); ok {
+			return elemType
 		}
 		// Map value type: strip map[K] to get V
 		if len(collType) > 4 && collType[0] == 'm' && collType[1] == 'a' && collType[2] == 'p' && collType[3] == '[' {
@@ -1913,6 +1940,11 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 			continue
 		}
 		c.compileExpr(node.X)
+		if node.Type != nil && node.Type.Kind == NArrayType {
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+		} else if isArrayTypeName(c.exprConcreteType(node.X)) {
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+		}
 		c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 	}
 
@@ -2328,7 +2360,7 @@ func (c *Compiler) compileFunc(node *Node) {
 			// Track elem size for slice params
 			if isVarParam {
 				c.localElemSizes[pname] = varElemSize
-			} else if param.Type != nil && param.Type.Kind == NSliceType {
+			} else if param.Type != nil && (param.Type.Kind == NSliceType || param.Type.Kind == NArrayType) {
 				c.localElemSizes[pname] = c.sliceElemSize(param.Type)
 			}
 			// Track string-typed params
@@ -2347,9 +2379,9 @@ func (c *Compiler) compileFunc(node *Node) {
 					c.localTypes[pname] = qualifiedType
 				}
 				c.localConcreteTypes[pname] = qualifiedType
-				// Also track slice elem sizes from type
-				if len(qualifiedType) > 2 && qualifiedType[0] == '[' && qualifiedType[1] == ']' {
-					c.localElemSizes[pname] = c.typeElemSize(qualifiedType[2:len(qualifiedType)])
+				// Also track slice/array elem sizes from type
+				if elemType, ok := splitBracketType(qualifiedType); ok {
+					c.localElemSizes[pname] = c.typeElemSize(elemType)
 				}
 				// Track map-typed params
 				if param.Type.Kind == NMapType {
@@ -2394,7 +2426,7 @@ func (c *Compiler) compileFunc(node *Node) {
 								c.localTypes[ret.Name] = qualifiedType
 							}
 							c.localConcreteTypes[ret.Name] = qualifiedType
-							if retTypeNode.Kind == NSliceType {
+							if retTypeNode.Kind == NSliceType || retTypeNode.Kind == NArrayType {
 								c.localElemSizes[ret.Name] = c.sliceElemSize(retTypeNode)
 							}
 							if retTypeNode.Kind == NMapType {
@@ -3066,12 +3098,47 @@ func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
 		lhs := lhsNodes[i]
 		if define {
 			idx := c.addLocal(lhs.Name)
+			if ct, ok := c.localConcreteTypes[lhs.Name]; ok && isArrayTypeName(ct) {
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+			}
 			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 		} else {
+			c.maybeCloneArrayForLValue(lhs)
 			c.compileLValueSet(lhs)
 		}
 		i = i - 1
 	}
+}
+
+func (c *Compiler) lvalueTypeName(node *Node) string {
+	if node == nil {
+		return ""
+	}
+	switch node.Kind {
+	case NIdent:
+		if ct, ok := c.localConcreteTypes[node.Name]; ok {
+			return ct
+		}
+		if c.curPkg != nil {
+			qname := c.curPkg.QualName(node.Name)
+			if ct, ok := c.globalConcreteTypes[qname]; ok {
+				return ct
+			}
+		}
+	case NSelectorExpr:
+		return c.resolveExprType(node)
+	}
+	return ""
+}
+
+func (c *Compiler) maybeCloneArrayForTypeName(typeName string) {
+	if isArrayTypeName(typeName) {
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+	}
+}
+
+func (c *Compiler) maybeCloneArrayForLValue(node *Node) {
+	c.maybeCloneArrayForTypeName(c.lvalueTypeName(node))
 }
 
 func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
@@ -3132,8 +3199,8 @@ func (c *Compiler) compileVarDecl(node *Node) {
 			c.curFunc.Locals[idx].Width = w
 		}
 	}
-	// Track element size for slice variables
-	if node.Type != nil && node.Type.Kind == NSliceType {
+	// Track element size for slice/array variables
+	if node.Type != nil && (node.Type.Kind == NSliceType || node.Type.Kind == NArrayType) {
 		c.localElemSizes[node.Name] = c.sliceElemSize(node.Type)
 	}
 	// Track string-typed variables
@@ -3175,6 +3242,20 @@ func (c *Compiler) compileVarDecl(node *Node) {
 			return
 		}
 		c.compileExpr(node.X)
+		if node.Type != nil && node.Type.Kind == NArrayType {
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+		}
+		if node.Type == nil {
+			if ct := c.exprConcreteType(node.X); ct != "" {
+				c.localConcreteTypes[node.Name] = ct
+				if elemType, ok := splitBracketType(ct); ok {
+					c.localElemSizes[node.Name] = c.typeElemSize(elemType)
+				}
+				if isArrayTypeName(ct) {
+					c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+				}
+			}
+		}
 		if node.Type != nil {
 			if c.isInterfaceTypeName(nodeTypeName(node.Type)) {
 				c.maybeBoxValueForInterface(node.X)
@@ -3182,9 +3263,9 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
 	} else {
-		// Fixed-size arrays are parsed as slice-compatible nodes with a retained
-		// length expression in Type.Y; allocate and initialize backing storage.
-		if node.Type != nil && node.Type.Kind == NSliceType && node.Type.Y != nil {
+		// Fixed-size arrays are represented as slice-header handles with a fixed
+		// len/cap and cloned on value copies.
+		if node.Type != nil && node.Type.Kind == NArrayType {
 			arrLen := c.evalConstExprWithIota(node.Type.Y, 0)
 			if arrLen < 0 {
 				arrLen = 0
@@ -3267,6 +3348,19 @@ func (c *Compiler) compileAssign(node *Node) {
 				c.errorf("%s: assignment count mismatch: %d variables but %d values", c.curFunc.Name, len(node.Nodes), len(node.Body.Nodes))
 				return
 			}
+			if isDefine {
+				for i, rhs := range node.Body.Nodes {
+					if i >= len(node.Nodes) || node.Nodes[i] == nil || node.Nodes[i].Kind != NIdent {
+						continue
+					}
+					if ct := c.exprConcreteType(rhs); ct != "" {
+						c.localConcreteTypes[node.Nodes[i].Name] = ct
+						if elemType, ok := splitBracketType(ct); ok {
+							c.localElemSizes[node.Nodes[i].Name] = c.typeElemSize(elemType)
+						}
+					}
+				}
+			}
 			for _, rhs := range node.Body.Nodes {
 				c.compileExpr(rhs)
 			}
@@ -3327,8 +3421,7 @@ func (c *Compiler) compileAssign(node *Node) {
 						if retTypes[j] == "string" {
 							c.localStringVars[lhs.Name] = true
 						}
-						if len(retTypes[j]) > 2 && retTypes[j][0] == '[' && retTypes[j][1] == ']' {
-							elemType := qret[2:len(qret)]
+						if elemType, ok := splitBracketType(qret); ok {
 							c.localElemSizes[lhs.Name] = c.typeElemSize(elemType)
 						}
 						c.setLocalMapMetadataFromQualified(lhs.Name, qret)
@@ -3401,9 +3494,9 @@ func (c *Compiler) compileAssign(node *Node) {
 			if c.isInterfaceTypeName(ct) {
 				c.localTypes[node.X.Name] = ct
 			}
-			// Track slice elem sizes
-			if len(ct) > 2 && ct[0] == '[' && ct[1] == ']' {
-				c.localElemSizes[node.X.Name] = c.typeElemSize(ct[2:len(ct)])
+			// Track slice/array elem sizes
+			if elemType, ok := splitBracketType(ct); ok {
+				c.localElemSizes[node.X.Name] = c.typeElemSize(elemType)
 			}
 			// Track map variables from concrete return type
 			c.setLocalMapMetadataFromQualified(node.X.Name, ct)
@@ -3464,6 +3557,9 @@ func (c *Compiler) compileAssign(node *Node) {
 			return
 		}
 		c.compileExpr(node.Y)
+		if ct, ok := c.localConcreteTypes[node.X.Name]; ok && isArrayTypeName(ct) {
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
 		return
 	}
@@ -3526,6 +3622,7 @@ func (c *Compiler) compileAssign(node *Node) {
 	if _, ok := c.lvalueInterfaceType(node.X); ok {
 		c.maybeBoxValueForInterface(node.Y)
 	}
+	c.maybeCloneArrayForLValue(node.X)
 	c.compileLValueSet(node.X)
 }
 
@@ -3980,6 +4077,9 @@ func (c *Compiler) emitNamedReturnValues(retTypes []string) int {
 			w = c.curFunc.Locals[idx].Width
 		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx, Width: w})
+		if i < len(retTypes) {
+			c.maybeCloneArrayForTypeName(retTypes[i])
+		}
 		if i < len(retTypes) && c.isInterfaceTypeName(retTypes[i]) {
 			if typeID := c.typeIDForTypeName(c.localConcreteTypes[name]); typeID > 0 {
 				c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: typeID})
@@ -4019,6 +4119,9 @@ func (c *Compiler) compileReturn(node *Node) {
 			if len(retExprs) == len(c.namedResultNames) && len(retExprs) == expectedCount {
 				for i, retExpr := range retExprs {
 					c.compileExpr(retExpr)
+					if i < len(retTypes) {
+						c.maybeCloneArrayForTypeName(retTypes[i])
+					}
 					c.maybeBoxInterface(retExpr, retTypes, i)
 				}
 				i := len(retExprs) - 1
@@ -4040,12 +4143,18 @@ func (c *Compiler) compileReturn(node *Node) {
 				if node.X != nil {
 					retIdx := count
 					c.compileExpr(node.X)
+					if retIdx < len(retTypes) {
+						c.maybeCloneArrayForTypeName(retTypes[retIdx])
+					}
 					c.maybeBoxInterface(node.X, retTypes, retIdx)
 					count++
 				}
 				for _, extra := range node.Nodes {
 					retIdx := count
 					c.compileExpr(extra)
+					if retIdx < len(retTypes) {
+						c.maybeCloneArrayForTypeName(retTypes[retIdx])
+					}
 					c.maybeBoxInterface(extra, retTypes, retIdx)
 					count++
 				}
@@ -4067,12 +4176,18 @@ func (c *Compiler) compileReturn(node *Node) {
 	if node.X != nil {
 		retIdx := count
 		c.compileExpr(node.X)
+		if retIdx < len(retTypes) {
+			c.maybeCloneArrayForTypeName(retTypes[retIdx])
+		}
 		c.maybeBoxInterface(node.X, retTypes, retIdx)
 		count++
 	}
 	for _, extra := range node.Nodes {
 		retIdx := count
 		c.compileExpr(extra)
+		if retIdx < len(retTypes) {
+			c.maybeCloneArrayForTypeName(retTypes[retIdx])
+		}
 		c.maybeBoxInterface(extra, retTypes, retIdx)
 		count++
 	}
@@ -4184,7 +4299,7 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 	if t == "error" || t == "interface{}" {
 		return 0
 	}
-	if len(t) > 1 && t[0] == '[' && t[1] == ']' {
+	if _, ok := splitBracketType(t); ok {
 		return 0
 	}
 	return 1
@@ -6048,9 +6163,16 @@ func (c *Compiler) packVariadicSlice(args []*Node, firstArgIdx int, varCount int
 }
 
 func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName string) {
+	paramTypes := c.funcParamTypes[callName]
 	c.compileExpr(receiver)
-	for _, arg := range args {
+	if len(paramTypes) > 0 {
+		c.maybeCloneArrayForTypeName(paramTypes[0])
+	}
+	for i, arg := range args {
 		c.compileExpr(arg)
+		if i+1 < len(paramTypes) {
+			c.maybeCloneArrayForTypeName(paramTypes[i+1])
+		}
 	}
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: len(args) + 1})
 }
@@ -6389,10 +6511,14 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		methodName := node.X.Name
 		if ifaceType, ok := c.localTypes[recvName]; ok {
 			if _, hasMethod := c.ifaceMethodReturnCount(ifaceType, methodName); hasMethod {
+				paramTypes := c.funcParamTypes[c.dotJoin(ifaceType, methodName)]
 				// Push receiver (interface pointer) then args
 				c.compileExpr(node.X.X)
-				for _, arg := range node.Nodes {
+				for i, arg := range node.Nodes {
 					c.compileExpr(arg)
+					if i < len(paramTypes) {
+						c.maybeCloneArrayForTypeName(paramTypes[i])
+					}
 				}
 				c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(node.Nodes)})
 				return
@@ -6425,8 +6551,15 @@ func (c *Compiler) compileCallExpr(node *Node) {
 						c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 						i++
 					}
-					for _, arg := range node.Nodes {
+					paramTypes := c.funcParamTypes[pm.Target]
+					if len(paramTypes) > 0 {
+						c.maybeCloneArrayForTypeName(paramTypes[0])
+					}
+					for i, arg := range node.Nodes {
 						c.compileExpr(arg)
+						if i+1 < len(paramTypes) {
+							c.maybeCloneArrayForTypeName(paramTypes[i+1])
+						}
 					}
 					c.emit(ir.Inst{Op: ir.OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
 					return
@@ -6445,10 +6578,17 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				if isVariadic && !isSpread {
 					// Push receiver (counts as first fixed arg)
 					c.compileExpr(node.X.X)
+					paramTypes := c.funcParamTypes[resolvedName]
+					if len(paramTypes) > 0 {
+						c.maybeCloneArrayForTypeName(paramTypes[0])
+					}
 					// Compile other fixed args (fixedCount includes receiver)
 					i := 0
 					for i < fixedCount-1 && i < len(node.Nodes) {
 						c.compileExpr(node.Nodes[i])
+						if i+1 < len(paramTypes) {
+							c.maybeCloneArrayForTypeName(paramTypes[i+1])
+						}
 						i++
 					}
 					// Package variadic args into a slice
@@ -6482,9 +6622,13 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			recvType := c.resolveExprType(recvExpr)
 			if recvType != "" {
 				if _, hasMethod := c.ifaceMethodReturnCount(recvType, methodName); hasMethod {
+					paramTypes := c.funcParamTypes[c.dotJoin(recvType, methodName)]
 					c.compileExpr(recvExpr)
-					for _, arg := range node.Nodes {
+					for i, arg := range node.Nodes {
 						c.compileExpr(arg)
+						if i < len(paramTypes) {
+							c.maybeCloneArrayForTypeName(paramTypes[i])
+						}
 					}
 					c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: c.dotJoin(recvType, methodName), Arg: len(node.Nodes)})
 					return
@@ -6503,8 +6647,15 @@ func (c *Compiler) compileCallExpr(node *Node) {
 							c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
 							i++
 						}
-						for _, arg := range node.Nodes {
+						paramTypes := c.funcParamTypes[pm.Target]
+						if len(paramTypes) > 0 {
+							c.maybeCloneArrayForTypeName(paramTypes[0])
+						}
+						for i, arg := range node.Nodes {
 							c.compileExpr(arg)
+							if i+1 < len(paramTypes) {
+								c.maybeCloneArrayForTypeName(paramTypes[i+1])
+							}
 						}
 						c.emit(ir.Inst{Op: ir.OP_CALL, Name: pm.Target, Arg: len(node.Nodes) + 1})
 						return
@@ -6521,9 +6672,16 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					isSpread := node.Name == "spread"
 					if isVariadic && !isSpread {
 						c.compileExpr(recvExpr)
+						paramTypes := c.funcParamTypes[resolvedName]
+						if len(paramTypes) > 0 {
+							c.maybeCloneArrayForTypeName(paramTypes[0])
+						}
 						i := 0
 						for i < fixedCount-1 && i < len(node.Nodes) {
 							c.compileExpr(node.Nodes[i])
+							if i+1 < len(paramTypes) {
+								c.maybeCloneArrayForTypeName(paramTypes[i+1])
+							}
 							i++
 						}
 						variadicCount := len(node.Nodes) - (fixedCount - 1)
@@ -6617,6 +6775,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		for i < fixedCount && i < len(node.Nodes) {
 			arg := node.Nodes[i]
 			c.compileExpr(arg)
+			if i < len(paramTypes) {
+				c.maybeCloneArrayForTypeName(paramTypes[i])
+			}
 			if i < len(paramTypes) && c.isInterfaceTypeName(paramTypes[i]) {
 				c.maybeBoxValueForInterface(arg)
 			}
@@ -6642,6 +6803,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		// Non-variadic call, or spread call — compile all args normally.
 		for i, arg := range node.Nodes {
 			c.compileExpr(arg)
+			if i < len(paramTypes) {
+				c.maybeCloneArrayForTypeName(paramTypes[i])
+			}
 			// For variadic spread calls, the last arg is already a variadic
 			// slice value and must not be boxed as interface{}.
 			shouldBox := true
@@ -7168,7 +7332,7 @@ func (c *Compiler) decodeComptimeValue(raw uint64, typeNode *Node, eval *vm.Eval
 		}
 	}
 
-	if aliasNode.Kind == NSliceType {
+	if aliasNode.Kind == NSliceType || aliasNode.Kind == NArrayType {
 		if raw == 0 {
 			return &Node{Kind: NBasicLit, Name: "nil"}, nil
 		}
@@ -7197,7 +7361,7 @@ func (c *Compiler) decodeComptimeValue(raw uint64, typeNode *Node, eval *vm.Eval
 			i = i + 1
 		}
 		litType := typeNode
-		if litType == nil || litType.Kind != NSliceType {
+		if litType == nil || (litType.Kind != NSliceType && litType.Kind != NArrayType) {
 			litType = aliasNode
 		}
 		return &Node{Kind: NCompositeLit, Type: cloneTypeNode(litType), Nodes: elems}, nil
@@ -7315,6 +7479,16 @@ func (c *Compiler) qualifyTypeNameInner(typeName string, pkgPath string) string 
 	if len(typeName) > 2 && typeName[0] == '[' && typeName[1] == ']' {
 		return "[]" + c.qualifyTypeName(typeName[2:len(typeName)], pkgPath)
 	}
+	// Fixed array prefix: [N]T
+	if len(typeName) > 2 && typeName[0] == '[' && typeName[1] != ']' {
+		i := 1
+		for i < len(typeName) && typeName[i] != ']' {
+			i++
+		}
+		if i < len(typeName) {
+			return typeName[0:i+1] + c.qualifyTypeName(typeName[i+1:len(typeName)], pkgPath)
+		}
+	}
 	// Pointer prefix: keep * after package name to match method table format (e.g. "main.*Parser")
 	if len(typeName) > 1 && typeName[0] == '*' {
 		inner := typeName[1:len(typeName)]
@@ -7423,10 +7597,10 @@ func (c *Compiler) findUniqueMethodByName(methodName string) (string, bool) {
 	return found, true
 }
 
-// sliceElemType extracts the element type from a slice type string like "[]os.DirEntry".
+// sliceElemType extracts the element type from a slice/array type string.
 func sliceElemType(typeName string) string {
-	if len(typeName) > 2 && typeName[0] == '[' && typeName[1] == ']' {
-		return typeName[2:len(typeName)]
+	if elemType, ok := splitBracketType(typeName); ok {
+		return elemType
 	}
 	return ""
 }
@@ -7708,10 +7882,10 @@ func (c *Compiler) exprElemSize(node *Node) int {
 		if es, ok := c.globalElemSizes[qname]; ok {
 			return es
 		}
-		// Check concrete type for slice elem size
+		// Check concrete type for slice/array elem size
 		if ct, ok := c.localConcreteTypes[node.Name]; ok {
-			if len(ct) > 2 && ct[0] == '[' && ct[1] == ']' {
-				return c.typeElemSize(ct[2:len(ct)])
+			if elemType, ok := splitBracketType(ct); ok {
+				return c.typeElemSize(elemType)
 			}
 		}
 		// Not a known slice variable — assume string indexing (elem size 1)
@@ -7721,8 +7895,8 @@ func (c *Compiler) exprElemSize(node *Node) int {
 		calleeName := c.resolveCallName(node.X)
 		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
 			retType := c.qualifyTypeName(retTypes[0], "")
-			if len(retType) > 2 && retType[0] == '[' && retType[1] == ']' {
-				return c.typeElemSize(retType[2:len(retType)])
+			if elemType, ok := splitBracketType(retType); ok {
+				return c.typeElemSize(elemType)
 			}
 		}
 		return 1
@@ -7731,10 +7905,9 @@ func (c *Compiler) exprElemSize(node *Node) int {
 		// Determine elem size of the result of indexing the base
 		if node.X != nil {
 			baseCT := c.exprConcreteType(node.X)
-			if len(baseCT) > 2 && baseCT[0] == '[' && baseCT[1] == ']' {
-				resultType := baseCT[2:len(baseCT)]
-				if len(resultType) > 2 && resultType[0] == '[' && resultType[1] == ']' {
-					return c.typeElemSize(resultType[2:len(resultType)])
+			if resultType, ok := splitBracketType(baseCT); ok {
+				if elemType, ok := splitBracketType(resultType); ok {
+					return c.typeElemSize(elemType)
 				}
 			}
 		}
@@ -7770,7 +7943,7 @@ func (c *Compiler) sliceElemSize(typeNode *Node) int {
 	if typeNode == nil {
 		return c.target.PtrSize
 	}
-	if typeNode.Kind == NSliceType && typeNode.X != nil {
+	if (typeNode.Kind == NSliceType || typeNode.Kind == NArrayType) && typeNode.X != nil {
 		return c.typeElemSize(nodeTypeName(typeNode.X))
 	}
 	return c.target.PtrSize
@@ -8037,9 +8210,10 @@ func (c *Compiler) mapExprKeyKind(node *Node) int {
 	// Indexing a slice of maps: determine key kind from the map element type
 	if node.Kind == NIndexExpr && node.X != nil {
 		collType := c.resolveExprType(node.X)
-		if len(collType) > 6 && collType[0] == '[' && collType[1] == ']' && collType[2] == 'm' && collType[3] == 'a' && collType[4] == 'p' && collType[5] == '[' {
-			// Extract key type from "[]map[K]V"
-			keyType := collType[6:len(collType)]
+		if elemType, ok := splitBracketType(collType); ok && len(elemType) > 4 &&
+			elemType[0] == 'm' && elemType[1] == 'a' && elemType[2] == 'p' && elemType[3] == '[' {
+			// Extract key type from "[]map[K]V" or "[N]map[K]V"
+			keyType := elemType[4:len(elemType)]
 			// Find closing ]
 			depth := 1
 			ki := 0
@@ -8097,7 +8271,8 @@ func (c *Compiler) isMapExpr(node *Node) bool {
 	// Check for indexing a slice-of-maps: scopes[i] where scopes is []map[K]V
 	if node.Kind == NIndexExpr && node.X != nil {
 		collType := c.resolveExprType(node.X)
-		if len(collType) > 6 && collType[0] == '[' && collType[1] == ']' && collType[2] == 'm' && collType[3] == 'a' && collType[4] == 'p' && collType[5] == '[' {
+		if elemType, ok := splitBracketType(collType); ok && len(elemType) > 4 &&
+			elemType[0] == 'm' && elemType[1] == 'a' && elemType[2] == 'p' && elemType[3] == '[' {
 			return true
 		}
 	}
@@ -8153,6 +8328,55 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 				// Original map_hdr still on stack
 			}
 		}
+		return
+	}
+
+	// Handle fixed array composite literals: [N]T{...} / [...]T{...}
+	if node.Type != nil && node.Type.Kind == NArrayType {
+		elemSize := c.sliceElemSize(node.Type)
+		arrLen := int64(0)
+		if node.Type.Name == "..." {
+			arrLen = int64(len(node.Nodes))
+			for _, elem := range node.Nodes {
+				if elem.Kind == NKeyValue && elem.X != nil {
+					k := c.evalConstExprWithIota(elem.X, 0)
+					if k+1 > arrLen {
+						arrLen = k + 1
+					}
+				}
+			}
+		} else {
+			arrLen = c.evalConstExprWithIota(node.Type.Y, 0)
+			if arrLen < 0 {
+				arrLen = 0
+			}
+		}
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: arrLen})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(elemSize)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceMake", Arg: 2})
+		tmpIdx := c.addLocal("$arrlit")
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: tmpIdx})
+
+		nextPos := int64(0)
+		for _, elem := range node.Nodes {
+			elemExpr := elem
+			idx := nextPos
+			if elem.Kind == NKeyValue {
+				elemExpr = elem.Y
+				idx = c.evalConstExprWithIota(elem.X, 0)
+			}
+			if idx < 0 || idx >= arrLen {
+				c.errorf("%s: array index %d out of bounds for length %d", c.curFunc.Name, idx, arrLen)
+				continue
+			}
+			c.compileExpr(elemExpr)
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: idx})
+			c.emit(ir.Inst{Op: ir.OP_INDEX_ADDR, Arg: elemSize})
+			c.emit(ir.Inst{Op: ir.OP_STORE, Arg: elemSize})
+			nextPos = idx + 1
+		}
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
 		return
 	}
 
@@ -8272,6 +8496,21 @@ func nodeTypeName(node *Node) string {
 		return "*" + nodeTypeName(node.X)
 	case NSliceType:
 		return "[]" + nodeTypeName(node.X)
+	case NArrayType:
+		lenExpr := "0"
+		if node.Name == "..." {
+			lenExpr = "..."
+		} else if node.Y != nil {
+			switch node.Y.Kind {
+			case NIntLit:
+				lenExpr = node.Y.Name
+			case NIdent:
+				lenExpr = node.Y.Name
+			default:
+				lenExpr = "?"
+			}
+		}
+		return "[" + lenExpr + "]" + nodeTypeName(node.X)
 	case NMapType:
 		return "map[" + nodeTypeName(node.X) + "]" + nodeTypeName(node.Y)
 	case NInterfaceType:

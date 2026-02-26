@@ -471,6 +471,36 @@ func SliceCopy(dst uintptr, src uintptr) int {
 	return n
 }
 
+// SliceClone makes a deep copy of a slice header and its backing storage.
+func SliceClone(hdr uintptr) uintptr {
+	if hdr == 0 {
+		return 0
+	}
+	srcData := ReadPtr(hdr)
+	slen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
+	scap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
+	elemSize := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
+	if elemSize <= 0 {
+		elemSize = PtrSize
+	}
+	if scap < slen {
+		scap = slen
+	}
+	newHdr := Alloc(SliceHdrSize)
+	newData := uintptr(0)
+	if scap > 0 {
+		newData = Alloc(scap * elemSize)
+		if slen > 0 && srcData != 0 {
+			Memcopy(newData, srcData, slen*elemSize)
+		}
+	}
+	WritePtr(newHdr, newData)
+	WritePtr(newHdr+uintptr(SliceOffLen), uintptr(slen))
+	WritePtr(newHdr+uintptr(SliceOffCap), uintptr(scap))
+	WritePtr(newHdr+uintptr(SliceOffEsz), uintptr(elemSize))
+	return newHdr
+}
+
 // SliceReslice creates a new slice header for s[low:high].
 func SliceReslice(hdr uintptr, low int, high int) uintptr {
 	if hdr == 0 {
