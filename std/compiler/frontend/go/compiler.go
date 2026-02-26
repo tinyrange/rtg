@@ -21,9 +21,8 @@ const (
 	targetRegisterFmt         = targetPkgPath + ".RegisterBinFormat"
 )
 
-// defer lowering can be re-enabled later, but it is currently unsupported by
-// project policy and should emit a clear compile-time error when used.
-var featureDeferEnabled = false
+// Defer lowering is enabled by default.
+var featureDeferEnabled = true
 
 type closureCaptureSpec struct {
 	Name  string
@@ -1192,10 +1191,229 @@ func hasZeroCallDirective(directives []string) bool {
 	return false
 }
 
+func isStrictDirectiveAllowed(directive string) bool {
+	trimmed := strings.TrimSpace(directive)
+	return len(trimmed) > len("embed ") && strings.HasPrefix(trimmed, "embed ")
+}
+
+func isRTGImplementationPackagePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	if strings.HasPrefix(path, "j5.nz/rtg/std/") || strings.HasPrefix(path, "j5.nz/rtg/x/") {
+		return true
+	}
+	if path == "runtime" || path == "os" || path == "target" || path == "compiler" {
+		return true
+	}
+	return strings.HasPrefix(path, "compiler/")
+}
+
+func (c *Compiler) strictDirectiveChecksEnabled(pkg *Package) bool {
+	if c == nil || c.target == nil || !c.target.Strict || pkg == nil {
+		return false
+	}
+	return !isRTGImplementationPackagePath(pkg.Path)
+}
+
+func isNilExpr(node *Node) bool {
+	return node != nil && node.Kind == NBasicLit && node.Name == "nil"
+}
+
+func isComparisonOp(op string) bool {
+	switch op {
+	case "==", "!=", "<", ">", "<=", ">=":
+		return true
+	}
+	return false
+}
+
+func isPointerTypeNameForStrict(typeName string) bool {
+	if typeName == "" {
+		return false
+	}
+	if typeName[0] == '*' {
+		return true
+	}
+	dot := -1
+	i := 0
+	for i < len(typeName) {
+		if typeName[i] == '.' {
+			dot = i
+		}
+		i++
+	}
+	return dot >= 0 && dot+1 < len(typeName) && typeName[dot+1] == '*'
+}
+
+func (c *Compiler) isPointerExprForStrict(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == NUnaryExpr && node.Name == "&" {
+		return true
+	}
+	t := c.resolveExprType(node)
+	if t == "" {
+		t = c.exprConcreteType(node)
+	}
+	return isPointerTypeNameForStrict(t)
+}
+
+func (c *Compiler) isSliceExprForStrict(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if c.isStringTypedExpr(node) || isStringExpr(node) {
+		return false
+	}
+	if node.Kind == NCompositeLit && node.Type != nil && node.Type.Kind == NSliceType {
+		return true
+	}
+	if node.Kind == NCallExpr && node.X != nil && node.X.Kind == NSliceType {
+		return true
+	}
+	if node.Kind == NSliceExpr {
+		if c.isStringTypedExpr(node.X) || isStringExpr(node.X) {
+			return false
+		}
+		return true
+	}
+	t := c.resolveExprType(node)
+	return strings.HasPrefix(t, "[]")
+}
+
+func (c *Compiler) isFuncExprForStrict(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == NFuncType {
+		return true
+	}
+	if node.Kind == NIdent {
+		if _, ok := c.localFuncTargets[node.Name]; ok {
+			return true
+		}
+		if _, ok := c.localMethodTargets[node.Name]; ok {
+			return true
+		}
+		if _, ok := c.lookupLocal(node.Name); ok {
+			t := c.resolveExprType(node)
+			return strings.HasPrefix(t, "func(")
+		}
+		if c.curPkg != nil {
+			if sym, ok := c.curPkg.Symbols[node.Name]; ok {
+				if sym.Kind == SymFunc {
+					return true
+				}
+				if sym.Kind == SymVar && sym.Node != nil && sym.Node.Type != nil && sym.Node.Type.Kind == NFuncType {
+					return true
+				}
+			}
+		}
+	}
+	if node.Kind == NSelectorExpr && node.X != nil && node.X.Kind == NIdent {
+		pkg := c.resolvePackage(node.X.Name)
+		if pkg != nil {
+			if sym, ok := pkg.Symbols[node.Name]; ok {
+				if sym.Kind == SymFunc {
+					return true
+				}
+				if sym.Kind == SymVar && sym.Node != nil && sym.Node.Type != nil && sym.Node.Type.Kind == NFuncType {
+					return true
+				}
+			}
+		}
+	}
+	t := c.resolveExprType(node)
+	return strings.HasPrefix(t, "func(")
+}
+
+func (c *Compiler) strictCheckComparison(op string, left *Node, right *Node) {
+	if !isComparisonOp(op) {
+		return
+	}
+
+	leftNil := isNilExpr(left)
+	rightNil := isNilExpr(right)
+	mapCmp := c.isMapExpr(left) || c.isMapExpr(right)
+	sliceCmp := c.isSliceExprForStrict(left) || c.isSliceExprForStrict(right)
+	funcCmp := c.isFuncExprForStrict(left) || c.isFuncExprForStrict(right)
+
+	if mapCmp {
+		if op != "==" && op != "!=" {
+			c.errorf("%s: invalid operation: map values are not ordered", c.curFunc.Name)
+			return
+		}
+		if !leftNil && !rightNil {
+			c.errorf("%s: invalid operation: map can only be compared to nil", c.curFunc.Name)
+		}
+		return
+	}
+	if sliceCmp {
+		if op != "==" && op != "!=" {
+			c.errorf("%s: invalid operation: slice values are not ordered", c.curFunc.Name)
+			return
+		}
+		if !leftNil && !rightNil {
+			c.errorf("%s: invalid operation: slice can only be compared to nil", c.curFunc.Name)
+		}
+		return
+	}
+	if funcCmp {
+		if op != "==" && op != "!=" {
+			c.errorf("%s: invalid operation: function values are not ordered", c.curFunc.Name)
+			return
+		}
+		if !leftNil && !rightNil {
+			c.errorf("%s: invalid operation: function can only be compared to nil", c.curFunc.Name)
+		}
+		return
+	}
+
+	if (op == "<" || op == ">" || op == "<=" || op == ">=") &&
+		(c.isPointerExprForStrict(left) || c.isPointerExprForStrict(right)) {
+		c.errorf("%s: invalid operation: pointer values are not ordered", c.curFunc.Name)
+	}
+}
+
+func (c *Compiler) strictCheckPointerArithmetic(op string, left *Node, right *Node) {
+	switch op {
+	case "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>":
+	default:
+		return
+	}
+	if c.isPointerExprForStrict(left) || c.isPointerExprForStrict(right) {
+		c.errorf("%s: pointer arithmetic is not allowed", c.curFunc.Name)
+	}
+}
+
+func (c *Compiler) filterDirectivesForStrict(pkg *Package, node *Node, directives []string, report bool) []string {
+	if !c.strictDirectiveChecksEnabled(pkg) || len(directives) == 0 {
+		return directives
+	}
+	filtered := make([]string, 0, len(directives))
+	for _, directive := range directives {
+		if isStrictDirectiveAllowed(directive) {
+			filtered = append(filtered, directive)
+			continue
+		}
+		if report {
+			line := 0
+			if node != nil {
+				line = node.Pos
+			}
+			c.errorf("%s: line %d: directive //rtg:%s is not allowed in -strict mode", pkg.Path, line, strings.TrimSpace(directive))
+		}
+	}
+	return filtered
+}
+
 func (c *Compiler) collectZeroCallTypeDirectives(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
 			base, directives := unwrapDirectiveNode(node)
+			directives = c.filterDirectivesForStrict(pkg, node, directives, false)
 			if base == nil || !hasZeroCallDirective(directives) {
 				continue
 			}
@@ -1221,6 +1439,7 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
 			fn, directives := unwrapDirectiveNode(node)
+			directives = c.filterDirectivesForStrict(pkg, node, directives, false)
 			if fn == nil {
 				continue
 			}
@@ -1500,6 +1719,7 @@ func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]directiveInit, [
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
 			base, directives := unwrapDirectiveNode(node)
+			directives = c.filterDirectivesForStrict(pkg, node, directives, false)
 			if base == nil || base.Kind != NFunc {
 				continue
 			}
@@ -1938,6 +2158,7 @@ func (c *Compiler) compileTopDecl(node *Node) {
 		c.compileFunc(node)
 	case NDirective:
 		base, directives := unwrapDirectiveNode(node)
+		directives = c.filterDirectivesForStrict(c.curPkg, node, directives, true)
 		if base != nil && base.Kind == NFunc {
 			intern := ""
 			var linkspec LinkStaticDirective
@@ -2854,6 +3075,9 @@ func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
 }
 
 func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
+	if op == ir.OP_ADD || op == ir.OP_SUB || op == ir.OP_MUL || op == ir.OP_DIV || op == ir.OP_MOD || op == ir.OP_AND || op == ir.OP_OR || op == ir.OP_XOR || op == ir.OP_SHL || op == ir.OP_SHR {
+		c.strictCheckPointerArithmetic("+", node.X, node.Y)
+	}
 	w := c.exprWidth(node.X)
 	c.compileLValueGet(node.X)
 	c.compileExpr(node.Y)
@@ -4293,6 +4517,7 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 			}
 			return
 		case "==", "!=", "<", ">", "<=", ">=":
+			c.strictCheckComparison(cond.Name, cond.X, cond.Y)
 			if c.boolOperandMismatch(cond.X, cond.Y) {
 				c.errorf("%s: invalid comparison between bool and non-bool", c.curFunc.Name)
 			}
@@ -4647,6 +4872,9 @@ func (c *Compiler) compileSwitch(node *Node, stmtLabels []string) {
 				// Check each case value with OR logic
 				// DUP/expr/EQ/JMP_IF is net-zero on the fallthrough path
 				for _, expr := range caseExprs {
+					if !isTypeSwitch {
+						c.strictCheckComparison("==", node.Y, expr)
+					}
 					c.emit(ir.Inst{Op: ir.OP_DUP})
 					if isTypeSwitch {
 						c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.typeIDForTypeNode(expr))})
@@ -4855,6 +5083,9 @@ func (c *Compiler) compileTypeAssertCommaOk(node *Node) {
 }
 
 func (c *Compiler) compileInc(node *Node) {
+	if c.isPointerExprForStrict(node.X) {
+		c.errorf("%s: pointer arithmetic is not allowed", c.curFunc.Name)
+	}
 	w := c.exprWidth(node.X)
 	c.compileLValueGet(node.X)
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
@@ -4867,6 +5098,9 @@ func (c *Compiler) compileInc(node *Node) {
 }
 
 func (c *Compiler) compileDec(node *Node) {
+	if c.isPointerExprForStrict(node.X) {
+		c.errorf("%s: pointer arithmetic is not allowed", c.curFunc.Name)
+	}
 	w := c.exprWidth(node.X)
 	c.compileLValueGet(node.X)
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
@@ -5408,6 +5642,9 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 		c.compileLogicalBinary(node, false)
 		return
 	}
+
+	c.strictCheckComparison(node.Name, node.X, node.Y)
+	c.strictCheckPointerArithmetic(node.Name, node.X, node.Y)
 
 	// String operations: concatenation and comparison
 	isStr := isStringExpr(node.X) || isStringExpr(node.Y) || c.isStringTypedExpr(node.X) || c.isStringTypedExpr(node.Y)
@@ -5968,8 +6205,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		name := node.X.Name
 		if name == "recover" {
-			// Minimal recover stub: outside panic unwinding this returns nil.
-			// Full panic/recover semantics remain unimplemented.
+			c.errorf("%s: recover is not supported", c.curFunc.Name)
 			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 			return
 		}

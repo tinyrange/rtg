@@ -12,6 +12,7 @@ type Target struct {
 	WordSize              int    // word size in bytes
 	BuildTags             []string
 	Defines               map[string]string
+	Strict                bool
 	CompilerDebug         bool
 	StripBinary           bool
 	StdlibIncludePaths    []string

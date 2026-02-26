@@ -4,24 +4,24 @@ build:
   sh go build -o build/rtg ./std/compiler/
 
 selfhost: build
-  sh ./build/rtg -o build/stage1 ./std/compiler/
-  sh ./build/stage1 -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage2
-  sh ./build/stage2 -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage3
+  sh ./build/rtg -strict -o build/stage1 ./std/compiler/
+  sh ./build/stage1 -strict -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage2
+  sh ./build/stage2 -strict -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage3
   sh cmp build/stage2 build/stage3 && echo "PASS: self-hosting OK"
 
 selfhost-strip: build
-  sh ./build/rtg -s -o build/stage1 ./std/compiler/
-  sh ./build/stage1 -s -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage2
-  sh ./build/stage2 -s -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage3
+  sh ./build/rtg -strict -s -o build/stage1 ./std/compiler/
+  sh ./build/stage1 -strict -s -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage2
+  sh ./build/stage2 -strict -s -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage3
   sh cmp build/stage2 build/stage3 && echo "PASS: stripped self-hosting OK"
 
 selfhost-size-native-tags: build
-  sh ./build/rtg -o build/stage1 ./std/compiler/
-  sh ./build/stage1 -o build/stage2 ./std/compiler/
-  sh ./build/stage2 -size-analysis build/stage2.size.default.json -o build/rtg.stage2.default ./std/compiler/
-  sh ./build/stage2 -s -size-analysis build/stage2.size.default.strip.json -o build/rtg.stage2.default.strip ./std/compiler/
-  sh ./build/stage2 -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386 -size-analysis build/stage2.size.native_only.json -o build/rtg.stage2.native_only ./std/compiler/
-  sh ./build/stage2 -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir -size-analysis build/stage2.size.native_strict.json -o build/rtg.stage2.native_strict ./std/compiler/
+  sh ./build/rtg -strict -o build/stage1 ./std/compiler/
+  sh ./build/stage1 -strict -o build/stage2 ./std/compiler/
+  sh ./build/stage2 -strict -size-analysis build/stage2.size.default.json -o build/rtg.stage2.default ./std/compiler/
+  sh ./build/stage2 -strict -s -size-analysis build/stage2.size.default.strip.json -o build/rtg.stage2.default.strip ./std/compiler/
+  sh ./build/stage2 -strict -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386 -size-analysis build/stage2.size.native_only.json -o build/rtg.stage2.native_only ./std/compiler/
+  sh ./build/stage2 -strict -tags no_backend_arm64,no_backend_linux_i386,no_backend_windows_amd64,no_backend_windows_i386,no_backend_wasi_wasm32,no_backend_c,no_backend_dos_i386,no_backend_ir -size-analysis build/stage2.size.native_strict.json -o build/rtg.stage2.native_strict ./std/compiler/
   sh ./build/rtg.stage2.default -h >/dev/null
   sh ./build/rtg.stage2.default.strip -h >/dev/null
   sh ./build/rtg.stage2.native_only -h >/dev/null
@@ -46,67 +46,67 @@ test-size-analysis-tagsets: build
   sh echo "PASS: size-analysis tagset matrix OK"
 
 selfhost-i386: build
-  sh ./build/rtg -T linux/386 -o build/stage1_i386 ./std/compiler/
-  sh ./build/stage1_i386 -T linux/386 -o build/stage2_i386 ./std/compiler/
-  sh ./build/stage2_i386 -T linux/386 -o build/stage3_i386 ./std/compiler/
+  sh ./build/rtg -strict -T linux/386 -o build/stage1_i386 ./std/compiler/
+  sh ./build/stage1_i386 -strict -T linux/386 -o build/stage2_i386 ./std/compiler/
+  sh ./build/stage2_i386 -strict -T linux/386 -o build/stage3_i386 ./std/compiler/
   sh cmp build/stage2_i386 build/stage3_i386 && echo "PASS: i386 self-hosting OK"
 
 selfhost-arm64: build
-  sh ./build/rtg -T linux/arm64 -o build/stage1_arm64 ./std/compiler/
-  sh ./build/stage1_arm64 -T linux/arm64 -o build/stage2_arm64 ./std/compiler/
-  sh ./build/stage2_arm64 -T linux/arm64 -o build/stage3_arm64 ./std/compiler/
+  sh ./build/rtg -strict -T linux/arm64 -o build/stage1_arm64 ./std/compiler/
+  sh ./build/stage1_arm64 -strict -T linux/arm64 -o build/stage2_arm64 ./std/compiler/
+  sh ./build/stage2_arm64 -strict -T linux/arm64 -o build/stage3_arm64 ./std/compiler/
   sh cmp build/stage2_arm64 build/stage3_arm64 && echo "PASS: arm64 self-hosting OK"
 
 selfhost-c: build
-  sh ./build/rtg -T c/64 -o build/stage1_c.c ./std/compiler/
+  sh ./build/rtg -strict -T c/64 -o build/stage1_c.c ./std/compiler/
   sh ${CC:-cc} build/stage1_c.c -o build/stage1_c
-  sh ./build/stage1_c -T c/64 -o build/stage2_c.c ./std/compiler/
+  sh ./build/stage1_c -strict -T c/64 -o build/stage2_c.c ./std/compiler/
   sh ${CC:-cc} build/stage2_c.c -o build/stage2_c
-  sh ./build/stage2_c -T c/64 -o build/stage3_c.c ./std/compiler/
+  sh ./build/stage2_c -strict -T c/64 -o build/stage3_c.c ./std/compiler/
   sh cmp build/stage2_c.c build/stage3_c.c && echo "PASS: C backend self-hosting OK"
 
 selfhost-wasm: build
-  sh ./build/rtg -T wasi/wasm32 -o build/stage1.wasm ./std/compiler/
-  sh wasmtime --dir=. build/stage1.wasm -T wasi/wasm32 -o build/stage2.wasm ./std/compiler/
-  sh wasmtime --dir=. build/stage2.wasm -T wasi/wasm32 -o build/stage3.wasm ./std/compiler/
+  sh ./build/rtg -strict -T wasi/wasm32 -o build/stage1.wasm ./std/compiler/
+  sh wasmtime --dir=. build/stage1.wasm -strict -T wasi/wasm32 -o build/stage2.wasm ./std/compiler/
+  sh wasmtime --dir=. build/stage2.wasm -strict -T wasi/wasm32 -o build/stage3.wasm ./std/compiler/
   sh cmp build/stage2.wasm build/stage3.wasm && echo "PASS: wasm self-hosting OK"
 
 selfhost-winarm64: build
-  sh set -eu; rtg=./build/rtg; if [ -x ./build/rtg.exe ]; then rtg=./build/rtg.exe; fi; stage1=build/stage1_winarm64.exe; stage2=build/stage2_winarm64.exe; stage3=build/stage3_winarm64.exe; if grep -qi microsoft /proc/version 2>/dev/null; then $rtg -T windows/arm64 -o $stage1 ./std/compiler/; root=$(pwd); wroot=$(wslpath -m $root); wstage1=$(wslpath -m $root/$stage1); wstage2=$(wslpath -m $root/$stage2); wstage3=$(wslpath -m $root/$stage3); wcompiler=$wroot/std/compiler/; cmd.exe /c $wstage1 -T windows/arm64 -o $wstage2 $wcompiler; cmd.exe /c $wstage2 -T windows/arm64 -o $wstage3 $wcompiler; else $rtg -T windows/arm64 -o $stage1 ./std/compiler/; $stage1 -T windows/arm64 -o $stage2 ./std/compiler/; chmod +x $stage2; $stage2 -T windows/arm64 -o $stage3 ./std/compiler/; fi; cmp $stage2 $stage3 && echo "PASS: windows/arm64 self-hosting OK"
+  sh set -eu; rtg=./build/rtg; if [ -x ./build/rtg.exe ]; then rtg=./build/rtg.exe; fi; stage1=build/stage1_winarm64.exe; stage2=build/stage2_winarm64.exe; stage3=build/stage3_winarm64.exe; if grep -qi microsoft /proc/version 2>/dev/null; then $rtg -strict -T windows/arm64 -o $stage1 ./std/compiler/; root=$(pwd); wroot=$(wslpath -m $root); wstage1=$(wslpath -m $root/$stage1); wstage2=$(wslpath -m $root/$stage2); wstage3=$(wslpath -m $root/$stage3); wcompiler=$wroot/std/compiler/; cmd.exe /c $wstage1 -strict -T windows/arm64 -o $wstage2 $wcompiler; cmd.exe /c $wstage2 -strict -T windows/arm64 -o $wstage3 $wcompiler; else $rtg -strict -T windows/arm64 -o $stage1 ./std/compiler/; $stage1 -strict -T windows/arm64 -o $stage2 ./std/compiler/; chmod +x $stage2; $stage2 -strict -T windows/arm64 -o $stage3 ./std/compiler/; fi; cmp $stage2 $stage3 && echo "PASS: windows/arm64 self-hosting OK"
 
 selfhost-winamd64: build
-  sh ./build/rtg -T windows/amd64 -o build/stage1_winamd64.exe ./std/compiler/
-  sh ./build/stage1_winamd64.exe -T windows/amd64 -o build/stage2_winamd64.exe ./std/compiler/
+  sh ./build/rtg -strict -T windows/amd64 -o build/stage1_winamd64.exe ./std/compiler/
+  sh ./build/stage1_winamd64.exe -strict -T windows/amd64 -o build/stage2_winamd64.exe ./std/compiler/
   sh chmod +x build/stage2_winamd64.exe
-  sh ./build/stage2_winamd64.exe -T windows/amd64 -o build/stage3_winamd64.exe ./std/compiler/
+  sh ./build/stage2_winamd64.exe -strict -T windows/amd64 -o build/stage3_winamd64.exe ./std/compiler/
   sh cmp build/stage2_winamd64.exe build/stage3_winamd64.exe && echo "PASS: windows/amd64 self-hosting OK"
 
 selfhost-win386: build
-  sh ./build/rtg -T windows/386 -o build/stage1.exe ./std/compiler/
-  sh ./build/stage1.exe -T windows/386 -o build/stage2.exe ./std/compiler/
-  sh ./build/stage2.exe -T windows/386 -o build/stage3.exe ./std/compiler/
+  sh ./build/rtg -strict -T windows/386 -o build/stage1.exe ./std/compiler/
+  sh ./build/stage1.exe -strict -T windows/386 -o build/stage2.exe ./std/compiler/
+  sh ./build/stage2.exe -strict -T windows/386 -o build/stage3.exe ./std/compiler/
   sh cmp build/stage2.exe build/stage3.exe && echo "PASS: windows/386 self-hosting OK"
 
 selfhost-exp: selfhost
-  sh ./build/stage2 -tags exp_ir_binary -o build/stage2_exp ./std/compiler/
-  sh ./build/stage2_exp -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend ./std/compiler/
+  sh ./build/stage2 -strict -tags exp_ir_binary -o build/stage2_exp ./std/compiler/
+  sh ./build/stage2_exp -strict -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend ./std/compiler/
   sh ./build/stage2_exp -emit-ir-binary build/selfhost_exp_native.irb tests/types_int.go
   sh ./build/stage2_exp_backend -from-ir-binary build/selfhost_exp_native.irb -o build/selfhost_exp_native
   sh ./build/selfhost_exp_native >/dev/null
   sh echo "PASS: self-hosting experimental IR binary roundtrip OK"
 
 selfhost-exp-i386: selfhost-i386
-  sh ./build/stage2_i386 -T linux/386 -tags exp_ir_binary -o build/stage2_i386_exp ./std/compiler/
-  sh ./build/stage2_i386_exp -T linux/386 -tags no_frontend,exp_ir_binary -o build/stage2_i386_exp_backend ./std/compiler/
+  sh ./build/stage2_i386 -strict -T linux/386 -tags exp_ir_binary -o build/stage2_i386_exp ./std/compiler/
+  sh ./build/stage2_i386_exp -strict -T linux/386 -tags no_frontend,exp_ir_binary -o build/stage2_i386_exp_backend ./std/compiler/
   sh ./build/stage2_i386_exp -T linux/386 -emit-ir-binary build/selfhost_exp_i386.irb tests/types_int.go
   sh ./build/stage2_i386_exp_backend -T linux/386 -from-ir-binary build/selfhost_exp_i386.irb -o build/selfhost_exp_i386
   sh ./build/selfhost_exp_i386 >/dev/null
   sh echo "PASS: i386 experimental IR binary roundtrip OK"
 
 selfhost-exp-c: selfhost-c
-  sh ./build/stage2_c -T c/64 -tags exp_ir_binary -o build/stage2_c_exp.c ./std/compiler/
+  sh ./build/stage2_c -strict -T c/64 -tags exp_ir_binary -o build/stage2_c_exp.c ./std/compiler/
   sh ${CC:-cc} build/stage2_c_exp.c -o build/stage2_c_exp
-  sh ./build/stage2_c_exp -T c/64 -tags no_frontend,exp_ir_binary -o build/stage2_c_exp_backend.c ./std/compiler/
+  sh ./build/stage2_c_exp -strict -T c/64 -tags no_frontend,exp_ir_binary -o build/stage2_c_exp_backend.c ./std/compiler/
   sh ${CC:-cc} build/stage2_c_exp_backend.c -o build/stage2_c_exp_backend
   sh ./build/stage2_c_exp -T c/64 -emit-ir-binary build/selfhost_exp_c.irb tests/types_int.go
   sh ./build/stage2_c_exp_backend -T c/64 -from-ir-binary build/selfhost_exp_c.irb -o build/selfhost_exp_c_out.c
@@ -115,16 +115,16 @@ selfhost-exp-c: selfhost-c
   sh echo "PASS: C experimental IR binary roundtrip OK"
 
 selfhost-exp-wasm: selfhost-wasm
-  sh wasmtime --dir=. build/stage2.wasm -T wasi/wasm32 -tags exp_ir_binary -o build/stage2_exp.wasm ./std/compiler/
-  sh wasmtime --dir=. build/stage2_exp.wasm -T wasi/wasm32 -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend.wasm ./std/compiler/
+  sh wasmtime --dir=. build/stage2.wasm -strict -T wasi/wasm32 -tags exp_ir_binary -o build/stage2_exp.wasm ./std/compiler/
+  sh wasmtime --dir=. build/stage2_exp.wasm -strict -T wasi/wasm32 -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend.wasm ./std/compiler/
   sh wasmtime --dir=. build/stage2_exp.wasm -T wasi/wasm32 -emit-ir-binary build/selfhost_exp_wasm.irb tests/types_int.go
   sh wasmtime --dir=. build/stage2_exp_backend.wasm -T wasi/wasm32 -from-ir-binary build/selfhost_exp_wasm.irb -o build/selfhost_exp_wasm_out.wasm
   sh wasmtime --dir=. build/selfhost_exp_wasm_out.wasm >/dev/null
   sh echo "PASS: wasm experimental IR binary roundtrip OK"
 
 selfhost-exp-winarm64: selfhost-winarm64
-  sh ./build/stage2_winarm64.exe -T windows/arm64 -tags exp_ir_binary -o build/stage2_winarm64_exp.exe ./std/compiler/
-  sh ./build/stage2_winarm64_exp.exe -T windows/arm64 -tags no_frontend,exp_ir_binary -o build/stage2_winarm64_exp_backend.exe ./std/compiler/
+  sh ./build/stage2_winarm64.exe -strict -T windows/arm64 -tags exp_ir_binary -o build/stage2_winarm64_exp.exe ./std/compiler/
+  sh ./build/stage2_winarm64_exp.exe -strict -T windows/arm64 -tags no_frontend,exp_ir_binary -o build/stage2_winarm64_exp_backend.exe ./std/compiler/
   sh ./build/stage2_winarm64_exp.exe -T windows/arm64 -emit-ir-binary build/selfhost_exp_winarm64.irb tests/types_int.go
   sh ./build/stage2_winarm64_exp_backend.exe -T windows/arm64 -from-ir-binary build/selfhost_exp_winarm64.irb -o build/selfhost_exp_winarm64.exe
   sh chmod +x build/selfhost_exp_winarm64.exe
@@ -132,8 +132,8 @@ selfhost-exp-winarm64: selfhost-winarm64
   sh echo "PASS: windows/arm64 experimental IR binary roundtrip OK"
 
 selfhost-exp-winamd64: selfhost-winamd64
-  sh ./build/stage2_winamd64.exe -T windows/amd64 -tags exp_ir_binary -o build/stage2_winamd64_exp.exe ./std/compiler/
-  sh ./build/stage2_winamd64_exp.exe -T windows/amd64 -tags no_frontend,exp_ir_binary -o build/stage2_winamd64_exp_backend.exe ./std/compiler/
+  sh ./build/stage2_winamd64.exe -strict -T windows/amd64 -tags exp_ir_binary -o build/stage2_winamd64_exp.exe ./std/compiler/
+  sh ./build/stage2_winamd64_exp.exe -strict -T windows/amd64 -tags no_frontend,exp_ir_binary -o build/stage2_winamd64_exp_backend.exe ./std/compiler/
   sh ./build/stage2_winamd64_exp.exe -T windows/amd64 -emit-ir-binary build/selfhost_exp_winamd64.irb tests/types_int.go
   sh ./build/stage2_winamd64_exp_backend.exe -T windows/amd64 -from-ir-binary build/selfhost_exp_winamd64.irb -o build/selfhost_exp_winamd64.exe
   sh chmod +x build/selfhost_exp_winamd64.exe
@@ -141,8 +141,8 @@ selfhost-exp-winamd64: selfhost-winamd64
   sh echo "PASS: windows/amd64 experimental IR binary roundtrip OK"
 
 selfhost-exp-win386: selfhost-win386
-  sh wine build/stage2.exe -T windows/386 -tags exp_ir_binary -o build/stage2_exp.exe ./std/compiler/
-  sh wine build/stage2_exp.exe -T windows/386 -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend.exe ./std/compiler/
+  sh wine build/stage2.exe -strict -T windows/386 -tags exp_ir_binary -o build/stage2_exp.exe ./std/compiler/
+  sh wine build/stage2_exp.exe -strict -T windows/386 -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend.exe ./std/compiler/
   sh wine build/stage2_exp.exe -T windows/386 -emit-ir-binary build/selfhost_exp_win386.irb tests/types_int.go
   sh wine build/stage2_exp_backend.exe -T windows/386 -from-ir-binary build/selfhost_exp_win386.irb -o build/selfhost_exp_win386.exe
   sh wine build/selfhost_exp_win386.exe >/dev/null
