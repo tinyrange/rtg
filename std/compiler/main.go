@@ -143,13 +143,14 @@ func main() {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
+	args := os.Args
 
-	targetFiles, err := collectTargetFileArgs(os.Args[1:])
+	targetFiles, err := collectTargetFileArgs(args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rtg: %v\n", err)
 		os.Exit(1)
 	}
-	targetRoots, err := collectTargetRootArgs(os.Args[1:])
+	targetRoots, err := collectTargetRootArgs(args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rtg: %v\n", err)
 		os.Exit(1)
@@ -181,191 +182,229 @@ func main() {
 	var showVersion bool
 	var programArgs []string
 	i := 1
-	for i < len(os.Args) {
-		if os.Args[i] == "-h" || os.Args[i] == "--help" {
-			printHelp(os.Args[0], os.Stdout)
+	for i < len(args) {
+		arg := args[i]
+		switch arg {
+		case "-h", "--help":
+			printHelp(args[0], os.Stdout)
 			os.Exit(0)
-		} else if os.Args[i] == "-version" || os.Args[i] == "--version" {
+		case "-version", "--version":
 			showVersion = true
 			i = i + 1
-		} else if os.Args[i] == "-run" {
+			continue
+		case "-run":
 			runMode = true
 			i = i + 1
-		} else if os.Args[i] == "-o" && i+1 < len(os.Args) {
-			outputPath = os.Args[i+1]
-			i = i + 2
-		} else if os.Args[i] == "-T" && i+1 < len(os.Args) {
-			target := os.Args[i+1]
-			if target == "c" || strings.HasPrefix(target, "c/") {
-				compileTarget.Triple = target
-				compileTarget.Backend = "c"
-				compileTarget.CModel = 64
-				if strings.HasPrefix(target, "c/") {
-					model := target[2:]
-					if model == "16" {
-						compileTarget.CModel = 16
-					} else if model == "32" {
-						compileTarget.CModel = 32
-					} else if model == "64" {
-						compileTarget.CModel = 64
-					} else {
-						fmt.Fprintf(os.Stderr, "invalid target %q: expected c, c/16, c/32, or c/64\n", target)
-						os.Exit(1)
-					}
-				}
-				if compileTarget.CModel == 16 {
-					compileTarget.PtrSize = 2
-				} else if compileTarget.CModel == 32 {
-					compileTarget.PtrSize = 4
-				} else {
-					compileTarget.PtrSize = 8
-				}
-				compileTarget.WordSize = compileTarget.PtrSize
-				compileTarget.GOOS = "c"
-				compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
-			} else if target == "ir" {
-				fmt.Fprintf(os.Stderr, "target %q is no longer supported; use -emit-ir <path> with a concrete -T <target>\n", target)
-				os.Exit(1)
-			} else if strings.HasPrefix(target, "vm/") {
-				compileTarget.Triple = target
-				compileTarget.Backend = "vm"
-				model := target[3:]
-				if model == "8" {
-					compileTarget.WordSize = 1
-					compileTarget.PtrSize = 2
-				} else if model == "16" {
-					compileTarget.WordSize = 2
-					compileTarget.PtrSize = 2
-				} else if model == "32" {
-					compileTarget.WordSize = 4
-					compileTarget.PtrSize = 4
-				} else if model == "64" {
-					compileTarget.WordSize = 8
-					compileTarget.PtrSize = 8
-				} else {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected vm/8, vm/16, vm/32, or vm/64\n", target)
-					os.Exit(1)
-				}
-				// Reuse C backend's runtime/os files via matching build tags
-				compileTarget.GOOS = "c"
-				bits := compileTarget.WordSize * 8
-				compileTarget.GOARCH = fmt.Sprintf("c%d", bits)
-			} else {
-				_, handledByTargetPkg, err := targetcfg.Apply(target, &compileTarget)
-				if handledByTargetPkg {
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "invalid target %q: %v\n", target, err)
-						os.Exit(1)
-					}
-					compileTarget.Triple = target
-					i = i + 2
-					continue
-				}
-				if target == "dos/8086" {
-					// DOS 8086 COM backend.
-					compileTarget.Triple = target
-					compileTarget.GOOS = "dos"
-					compileTarget.GOARCH = "dos16"
-					compileTarget.PtrSize = 2
-					compileTarget.WordSize = 2
-					i = i + 2
-					continue
-				}
-				slashIdx := strings.Index(target, "/")
-				if slashIdx < 0 {
-					fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], or vm/<8|16|32|64>\n", target)
-					os.Exit(1)
-				}
-				compileTarget.GOOS = target[0:slashIdx]
-				compileTarget.GOARCH = target[slashIdx+1:]
-				compileTarget.Triple = target
-				if compileTarget.GOARCH == "386" || compileTarget.GOARCH == "wasm32" || compileTarget.GOARCH == "armv8m" {
-					compileTarget.PtrSize = 4
-				} else {
-					compileTarget.PtrSize = 8
-				}
-				compileTarget.WordSize = compileTarget.PtrSize
+			continue
+		case "-o":
+			if i+1 < len(args) {
+				outputPath = args[i+1]
+				i = i + 2
+				continue
 			}
-			i = i + 2
-		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
-			ir.SizeAnalysisPath = os.Args[i+1]
-			i = i + 2
-		} else if os.Args[i] == "-parse-only" {
+		case "-T":
+			if i+1 < len(args) {
+				target := args[i+1]
+				if target == "c" || strings.HasPrefix(target, "c/") {
+					compileTarget.Triple = target
+					compileTarget.Backend = "c"
+					compileTarget.CModel = 64
+					if strings.HasPrefix(target, "c/") {
+						model := target[2:]
+						if model == "16" {
+							compileTarget.CModel = 16
+						} else if model == "32" {
+							compileTarget.CModel = 32
+						} else if model == "64" {
+							compileTarget.CModel = 64
+						} else {
+							fmt.Fprintf(os.Stderr, "invalid target %q: expected c, c/16, c/32, or c/64\n", target)
+							os.Exit(1)
+						}
+					}
+					if compileTarget.CModel == 16 {
+						compileTarget.PtrSize = 2
+					} else if compileTarget.CModel == 32 {
+						compileTarget.PtrSize = 4
+					} else {
+						compileTarget.PtrSize = 8
+					}
+					compileTarget.WordSize = compileTarget.PtrSize
+					compileTarget.GOOS = "c"
+					compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
+				} else if target == "ir" {
+					fmt.Fprintf(os.Stderr, "target %q is no longer supported; use -emit-ir <path> with a concrete -T <target>\n", target)
+					os.Exit(1)
+				} else if strings.HasPrefix(target, "vm/") {
+					compileTarget.Triple = target
+					compileTarget.Backend = "vm"
+					model := target[3:]
+					if model == "8" {
+						compileTarget.WordSize = 1
+						compileTarget.PtrSize = 2
+					} else if model == "16" {
+						compileTarget.WordSize = 2
+						compileTarget.PtrSize = 2
+					} else if model == "32" {
+						compileTarget.WordSize = 4
+						compileTarget.PtrSize = 4
+					} else if model == "64" {
+						compileTarget.WordSize = 8
+						compileTarget.PtrSize = 8
+					} else {
+						fmt.Fprintf(os.Stderr, "invalid target %q: expected vm/8, vm/16, vm/32, or vm/64\n", target)
+						os.Exit(1)
+					}
+					compileTarget.GOOS = "c"
+					bits := compileTarget.WordSize * 8
+					compileTarget.GOARCH = fmt.Sprintf("c%d", bits)
+				} else {
+					_, handledByTargetPkg, err := targetcfg.Apply(target, &compileTarget)
+					if handledByTargetPkg {
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "invalid target %q: %v\n", target, err)
+							os.Exit(1)
+						}
+						compileTarget.Triple = target
+						i = i + 2
+						continue
+					}
+					if target == "dos/8086" {
+						compileTarget.Triple = target
+						compileTarget.GOOS = "dos"
+						compileTarget.GOARCH = "dos16"
+						compileTarget.PtrSize = 2
+						compileTarget.WordSize = 2
+						i = i + 2
+						continue
+					}
+					slashIdx := strings.Index(target, "/")
+					if slashIdx < 0 {
+						fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], or vm/<8|16|32|64>\n", target)
+						os.Exit(1)
+					}
+					compileTarget.GOOS = target[0:slashIdx]
+					compileTarget.GOARCH = target[slashIdx+1:]
+					compileTarget.Triple = target
+					if compileTarget.GOARCH == "386" || compileTarget.GOARCH == "wasm32" || compileTarget.GOARCH == "armv8m" {
+						compileTarget.PtrSize = 4
+					} else {
+						compileTarget.PtrSize = 8
+					}
+					compileTarget.WordSize = compileTarget.PtrSize
+				}
+				i = i + 2
+				continue
+			}
+		case "-size-analysis":
+			if i+1 < len(args) {
+				ir.SizeAnalysisPath = args[i+1]
+				i = i + 2
+				continue
+			}
+		case "-parse-only":
 			parseOnly = true
 			i = i + 1
-		} else if os.Args[i] == "-strict" {
+			continue
+		case "-strict":
 			compileTarget.Strict = true
 			i = i + 1
-		} else if os.Args[i] == "-emit-ir" && i+1 < len(os.Args) {
-			emitIRPath = os.Args[i+1]
-			i = i + 2
-		} else if (os.Args[i] == "-emit-ir-binary" || os.Args[i] == "-from-ir-binary") && i+1 < len(os.Args) {
-			if !binary.IrBinaryEnabled {
-				fmt.Fprintf(os.Stderr, "IR binary I/O is experimental; rebuild with -tags exp_ir_binary\n")
-				runCleanup()
-				os.Exit(1)
+			continue
+		case "-emit-ir":
+			if i+1 < len(args) {
+				emitIRPath = args[i+1]
+				i = i + 2
+				continue
 			}
-			if os.Args[i] == "-emit-ir-binary" {
-				emitIRBinaryPath = os.Args[i+1]
-			} else {
-				fromIRBinaryPath = os.Args[i+1]
+		case "-emit-ir-binary", "-from-ir-binary":
+			if i+1 < len(args) {
+				if !binary.IrBinaryEnabled {
+					fmt.Fprintf(os.Stderr, "IR binary I/O is experimental; rebuild with -tags exp_ir_binary\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				if arg == "-emit-ir-binary" {
+					emitIRBinaryPath = args[i+1]
+				} else {
+					fromIRBinaryPath = args[i+1]
+				}
+				i = i + 2
+				continue
 			}
-			i = i + 2
-		} else if os.Args[i] == "-list-build-tags" && i+1 < len(os.Args) {
-			buildTagsPath = os.Args[i+1]
-			i = i + 2
-		} else if os.Args[i] == "-tags" && i+1 < len(os.Args) {
-			extraTags = os.Args[i+1]
-			i = i + 2
-		} else if os.Args[i] == "-target-file" && i+1 < len(os.Args) {
-			i = i + 2
-		} else if os.Args[i] == "-target-root" && i+1 < len(os.Args) {
-			i = i + 2
-		} else if os.Args[i] == "-D" && i+1 < len(os.Args) {
-			key, value, ok := parseDefineArg(os.Args[i+1])
-			if !ok {
-				fmt.Fprintf(os.Stderr, "invalid -D value %q: expected key=value\n", os.Args[i+1])
-				runCleanup()
-				os.Exit(1)
+		case "-list-build-tags":
+			if i+1 < len(args) {
+				buildTagsPath = args[i+1]
+				i = i + 2
+				continue
 			}
-			compileTarget.Defines[key] = value
-			i = i + 2
-		} else if os.Args[i] == "-include" && i+1 < len(os.Args) {
-			val := common.NormalizePath(os.Args[i+1])
-			if !compileTarget.StdlibIncludeExplicit {
-				compileTarget.StdlibIncludeExplicit = true
-				compileTarget.StdlibIncludeEmbedded = false
+		case "-tags":
+			if i+1 < len(args) {
+				extraTags = args[i+1]
+				i = i + 2
+				continue
 			}
-			if val == "-" {
-				compileTarget.StdlibIncludeEmbedded = true
-			} else if val != "" {
-				compileTarget.StdlibIncludePaths = common.AppendUnique(
-					compileTarget.StdlibIncludePaths, common.TrimTrailingSlash(val),
-				)
+		case "-target-file", "-target-root":
+			if i+1 < len(args) {
+				i = i + 2
+				continue
 			}
-			i = i + 2
-		} else if os.Args[i] == "-extract-stdlib" && i+1 < len(os.Args) {
-			extractStdlibDest = common.NormalizePath(os.Args[i+1])
-			i = i + 2
-		} else if os.Args[i] == "-debug" {
+		case "-D":
+			if i+1 < len(args) {
+				key, value, ok := parseDefineArg(args[i+1])
+				if !ok {
+					fmt.Fprintf(os.Stderr, "invalid -D value %q: expected key=value\n", args[i+1])
+					runCleanup()
+					os.Exit(1)
+				}
+				compileTarget.Defines[key] = value
+				i = i + 2
+				continue
+			}
+		case "-include":
+			if i+1 < len(args) {
+				val := common.NormalizePath(args[i+1])
+				if !compileTarget.StdlibIncludeExplicit {
+					compileTarget.StdlibIncludeExplicit = true
+					compileTarget.StdlibIncludeEmbedded = false
+				}
+				if val == "-" {
+					compileTarget.StdlibIncludeEmbedded = true
+				} else if val != "" {
+					compileTarget.StdlibIncludePaths = common.AppendUnique(
+						compileTarget.StdlibIncludePaths, common.TrimTrailingSlash(val),
+					)
+				}
+				i = i + 2
+				continue
+			}
+		case "-extract-stdlib":
+			if i+1 < len(args) {
+				extractStdlibDest = common.NormalizePath(args[i+1])
+				i = i + 2
+				continue
+			}
+		case "-debug":
 			compileTarget.CompilerDebug = true
 			i = i + 1
-		} else if os.Args[i] == "-strip" || os.Args[i] == "-s" {
+			continue
+		case "-strip", "-s":
 			compileTarget.StripBinary = true
 			i = i + 1
-		} else if os.Args[i] == "--" {
+			continue
+		case "--":
 			i = i + 1
-			for i < len(os.Args) {
-				programArgs = append(programArgs, os.Args[i])
+			for i < len(args) {
+				programArgs = append(programArgs, args[i])
 				i = i + 1
 			}
-		} else if os.Args[i] == "-" {
+			continue
+		case "-":
 			stdinInput = true
 			i = i + 1
-		} else {
-			entryFiles = append(entryFiles, common.NormalizePath(os.Args[i]))
-			i = i + 1
+			continue
 		}
+		entryFiles = append(entryFiles, common.NormalizePath(arg))
+		i = i + 1
 	}
 	if showVersion {
 		fmt.Fprintf(os.Stdout, "%s\n", compilerStamp())
