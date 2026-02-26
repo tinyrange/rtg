@@ -5,6 +5,7 @@ package windows
 import (
 	core "j5.nz/rtg/std/compiler/backend/i386"
 	"j5.nz/rtg/std/compiler/ir"
+	objpe "j5.nz/rtg/std/compiler/object/pe"
 )
 
 // buildPE32 assembles a PE32 executable from the compiled code, rodata, data,
@@ -304,398 +305,77 @@ func BuildPE32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 
 // writeSection writes a 40-byte section header entry.
 func writeSection(buf []byte, name string, virtualSize, rva, rawSize, fileOff int, characteristics uint32) {
-	// Name (8 bytes, null-padded)
-	i := 0
-	for i < len(name) && i < 8 {
-		buf[i] = name[i]
-		i++
-	}
-	putU32(buf[8:], uint32(virtualSize)) // VirtualSize
-	putU32(buf[12:], uint32(rva))        // VirtualAddress (RVA)
-	putU32(buf[16:], uint32(rawSize))    // SizeOfRawData
-	putU32(buf[20:], uint32(fileOff))    // PointerToRawData
-	putU32(buf[24:], 0)                  // PointerToRelocations
-	putU32(buf[28:], 0)                  // PointerToLinenumbers
-	putU16(buf[32:], 0)                  // NumberOfRelocations
-	putU16(buf[34:], 0)                  // NumberOfLinenumbers
-	putU32(buf[36:], characteristics)    // Characteristics
+	objpe.WriteSection(buf, name, virtualSize, rva, rawSize, fileOff, characteristics)
 }
 
 // writeSectionLongName writes a section header with a long name referenced via
 // the COFF string table. The name field is "/<decimal_offset>".
 func writeSectionLongName(buf []byte, strtabOffset int, virtualSize, rva, rawSize, fileOff int, characteristics uint32) {
-	// Format: "/<decimal_offset>" in 8 bytes
-	s := formatSlashOffset(strtabOffset)
-	i := 0
-	for i < len(s) && i < 8 {
-		buf[i] = s[i]
-		i++
-	}
-	putU32(buf[8:], uint32(virtualSize))
-	putU32(buf[12:], uint32(rva))
-	putU32(buf[16:], uint32(rawSize))
-	putU32(buf[20:], uint32(fileOff))
-	putU32(buf[24:], 0)
-	putU32(buf[28:], 0)
-	putU16(buf[32:], 0)
-	putU16(buf[34:], 0)
-	putU32(buf[36:], characteristics)
+	objpe.WriteSectionLongName(buf, strtabOffset, virtualSize, rva, rawSize, fileOff, characteristics)
 }
 
 // formatSlashOffset formats an integer as "/<decimal>" for PE long section names.
 func formatSlashOffset(n int) []byte {
-	if n == 0 {
-		return []byte("/0")
-	}
-	// Build digits in reverse
-	var digits []byte
-	v := n
-	for v > 0 {
-		digits = append(digits, byte('0'+v%10))
-		v = v / 10
-	}
-	result := []byte("/")
-	i := len(digits) - 1
-	for i >= 0 {
-		result = append(result, digits[i])
-		i = i - 1
-	}
-	return result
+	return objpe.FormatSlashOffset(n)
 }
 
 // buildIData builds the .idata section content.
 // Layout: Import Directory Table | ILT blocks | IAT blocks | Hint/Name Table | DLL names
 func buildIData(g *core.CodeGen, imports []winImport) []byte {
-	groups := groupWinImports(imports)
-	numLibs := len(groups)
-
-	// Import Directory Table: one descriptor per DLL, plus null terminator.
-	idtSize := (numLibs + 1) * 20
-
-	// Compute ILT and IAT block offsets.
-	iltOffsets := make([]int, numLibs)
-	iatOffsets := make([]int, numLibs)
-	iltSize := 0
-	for i, grp := range groups {
-		iltOffsets[i] = idtSize + iltSize
-		iltSize += (len(grp.Symbols) + 1) * 4
-	}
-	iatBase := idtSize + iltSize
-	iatSize := 0
-	for i, grp := range groups {
-		iatOffsets[i] = iatBase + iatSize
-		iatSize += (len(grp.Symbols) + 1) * 4
-	}
-
-	// Hint/Name entries.
-	hntOffset := idataOffsetAfterIAT(imports)
-	var hntEntries []byte
-	hntOffsets := make(map[string]int)
-	for _, grp := range groups {
-		for _, sym := range grp.Symbols {
-			off := hntOffset + len(hntEntries)
-			hntOffsets[winImportKey(grp.Library, sym)] = off
-			hntEntries = append(hntEntries, 0, 0) // Hint = 0
-			hntEntries = append(hntEntries, []byte(sym)...)
-			hntEntries = append(hntEntries, 0)
-			if len(hntEntries)%2 != 0 {
-				hntEntries = append(hntEntries, 0)
-			}
-		}
-	}
-
-	// DLL names.
-	dllNameOffset := hntOffset + len(hntEntries)
-	dllOffsets := make([]int, numLibs)
-	var dllEntries []byte
-	for i, grp := range groups {
-		dllOffsets[i] = dllNameOffset + len(dllEntries)
-		dllEntries = append(dllEntries, []byte(grp.Library)...)
-		dllEntries = append(dllEntries, 0)
-	}
-
-	totalSize := dllNameOffset + len(dllEntries)
-	idata := make([]byte, totalSize)
-
-	// Import directory descriptors and thunk tables.
-	for i, grp := range groups {
-		base := i * 20
-		putU32(idata[base+0:], uint32(iltOffsets[i]))  // OriginalFirstThunk
-		putU32(idata[base+4:], 0)                      // TimeDateStamp
-		putU32(idata[base+8:], 0)                      // ForwarderChain
-		putU32(idata[base+12:], uint32(dllOffsets[i])) // Name
-		putU32(idata[base+16:], uint32(iatOffsets[i])) // FirstThunk
-
-		for j, sym := range grp.Symbols {
-			key := winImportKey(grp.Library, sym)
-			hnt := uint32(hntOffsets[key])
-			putU32(idata[iltOffsets[i]+j*4:], hnt)
-			putU32(idata[iatOffsets[i]+j*4:], hnt)
-		}
-	}
-
-	copy(idata[hntOffset:], hntEntries)
-	copy(idata[dllNameOffset:], dllEntries)
-	return idata
+	return objpe.BuildIData32(toPEImportGroups(imports))
 }
 
 func idataOffsetAfterIAT(imports []winImport) int {
-	groups := groupWinImports(imports)
-	idtSize := (len(groups) + 1) * 20
-	iltSize := 0
-	iatSize := 0
-	for _, grp := range groups {
-		iltSize += (len(grp.Symbols) + 1) * 4
-		iatSize += (len(grp.Symbols) + 1) * 4
-	}
-	return idtSize + iltSize + iatSize
+	return objpe.IdataOffsetAfterIAT32(toPEImportGroups(imports))
 }
 
 // fixupIData adjusts all RVA fields in the .idata content to be actual RVAs.
 func fixupIData(g *core.CodeGen, idata []byte, idataRVA int, imports []winImport) {
-	groups := groupWinImports(imports)
-	numLibs := len(groups)
-	idtSize := (numLibs + 1) * 20
-
-	iltSize := 0
-	for _, grp := range groups {
-		iltSize += (len(grp.Symbols) + 1) * 4
-	}
-	iatBase := idtSize + iltSize
-
-	for i := 0; i < numLibs; i++ {
-		base := i * 20
-		putU32(idata[base+0:], uint32(idataRVA)+getU32(idata[base+0:base+4]))    // OriginalFirstThunk
-		putU32(idata[base+12:], uint32(idataRVA)+getU32(idata[base+12:base+16])) // Name
-		putU32(idata[base+16:], uint32(idataRVA)+getU32(idata[base+16:base+20])) // FirstThunk
-	}
-
-	iltOff := idtSize
-	for _, grp := range groups {
-		for i := 0; i < len(grp.Symbols); i++ {
-			off := iltOff + i*4
-			putU32(idata[off:], uint32(idataRVA)+getU32(idata[off:off+4]))
-		}
-		iltOff += (len(grp.Symbols) + 1) * 4
-	}
-
-	iatOff := iatBase
-	for _, grp := range groups {
-		for i := 0; i < len(grp.Symbols); i++ {
-			off := iatOff + i*4
-			putU32(idata[off:], uint32(idataRVA)+getU32(idata[off:off+4]))
-		}
-		iatOff += (len(grp.Symbols) + 1) * 4
-	}
+	objpe.FixupIData32(idata, idataRVA, toPEImportGroups(imports))
 }
 
 // buildIATOffsets returns import key → offset within .idata of that function's IAT entry.
 func buildIATOffsets(g *core.CodeGen, imports []winImport) map[string]int {
-	groups := groupWinImports(imports)
-	idtSize := (len(groups) + 1) * 20
-	iltSize := 0
-	for _, grp := range groups {
-		iltSize += (len(grp.Symbols) + 1) * 4
-	}
-	iatBase := idtSize + iltSize
-
-	offsets := make(map[string]int)
-	cur := iatBase
-	for _, grp := range groups {
-		for i, sym := range grp.Symbols {
-			offsets[winImportKey(grp.Library, sym)] = cur + i*4
-		}
-		cur += (len(grp.Symbols) + 1) * 4
-	}
-	return offsets
+	return objpe.BuildIATOffsets32(toPEImportGroups(imports))
 }
 
 // getImportDirInfo returns the RVA and size of the Import Directory Table.
 func getImportDirInfo(g *core.CodeGen, imports []winImport, idataRVA int) (int, int) {
-	groups := groupWinImports(imports)
-	if len(groups) == 0 {
-		return 0, 0
-	}
-	return idataRVA, (len(groups) + 1) * 20
+	return objpe.GetImportDirInfo(toPEImportGroups(imports), idataRVA)
 }
 
 // getIATInfo returns the RVA and size of the IAT.
 func getIATInfo(g *core.CodeGen, imports []winImport, idataRVA int) (int, int) {
-	groups := groupWinImports(imports)
-	if len(groups) == 0 {
-		return 0, 0
-	}
-	idtSize := (len(groups) + 1) * 20
-	iltSize := 0
-	iatSize := 0
-	for _, grp := range groups {
-		iltSize += (len(grp.Symbols) + 1) * 4
-		iatSize += (len(grp.Symbols) + 1) * 4
-	}
-	return idataRVA + idtSize + iltSize, iatSize
+	return objpe.GetIATInfo32(toPEImportGroups(imports), idataRVA)
 }
 
 // makeCOFFSym creates an 18-byte COFF symbol entry.
 func makeCOFFSym(name []byte, value uint32, section uint16, symType uint16, storageClass byte) []byte {
-	sym := make([]byte, 18)
-	if len(name) <= 8 {
-		i := 0
-		for i < len(name) && i < 8 {
-			sym[i] = name[i]
-			i++
-		}
-	} else {
-		// Long name marker: first 4 bytes zero, next 4 = strtab offset
-		// Caller must set bytes 4..7 to the strtab offset after calling this
-		putU32(sym[0:], 0)
-		putU32(sym[4:], 0) // placeholder
-	}
-	putU32(sym[8:], value)
-	putU16(sym[12:], section)
-	putU16(sym[14:], symType)
-	sym[16] = storageClass
-	sym[17] = 0
-	return sym
+	return objpe.MakeCOFFSym(name, value, section, symType, storageClass)
 }
 
 // buildCOFFSymbols creates the COFF symbol table and string table.
 func buildCOFFSymbols(g *core.CodeGen, irmod *ir.IRModule) ([]byte, []byte, int) {
-	var coffSyms []byte
-	var coffStrtab []byte
-	coffStrtab = append(coffStrtab, 0, 0, 0, 0) // placeholder for string table size
-	numSyms := 0
+	return objpe.BuildCOFFSymbols(irmod, g.FuncOffsets)
+}
 
-	// Add _start symbol
-	sym := makeCOFFSym([]byte("_start"), 0, 1, 0x20, 2)
-	coffSyms = append(coffSyms, sym...)
-	numSyms++
-
-	// Add function symbols
-	i := 0
-	for i < len(irmod.Funcs) {
-		f := irmod.Funcs[i]
-		funcOff := g.FuncOffsets[f.Name]
-		nameBytes := []byte(f.Name)
-		sym = makeCOFFSym(nameBytes, uint32(funcOff), 1, 0x20, 2)
-		if len(nameBytes) > 8 {
-			// Patch long name offset
-			putU32(sym[4:], uint32(len(coffStrtab)))
-			coffStrtab = append(coffStrtab, nameBytes...)
-			coffStrtab = append(coffStrtab, 0)
+func toPEImportGroups(imports []winImport) []objpe.ImportGroup {
+	local := groupWinImports(imports)
+	groups := make([]objpe.ImportGroup, len(local))
+	for i, grp := range local {
+		groups[i] = objpe.ImportGroup{
+			Library: grp.Library,
+			Symbols: grp.Symbols,
 		}
-		coffSyms = append(coffSyms, sym...)
-		numSyms++
-		i++
 	}
-
-	// Patch string table size
-	putU32(coffStrtab[0:], uint32(len(coffStrtab)))
-
-	return coffSyms, coffStrtab, numSyms
+	return groups
 }
 
 // buildDWARF generates minimal DWARF2 .debug_abbrev and .debug_info sections
 // so that WineDbg can resolve function names in backtraces.
 func buildDWARF(g *core.CodeGen, irmod *ir.IRModule, textVA int, textSize int) ([]byte, []byte) {
-	// === .debug_abbrev ===
-	// Abbrev 1: DW_TAG_compile_unit, has children
-	//   DW_AT_name (string), DW_AT_low_pc (addr), DW_AT_high_pc (addr)
-	// Abbrev 2: DW_TAG_subprogram, no children
-	//   DW_AT_name (string), DW_AT_low_pc (addr), DW_AT_high_pc (addr)
-	var abbrev []byte
-	// Abbrev 1: compile_unit
-	abbrev = append(abbrev, 1)    // abbrev number
-	abbrev = append(abbrev, 0x11) // DW_TAG_compile_unit
-	abbrev = append(abbrev, 1)    // DW_CHILDREN_yes
-	abbrev = append(abbrev, 0x03) // DW_AT_name
-	abbrev = append(abbrev, 0x08) // DW_FORM_string
-	abbrev = append(abbrev, 0x11) // DW_AT_low_pc
-	abbrev = append(abbrev, 0x01) // DW_FORM_addr
-	abbrev = append(abbrev, 0x12) // DW_AT_high_pc
-	abbrev = append(abbrev, 0x01) // DW_FORM_addr
-	abbrev = append(abbrev, 0, 0) // end of attributes
-
-	// Abbrev 2: subprogram
-	abbrev = append(abbrev, 2)    // abbrev number
-	abbrev = append(abbrev, 0x2e) // DW_TAG_subprogram
-	abbrev = append(abbrev, 0)    // DW_CHILDREN_no
-	abbrev = append(abbrev, 0x03) // DW_AT_name
-	abbrev = append(abbrev, 0x08) // DW_FORM_string
-	abbrev = append(abbrev, 0x11) // DW_AT_low_pc
-	abbrev = append(abbrev, 0x01) // DW_FORM_addr
-	abbrev = append(abbrev, 0x12) // DW_AT_high_pc
-	abbrev = append(abbrev, 0x01) // DW_FORM_addr
-	abbrev = append(abbrev, 0, 0) // end of attributes
-
-	abbrev = append(abbrev, 0) // end of abbreviation table
-
-	// === .debug_info ===
-	// Compilation unit header (DWARF2, 32-bit):
-	//   unit_length: 4 bytes
-	//   version: 2 bytes (= 2)
-	//   debug_abbrev_offset: 4 bytes (= 0)
-	//   address_size: 1 byte (= 4)
-	// Total header: 11 bytes
-
-	var info []byte
-	// Reserve 4 bytes for unit_length (patched at end)
-	info = append(info, 0, 0, 0, 0)
-	// Version
-	info = append(info, 2, 0) // DWARF version 2 (little-endian)
-	// debug_abbrev_offset
-	info = append(info, 0, 0, 0, 0) // offset 0 into .debug_abbrev
-	// address_size
-	info = append(info, 4) // 32-bit addresses
-
-	// DW_TAG_compile_unit (abbrev 1)
-	info = append(info, 1) // abbrev number 1
-	// DW_AT_name: inline string
-	info = append(info, []byte("rtg")...)
-	info = append(info, 0)
-	// DW_AT_low_pc
-	info = appendU32(info, uint32(textVA))
-	// DW_AT_high_pc
-	info = appendU32(info, uint32(textVA+textSize))
-
-	// Add _start as subprogram
-	startHighPC := textVA
-	if len(irmod.Funcs) > 0 {
-		startHighPC = textVA + g.FuncOffsets[irmod.Funcs[0].Name]
-	} else {
-		startHighPC = textVA + textSize
-	}
-	info = append(info, 2) // abbrev number 2
-	info = append(info, []byte("_start")...)
-	info = append(info, 0)
-	info = appendU32(info, uint32(textVA))
-	info = appendU32(info, uint32(startHighPC))
-
-	// Add each function as DW_TAG_subprogram
-	i := 0
-	for i < len(irmod.Funcs) {
-		f := irmod.Funcs[i]
-		funcStart := textVA + g.FuncOffsets[f.Name]
-		funcEnd := textVA + textSize
-		if i+1 < len(irmod.Funcs) {
-			funcEnd = textVA + g.FuncOffsets[irmod.Funcs[i+1].Name]
-		}
-
-		info = append(info, 2) // abbrev number 2
-		info = append(info, []byte(f.Name)...)
-		info = append(info, 0)
-		info = appendU32(info, uint32(funcStart))
-		info = appendU32(info, uint32(funcEnd))
-		i++
-	}
-
-	// Null terminator (end of compile_unit children)
-	info = append(info, 0)
-
-	// Patch unit_length (total size minus the 4-byte length field itself)
-	unitLen := len(info) - 4
-	putU32(info[0:], uint32(unitLen))
-
-	return abbrev, info
+	symbols := objpe.BuildDWARFSymbols(irmod, textVA, textVA+textSize, g.FuncOffsets)
+	return objpe.BuildDWARF32(textVA, textVA+textSize, symbols)
 }
 
 // appendU32 appends a little-endian uint32 to a byte slice.
@@ -724,16 +404,9 @@ func getU32(b []byte) uint32 {
 }
 
 func alignUp(v, align int) int {
-	if align <= 0 {
-		return v
-	}
-	mask := align - 1
-	return (v + mask) & ^mask
+	return objpe.AlignUp(v, align)
 }
 
 func sectionSpan(size, align int) int {
-	if size <= 0 {
-		return align
-	}
-	return alignUp(size, align)
+	return objpe.SectionSpan(size, align)
 }

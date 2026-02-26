@@ -5,15 +5,10 @@ package linux
 import (
 	"j5.nz/rtg/std/compiler/backend/aarch64"
 	"j5.nz/rtg/std/compiler/ir"
+	objelf "j5.nz/rtg/std/compiler/object/elf"
 )
 
 // === ELF64 Binary Builder ===
-
-type symEntry struct {
-	nameOff int
-	value   uint64
-	size    uint64
-}
 
 func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	// Layout:
@@ -82,73 +77,10 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 		}
 	}
 
-	// === Build .strtab (symbol name strings) ===
-	var strtab []byte
-	strtab = append(strtab, 0) // null byte at index 0
-
-	// _start symbol
-	startNameOff := len(strtab)
-	strtab = append(strtab, []byte("_start")...)
-	strtab = append(strtab, 0)
-
-	// Function name offsets for symtab
-	var syms []symEntry
-
-	// _start entry
-	startSize := uint64(0)
-	if len(irmod.Funcs) > 0 {
-		if v, ok := g.LookupFuncOffset(irmod.Funcs[0].Name); ok {
-			startSize = uint64(v)
-		}
-	} else {
-		startSize = uint64(textSize)
-	}
-	syms = append(syms, symEntry{startNameOff, textVAddr, startSize})
-
-	// All compiled functions
-	for i, f := range irmod.Funcs {
-		nameOff := len(strtab)
-		strtab = append(strtab, []byte(f.Name)...)
-		strtab = append(strtab, 0)
-
-		funcStart, _ := g.LookupFuncOffset(f.Name)
-		var funcSize int
-		if i+1 < len(irmod.Funcs) {
-			nextStart, _ := g.LookupFuncOffset(irmod.Funcs[i+1].Name)
-			funcSize = nextStart - funcStart
-		} else {
-			funcSize = textSize - funcStart
-		}
-		syms = append(syms, symEntry{nameOff, textVAddr + uint64(funcStart), uint64(funcSize)})
-	}
-
-	// === Build .symtab ===
+	symtab, strtab := objelf.BuildSymtabAndStrtab64(irmod, textVAddr, textSize, g.FuncOffsets())
 	symEntrySize := 24
-	// Entry 0: null symbol + 1 (_start) + len(irmod.Funcs)
-	symtabSize := (1 + len(syms)) * symEntrySize
-	symtab := make([]byte, symtabSize)
-
-	// Entry 0 is all zeros (null symbol) — already zero from make()
-	for i, sym := range syms {
-		off := (i + 1) * symEntrySize
-		aarch64.PutU32(symtab[off:], uint32(sym.nameOff)) // st_name
-		symtab[off+4] = 0x12                              // st_info: STT_FUNC | STB_GLOBAL<<4
-		symtab[off+5] = 0                                 // st_other
-		aarch64.PutU16(symtab[off+6:], 1)                 // st_shndx: .text section index
-		aarch64.PutU64(symtab[off+8:], sym.value)         // st_value
-		aarch64.PutU64(symtab[off+16:], sym.size)         // st_size
-	}
-
-	// === Build .shstrtab (section name strings) ===
-	// \0.text\0.rodata\0.data\0.symtab\0.strtab\0.shstrtab\0
-	shstrtab := []byte("\x00.text\x00.rodata\x00.data\x00.symtab\x00.strtab\x00.shstrtab\x00")
-	// Offsets within shstrtab:
-	shNameText := 1      // ".text"
-	shNameRodata := 7    // ".rodata"
-	shNameData := 15     // ".data"
-	shNameSymtab := 21   // ".symtab"
-	shNameStrtab := 29   // ".strtab"
-	shNameShstrtab := 37 // ".shstrtab"
+	symtabSize := len(symtab)
+	shstrtab, shNames := objelf.DefaultShStrtab()
 
 	// === Compute file offsets for new sections ===
 	symtabOffset := loadedSize
@@ -237,20 +169,20 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 
 		// Section 1: .text
 		s := shdr[1*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNameText))  // sh_name
-		aarch64.PutU32(s[4:], 1)                   // sh_type: SHT_PROGBITS
-		aarch64.PutU64(s[8:], 6)                   // sh_flags: SHF_ALLOC|SHF_EXECINSTR
-		aarch64.PutU64(s[16:], textVAddr)          // sh_addr
-		aarch64.PutU64(s[24:], uint64(textOffset)) // sh_offset
-		aarch64.PutU64(s[32:], uint64(textSize))   // sh_size
-		aarch64.PutU32(s[40:], 0)                  // sh_link
-		aarch64.PutU32(s[44:], 0)                  // sh_info
-		aarch64.PutU64(s[48:], 16)                 // sh_addralign
-		aarch64.PutU64(s[56:], 0)                  // sh_entsize
+		aarch64.PutU32(s[0:], uint32(shNames.Text)) // sh_name
+		aarch64.PutU32(s[4:], 1)                    // sh_type: SHT_PROGBITS
+		aarch64.PutU64(s[8:], 6)                    // sh_flags: SHF_ALLOC|SHF_EXECINSTR
+		aarch64.PutU64(s[16:], textVAddr)           // sh_addr
+		aarch64.PutU64(s[24:], uint64(textOffset))  // sh_offset
+		aarch64.PutU64(s[32:], uint64(textSize))    // sh_size
+		aarch64.PutU32(s[40:], 0)                   // sh_link
+		aarch64.PutU32(s[44:], 0)                   // sh_info
+		aarch64.PutU64(s[48:], 16)                  // sh_addralign
+		aarch64.PutU64(s[56:], 0)                   // sh_entsize
 
 		// Section 2: .rodata
 		s = shdr[2*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNameRodata))
+		aarch64.PutU32(s[0:], uint32(shNames.Rodata))
 		aarch64.PutU32(s[4:], 1) // SHT_PROGBITS
 		aarch64.PutU64(s[8:], 2) // SHF_ALLOC
 		aarch64.PutU64(s[16:], rodataVAddr)
@@ -260,7 +192,7 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 
 		// Section 3: .data
 		s = shdr[3*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNameData))
+		aarch64.PutU32(s[0:], uint32(shNames.Data))
 		aarch64.PutU32(s[4:], 1) // SHT_PROGBITS
 		aarch64.PutU64(s[8:], 3) // SHF_ALLOC|SHF_WRITE
 		aarch64.PutU64(s[16:], dataVAddr)
@@ -270,7 +202,7 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 
 		// Section 4: .symtab
 		s = shdr[4*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNameSymtab))
+		aarch64.PutU32(s[0:], uint32(shNames.Symtab))
 		aarch64.PutU32(s[4:], 2)  // SHT_SYMTAB
 		aarch64.PutU64(s[8:], 0)  // no flags
 		aarch64.PutU64(s[16:], 0) // sh_addr: not loaded
@@ -283,7 +215,7 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 
 		// Section 5: .strtab
 		s = shdr[5*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNameStrtab))
+		aarch64.PutU32(s[0:], uint32(shNames.Strtab))
 		aarch64.PutU32(s[4:], 3) // SHT_STRTAB
 		aarch64.PutU64(s[8:], 0)
 		aarch64.PutU64(s[16:], 0)
@@ -293,7 +225,7 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 
 		// Section 6: .shstrtab
 		s = shdr[6*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNameShstrtab))
+		aarch64.PutU32(s[0:], uint32(shNames.Shstrtab))
 		aarch64.PutU32(s[4:], 3) // SHT_STRTAB
 		aarch64.PutU64(s[8:], 0)
 		aarch64.PutU64(s[16:], 0)

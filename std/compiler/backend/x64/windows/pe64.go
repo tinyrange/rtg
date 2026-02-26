@@ -6,135 +6,50 @@ import (
 	core "j5.nz/rtg/std/compiler/backend/x64"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
+	objpe "j5.nz/rtg/std/compiler/object/pe"
 )
 
 // writeSection writes a 40-byte section header entry.
 func writeSection(buf []byte, name string, virtualSize, rva, rawSize, fileOff int, characteristics uint32) {
-	// Name (8 bytes, null-padded)
-	i := 0
-	for i < len(name) && i < 8 {
-		buf[i] = name[i]
-		i++
-	}
-	common.PutU32(buf[8:], uint32(virtualSize)) // VirtualSize
-	common.PutU32(buf[12:], uint32(rva))        // VirtualAddress (RVA)
-	common.PutU32(buf[16:], uint32(rawSize))    // SizeOfRawData
-	common.PutU32(buf[20:], uint32(fileOff))    // PointerToRawData
-	common.PutU32(buf[24:], 0)                  // PointerToRelocations
-	common.PutU32(buf[28:], 0)                  // PointerToLinenumbers
-	common.PutU16(buf[32:], 0)                  // NumberOfRelocations
-	common.PutU16(buf[34:], 0)                  // NumberOfLinenumbers
-	common.PutU32(buf[36:], characteristics)    // Characteristics
+	objpe.WriteSection(buf, name, virtualSize, rva, rawSize, fileOff, characteristics)
 }
 
 // writeSectionLongName writes a section header with a long name referenced via
 // the COFF string table. The name field is "/<decimal_offset>".
 func writeSectionLongName(buf []byte, strtabOffset int, virtualSize, rva, rawSize, fileOff int, characteristics uint32) {
-	// Format: "/<decimal_offset>" in 8 bytes
-	s := formatSlashOffset(strtabOffset)
-	i := 0
-	for i < len(s) && i < 8 {
-		buf[i] = s[i]
-		i++
-	}
-	common.PutU32(buf[8:], uint32(virtualSize))
-	common.PutU32(buf[12:], uint32(rva))
-	common.PutU32(buf[16:], uint32(rawSize))
-	common.PutU32(buf[20:], uint32(fileOff))
-	common.PutU32(buf[24:], 0)
-	common.PutU32(buf[28:], 0)
-	common.PutU16(buf[32:], 0)
-	common.PutU16(buf[34:], 0)
-	common.PutU32(buf[36:], characteristics)
+	objpe.WriteSectionLongName(buf, strtabOffset, virtualSize, rva, rawSize, fileOff, characteristics)
 }
 
 // formatSlashOffset formats an integer as "/<decimal>" for PE long section names.
 func formatSlashOffset(n int) []byte {
-	if n == 0 {
-		return []byte("/0")
-	}
-	// Build digits in reverse
-	var digits []byte
-	v := n
-	for v > 0 {
-		digits = append(digits, byte('0'+v%10))
-		v = v / 10
-	}
-	result := []byte("/")
-	i := len(digits) - 1
-	for i >= 0 {
-		result = append(result, digits[i])
-		i = i - 1
-	}
-	return result
+	return objpe.FormatSlashOffset(n)
 }
 
 // getImportDirInfo returns the RVA and size of the Import Directory Table.
 func getImportDirInfo(g *core.CodeGen, imports []winImport, idataRVA int) (int, int) {
-	groups := groupWinImports(imports)
-	if len(groups) == 0 {
-		return 0, 0
-	}
-	return idataRVA, (len(groups) + 1) * 20
+	return objpe.GetImportDirInfo(toPEImportGroups(imports), idataRVA)
 }
 
 // makeCOFFSym creates an 18-byte COFF symbol entry.
 func makeCOFFSym(name []byte, value uint32, section uint16, symType uint16, storageClass byte) []byte {
-	sym := make([]byte, 18)
-	if len(name) <= 8 {
-		i := 0
-		for i < len(name) && i < 8 {
-			sym[i] = name[i]
-			i++
-		}
-	} else {
-		// Long name marker: first 4 bytes zero, next 4 = strtab offset
-		// Caller must set bytes 4..7 to the strtab offset after calling this
-		common.PutU32(sym[0:], 0)
-		common.PutU32(sym[4:], 0) // placeholder
-	}
-	common.PutU32(sym[8:], value)
-	common.PutU16(sym[12:], section)
-	common.PutU16(sym[14:], symType)
-	sym[16] = storageClass
-	sym[17] = 0
-	return sym
+	return objpe.MakeCOFFSym(name, value, section, symType, storageClass)
 }
 
 // buildCOFFSymbols creates the COFF symbol table and string table.
 func buildCOFFSymbols(g *core.CodeGen, irmod *ir.IRModule) ([]byte, []byte, int) {
-	var coffSyms []byte
-	var coffStrtab []byte
-	coffStrtab = append(coffStrtab, 0, 0, 0, 0) // placeholder for string table size
-	numSyms := 0
+	return objpe.BuildCOFFSymbols(irmod, g.FuncOffsets())
+}
 
-	// Add _start symbol
-	sym := makeCOFFSym([]byte("_start"), 0, 1, 0x20, 2)
-	coffSyms = append(coffSyms, sym...)
-	numSyms++
-
-	// Add function symbols
-	i := 0
-	for i < len(irmod.Funcs) {
-		f := irmod.Funcs[i]
-		funcOff := g.GetFuncOffset(f.Name)
-		nameBytes := []byte(f.Name)
-		sym = makeCOFFSym(nameBytes, uint32(funcOff), 1, 0x20, 2)
-		if len(nameBytes) > 8 {
-			// Patch long name offset
-			common.PutU32(sym[4:], uint32(len(coffStrtab)))
-			coffStrtab = append(coffStrtab, nameBytes...)
-			coffStrtab = append(coffStrtab, 0)
+func toPEImportGroups(imports []winImport) []objpe.ImportGroup {
+	local := groupWinImports(imports)
+	groups := make([]objpe.ImportGroup, len(local))
+	for i, grp := range local {
+		groups[i] = objpe.ImportGroup{
+			Library: grp.Library,
+			Symbols: grp.Symbols,
 		}
-		coffSyms = append(coffSyms, sym...)
-		numSyms++
-		i++
 	}
-
-	// Patch string table size
-	common.PutU32(coffStrtab[0:], uint32(len(coffStrtab)))
-
-	return coffSyms, coffStrtab, numSyms
+	return groups
 }
 
 // buildPE64 assembles a PE32+ (64-bit) executable from the compiled code, rodata, data,
@@ -428,296 +343,39 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 
 // buildIData64 builds the .idata section with 8-byte ILT/IAT entries for PE32+.
 func buildIData64(g *core.CodeGen, imports []winImport) []byte {
-	groups := groupWinImports(imports)
-	numLibs := len(groups)
-
-	// Import Directory Table: one descriptor per DLL, plus null terminator.
-	idtSize := (numLibs + 1) * 20
-
-	// Compute ILT and IAT block offsets.
-	iltOffsets := make([]int, numLibs)
-	iatOffsets := make([]int, numLibs)
-	iltSize := 0
-	for i, grp := range groups {
-		iltOffsets[i] = idtSize + iltSize
-		iltSize += (len(grp.Symbols) + 1) * 8
-	}
-	iatBase := idtSize + iltSize
-	iatSize := 0
-	for i, grp := range groups {
-		iatOffsets[i] = iatBase + iatSize
-		iatSize += (len(grp.Symbols) + 1) * 8
-	}
-
-	// Hint/Name table entries.
-	hntOffset := idataOffsetAfterIAT64(imports)
-	var hntEntries []byte
-	hntOffsets := make(map[string]int)
-	for _, grp := range groups {
-		for _, sym := range grp.Symbols {
-			off := hntOffset + len(hntEntries)
-			hntOffsets[winImportKey(grp.Library, sym)] = off
-			hntEntries = append(hntEntries, 0, 0) // Hint = 0
-			hntEntries = append(hntEntries, []byte(sym)...)
-			hntEntries = append(hntEntries, 0)
-			if len(hntEntries)%2 != 0 {
-				hntEntries = append(hntEntries, 0)
-			}
-		}
-	}
-
-	// DLL names.
-	dllNameOffset := hntOffset + len(hntEntries)
-	dllOffsets := make([]int, numLibs)
-	var dllEntries []byte
-	for i, grp := range groups {
-		dllOffsets[i] = dllNameOffset + len(dllEntries)
-		dllEntries = append(dllEntries, []byte(grp.Library)...)
-		dllEntries = append(dllEntries, 0)
-	}
-
-	totalSize := dllNameOffset + len(dllEntries)
-	idata := make([]byte, totalSize)
-
-	// Import directory descriptors.
-	for i, grp := range groups {
-		base := i * 20
-		common.PutU32(idata[base+0:], uint32(iltOffsets[i]))  // OriginalFirstThunk
-		common.PutU32(idata[base+4:], 0)                      // TimeDateStamp
-		common.PutU32(idata[base+8:], 0)                      // ForwarderChain
-		common.PutU32(idata[base+12:], uint32(dllOffsets[i])) // Name
-		common.PutU32(idata[base+16:], uint32(iatOffsets[i])) // FirstThunk
-
-		for j, sym := range grp.Symbols {
-			key := winImportKey(grp.Library, sym)
-			hnt := uint64(hntOffsets[key])
-			common.PutU64(idata[iltOffsets[i]+j*8:], hnt)
-			common.PutU64(idata[iatOffsets[i]+j*8:], hnt)
-		}
-	}
-
-	copy(idata[hntOffset:], hntEntries)
-	copy(idata[dllNameOffset:], dllEntries)
-	return idata
+	return objpe.BuildIData64(toPEImportGroups(imports))
 }
 
 func idataOffsetAfterIAT64(imports []winImport) int {
-	groups := groupWinImports(imports)
-	idtSize := (len(groups) + 1) * 20
-	iltSize := 0
-	iatSize := 0
-	for _, grp := range groups {
-		iltSize += (len(grp.Symbols) + 1) * 8
-		iatSize += (len(grp.Symbols) + 1) * 8
-	}
-	return idtSize + iltSize + iatSize
+	return objpe.IdataOffsetAfterIAT64(toPEImportGroups(imports))
 }
 
 // fixupIData64 adjusts RVA fields in the .idata content to be actual RVAs.
 func fixupIData64(g *core.CodeGen, idata []byte, idataRVA int, imports []winImport) {
-	groups := groupWinImports(imports)
-	numLibs := len(groups)
-	idtSize := (numLibs + 1) * 20
-
-	iltSize := 0
-	for _, grp := range groups {
-		iltSize += (len(grp.Symbols) + 1) * 8
-	}
-	iatBase := idtSize + iltSize
-
-	// Fix Import Directory descriptors.
-	for i := 0; i < numLibs; i++ {
-		base := i * 20
-		common.PutU32(idata[base+0:], uint32(idataRVA)+common.GetU32(idata[base+0:base+4]))    // OriginalFirstThunk
-		common.PutU32(idata[base+12:], uint32(idataRVA)+common.GetU32(idata[base+12:base+16])) // Name
-		common.PutU32(idata[base+16:], uint32(idataRVA)+common.GetU32(idata[base+16:base+20])) // FirstThunk
-	}
-
-	iltOff := idtSize
-	for _, grp := range groups {
-		for i := 0; i < len(grp.Symbols); i++ {
-			off := iltOff + i*8
-			common.PutU64(idata[off:], uint64(idataRVA)+common.GetU64(idata[off:off+8]))
-		}
-		iltOff += (len(grp.Symbols) + 1) * 8
-	}
-
-	iatOff := iatBase
-	for _, grp := range groups {
-		for i := 0; i < len(grp.Symbols); i++ {
-			off := iatOff + i*8
-			common.PutU64(idata[off:], uint64(idataRVA)+common.GetU64(idata[off:off+8]))
-		}
-		iatOff += (len(grp.Symbols) + 1) * 8
-	}
+	objpe.FixupIData64(idata, idataRVA, toPEImportGroups(imports))
 }
 
 // buildIATOffsets64 returns import key → offset within .idata of the IAT entry.
 func buildIATOffsets64(g *core.CodeGen, imports []winImport) map[string]int {
-	groups := groupWinImports(imports)
-	idtSize := (len(groups) + 1) * 20
-	iltSize := 0
-	for _, grp := range groups {
-		iltSize += (len(grp.Symbols) + 1) * 8
-	}
-	iatBase := idtSize + iltSize
-
-	offsets := make(map[string]int)
-	cur := iatBase
-	for _, grp := range groups {
-		for i, sym := range grp.Symbols {
-			offsets[winImportKey(grp.Library, sym)] = cur + i*8
-		}
-		cur += (len(grp.Symbols) + 1) * 8
-	}
-	return offsets
+	return objpe.BuildIATOffsets64(toPEImportGroups(imports))
 }
 
 // getIATInfo64 returns the RVA and size of the IAT (8-byte entries).
 func getIATInfo64(g *core.CodeGen, imports []winImport, idataRVA int) (int, int) {
-	groups := groupWinImports(imports)
-	if len(groups) == 0 {
-		return 0, 0
-	}
-	idtSize := (len(groups) + 1) * 20
-	iltSize := 0
-	iatSize := 0
-	for _, grp := range groups {
-		iltSize += (len(grp.Symbols) + 1) * 8
-		iatSize += (len(grp.Symbols) + 1) * 8
-	}
-	return idataRVA + idtSize + iltSize, iatSize
+	return objpe.GetIATInfo64(toPEImportGroups(imports), idataRVA)
 }
 
 // buildDWARF64 generates DWARF2 sections with 8-byte addresses for PE32+.
 func buildDWARF64(g *core.CodeGen, irmod *ir.IRModule, textVA int, textSize int) ([]byte, []byte) {
-	// === .debug_abbrev ===
-	var abbrev []byte
-	// Abbrev 1: compile_unit
-	abbrev = append(abbrev, 1)    // abbrev number
-	abbrev = append(abbrev, 0x11) // DW_TAG_compile_unit
-	abbrev = append(abbrev, 1)    // DW_CHILDREN_yes
-	abbrev = append(abbrev, 0x03) // DW_AT_name
-	abbrev = append(abbrev, 0x08) // DW_FORM_string
-	abbrev = append(abbrev, 0x11) // DW_AT_low_pc
-	abbrev = append(abbrev, 0x01) // DW_FORM_addr
-	abbrev = append(abbrev, 0x12) // DW_AT_high_pc
-	abbrev = append(abbrev, 0x01) // DW_FORM_addr
-	abbrev = append(abbrev, 0, 0) // end of attributes
-
-	// Abbrev 2: subprogram
-	abbrev = append(abbrev, 2)    // abbrev number
-	abbrev = append(abbrev, 0x2e) // DW_TAG_subprogram
-	abbrev = append(abbrev, 0)    // DW_CHILDREN_no
-	abbrev = append(abbrev, 0x03) // DW_AT_name
-	abbrev = append(abbrev, 0x08) // DW_FORM_string
-	abbrev = append(abbrev, 0x11) // DW_AT_low_pc
-	abbrev = append(abbrev, 0x01) // DW_FORM_addr
-	abbrev = append(abbrev, 0x12) // DW_AT_high_pc
-	abbrev = append(abbrev, 0x01) // DW_FORM_addr
-	abbrev = append(abbrev, 0, 0) // end of attributes
-
-	abbrev = append(abbrev, 0) // end of abbreviation table
-
-	// === .debug_info ===
-	var info []byte
-	info = append(info, 0, 0, 0, 0) // unit_length (patched later)
-	info = append(info, 2, 0)       // DWARF version 2
-	info = append(info, 0, 0, 0, 0) // debug_abbrev_offset
-	info = append(info, 8)          // address_size = 8 (64-bit)
-
-	// DW_TAG_compile_unit
-	info = append(info, 1) // abbrev 1
-	info = append(info, []byte("rtg")...)
-	info = append(info, 0)
-	info = appendU64(info, uint64(textVA))
-	info = appendU64(info, uint64(textVA+textSize))
-
-	// _start
-	startHighPC := textVA
-	if len(irmod.Funcs) > 0 {
-		startHighPC = textVA + g.GetFuncOffset(irmod.Funcs[0].Name)
-	} else {
-		startHighPC = textVA + textSize
-	}
-	info = append(info, 2) // abbrev 2
-	info = append(info, []byte("_start")...)
-	info = append(info, 0)
-	info = appendU64(info, uint64(textVA))
-	info = appendU64(info, uint64(startHighPC))
-
-	// Functions
-	i := 0
-	for i < len(irmod.Funcs) {
-		f := irmod.Funcs[i]
-		funcStart := textVA + g.GetFuncOffset(f.Name)
-		funcEnd := textVA + textSize
-		if i+1 < len(irmod.Funcs) {
-			funcEnd = textVA + g.GetFuncOffset(irmod.Funcs[i+1].Name)
-		}
-
-		info = append(info, 2)
-		info = append(info, []byte(f.Name)...)
-		info = append(info, 0)
-		info = appendU64(info, uint64(funcStart))
-		info = appendU64(info, uint64(funcEnd))
-		i++
-	}
-
-	info = append(info, 0) // null terminator
-
-	unitLen := len(info) - 4
-	common.PutU32(info[0:], uint32(unitLen))
-
-	return abbrev, info
+	symbols := objpe.BuildDWARFSymbols(irmod, textVA, textVA+textSize, g.FuncOffsets())
+	return objpe.BuildDWARF64(textVA, textVA+textSize, symbols)
 }
 
 // buildBaseRelocations builds a .reloc section for 64-bit PE base relocations.
 // sectionRVA is the RVA of the section containing the addresses to relocate.
 // offsets are sorted offsets within that section of 8-byte absolute addresses.
 func buildBaseRelocations(g *core.CodeGen, sectionRVA int, offsets []int) []byte {
-	if len(offsets) == 0 {
-		return nil
-	}
-
-	var reloc []byte
-
-	// Group relocations by 4KB page
-	i := 0
-	for i < len(offsets) {
-		rva := sectionRVA + offsets[i]
-		pageRVA := (rva / 0x1000) * 0x1000
-
-		// Reserve space for block header
-		blockStart := len(reloc)
-		reloc = append(reloc, 0, 0, 0, 0) // PageRVA placeholder
-		reloc = append(reloc, 0, 0, 0, 0) // BlockSize placeholder
-
-		// Add entries for all relocations in this page
-		for i < len(offsets) {
-			rva = sectionRVA + offsets[i]
-			if (rva/0x1000)*0x1000 != pageRVA {
-				break
-			}
-			offsetInPage := rva % 0x1000
-			entry := uint16(0xA000) | uint16(offsetInPage) // IMAGE_REL_BASED_DIR64
-			reloc = append(reloc, byte(entry), byte(entry>>8))
-			i++
-		}
-
-		// Pad to 4-byte alignment
-		blockSize := len(reloc) - blockStart
-		if blockSize%4 != 0 {
-			reloc = append(reloc, 0, 0) // IMAGE_REL_BASED_ABSOLUTE padding
-			blockSize += 2
-		}
-
-		// Patch block header
-		common.PutU32(reloc[blockStart:], uint32(pageRVA))
-		common.PutU32(reloc[blockStart+4:], uint32(blockSize))
-	}
-
-	return reloc
+	return objpe.BuildBaseRelocations64(sectionRVA, offsets)
 }
 
 // appendU64 appends a little-endian uint64 to a byte slice.
