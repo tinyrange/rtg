@@ -293,6 +293,9 @@ func main() {
 		} else if os.Args[i] == "-parse-only" {
 			parseOnly = true
 			i = i + 1
+		} else if os.Args[i] == "-strict" {
+			compileTarget.Strict = true
+			i = i + 1
 		} else if os.Args[i] == "-emit-ir" && i+1 < len(os.Args) {
 			emitIRPath = os.Args[i+1]
 			i = i + 2
@@ -703,6 +706,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -include <path|->      Add stdlib search root; first -include disables default embedded stdlib, -include - re-enables it\n")
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
+	fmt.Fprintf(out, "  -strict                Reject RTG-only language extensions in user packages\n")
 	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")
 		fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
