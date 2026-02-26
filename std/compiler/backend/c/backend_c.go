@@ -105,6 +105,334 @@ func cWritef(b *strings.Builder, format string, a ...interface{}) {
 	b.WriteString(fmt.Sprintf(format, a...))
 }
 
+func cEmitIntrinsicResultCall(bp *strings.Builder, callExpr string) {
+	cWritef(bp, "  { rtg_sword rv = %s;\n", callExpr)
+	bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
+}
+
+func cEmitIntrinsicHostCall(bp *strings.Builder, name string) bool {
+	switch name {
+	case "SysRead":
+		cEmitIntrinsicResultCall(bp, "rtg_host_read(locals[0], locals[1], locals[2])")
+	case "SysWrite":
+		cEmitIntrinsicResultCall(bp, "rtg_host_write(locals[0], locals[1], locals[2])")
+	case "SysOpen":
+		cEmitIntrinsicResultCall(bp, "rtg_host_open(locals[0], locals[1])")
+	case "SysClose":
+		cEmitIntrinsicResultCall(bp, "rtg_host_close(locals[0])")
+	case "SysStat":
+		cEmitIntrinsicResultCall(bp, "rtg_host_stat(locals[0])")
+	case "SysMkdir":
+		cEmitIntrinsicResultCall(bp, "rtg_host_mkdir(locals[0])")
+	case "SysRmdir":
+		cEmitIntrinsicResultCall(bp, "rtg_host_rmdir(locals[0])")
+	case "SysUnlink":
+		cEmitIntrinsicResultCall(bp, "rtg_host_unlink(locals[0])")
+	case "SysGetcwd":
+		cEmitIntrinsicResultCall(bp, "rtg_host_getcwd(locals[0], locals[1])")
+	case "SysExit":
+		bp.WriteString("  rtg_host_exit((int)locals[0]);\n")
+	case "SysMmap":
+		cEmitIntrinsicResultCall(bp, "rtg_host_alloc(locals[1])")
+	case "SysGetargc":
+		bp.WriteString("  rtg_push((rtg_word)g_argc); rtg_push(0); rtg_push(0);\n")
+	case "SysGetargv":
+		bp.WriteString("  { int idx = (int)locals[0]; rtg_push(((idx >= g_argc) ? 0 : (rtg_word)(rtg_size)g_argv[idx])); rtg_push(0); rtg_push(0); }\n")
+	case "SysGetenv":
+		cEmitIntrinsicResultCall(bp, "rtg_host_getenv(locals[0])")
+	case "SysOpendir":
+		cEmitIntrinsicResultCall(bp, "rtg_host_opendir(locals[0])")
+	case "SysReaddir":
+		cEmitIntrinsicResultCall(bp, "rtg_host_readdir(locals[0], locals[1], locals[2], 0)")
+	case "SysReaddirWithType":
+		cEmitIntrinsicResultCall(bp, "rtg_host_readdir(locals[0], locals[1], locals[2], locals[3])")
+	case "SysClosedir":
+		cEmitIntrinsicResultCall(bp, "rtg_host_closedir(locals[0])")
+	case "SysSystem":
+		cEmitIntrinsicResultCall(bp, "rtg_host_system(locals[0])")
+	case "SysPopen":
+		cEmitIntrinsicResultCall(bp, "rtg_host_popen(locals[0])")
+	case "SysPclose":
+		cEmitIntrinsicResultCall(bp, "rtg_host_pclose(locals[0])")
+	case "SysChmod":
+		cEmitIntrinsicResultCall(bp, "rtg_host_chmod(locals[0], locals[1])")
+	case "SysGetpid":
+		bp.WriteString("  rtg_push((rtg_word)rtg_host_getpid()); rtg_push(0); rtg_push(0);\n")
+	default:
+		return false
+	}
+	return true
+}
+
+const cDefaultHostCore = `#define RTG_FD_MAX 1024
+static FILE* rtg_fd_table[RTG_FD_MAX];
+static int rtg_fd_hint = 3;
+
+static void rtg_host_init(void) {
+  rtg_fd_table[0] = stdin;
+  rtg_fd_table[1] = stdout;
+  rtg_fd_table[2] = stderr;
+}
+
+static void rtg_host_write_str(const char* s, rtg_size n) {
+  fwrite(s, 1, n, stderr);
+  fflush(stderr);
+}
+
+static void rtg_host_exit(int code) {
+  exit(code);
+}
+
+static rtg_sword rtg_host_read(rtg_word fd, rtg_word buf, rtg_word len) {
+  int ifd = (int)fd;
+  FILE* f;
+  if (ifd < 0 || ifd >= RTG_FD_MAX) return -1;
+  f = rtg_fd_table[ifd];
+  if (!f) return -1;
+  return (rtg_sword)fread((void*)(rtg_size)buf, 1, (rtg_size)len, f);
+}
+
+static rtg_sword rtg_host_write(rtg_word fd, rtg_word buf, rtg_word len) {
+  int ifd = (int)fd;
+  FILE* f;
+  rtg_sword n;
+  if (ifd < 0 || ifd >= RTG_FD_MAX) return -1;
+  f = rtg_fd_table[ifd];
+  if (!f) return -1;
+  n = (rtg_sword)fwrite((const void*)(rtg_size)buf, 1, (rtg_size)len, f);
+  fflush(f);
+  return n;
+}
+
+static rtg_sword rtg_host_open(rtg_word pathw, rtg_word flags) {
+  const char* path = (const char*)(rtg_size)pathw;
+  int fl = (int)flags;
+  const char* mode;
+  FILE* f;
+  int fd;
+  int i;
+  int start;
+  if ((fl & 1) && (fl & 64)) mode = "wb";
+  else if (fl & 1) mode = "wb";
+  else if (fl & 2) mode = "r+b";
+  else mode = "rb";
+  f = fopen(path, mode);
+  if (!f) return -2;
+  start = rtg_fd_hint;
+  if (start < 3 || start >= RTG_FD_MAX) start = 3;
+  fd = -1;
+  for (i = start; i < RTG_FD_MAX; i++) { if (!rtg_fd_table[i]) { fd = i; break; } }
+  if (fd < 0) {
+    for (i = 3; i < start; i++) { if (!rtg_fd_table[i]) { fd = i; break; } }
+  }
+  if (fd < 0) { fclose(f); return -1; }
+  rtg_fd_table[fd] = f;
+  rtg_fd_hint = fd + 1;
+  if (rtg_fd_hint >= RTG_FD_MAX) rtg_fd_hint = 3;
+  return (rtg_sword)fd;
+}
+
+static rtg_sword rtg_host_close(rtg_word fdw) {
+  int fd = (int)fdw;
+  if (fd < 3 || fd >= RTG_FD_MAX || !rtg_fd_table[fd]) return -1;
+  fclose(rtg_fd_table[fd]);
+  rtg_fd_table[fd] = 0;
+  if (fd < rtg_fd_hint) rtg_fd_hint = fd;
+  return 0;
+}
+
+static rtg_sword rtg_host_stat(rtg_word pathw) {
+  const char* path = (const char*)(rtg_size)pathw;
+  FILE* f = fopen(path, "rb");
+  if (f) { fclose(f); return 0; }
+#if !defined(__CC65__)
+#ifdef _WIN32
+  { DWORD a = GetFileAttributesA(path); if (a != INVALID_FILE_ATTRIBUTES) return 0; }
+#else
+  { DIR* d = opendir(path); if (d) { closedir(d); return 0; } }
+#endif
+#endif
+  return -2;
+}
+
+static rtg_sword rtg_host_mkdir(rtg_word pathw) {
+  int rv = rtg_mkdir((const char*)(rtg_size)pathw);
+  if (rv != 0) return -17;
+  return 0;
+}
+
+static rtg_sword rtg_host_chmod(rtg_word pathw, rtg_word mode) {
+#ifdef _WIN32
+  (void)pathw; (void)mode; return 0;
+#else
+  int rv = chmod((const char*)(rtg_size)pathw, (int)mode);
+  if (rv != 0) return -1;
+  return 0;
+#endif
+}
+
+static rtg_sword rtg_host_getpid(void) {
+#ifdef _WIN32
+  return (rtg_sword)GetCurrentProcessId();
+#else
+  return (rtg_sword)getpid();
+#endif
+}
+
+static rtg_sword rtg_host_rmdir(rtg_word pathw) {
+  int rv = rtg_rmdir((const char*)(rtg_size)pathw);
+  if (rv != 0) return -1;
+  return 0;
+}
+
+static rtg_sword rtg_host_unlink(rtg_word pathw) {
+  int rv = remove((const char*)(rtg_size)pathw);
+  if (rv != 0) return -1;
+  return 0;
+}
+
+static rtg_sword rtg_host_getcwd(rtg_word buf, rtg_word bufsz) {
+  char* rv = rtg_getcwd((char*)(rtg_size)buf, (rtg_size)bufsz);
+  if (!rv) return -1;
+  return (rtg_sword)rtg_strlen((const char*)(rtg_size)buf);
+}
+
+static rtg_sword rtg_host_alloc(rtg_word size) {
+  rtg_size sz = (rtg_size)size;
+  void* p;
+  if (sz == 0) sz = 1;
+  p = malloc(sz);
+  if (!p) return 0;
+  memset(p, 0, sz);
+  return (rtg_sword)(rtg_size)p;
+}
+
+static rtg_sword rtg_host_getenv(rtg_word keyw) {
+  char* val = getenv((const char*)(rtg_size)keyw);
+  if (!val) return 0;
+  return (rtg_sword)(rtg_size)val;
+}
+
+`
+
+const cDefaultHostDirOps = `#if !defined(__CC65__)
+#ifdef _WIN32
+static rtg_sword rtg_host_opendir(rtg_word pathw) {
+  const char* path = (const char*)(rtg_size)pathw;
+  char pattern[1024];
+  HANDLE h;
+  WIN32_FIND_DATAA* fd;
+  int plen = (int)rtg_strlen(path);
+  if (plen + 3 >= 1024) return -1;
+  memcpy(pattern, path, plen);
+  pattern[plen] = '\\'; pattern[plen+1] = '*'; pattern[plen+2] = 0;
+  fd = (WIN32_FIND_DATAA*)malloc(sizeof(WIN32_FIND_DATAA) + sizeof(HANDLE));
+  if (!fd) return -1;
+  h = FindFirstFileA(pattern, fd);
+  if (h == INVALID_HANDLE_VALUE) { free(fd); return -1; }
+  *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA)) = h;
+  return (rtg_sword)(rtg_size)fd;
+}
+static rtg_sword rtg_host_readdir(rtg_word handlew, rtg_word buf, rtg_word bufsz, rtg_word isDirBufW) {
+  WIN32_FIND_DATAA* fd = (WIN32_FIND_DATAA*)(rtg_size)handlew;
+  char* out = (char*)(rtg_size)buf;
+  rtg_size bufLen = (rtg_size)bufsz;
+  char* isDirBuf = (char*)(rtg_size)isDirBufW;
+  HANDLE h;
+  rtg_size nameLen;
+  if (!fd) return 0;
+  h = *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA));
+  nameLen = rtg_strlen(fd->cFileName);
+  if (nameLen == 0) return 0;
+  if (nameLen > bufLen) nameLen = bufLen;
+  memcpy(out, fd->cFileName, nameLen);
+  if (isDirBuf) *isDirBuf = (fd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+  if (!FindNextFileA(h, fd)) fd->cFileName[0] = 0;
+  return (rtg_sword)nameLen;
+}
+static rtg_sword rtg_host_closedir(rtg_word handlew) {
+  WIN32_FIND_DATAA* fd = (WIN32_FIND_DATAA*)(rtg_size)handlew;
+  HANDLE h;
+  if (!fd) return 0;
+  h = *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA));
+  FindClose(h);
+  free(fd);
+  return 0;
+}
+#else
+static rtg_sword rtg_host_opendir(rtg_word pathw) {
+  DIR* d = opendir((const char*)(rtg_size)pathw);
+  if (!d) return -1;
+  return (rtg_sword)(rtg_size)d;
+}
+static rtg_sword rtg_host_readdir(rtg_word handlew, rtg_word buf, rtg_word bufsz, rtg_word isDirBufW) {
+  DIR* d = (DIR*)(rtg_size)handlew;
+  char* out = (char*)(rtg_size)buf;
+  rtg_size bufLen = (rtg_size)bufsz;
+  char* isDirBuf = (char*)(rtg_size)isDirBufW;
+  struct dirent* ent;
+  rtg_size nameLen;
+  if (!d) return 0;
+  ent = readdir(d);
+  if (!ent) return 0;
+  nameLen = rtg_strlen(ent->d_name);
+  if (nameLen > bufLen) nameLen = bufLen;
+  memcpy(out, ent->d_name, nameLen);
+  if (isDirBuf) *isDirBuf = (ent->d_type == 4) ? 1 : 0;
+  return (rtg_sword)nameLen;
+}
+static rtg_sword rtg_host_closedir(rtg_word handlew) {
+  DIR* d = (DIR*)(rtg_size)handlew;
+  if (d) closedir(d);
+  return 0;
+}
+#endif
+#else
+static rtg_sword rtg_host_opendir(rtg_word p) { (void)p; return -1; }
+static rtg_sword rtg_host_readdir(rtg_word h, rtg_word b, rtg_word n, rtg_word d) { (void)h;(void)b;(void)n;(void)d; return 0; }
+static rtg_sword rtg_host_closedir(rtg_word h) { (void)h; return 0; }
+#endif
+
+`
+
+const cDefaultHostProcessOps = `static rtg_sword rtg_host_system(rtg_word cmdw) {
+  return (rtg_sword)system((const char*)(rtg_size)cmdw);
+}
+
+static rtg_sword rtg_host_popen(rtg_word cmdw) {
+  FILE* f = rtg_popen((const char*)(rtg_size)cmdw, "r");
+  int fd;
+  int i;
+  int start;
+  if (!f) return -1;
+  start = rtg_fd_hint;
+  if (start < 3 || start >= RTG_FD_MAX) start = 3;
+  fd = -1;
+  for (i = start; i < RTG_FD_MAX; i++) { if (!rtg_fd_table[i]) { fd = i; break; } }
+  if (fd < 0) {
+    for (i = 3; i < start; i++) { if (!rtg_fd_table[i]) { fd = i; break; } }
+  }
+  if (fd < 0) { rtg_pclose(f); return -1; }
+  rtg_fd_table[fd] = f;
+  rtg_fd_hint = fd + 1;
+  if (rtg_fd_hint >= RTG_FD_MAX) rtg_fd_hint = 3;
+  return (rtg_sword)fd;
+}
+
+static rtg_sword rtg_host_pclose(rtg_word fdw) {
+  int fd = (int)fdw;
+  int rv;
+  if (fd < 3 || fd >= RTG_FD_MAX || !rtg_fd_table[fd]) return -1;
+  rv = rtg_pclose(rtg_fd_table[fd]);
+  rtg_fd_table[fd] = 0;
+  if (fd < rtg_fd_hint) rtg_fd_hint = fd;
+  return (rtg_sword)rv;
+}
+
+#endif /* RTG_CUSTOM_HOST */
+
+`
+
 func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	bits := target.CModel
 	if bits == 0 {
@@ -341,291 +669,9 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	}
 	bp.WriteString("#endif\n\n")
 
-	// fd table
-	bp.WriteString("#define RTG_FD_MAX 1024\n")
-	bp.WriteString("static FILE* rtg_fd_table[RTG_FD_MAX];\n")
-	bp.WriteString("static int rtg_fd_hint = 3;\n\n")
-
-	// rtg_host_init
-	bp.WriteString("static void rtg_host_init(void) {\n")
-	bp.WriteString("  rtg_fd_table[0] = stdin;\n")
-	bp.WriteString("  rtg_fd_table[1] = stdout;\n")
-	bp.WriteString("  rtg_fd_table[2] = stderr;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_write_str (for internal error messages)
-	bp.WriteString("static void rtg_host_write_str(const char* s, rtg_size n) {\n")
-	bp.WriteString("  fwrite(s, 1, n, stderr);\n")
-	bp.WriteString("  fflush(stderr);\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_exit
-	bp.WriteString("static void rtg_host_exit(int code) {\n")
-	bp.WriteString("  exit(code);\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_read
-	bp.WriteString("static rtg_sword rtg_host_read(rtg_word fd, rtg_word buf, rtg_word len) {\n")
-	bp.WriteString("  int ifd = (int)fd;\n")
-	bp.WriteString("  FILE* f;\n")
-	bp.WriteString("  if (ifd < 0 || ifd >= RTG_FD_MAX) return -1;\n")
-	bp.WriteString("  f = rtg_fd_table[ifd];\n")
-	bp.WriteString("  if (!f) return -1;\n")
-	bp.WriteString("  return (rtg_sword)fread((void*)(rtg_size)buf, 1, (rtg_size)len, f);\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_write
-	bp.WriteString("static rtg_sword rtg_host_write(rtg_word fd, rtg_word buf, rtg_word len) {\n")
-	bp.WriteString("  int ifd = (int)fd;\n")
-	bp.WriteString("  FILE* f;\n")
-	bp.WriteString("  rtg_sword n;\n")
-	bp.WriteString("  if (ifd < 0 || ifd >= RTG_FD_MAX) return -1;\n")
-	bp.WriteString("  f = rtg_fd_table[ifd];\n")
-	bp.WriteString("  if (!f) return -1;\n")
-	bp.WriteString("  n = (rtg_sword)fwrite((const void*)(rtg_size)buf, 1, (rtg_size)len, f);\n")
-	bp.WriteString("  fflush(f);\n")
-	bp.WriteString("  return n;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_open
-	bp.WriteString("static rtg_sword rtg_host_open(rtg_word pathw, rtg_word flags) {\n")
-	bp.WriteString("  const char* path = (const char*)(rtg_size)pathw;\n")
-	bp.WriteString("  int fl = (int)flags;\n")
-	bp.WriteString("  const char* mode;\n")
-	bp.WriteString("  FILE* f;\n")
-	bp.WriteString("  int fd;\n")
-	bp.WriteString("  int i;\n")
-	bp.WriteString("  int start;\n")
-	bp.WriteString("  if ((fl & 1) && (fl & 64)) mode = \"wb\";\n")
-	bp.WriteString("  else if (fl & 1) mode = \"wb\";\n")
-	bp.WriteString("  else if (fl & 2) mode = \"r+b\";\n")
-	bp.WriteString("  else mode = \"rb\";\n")
-	bp.WriteString("  f = fopen(path, mode);\n")
-	bp.WriteString("  if (!f) return -2;\n")
-	bp.WriteString("  start = rtg_fd_hint;\n")
-	bp.WriteString("  if (start < 3 || start >= RTG_FD_MAX) start = 3;\n")
-	bp.WriteString("  fd = -1;\n")
-	bp.WriteString("  for (i = start; i < RTG_FD_MAX; i++) { if (!rtg_fd_table[i]) { fd = i; break; } }\n")
-	bp.WriteString("  if (fd < 0) {\n")
-	bp.WriteString("    for (i = 3; i < start; i++) { if (!rtg_fd_table[i]) { fd = i; break; } }\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("  if (fd < 0) { fclose(f); return -1; }\n")
-	bp.WriteString("  rtg_fd_table[fd] = f;\n")
-	bp.WriteString("  rtg_fd_hint = fd + 1;\n")
-	bp.WriteString("  if (rtg_fd_hint >= RTG_FD_MAX) rtg_fd_hint = 3;\n")
-	bp.WriteString("  return (rtg_sword)fd;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_close
-	bp.WriteString("static rtg_sword rtg_host_close(rtg_word fdw) {\n")
-	bp.WriteString("  int fd = (int)fdw;\n")
-	bp.WriteString("  if (fd < 3 || fd >= RTG_FD_MAX || !rtg_fd_table[fd]) return -1;\n")
-	bp.WriteString("  fclose(rtg_fd_table[fd]);\n")
-	bp.WriteString("  rtg_fd_table[fd] = 0;\n")
-	bp.WriteString("  if (fd < rtg_fd_hint) rtg_fd_hint = fd;\n")
-	bp.WriteString("  return 0;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_stat
-	bp.WriteString("static rtg_sword rtg_host_stat(rtg_word pathw) {\n")
-	bp.WriteString("  const char* path = (const char*)(rtg_size)pathw;\n")
-	bp.WriteString("  FILE* f = fopen(path, \"rb\");\n")
-	bp.WriteString("  if (f) { fclose(f); return 0; }\n")
-	bp.WriteString("#if !defined(__CC65__)\n")
-	bp.WriteString("#ifdef _WIN32\n")
-	bp.WriteString("  { DWORD a = GetFileAttributesA(path); if (a != INVALID_FILE_ATTRIBUTES) return 0; }\n")
-	bp.WriteString("#else\n")
-	bp.WriteString("  { DIR* d = opendir(path); if (d) { closedir(d); return 0; } }\n")
-	bp.WriteString("#endif\n")
-	bp.WriteString("#endif\n")
-	bp.WriteString("  return -2;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_mkdir
-	bp.WriteString("static rtg_sword rtg_host_mkdir(rtg_word pathw) {\n")
-	bp.WriteString("  int rv = rtg_mkdir((const char*)(rtg_size)pathw);\n")
-	bp.WriteString("  if (rv != 0) return -17;\n")
-	bp.WriteString("  return 0;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_chmod
-	bp.WriteString("static rtg_sword rtg_host_chmod(rtg_word pathw, rtg_word mode) {\n")
-	bp.WriteString("#ifdef _WIN32\n")
-	bp.WriteString("  (void)pathw; (void)mode; return 0;\n")
-	bp.WriteString("#else\n")
-	bp.WriteString("  int rv = chmod((const char*)(rtg_size)pathw, (int)mode);\n")
-	bp.WriteString("  if (rv != 0) return -1;\n")
-	bp.WriteString("  return 0;\n")
-	bp.WriteString("#endif\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_getpid
-	bp.WriteString("static rtg_sword rtg_host_getpid(void) {\n")
-	bp.WriteString("#ifdef _WIN32\n")
-	bp.WriteString("  return (rtg_sword)GetCurrentProcessId();\n")
-	bp.WriteString("#else\n")
-	bp.WriteString("  return (rtg_sword)getpid();\n")
-	bp.WriteString("#endif\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_rmdir
-	bp.WriteString("static rtg_sword rtg_host_rmdir(rtg_word pathw) {\n")
-	bp.WriteString("  int rv = rtg_rmdir((const char*)(rtg_size)pathw);\n")
-	bp.WriteString("  if (rv != 0) return -1;\n")
-	bp.WriteString("  return 0;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_unlink
-	bp.WriteString("static rtg_sword rtg_host_unlink(rtg_word pathw) {\n")
-	bp.WriteString("  int rv = remove((const char*)(rtg_size)pathw);\n")
-	bp.WriteString("  if (rv != 0) return -1;\n")
-	bp.WriteString("  return 0;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_getcwd
-	bp.WriteString("static rtg_sword rtg_host_getcwd(rtg_word buf, rtg_word bufsz) {\n")
-	bp.WriteString("  char* rv = rtg_getcwd((char*)(rtg_size)buf, (rtg_size)bufsz);\n")
-	bp.WriteString("  if (!rv) return -1;\n")
-	bp.WriteString("  return (rtg_sword)rtg_strlen((const char*)(rtg_size)buf);\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_alloc
-	bp.WriteString("static rtg_sword rtg_host_alloc(rtg_word size) {\n")
-	bp.WriteString("  rtg_size sz = (rtg_size)size;\n")
-	bp.WriteString("  void* p;\n")
-	bp.WriteString("  if (sz == 0) sz = 1;\n")
-	bp.WriteString("  p = malloc(sz);\n")
-	bp.WriteString("  if (!p) return 0;\n")
-	bp.WriteString("  memset(p, 0, sz);\n")
-	bp.WriteString("  return (rtg_sword)(rtg_size)p;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_getenv
-	bp.WriteString("static rtg_sword rtg_host_getenv(rtg_word keyw) {\n")
-	bp.WriteString("  char* val = getenv((const char*)(rtg_size)keyw);\n")
-	bp.WriteString("  if (!val) return 0;\n")
-	bp.WriteString("  return (rtg_sword)(rtg_size)val;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_opendir
-	bp.WriteString("#if !defined(__CC65__)\n")
-	bp.WriteString("#ifdef _WIN32\n")
-	bp.WriteString("static rtg_sword rtg_host_opendir(rtg_word pathw) {\n")
-	bp.WriteString("  const char* path = (const char*)(rtg_size)pathw;\n")
-	bp.WriteString("  char pattern[1024];\n")
-	bp.WriteString("  HANDLE h;\n")
-	bp.WriteString("  WIN32_FIND_DATAA* fd;\n")
-	bp.WriteString("  int plen = (int)rtg_strlen(path);\n")
-	bp.WriteString("  if (plen + 3 >= 1024) return -1;\n")
-	bp.WriteString("  memcpy(pattern, path, plen);\n")
-	bp.WriteString("  pattern[plen] = '\\\\'; pattern[plen+1] = '*'; pattern[plen+2] = 0;\n")
-	bp.WriteString("  fd = (WIN32_FIND_DATAA*)malloc(sizeof(WIN32_FIND_DATAA) + sizeof(HANDLE));\n")
-	bp.WriteString("  if (!fd) return -1;\n")
-	bp.WriteString("  h = FindFirstFileA(pattern, fd);\n")
-	bp.WriteString("  if (h == INVALID_HANDLE_VALUE) { free(fd); return -1; }\n")
-	bp.WriteString("  *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA)) = h;\n")
-	bp.WriteString("  return (rtg_sword)(rtg_size)fd;\n")
-	bp.WriteString("}\n")
-	bp.WriteString("static rtg_sword rtg_host_readdir(rtg_word handlew, rtg_word buf, rtg_word bufsz, rtg_word isDirBufW) {\n")
-	bp.WriteString("  WIN32_FIND_DATAA* fd = (WIN32_FIND_DATAA*)(rtg_size)handlew;\n")
-	bp.WriteString("  char* out = (char*)(rtg_size)buf;\n")
-	bp.WriteString("  rtg_size bufLen = (rtg_size)bufsz;\n")
-	bp.WriteString("  char* isDirBuf = (char*)(rtg_size)isDirBufW;\n")
-	bp.WriteString("  HANDLE h;\n")
-	bp.WriteString("  rtg_size nameLen;\n")
-	bp.WriteString("  if (!fd) return 0;\n")
-	bp.WriteString("  h = *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA));\n")
-	bp.WriteString("  nameLen = rtg_strlen(fd->cFileName);\n")
-	bp.WriteString("  if (nameLen == 0) return 0;\n")
-	bp.WriteString("  if (nameLen > bufLen) nameLen = bufLen;\n")
-	bp.WriteString("  memcpy(out, fd->cFileName, nameLen);\n")
-	bp.WriteString("  if (isDirBuf) *isDirBuf = (fd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;\n")
-	bp.WriteString("  if (!FindNextFileA(h, fd)) fd->cFileName[0] = 0;\n")
-	bp.WriteString("  return (rtg_sword)nameLen;\n")
-	bp.WriteString("}\n")
-	bp.WriteString("static rtg_sword rtg_host_closedir(rtg_word handlew) {\n")
-	bp.WriteString("  WIN32_FIND_DATAA* fd = (WIN32_FIND_DATAA*)(rtg_size)handlew;\n")
-	bp.WriteString("  HANDLE h;\n")
-	bp.WriteString("  if (!fd) return 0;\n")
-	bp.WriteString("  h = *(HANDLE*)((char*)fd + sizeof(WIN32_FIND_DATAA));\n")
-	bp.WriteString("  FindClose(h);\n")
-	bp.WriteString("  free(fd);\n")
-	bp.WriteString("  return 0;\n")
-	bp.WriteString("}\n")
-	bp.WriteString("#else\n")
-	// POSIX
-	bp.WriteString("static rtg_sword rtg_host_opendir(rtg_word pathw) {\n")
-	bp.WriteString("  DIR* d = opendir((const char*)(rtg_size)pathw);\n")
-	bp.WriteString("  if (!d) return -1;\n")
-	bp.WriteString("  return (rtg_sword)(rtg_size)d;\n")
-	bp.WriteString("}\n")
-	bp.WriteString("static rtg_sword rtg_host_readdir(rtg_word handlew, rtg_word buf, rtg_word bufsz, rtg_word isDirBufW) {\n")
-	bp.WriteString("  DIR* d = (DIR*)(rtg_size)handlew;\n")
-	bp.WriteString("  char* out = (char*)(rtg_size)buf;\n")
-	bp.WriteString("  rtg_size bufLen = (rtg_size)bufsz;\n")
-	bp.WriteString("  char* isDirBuf = (char*)(rtg_size)isDirBufW;\n")
-	bp.WriteString("  struct dirent* ent;\n")
-	bp.WriteString("  rtg_size nameLen;\n")
-	bp.WriteString("  if (!d) return 0;\n")
-	bp.WriteString("  ent = readdir(d);\n")
-	bp.WriteString("  if (!ent) return 0;\n")
-	bp.WriteString("  nameLen = rtg_strlen(ent->d_name);\n")
-	bp.WriteString("  if (nameLen > bufLen) nameLen = bufLen;\n")
-	bp.WriteString("  memcpy(out, ent->d_name, nameLen);\n")
-	bp.WriteString("  if (isDirBuf) *isDirBuf = (ent->d_type == 4) ? 1 : 0;\n")
-	bp.WriteString("  return (rtg_sword)nameLen;\n")
-	bp.WriteString("}\n")
-	bp.WriteString("static rtg_sword rtg_host_closedir(rtg_word handlew) {\n")
-	bp.WriteString("  DIR* d = (DIR*)(rtg_size)handlew;\n")
-	bp.WriteString("  if (d) closedir(d);\n")
-	bp.WriteString("  return 0;\n")
-	bp.WriteString("}\n")
-	bp.WriteString("#endif\n")
-	bp.WriteString("#else\n")
-	// CC65/no-dirent fallback
-	bp.WriteString("static rtg_sword rtg_host_opendir(rtg_word p) { (void)p; return -1; }\n")
-	bp.WriteString("static rtg_sword rtg_host_readdir(rtg_word h, rtg_word b, rtg_word n, rtg_word d) { (void)h;(void)b;(void)n;(void)d; return 0; }\n")
-	bp.WriteString("static rtg_sword rtg_host_closedir(rtg_word h) { (void)h; return 0; }\n")
-	bp.WriteString("#endif\n\n")
-
-	// rtg_host_system
-	bp.WriteString("static rtg_sword rtg_host_system(rtg_word cmdw) {\n")
-	bp.WriteString("  return (rtg_sword)system((const char*)(rtg_size)cmdw);\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_popen
-	bp.WriteString("static rtg_sword rtg_host_popen(rtg_word cmdw) {\n")
-	bp.WriteString("  FILE* f = rtg_popen((const char*)(rtg_size)cmdw, \"r\");\n")
-	bp.WriteString("  int fd;\n")
-	bp.WriteString("  int i;\n")
-	bp.WriteString("  int start;\n")
-	bp.WriteString("  if (!f) return -1;\n")
-	bp.WriteString("  start = rtg_fd_hint;\n")
-	bp.WriteString("  if (start < 3 || start >= RTG_FD_MAX) start = 3;\n")
-	bp.WriteString("  fd = -1;\n")
-	bp.WriteString("  for (i = start; i < RTG_FD_MAX; i++) { if (!rtg_fd_table[i]) { fd = i; break; } }\n")
-	bp.WriteString("  if (fd < 0) {\n")
-	bp.WriteString("    for (i = 3; i < start; i++) { if (!rtg_fd_table[i]) { fd = i; break; } }\n")
-	bp.WriteString("  }\n")
-	bp.WriteString("  if (fd < 0) { rtg_pclose(f); return -1; }\n")
-	bp.WriteString("  rtg_fd_table[fd] = f;\n")
-	bp.WriteString("  rtg_fd_hint = fd + 1;\n")
-	bp.WriteString("  if (rtg_fd_hint >= RTG_FD_MAX) rtg_fd_hint = 3;\n")
-	bp.WriteString("  return (rtg_sword)fd;\n")
-	bp.WriteString("}\n\n")
-
-	// rtg_host_pclose
-	bp.WriteString("static rtg_sword rtg_host_pclose(rtg_word fdw) {\n")
-	bp.WriteString("  int fd = (int)fdw;\n")
-	bp.WriteString("  int rv;\n")
-	bp.WriteString("  if (fd < 3 || fd >= RTG_FD_MAX || !rtg_fd_table[fd]) return -1;\n")
-	bp.WriteString("  rv = rtg_pclose(rtg_fd_table[fd]);\n")
-	bp.WriteString("  rtg_fd_table[fd] = 0;\n")
-	bp.WriteString("  if (fd < rtg_fd_hint) rtg_fd_hint = fd;\n")
-	bp.WriteString("  return (rtg_sword)rv;\n")
-	bp.WriteString("}\n\n")
-
-	bp.WriteString("#endif /* RTG_CUSTOM_HOST */\n\n")
+	bp.WriteString(cDefaultHostCore)
+	bp.WriteString(cDefaultHostDirOps)
+	bp.WriteString(cDefaultHostProcessOps)
 
 	// ------ Dispatch function: calls individual rtg_host_* functions ------
 	bp.WriteString("static rtg_sword rtg_host_call(rtg_word num, rtg_word a0, rtg_word a1, rtg_word a2, rtg_word a3, rtg_word a4, rtg_word a5) {\n")
@@ -1048,72 +1094,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				}
 
 			case ir.OP_CALL_INTRINSIC:
+				if cEmitIntrinsicHostCall(bp, in.Name) {
+					break
+				}
 				switch in.Name {
-				case "SysRead":
-					bp.WriteString("  { rtg_sword rv = rtg_host_read(locals[0], locals[1], locals[2]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysWrite":
-					bp.WriteString("  { rtg_sword rv = rtg_host_write(locals[0], locals[1], locals[2]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysOpen":
-					bp.WriteString("  { rtg_sword rv = rtg_host_open(locals[0], locals[1]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysClose":
-					bp.WriteString("  { rtg_sword rv = rtg_host_close(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysStat":
-					bp.WriteString("  { rtg_sword rv = rtg_host_stat(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysMkdir":
-					bp.WriteString("  { rtg_sword rv = rtg_host_mkdir(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysRmdir":
-					bp.WriteString("  { rtg_sword rv = rtg_host_rmdir(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysUnlink":
-					bp.WriteString("  { rtg_sword rv = rtg_host_unlink(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysGetcwd":
-					bp.WriteString("  { rtg_sword rv = rtg_host_getcwd(locals[0], locals[1]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysExit":
-					bp.WriteString("  rtg_host_exit((int)locals[0]);\n")
-				case "SysMmap":
-					bp.WriteString("  { rtg_sword rv = rtg_host_alloc(locals[1]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysGetargc":
-					bp.WriteString("  rtg_push((rtg_word)g_argc); rtg_push(0); rtg_push(0);\n")
-				case "SysGetargv":
-					bp.WriteString("  { int idx = (int)locals[0]; rtg_push(((idx >= g_argc) ? 0 : (rtg_word)(rtg_size)g_argv[idx])); rtg_push(0); rtg_push(0); }\n")
-				case "SysGetenv":
-					bp.WriteString("  { rtg_sword rv = rtg_host_getenv(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysOpendir":
-					bp.WriteString("  { rtg_sword rv = rtg_host_opendir(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysReaddir":
-					bp.WriteString("  { rtg_sword rv = rtg_host_readdir(locals[0], locals[1], locals[2], 0);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysReaddirWithType":
-					bp.WriteString("  { rtg_sword rv = rtg_host_readdir(locals[0], locals[1], locals[2], locals[3]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysClosedir":
-					bp.WriteString("  { rtg_sword rv = rtg_host_closedir(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysSystem":
-					bp.WriteString("  { rtg_sword rv = rtg_host_system(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysPopen":
-					bp.WriteString("  { rtg_sword rv = rtg_host_popen(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysPclose":
-					bp.WriteString("  { rtg_sword rv = rtg_host_pclose(locals[0]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysChmod":
-					bp.WriteString("  { rtg_sword rv = rtg_host_chmod(locals[0], locals[1]);\n")
-					bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
-				case "SysGetpid":
-					bp.WriteString("  rtg_push((rtg_word)rtg_host_getpid()); rtg_push(0); rtg_push(0);\n")
 				case "Sliceptr":
 					bp.WriteString("  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n")
 				case "Makeslice":
