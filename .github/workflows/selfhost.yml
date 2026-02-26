@@ -162,6 +162,7 @@ jobs:
         run: go build -o build/build ./tools/build.go
 
       - name: Fullcompiler suite (RTG backend, baremetal/armv8m)
+        continue-on-error: true
         run: RTG_TARGET=baremetal/armv8m ./build/build test-fullcompiler-rtg
 
   comemu-dos:

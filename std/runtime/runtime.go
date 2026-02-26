@@ -43,7 +43,7 @@ var heapPtr uintptr
 var heapEnd uintptr
 var heapChunk int = 65536
 
-const heapChunkMax int = 1048576
+var heapChunkMax int = 1048576
 
 // Alloc allocates size bytes via mmap, using a bump allocator over
 // growth-sized regions to avoid per-allocation syscall overhead while
