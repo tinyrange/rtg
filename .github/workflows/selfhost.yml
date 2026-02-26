@@ -161,6 +161,37 @@ jobs:
       - name: Build Buildfile runner
         run: go build -o build/build ./tools/build.go
 
+      - name: QEMU semihosting smoke (armv8m)
+        run: |
+          cat > build/qemu_semihost_probe.go <<'EOF'
+          package main
+          import "runtime"
+          func main() {
+            s := "PASS"
+            runtime.SysWrite(1, runtime.Stringptr(s), uintptr(len(s)))
+          }
+          EOF
+          ./build/rtg -T semihost/armv8m -o build/qemu_semihost_probe build/qemu_semihost_probe.go
+          timeout 20s qemu-system-arm \
+            -M mps2-an505 \
+            -cpu cortex-m33 \
+            -nographic \
+            -serial mon:stdio \
+            -semihosting-config enable=on,target=native \
+            -kernel build/qemu_semihost_probe \
+            > build/qemu_semihost_probe.out 2>&1
+          grep -q "PASS" build/qemu_semihost_probe.out
+
+      - name: Install Renode
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/renode"
+          curl -fsSL https://builds.renode.io/renode-latest.linux-portable-dotnet.tar.gz \
+            | tar -xz -C "$HOME/renode"
+
+      - name: Fullcompiler suite (RTG backend, semihost/armv8m on Renode)
+        run: RENODE_PATH="$HOME/renode" ./build/build test-fullcompiler-armv8m-renode
+
       - name: Fullcompiler suite (RTG backend, baremetal/armv8m)
         continue-on-error: true
         run: RTG_TARGET=baremetal/armv8m ./build/build test-fullcompiler-rtg

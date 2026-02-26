@@ -1,4 +1,4 @@
-//go:build baremetal
+//go:build bare || semihost
 
 package exec
 
