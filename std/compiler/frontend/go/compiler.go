@@ -107,6 +107,7 @@ type Compiler struct {
 	stackDepth           int                 // operand stack depth tracking for balance checks
 	deferSites           []deferSite
 	deferHeadLocal       int
+	panicUnwindLabel     int
 	namedResultNames     []string
 	labelIDs             map[string]int
 	funcLitSeq           int
@@ -2291,6 +2292,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localMapValueTypes = make(map[string]string)
 	c.deferSites = nil
 	c.deferHeadLocal = -1
+	c.panicUnwindLabel = -1
 	c.namedResultNames = nil
 	c.fallthroughs = nil
 	c.pendingStmtLabels = nil
@@ -2460,6 +2462,11 @@ func (c *Compiler) compileFunc(node *Node) {
 	// Pre-register funcRets before compiling body so recursive calls resolve correctly
 	c.funcRets[f.Name] = f.RetCount
 	c.stackDepth = 0
+	if c.funcIsZeroCall[f.Name] {
+		c.panicUnwindLabel = -1
+	} else {
+		c.panicUnwindLabel = c.newLabel()
+	}
 
 	for _, name := range c.namedResultNames {
 		if idx, ok := c.lookupLocal(name); ok {
@@ -2494,6 +2501,26 @@ func (c *Compiler) compileFunc(node *Node) {
 			}
 			c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 		}
+	}
+
+	if c.panicUnwindLabel >= 0 {
+		// Panic-unwind path shared by call-site panic propagation checks.
+		c.emitLabel(c.panicUnwindLabel)
+		if len(c.deferSites) > 0 {
+			c.emitDeferredCalls()
+		}
+		recoveredLabel := c.newLabel()
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicWasRecovered", Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: recoveredLabel})
+		if f.Name == "main.main" {
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicValueToString", Arg: 0})
+			c.emit(ir.Inst{Op: ir.OP_PANIC})
+		} else {
+			c.emitRecoveredPanicReturn()
+		}
+		c.emitLabel(recoveredLabel)
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicReset", Arg: 0})
+		c.emitRecoveredPanicReturn()
 	}
 
 	c.popScope()
@@ -2802,8 +2829,27 @@ func (c *Compiler) instStackDelta(inst ir.Inst) int {
 	case ir.OP_IFACE_BOX:
 		return 0 // pop value, push boxed
 	case ir.OP_IFACE_CALL:
-		// consumes receiver + args, produces 1 result
-		return -(inst.Arg + 1) + 1
+		// consumes receiver + args, produces interface-method return count
+		retCount := 1
+		if len(inst.Name) > 0 {
+			dot := -1
+			i := len(inst.Name) - 1
+			for i >= 0 {
+				if inst.Name[i] == '.' {
+					dot = i
+					break
+				}
+				i--
+			}
+			if dot > 0 && dot+1 < len(inst.Name) {
+				ifaceType := inst.Name[:dot]
+				methodName := inst.Name[dot+1:]
+				if n, ok := c.ifaceMethodReturnCount(ifaceType, methodName); ok {
+					retCount = n
+				}
+			}
+		}
+		return -(inst.Arg + 1) + retCount
 	case ir.OP_PANIC:
 		return -1
 	case ir.OP_SLICE_GET, ir.OP_SLICE_MAKE, ir.OP_STRING_GET, ir.OP_STRING_MAKE:
@@ -3735,6 +3781,7 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	savedLocalMapVals := c.localMapValueTypes
 	savedDeferSites := c.deferSites
 	savedDeferHeadLocal := c.deferHeadLocal
+	savedPanicUnwindLabel := c.panicUnwindLabel
 	savedNamed := c.namedResultNames
 	savedPendingStmtLabels := c.pendingStmtLabels
 	savedLabelIDs := c.labelIDs
@@ -3765,6 +3812,7 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	c.localMapValueTypes = savedLocalMapVals
 	c.deferSites = savedDeferSites
 	c.deferHeadLocal = savedDeferHeadLocal
+	c.panicUnwindLabel = savedPanicUnwindLabel
 	c.namedResultNames = savedNamed
 	c.pendingStmtLabels = savedPendingStmtLabels
 	c.labelIDs = savedLabelIDs
@@ -4004,6 +4052,7 @@ func (c *Compiler) emitDeferredCalls() {
 
 func (c *Compiler) emitDeferredSiteCall(site deferSite, recIdx int) {
 	argCount := site.argCount
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverEnter", Arg: 0})
 	if site.isVariadic {
 		fixedCount := site.fixedCount
 		if fixedCount > argCount {
@@ -4079,6 +4128,7 @@ func (c *Compiler) emitDeferredSiteCall(site deferSite, recIdx int) {
 			c.emit(ir.Inst{Op: ir.OP_CALL, Name: site.callName, Arg: argCount})
 		}
 	}
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverExit", Arg: 0})
 	dropCount := site.retCount
 	for dropCount > 0 {
 		c.emit(ir.Inst{Op: ir.OP_DROP})
@@ -4109,6 +4159,69 @@ func (c *Compiler) emitNamedReturnValues(retTypes []string) int {
 		count++
 	}
 	return count
+}
+
+func (c *Compiler) emitRecoveredPanicReturn() {
+	retTypes := c.funcRetTypes[c.curFunc.Name]
+	count := 0
+	if len(c.namedResultNames) > 0 {
+		count = c.emitNamedReturnValues(retTypes)
+	} else {
+		want := c.curFunc.RetCount
+		i := 0
+		for i < want {
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			count++
+			i++
+		}
+	}
+	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
+}
+
+func (c *Compiler) emitPanicPropagationCheck(retCount int) {
+	if c.panicUnwindLabel < 0 {
+		return
+	}
+	continueLabel := c.newLabel()
+	savedDepth := c.stackDepth
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicShouldUnwind", Arg: 0})
+	c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: continueLabel})
+	// We can be in the middle of a larger expression when a callee panics.
+	// Jumping to the shared unwind label must not carry any transient operands.
+	dropCount := savedDepth
+	for dropCount > 0 {
+		c.emit(ir.Inst{Op: ir.OP_DROP})
+		dropCount--
+	}
+	c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.panicUnwindLabel})
+	c.stackDepth = savedDepth
+	c.emitLabel(continueLabel)
+}
+
+func (c *Compiler) emitCallWithPanicCheck(callName string, argCount int) {
+	if c.panicUnwindLabel >= 0 {
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
+	}
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: argCount})
+	retCount := 1
+	if n, ok := c.funcRets[callName]; ok {
+		retCount = n
+	}
+	if c.panicUnwindLabel >= 0 {
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverAfterCall", Arg: 0})
+	}
+	c.emitPanicPropagationCheck(retCount)
+}
+
+func (c *Compiler) emitIfaceCallWithPanicCheck(callName string, argCount int, retCount int) {
+	if c.panicUnwindLabel >= 0 {
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
+	}
+	c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: callName, Arg: argCount})
+	if c.panicUnwindLabel >= 0 {
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverAfterCall", Arg: 0})
+	}
+	c.emitPanicPropagationCheck(retCount)
 }
 
 func (c *Compiler) compileReturn(node *Node) {
@@ -6195,7 +6308,7 @@ func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName s
 			c.maybeCloneArrayForTypeName(paramTypes[i+1])
 		}
 	}
-	c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: len(args) + 1})
+	c.emitCallWithPanicCheck(callName, len(args)+1)
 }
 
 func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType string, methodName string) {
@@ -6207,7 +6320,8 @@ func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType s
 			c.maybeCloneArrayForTypeName(paramTypes[i])
 		}
 	}
-	c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: c.dotJoin(ifaceType, methodName), Arg: len(args)})
+	retCount, _ := c.ifaceMethodReturnCount(ifaceType, methodName)
+	c.emitIfaceCallWithPanicCheck(c.dotJoin(ifaceType, methodName), len(args), retCount)
 }
 
 func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promotedMethodMatch) {
@@ -6228,7 +6342,7 @@ func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promo
 			c.maybeCloneArrayForTypeName(paramTypes[i+1])
 		}
 	}
-	c.emit(ir.Inst{Op: ir.OP_CALL, Name: pm.Target, Arg: len(args) + 1})
+	c.emitCallWithPanicCheck(pm.Target, len(args)+1)
 }
 
 func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedName string) {
@@ -6261,7 +6375,7 @@ func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedNa
 			mVarElemSz = mesz
 		}
 		c.packVariadicSlice(node.Nodes, fixedArgCount, variadicCount, mVarElemSz, resolvedName)
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: resolvedName, Arg: fixedCount + 1})
+		c.emitCallWithPanicCheck(resolvedName, fixedCount+1)
 		return
 	}
 	c.emitCallWithReceiver(recvExpr, node.Nodes, resolvedName)
@@ -6387,7 +6501,7 @@ func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 	for _, arg := range node.Nodes {
 		c.compileExpr(arg)
 	}
-	c.emit(ir.Inst{Op: ir.OP_CALL, Name: target, Arg: len(node.Nodes) + 1})
+	c.emitCallWithPanicCheck(target, len(node.Nodes)+1)
 	return true
 }
 
@@ -6405,7 +6519,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			for _, arg := range node.Nodes {
 				c.compileExpr(arg)
 			}
-			c.emit(ir.Inst{Op: ir.OP_CALL, Name: target, Arg: len(node.Nodes) + len(captureArgs)})
+			c.emitCallWithPanicCheck(target, len(node.Nodes)+len(captureArgs))
 			return
 		}
 		if c.compileBoundMethodValueCall(node) {
@@ -6417,8 +6531,15 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		name := node.X.Name
 		if name == "recover" {
-			c.errorf("%s: recover is not supported", c.curFunc.Name)
-			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+			if c.panicUnwindLabel < 0 {
+				c.errorf("%s: recover is not supported in zerocall functions", c.curFunc.Name)
+				c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
+				return
+			}
+			if len(node.Nodes) != 0 {
+				c.errorf("%s: recover expects no arguments", c.curFunc.Name)
+			}
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Recover", Arg: 0})
 			return
 		}
 		if name == "complex" || name == "real" || name == "imag" {
@@ -6509,22 +6630,49 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			return
 		}
 		if name == "panic" {
-			if len(c.deferSites) > 0 {
-				c.emitDeferredCalls()
+			if c.panicUnwindLabel < 0 {
+				if len(node.Nodes) != 1 {
+					c.errorf("%s: panic expects exactly one argument", c.curFunc.Name)
+					c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "panic"})
+					c.emit(ir.Inst{Op: ir.OP_PANIC})
+					return
+				}
+				arg := node.Nodes[0]
+				c.compileExpr(arg)
+				if !c.isStringTypedExpr(arg) && !isStringExpr(arg) {
+					c.maybeBoxValueForInterface(arg)
+					c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Tostring", Arg: 1})
+				}
+				c.emit(ir.Inst{Op: ir.OP_PANIC})
+				return
 			}
 			if len(node.Nodes) != 1 {
 				c.errorf("%s: panic expects exactly one argument", c.curFunc.Name)
 				c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "panic"})
-				c.emit(ir.Inst{Op: ir.OP_PANIC})
+				c.emit(ir.Inst{Op: ir.OP_IFACE_BOX, Arg: c.typeIDForTypeName("string")})
+				c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "panic"})
+				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicBegin", Arg: 2})
+				c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.panicUnwindLabel})
 				return
 			}
 			arg := node.Nodes[0]
 			c.compileExpr(arg)
+			argIdx := c.addLocal("$panic_arg")
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: argIdx})
+			// First argument: original panic value as interface{}.
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argIdx})
+			c.maybeBoxValueForInterface(arg)
+			// Second argument: panic text used by OP_PANIC path.
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argIdx})
 			if !c.isStringTypedExpr(arg) && !isStringExpr(arg) {
-				c.maybeBoxValueForInterface(arg)
+				argType := c.resolveExprType(arg)
+				if !c.isInterfaceTypeName(argType) {
+					c.maybeBoxValueForInterface(arg)
+				}
 				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Tostring", Arg: 1})
 			}
-			c.emit(ir.Inst{Op: ir.OP_PANIC})
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicBegin", Arg: 2})
+			c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.panicUnwindLabel})
 			return
 		}
 		if name == "new" {
@@ -6775,7 +6923,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		c.packVariadicSlice(node.Nodes, fixedCount, variadicCount, varElemSz, callName)
 
 		// Call with fixedCount + 1 args (fixed params + one slice)
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: fixedCount + 1})
+		c.emitCallWithPanicCheck(callName, fixedCount+1)
 	} else {
 		// Non-variadic call, or spread call — compile all args normally.
 		for i, arg := range node.Nodes {
@@ -6793,7 +6941,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 				c.maybeBoxValueForInterface(arg)
 			}
 		}
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: argCount})
+		c.emitCallWithPanicCheck(callName, argCount)
 	}
 }
 
@@ -6873,6 +7021,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedLocalAddrOf := c.localAddrOf
 	savedDeferSites := c.deferSites
 	savedDeferHeadLocal := c.deferHeadLocal
+	savedPanicUnwindLabel := c.panicUnwindLabel
 	savedNamedResultNames := c.namedResultNames
 	savedPendingStmtLabels := c.pendingStmtLabels
 	savedLabelIDs := c.labelIDs
@@ -6900,6 +7049,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localAddrOf = make(map[string]bool)
 	c.deferSites = nil
 	c.deferHeadLocal = -1
+	c.panicUnwindLabel = -1
 	c.namedResultNames = nil
 	c.fallthroughs = nil
 	c.pendingStmtLabels = nil
@@ -6932,6 +7082,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localAddrOf = savedLocalAddrOf
 	c.deferSites = savedDeferSites
 	c.deferHeadLocal = savedDeferHeadLocal
+	c.panicUnwindLabel = savedPanicUnwindLabel
 	c.namedResultNames = savedNamedResultNames
 	c.pendingStmtLabels = savedPendingStmtLabels
 	c.labelIDs = savedLabelIDs

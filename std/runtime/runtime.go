@@ -39,6 +39,92 @@ func runtimePanic(msg string) {
 	SysExit(2)
 }
 
+var panicActive bool
+var panicRecovered bool
+var panicRecoverArmed bool
+var panicRecoverDepth int
+var panicValue interface{}
+var panicMessage string
+
+// PanicBegin records the current panic payload and starts panic-unwind mode.
+func PanicBegin(v interface{}, msg string) {
+	panicActive = true
+	panicRecovered = false
+	panicRecoverArmed = false
+	panicRecoverDepth = 0
+	panicValue = v
+	panicMessage = msg
+}
+
+// PanicValueToString converts the active panic payload to text for OP_PANIC.
+func PanicValueToString() string {
+	if !panicActive {
+		return "panic"
+	}
+	return panicMessage
+}
+
+// PanicWasRecovered reports whether recover() consumed the active panic.
+func PanicWasRecovered() bool {
+	return panicRecovered
+}
+
+// PanicShouldUnwind reports whether callers should branch into panic unwind.
+func PanicShouldUnwind() bool {
+	return panicActive && !panicRecoverArmed
+}
+
+// PanicReset clears panic bookkeeping after a recovered panic returns.
+func PanicReset() {
+	panicActive = false
+	panicRecovered = false
+	panicRecoverArmed = false
+	panicRecoverDepth = 0
+	panicValue = nil
+	panicMessage = ""
+}
+
+// DeferRecoverEnter marks entry into a deferred callsite.
+func DeferRecoverEnter() {
+	panicRecoverArmed = panicActive
+	panicRecoverDepth = 0
+}
+
+// DeferRecoverExit marks exit from a deferred callsite.
+func DeferRecoverExit() {
+	panicRecoverArmed = false
+	panicRecoverDepth = 0
+}
+
+// DeferRecoverBeforeCall tracks nested calls from a deferred frame.
+func DeferRecoverBeforeCall() {
+	if panicRecoverArmed {
+		panicRecoverDepth = panicRecoverDepth + 1
+	}
+}
+
+// DeferRecoverAfterCall tracks return from nested calls in deferred frames.
+func DeferRecoverAfterCall() {
+	if panicRecoverArmed && panicRecoverDepth > 0 {
+		panicRecoverDepth = panicRecoverDepth - 1
+	}
+}
+
+// Recover implements the recover builtin contract for defer-unwind.
+func Recover() interface{} {
+	if !panicActive || !panicRecoverArmed || panicRecoverDepth != 0 {
+		return nil
+	}
+	v := panicValue
+	panicActive = false
+	panicRecovered = true
+	panicRecoverArmed = false
+	panicRecoverDepth = 0
+	panicValue = nil
+	panicMessage = ""
+	return v
+}
+
 var heapPtr uintptr
 var heapEnd uintptr
 var heapChunk int = 65536
