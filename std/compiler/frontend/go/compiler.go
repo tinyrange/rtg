@@ -722,6 +722,19 @@ func isArrayTypeName(typeName string) bool {
 	return typeName[1] != ']'
 }
 
+func arrayTypeNestingDepth(typeName string) int {
+	depth := 0
+	for isArrayTypeName(typeName) {
+		depth++
+		elemType, ok := splitBracketType(typeName)
+		if !ok {
+			break
+		}
+		typeName = elemType
+	}
+	return depth
+}
+
 // resolveExprType returns the concrete qualified type of an expression, or "" if unknown.
 func (c *Compiler) resolveExprType(node *Node) string {
 	if node == nil {
@@ -1941,9 +1954,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		}
 		c.compileExpr(node.X)
 		if node.Type != nil && node.Type.Kind == NArrayType {
-			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
-		} else if isArrayTypeName(c.exprConcreteType(node.X)) {
-			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+			c.maybeCloneArrayForTypeName(nodeTypeName(node.Type))
+		} else {
+			c.maybeCloneArrayForTypeName(c.exprConcreteType(node.X))
 		}
 		c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 	}
@@ -3098,8 +3111,8 @@ func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
 		lhs := lhsNodes[i]
 		if define {
 			idx := c.addLocal(lhs.Name)
-			if ct, ok := c.localConcreteTypes[lhs.Name]; ok && isArrayTypeName(ct) {
-				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+			if ct, ok := c.localConcreteTypes[lhs.Name]; ok {
+				c.maybeCloneArrayForTypeName(ct)
 			}
 			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 		} else {
@@ -3132,8 +3145,11 @@ func (c *Compiler) lvalueTypeName(node *Node) string {
 }
 
 func (c *Compiler) maybeCloneArrayForTypeName(typeName string) {
-	if isArrayTypeName(typeName) {
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+	depth := arrayTypeNestingDepth(typeName)
+	if depth > 0 {
+		// nestedDepth = number of array layers below the current one.
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(depth - 1)})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceCloneArray", Arg: 2})
 	}
 }
 
@@ -3242,8 +3258,8 @@ func (c *Compiler) compileVarDecl(node *Node) {
 			return
 		}
 		c.compileExpr(node.X)
-		if node.Type != nil && node.Type.Kind == NArrayType {
-			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+		if node.Type != nil {
+			c.maybeCloneArrayForTypeName(nodeTypeName(node.Type))
 		}
 		if node.Type == nil {
 			if ct := c.exprConcreteType(node.X); ct != "" {
@@ -3251,9 +3267,7 @@ func (c *Compiler) compileVarDecl(node *Node) {
 				if elemType, ok := splitBracketType(ct); ok {
 					c.localElemSizes[node.Name] = c.typeElemSize(elemType)
 				}
-				if isArrayTypeName(ct) {
-					c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
-				}
+				c.maybeCloneArrayForTypeName(ct)
 			}
 		}
 		if node.Type != nil {
@@ -3557,8 +3571,8 @@ func (c *Compiler) compileAssign(node *Node) {
 			return
 		}
 		c.compileExpr(node.Y)
-		if ct, ok := c.localConcreteTypes[node.X.Name]; ok && isArrayTypeName(ct) {
-			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceClone", Arg: 1})
+		if ct, ok := c.localConcreteTypes[node.X.Name]; ok {
+			c.maybeCloneArrayForTypeName(ct)
 		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
 		return
