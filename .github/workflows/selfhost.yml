@@ -231,17 +231,19 @@ jobs:
           sram_stack: Memory.MappedMemory @ sysbus 0x283E0000
               size: 0x00010000
           EOF
-          cat > build/renode_bare_probe.resc <<'EOF'
+          REPL_ABS="$(pwd)/build/renode_bare_probe.repl"
+          ELF_ABS="$(pwd)/build/renode_bare_probe"
+          OUT_ABS="$(pwd)/build/renode_bare_probe.out"
+          cat > build/renode_bare_probe.resc <<EOF
+          using sysbus
           mach create "rtg_bare_probe"
-          machine LoadPlatformDescription @build/renode_bare_probe.repl
-          sysbus LoadELF @build/renode_bare_probe
-          showAnalyzer uart0
-          uart0 CreateFileBackend @build/renode_bare_probe.out true
-          cpu VectorTableOffset 0x10000000
-          cpu PC 0x10000000
+          machine LoadPlatformDescription @${REPL_ABS}
+          uart0 CreateFileBackend @${OUT_ABS} true
+          sysbus LoadELF @${ELF_ABS}
+          cpu PerformanceInMips 1000
           cpu SP 0x283EF000
-          start
-          emulation RunFor "2.0"
+          cpu PC 0x10000101
+          emulation RunFor "1.0"
           quit
           EOF
           timeout 30s "$RENODE_BIN" --disable-xwt -P 0 build/renode_bare_probe.resc
