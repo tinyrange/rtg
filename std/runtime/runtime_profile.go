@@ -37,7 +37,7 @@ func ProfileHash(methodHash uint32, executionTime int) {
 
 // ProfileHashNow records a duration using runtime.Now()-startTime.
 func ProfileHashNow(methodHash uint32, startTime int) {
-	profileRecord(methodHash, Now()-startTime)
+	profileRecord(methodHash, profileNow()-startTime)
 }
 
 func profileRecord(methodHash uint32, executionTime int) {
@@ -102,7 +102,7 @@ func profileEnsureInit() {
 	}
 	// Some targets may create the file with restrictive default mode despite O_CREAT mode.
 	// Normalize permissions so external tools can read profile output.
-	SysChmod(Sliceptr(cpath), uintptr(profileFilePerm))
+	profileNormalizePermissions(cpath)
 	profileFD = fd
 	profileFDOpen = true
 	profileEnabled = true
