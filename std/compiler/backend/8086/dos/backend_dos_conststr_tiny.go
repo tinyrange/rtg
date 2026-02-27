@@ -2,6 +2,7 @@
 
 package dos
 
+//rtg:profile
 func (g *CodeGen) compileConstStr(raw string) {
 	decoded := decodeTinyStringLiteral(raw)
 

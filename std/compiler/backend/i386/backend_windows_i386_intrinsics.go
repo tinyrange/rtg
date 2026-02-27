@@ -22,6 +22,7 @@ func decodeLinkStaticSpecWin386(raw string) (string, string, string, bool) {
 	return lib, sym, mode, true
 }
 
+//rtg:profile
 func (g *CodeGen) emitGenericLinkStaticCallWin386(paramCount int, lib string, sym string) {
 	if paramCount < 0 {
 		panic("ICE: invalid linkstatic arg count")
@@ -33,6 +34,7 @@ func (g *CodeGen) emitGenericLinkStaticCallWin386(paramCount int, lib string, sy
 	g.emitCallIATInLib(lib, sym)
 }
 
+//rtg:profile
 func (g *CodeGen) emitLinkStaticPtrReturnWin386() {
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixNonZero := g.jccRel32(CC32_NE)
@@ -57,6 +59,7 @@ func (g *CodeGen) emitLinkStaticPtrReturnWin386() {
 	g.patchRel32(fixDone)
 }
 
+//rtg:profile
 func (g *CodeGen) emitLinkStaticReturnWin386(mode string) {
 	switch mode {
 	case "syscall":
@@ -76,6 +79,7 @@ func (g *CodeGen) emitLinkStaticReturnWin386(mode string) {
 	}
 }
 
+//rtg:profile
 func (g *CodeGen) compileLinkStaticIntrinsicWin386(inst ir.Inst) bool {
 	if g.Target.GOOS != "windows" || g.IRMod == nil || g.IRMod.LinkStaticFuncs == nil {
 		return false
@@ -97,6 +101,7 @@ func (g *CodeGen) compileLinkStaticIntrinsicWin386(inst ir.Inst) bool {
 	return true
 }
 
+//rtg:profile
 func (g *CodeGen) pushImm32(val uint32) {
 	if val < 128 {
 		g.emitBytes(0x6a, byte(val))
@@ -106,6 +111,7 @@ func (g *CodeGen) pushImm32(val uint32) {
 	g.emitU32(val)
 }
 
+//rtg:profile
 func (g *CodeGen) compilePanic_win386() {
 	g.opPop(REG32_EAX)
 

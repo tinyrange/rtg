@@ -31,6 +31,7 @@ const (
 // === Register-immediate32 move ===
 
 // emitMovRegImm32 emits `mov reg, imm32` (B8+rd imm32, 5 bytes)
+//rtg:profile
 func (g *CodeGen) emitMovRegImm32(reg int, val uint32) {
 	g.emitByte(byte(0xb8 + reg))
 	g.emitU32(val)
@@ -39,6 +40,7 @@ func (g *CodeGen) emitMovRegImm32(reg int, val uint32) {
 // === Local variable access (ebp-relative, 32-bit) ===
 
 // emitLoadLocal32 emits `mov reg, [ebp - offset]`
+//rtg:profile
 func (g *CodeGen) emitLoadLocal32(offset int, reg int) {
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
@@ -50,6 +52,7 @@ func (g *CodeGen) emitLoadLocal32(offset int, reg int) {
 }
 
 // emitStoreLocal32 emits `mov [ebp - offset], reg`
+//rtg:profile
 func (g *CodeGen) emitStoreLocal32(offset int, reg int) {
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
@@ -61,6 +64,7 @@ func (g *CodeGen) emitStoreLocal32(offset int, reg int) {
 }
 
 // emitLeaLocal32 emits `lea reg, [ebp - offset]`
+//rtg:profile
 func (g *CodeGen) emitLeaLocal32(offset int, reg int) {
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
@@ -74,11 +78,13 @@ func (g *CodeGen) emitLeaLocal32(offset int, reg int) {
 // === x86 stack push/pop (32-bit) ===
 
 // pushR32 emits `push reg`
+//rtg:profile
 func (g *CodeGen) pushR32(reg int) {
 	g.emitByte(byte(0x50 + reg))
 }
 
 // popR32 emits `pop reg`
+//rtg:profile
 func (g *CodeGen) popR32(reg int) {
 	g.emitByte(byte(0x58 + reg))
 }
@@ -91,46 +97,55 @@ func modrmRR32(dst, src int) byte {
 }
 
 // movRR32 emits `mov dst, src`
+//rtg:profile
 func (g *CodeGen) movRR32(dst, src int) {
 	g.emitBytes(0x89, modrmRR32(src, dst))
 }
 
 // addRR32 emits `add dst, src`
+//rtg:profile
 func (g *CodeGen) addRR32(dst, src int) {
 	g.emitBytes(0x01, modrmRR32(src, dst))
 }
 
 // subRR32 emits `sub dst, src`
+//rtg:profile
 func (g *CodeGen) subRR32(dst, src int) {
 	g.emitBytes(0x29, modrmRR32(src, dst))
 }
 
 // andRR32 emits `and dst, src`
+//rtg:profile
 func (g *CodeGen) andRR32(dst, src int) {
 	g.emitBytes(0x21, modrmRR32(src, dst))
 }
 
 // orRR32 emits `or dst, src`
+//rtg:profile
 func (g *CodeGen) orRR32(dst, src int) {
 	g.emitBytes(0x09, modrmRR32(src, dst))
 }
 
 // xorRR32 emits `xor dst, src`
+//rtg:profile
 func (g *CodeGen) xorRR32(dst, src int) {
 	g.emitBytes(0x31, modrmRR32(src, dst))
 }
 
 // cmpRR32 emits `cmp a, b`
+//rtg:profile
 func (g *CodeGen) cmpRR32(a, b int) {
 	g.emitBytes(0x39, modrmRR32(b, a))
 }
 
 // testRR32 emits `test a, b`
+//rtg:profile
 func (g *CodeGen) testRR32(a, b int) {
 	g.emitBytes(0x85, modrmRR32(b, a))
 }
 
 // imulRR32 emits `imul dst, src` (2-byte opcode 0F AF)
+//rtg:profile
 func (g *CodeGen) imulRR32(dst, src int) {
 	g.emitBytes(0x0f, 0xaf, modrmRR32(dst, src))
 }
@@ -138,41 +153,49 @@ func (g *CodeGen) imulRR32(dst, src int) {
 // === Single-register / no-operand instructions ===
 
 // negR32 emits `neg reg`
+//rtg:profile
 func (g *CodeGen) negR32(reg int) {
 	g.emitBytes(0xf7, byte(0xd8|(reg&7)))
 }
 
 // cdq32 emits `cdq` (sign-extend eax into edx:eax)
+//rtg:profile
 func (g *CodeGen) cdq32() {
 	g.emitByte(0x99)
 }
 
 // idivR32 emits `idiv reg`
+//rtg:profile
 func (g *CodeGen) idivR32(reg int) {
 	g.emitBytes(0xf7, byte(0xf8|(reg&7)))
 }
 
 // imulR32 emits one-operand `imul reg`.
+//rtg:profile
 func (g *CodeGen) imulR32(reg int) {
 	g.emitBytes(0xf7, byte(0xe8|(reg&7)))
 }
 
 // shlCl32 emits `shl reg, cl`
+//rtg:profile
 func (g *CodeGen) shlCl32(reg int) {
 	g.emitBytes(0xd3, byte(0xe0|(reg&7)))
 }
 
 // sarCl32 emits `sar reg, cl` (arithmetic shift right)
+//rtg:profile
 func (g *CodeGen) sarCl32(reg int) {
 	g.emitBytes(0xd3, byte(0xf8|(reg&7)))
 }
 
 // shlImm32 emits `shl reg, imm8`
+//rtg:profile
 func (g *CodeGen) shlImm32(reg int, n byte) {
 	g.emitBytes(0xc1, byte(0xe0|(reg&7)), n)
 }
 
 // emitInt80 emits the `int 0x80` instruction for i386 Linux syscalls
+//rtg:profile
 func (g *CodeGen) emitInt80() {
 	g.emitBytes(0xcd, 0x80)
 }
@@ -180,6 +203,7 @@ func (g *CodeGen) emitInt80() {
 // === Register-immediate operations (32-bit) ===
 
 // addRI32 emits `add reg, imm` (auto-selects imm8 or imm32)
+//rtg:profile
 func (g *CodeGen) addRI32(reg int, val int32) {
 	if val >= -128 && val <= 127 {
 		g.emitBytes(0x83, byte(0xc0|(reg&7)), byte(val))
@@ -194,6 +218,7 @@ func (g *CodeGen) addRI32(reg int, val int32) {
 }
 
 // subRI32 emits `sub reg, imm` (auto-selects imm8 or imm32)
+//rtg:profile
 func (g *CodeGen) subRI32(reg int, val int32) {
 	if val >= -128 && val <= 127 {
 		g.emitBytes(0x83, byte(0xe8|(reg&7)), byte(val))
@@ -204,6 +229,7 @@ func (g *CodeGen) subRI32(reg int, val int32) {
 }
 
 // cmpRI32 emits `cmp reg, imm` (auto-selects imm8 or imm32)
+//rtg:profile
 func (g *CodeGen) cmpRI32(reg int, val int32) {
 	if val >= -128 && val <= 127 {
 		g.emitBytes(0x83, byte(0xf8|(reg&7)), byte(val))
@@ -214,11 +240,13 @@ func (g *CodeGen) cmpRI32(reg int, val int32) {
 }
 
 // xorRI8_32 emits `xor reg, imm8`
+//rtg:profile
 func (g *CodeGen) xorRI8_32(reg int, val byte) {
 	g.emitBytes(0x83, byte(0xf0|(reg&7)), val)
 }
 
 // imulRRI32_32 emits `imul dst, src, imm32`
+//rtg:profile
 func (g *CodeGen) imulRRI32_32(dst, src int, val int32) {
 	g.emitBytes(0x69, modrmRR32(dst, src))
 	g.emitU32(uint32(val))
@@ -227,6 +255,7 @@ func (g *CodeGen) imulRRI32_32(dst, src int, val int32) {
 // === Memory load/store with fixed offsets (32-bit) ===
 
 // loadMem32 emits `mov dst, [base+off]` (32-bit)
+//rtg:profile
 func (g *CodeGen) loadMem32(dst, base, off int) {
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x8b, byte((dst&7)<<3|(base&7)))
@@ -250,6 +279,7 @@ func (g *CodeGen) loadMem32(dst, base, off int) {
 }
 
 // storeMem32 emits `mov [base+off], src` (32-bit)
+//rtg:profile
 func (g *CodeGen) storeMem32(base, off, src int) {
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x89, byte((src&7)<<3|(base&7)))
@@ -273,6 +303,7 @@ func (g *CodeGen) storeMem32(base, off, src int) {
 }
 
 // loadMemByte32 emits `movzx dst, byte [base+off]`
+//rtg:profile
 func (g *CodeGen) loadMemByte32(dst, base, off int) {
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x0f, 0xb6, byte((dst&7)<<3|(base&7)))
@@ -285,6 +316,7 @@ func (g *CodeGen) loadMemByte32(dst, base, off int) {
 }
 
 // storeMemByte32 emits `mov byte [base+off], src_lo8`
+//rtg:profile
 func (g *CodeGen) storeMemByte32(base, off, src int) {
 	if off == 0 && (base&7) != REG32_EBP {
 		g.emitBytes(0x88, byte((src&7)<<3|(base&7)))
@@ -299,16 +331,19 @@ func (g *CodeGen) storeMemByte32(base, off, src int) {
 // === Extend/truncate (32-bit) ===
 
 // movzxB32 emits `movzx reg, reg_lo8`
+//rtg:profile
 func (g *CodeGen) movzxB32(reg int) {
 	g.emitBytes(0x0f, 0xb6, modrmRR32(reg, reg))
 }
 
 // movzxW32 emits `movzx reg, reg_lo16`
+//rtg:profile
 func (g *CodeGen) movzxW32(reg int) {
 	g.emitBytes(0x0f, 0xb7, modrmRR32(reg, reg))
 }
 
 // movsxW32 emits `movsx reg, reg_lo16`
+//rtg:profile
 func (g *CodeGen) movsxW32(reg int) {
 	g.emitBytes(0x0f, 0xbf, modrmRR32(reg, reg))
 }
@@ -316,6 +351,7 @@ func (g *CodeGen) movsxW32(reg int) {
 // === Setcc (32-bit) ===
 
 // setcc32 emits `setCC reg_lo8` where cc is a condition code constant
+//rtg:profile
 func (g *CodeGen) setcc32(cc byte, reg int) {
 	setccOp := byte(0x90 | (cc & 0x0f))
 	g.emitBytes(0x0f, setccOp, byte(0xc0|(reg&7)))

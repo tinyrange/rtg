@@ -4,6 +4,7 @@ package dos
 
 import "j5.nz/rtg/std/compiler/ir"
 
+//rtg:profile
 func (g *CodeGen) compileInst(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:

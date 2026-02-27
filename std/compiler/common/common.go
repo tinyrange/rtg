@@ -13,6 +13,7 @@ type Target struct {
 	BuildTags             []string
 	Defines               map[string]string
 	Strict                bool
+	Profile               bool
 	CompilerDebug         bool
 	StripBinary           bool
 	StdlibIncludePaths    []string

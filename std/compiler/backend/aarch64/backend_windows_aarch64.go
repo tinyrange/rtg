@@ -83,6 +83,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 }
 
 // emitStartArm64Windows generates the Windows ARM64 entry point.
+//rtg:profile
 func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 	// Save LR (entry is called by Windows loader)
 	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
@@ -130,10 +131,12 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 
 // emitCallIATArm64 emits ADRP+LDR X16 (placeholder) then BLR X16 for calling
 // a Windows IAT entry. Creates a $iat$funcName callFixup.
+//rtg:profile
 func (g *CodeGen) emitCallIATArm64(funcName string) {
 	g.emitCallIATArm64InLib(winDefaultImportLibraryArm64, funcName)
 }
 
+//rtg:profile
 func (g *CodeGen) emitCallIATArm64InLib(libName string, funcName string) {
 	g.Flush()
 	// Windows ARM64 ABI requires 32 bytes of home space for callees.
@@ -175,6 +178,7 @@ func emitDebugMarkerArm64(g *CodeGen, marker byte) {
 
 // loadFdAsHandleArm64 loads fd from local, converts 0/1/2 to std handles via GetStdHandle.
 // Result in X0. Saves/restores X28 across GetStdHandle call using machine stack.
+//rtg:profile
 func (g *CodeGen) loadFdAsHandleArm64(localOffset int) {
 	g.emitLoadLocalArm64(localOffset, REG_X0) // fd
 
@@ -210,6 +214,7 @@ func (g *CodeGen) loadFdAsHandleArm64(localOffset int) {
 // emitWinApiReturnArm64 checks return value (nonzero=success) and pushes (r1, r2, err) triple.
 // On success: r1=successReg, r2=0, err=0
 // On failure: r1=0, r2=0, err=GetLastError()
+//rtg:profile
 func (g *CodeGen) emitWinApiReturnArm64(successReg int) {
 	g.Flush()
 	g.emitTstRR(REG_X0, REG_X0)
@@ -242,6 +247,7 @@ func (g *CodeGen) emitWinApiReturnArm64(successReg int) {
 
 // === Intrinsic dispatcher ===
 
+//rtg:profile
 func (g *CodeGen) compileCallIntrinsicArm64Windows(inst ir.Inst) {
 	g.Flush()
 	if g.compileLinkStaticIntrinsicArm64Windows(inst) {
@@ -270,6 +276,7 @@ func (g *CodeGen) compileCallIntrinsicArm64Windows(inst ir.Inst) {
 }
 
 // compilePanicArm64Windows handles panic on Windows ARM64.
+//rtg:profile
 func (g *CodeGen) compilePanicArm64Windows() {
 	// Pop value from operand stack
 	g.opPop(REG_X0)

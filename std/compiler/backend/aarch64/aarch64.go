@@ -58,6 +58,7 @@ func (g *CodeGen) EmitArm64(inst uint32) {
 // === Immediate loading ===
 
 // EmitMovZ emits MOVZ Xd, #imm16, LSL #shift (shift=0,16,32,48)
+//rtg:profile
 func (g *CodeGen) EmitMovZ(rd int, imm16 uint16, shift int) {
 	hw := uint32(shift / 16)
 	inst := uint32(0xD2800000) | (hw << 21) | (uint32(imm16) << 5) | uint32(rd&0x1f)
@@ -65,6 +66,7 @@ func (g *CodeGen) EmitMovZ(rd int, imm16 uint16, shift int) {
 }
 
 // emitMovK emits MOVK Xd, #imm16, LSL #shift (shift=0,16,32,48)
+//rtg:profile
 func (g *CodeGen) emitMovK(rd int, imm16 uint16, shift int) {
 	hw := uint32(shift / 16)
 	inst := uint32(0xF2800000) | (hw << 21) | (uint32(imm16) << 5) | uint32(rd&0x1f)
@@ -72,6 +74,7 @@ func (g *CodeGen) emitMovK(rd int, imm16 uint16, shift int) {
 }
 
 // emitMovN emits MOVN Xd, #imm16, LSL #shift (move wide with NOT)
+//rtg:profile
 func (g *CodeGen) emitMovN(rd int, imm16 uint16, shift int) {
 	hw := uint32(shift / 16)
 	inst := uint32(0x92800000) | (hw << 21) | (uint32(imm16) << 5) | uint32(rd&0x1f)
@@ -80,6 +83,7 @@ func (g *CodeGen) emitMovN(rd int, imm16 uint16, shift int) {
 
 // emitLoadImm64 loads a full 64-bit value into rd using MOVZ/MOVK sequence.
 // Always emits exactly 4 instructions (16 bytes) so it can be patched.
+//rtg:profile
 func (g *CodeGen) emitLoadImm64(rd int, val uint64) {
 	g.EmitMovZ(rd, uint16(val&0xFFFF), 0)
 	g.emitMovK(rd, uint16((val>>16)&0xFFFF), 16)
@@ -89,6 +93,7 @@ func (g *CodeGen) emitLoadImm64(rd int, val uint64) {
 
 // EmitLoadImm64Compact loads a 64-bit value, using fewer instructions when possible.
 // NOT patchable (variable length). Use for constants that don't need fixup.
+//rtg:profile
 func (g *CodeGen) EmitLoadImm64Compact(rd int, val uint64) {
 	if val == 0 {
 		// MOVZ Xd, #0
@@ -121,12 +126,14 @@ func (g *CodeGen) EmitLoadImm64Compact(rd int, val uint64) {
 // === Arithmetic ===
 
 // EmitAddRR emits ADD Xd, Xn, Xm
+//rtg:profile
 func (g *CodeGen) EmitAddRR(rd, rn, rm int) {
 	inst := uint32(0x8B000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitSubRR emits SUB Xd, Xn, Xm
+//rtg:profile
 func (g *CodeGen) emitSubRR(rd, rn, rm int) {
 	inst := uint32(0xCB000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
@@ -145,24 +152,28 @@ func (g *CodeGen) emitSubImm(rd, rn int, imm12 uint32) {
 }
 
 // emitMul emits MUL Xd, Xn, Xm (alias for MADD Xd, Xn, Xm, XZR)
+//rtg:profile
 func (g *CodeGen) emitMul(rd, rn, rm int) {
 	inst := uint32(0x9B007C00) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitSdiv emits SDIV Xd, Xn, Xm
+//rtg:profile
 func (g *CodeGen) emitSdiv(rd, rn, rm int) {
 	inst := uint32(0x9AC00C00) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitMsub emits MSUB Xd, Xn, Xm, Xa  (Xd = Xa - Xn*Xm)
+//rtg:profile
 func (g *CodeGen) emitMsub(rd, rn, rm, ra int) {
 	inst := uint32(0x9B008000) | (uint32(rm&0x1f) << 16) | (uint32(ra&0x1f) << 10) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitNeg emits NEG Xd, Xm (alias for SUB Xd, XZR, Xm)
+//rtg:profile
 func (g *CodeGen) emitNeg(rd, rm int) {
 	g.emitSubRR(rd, REG_XZR, rm)
 }
@@ -170,36 +181,42 @@ func (g *CodeGen) emitNeg(rd, rm int) {
 // === Logic ===
 
 // emitAndRR emits AND Xd, Xn, Xm
+//rtg:profile
 func (g *CodeGen) emitAndRR(rd, rn, rm int) {
 	inst := uint32(0x8A000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitOrrRR emits ORR Xd, Xn, Xm
+//rtg:profile
 func (g *CodeGen) emitOrrRR(rd, rn, rm int) {
 	inst := uint32(0xAA000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitEorRR emits EOR Xd, Xn, Xm (exclusive or)
+//rtg:profile
 func (g *CodeGen) emitEorRR(rd, rn, rm int) {
 	inst := uint32(0xCA000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitLslRR emits LSLV Xd, Xn, Xm
+//rtg:profile
 func (g *CodeGen) emitLslRR(rd, rn, rm int) {
 	inst := uint32(0x9AC02000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitAsrRR emits ASRV Xd, Xn, Xm (arithmetic shift right)
+//rtg:profile
 func (g *CodeGen) emitAsrRR(rd, rn, rm int) {
 	inst := uint32(0x9AC02800) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitLslImm emits LSL Xd, Xn, #shift (alias for UBFM)
+//rtg:profile
 func (g *CodeGen) emitLslImm(rd, rn int, shift uint32) {
 	// LSL Xd, Xn, #shift is UBFM Xd, Xn, #(64-shift), #(63-shift)
 	immr := (64 - shift) & 0x3F
@@ -211,24 +228,28 @@ func (g *CodeGen) emitLslImm(rd, rn int, shift uint32) {
 // === Compare ===
 
 // emitCmpRR emits CMP Xn, Xm (alias for SUBS XZR, Xn, Xm)
+//rtg:profile
 func (g *CodeGen) emitCmpRR(rn, rm int) {
 	inst := uint32(0xEB000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(REG_XZR&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitCmpImm emits CMP Xn, #imm12 (alias for SUBS XZR, Xn, #imm12)
+//rtg:profile
 func (g *CodeGen) emitCmpImm(rn int, imm12 uint32) {
 	inst := uint32(0xF1000000) | ((imm12 & 0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(REG_XZR&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitTstRR emits TST Xn, Xm (alias for ANDS XZR, Xn, Xm)
+//rtg:profile
 func (g *CodeGen) emitTstRR(rn, rm int) {
 	inst := uint32(0xEA000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(REG_XZR&0x1f)
 	g.EmitArm64(inst)
 }
 
 // emitCset emits CSET Xd, cond (alias for CSINC Xd, XZR, XZR, invert(cond))
+//rtg:profile
 func (g *CodeGen) emitCset(rd int, cond int) {
 	// CSET is CSINC Rd, XZR, XZR, invert(cond)
 	// invert = cond ^ 1
@@ -286,6 +307,7 @@ func (g *CodeGen) EmitStr(rt, rn int, offset int) {
 }
 
 // emitLdrb emits LDRB Wt, [Xn, #offset] (zero-extend byte)
+//rtg:profile
 func (g *CodeGen) emitLdrb(rt, rn int, offset int) {
 	if offset >= 0 && offset < 4096 {
 		inst := uint32(0x39400000) | (uint32(offset&0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
@@ -303,6 +325,7 @@ func (g *CodeGen) emitLdrb(rt, rn int, offset int) {
 }
 
 // emitStrb emits STRB Wt, [Xn, #offset]
+//rtg:profile
 func (g *CodeGen) emitStrb(rt, rn int, offset int) {
 	if offset >= 0 && offset < 4096 {
 		inst := uint32(0x39000000) | (uint32(offset&0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
@@ -320,6 +343,7 @@ func (g *CodeGen) emitStrb(rt, rn int, offset int) {
 }
 
 // EmitStp emits STP Xt1, Xt2, [Xn, #offset]! (pre-index)
+//rtg:profile
 func (g *CodeGen) EmitStp(rt1, rt2, rn int, offset int) {
 	// STP (pre-index): [Xn, #imm7*8]!
 	imm7 := uint32(offset/8) & 0x7F
@@ -328,6 +352,7 @@ func (g *CodeGen) EmitStp(rt1, rt2, rn int, offset int) {
 }
 
 // EmitLdp emits LDP Xt1, Xt2, [Xn], #offset (post-index)
+//rtg:profile
 func (g *CodeGen) EmitLdp(rt1, rt2, rn int, offset int) {
 	// LDP (post-index): [Xn], #imm7*8
 	imm7 := uint32(offset/8) & 0x7F
@@ -339,6 +364,7 @@ func (g *CodeGen) EmitLdp(rt1, rt2, rn int, offset int) {
 
 // emitB emits B (unconditional branch, imm26) with placeholder.
 // Returns the code offset of the instruction for later fixup.
+//rtg:profile
 func (g *CodeGen) emitB() int {
 	off := len(g.code)
 	g.EmitArm64(0x14000000) // B #0 (placeholder)
@@ -347,6 +373,7 @@ func (g *CodeGen) emitB() int {
 
 // emitBL emits BL (branch with link) with placeholder.
 // Returns the code offset of the instruction for later fixup.
+//rtg:profile
 func (g *CodeGen) emitBL() int {
 	off := len(g.code)
 	g.EmitArm64(0x94000000) // BL #0 (placeholder)
@@ -355,6 +382,7 @@ func (g *CodeGen) emitBL() int {
 
 // emitBCond emits B.cond with placeholder.
 // Returns the code offset of the instruction for later fixup.
+//rtg:profile
 func (g *CodeGen) emitBCond(cond int) int {
 	off := len(g.code)
 	inst := uint32(0x54000000) | uint32(cond&0xF)
@@ -363,27 +391,32 @@ func (g *CodeGen) emitBCond(cond int) int {
 }
 
 // EmitBlr emits BLR Xn (branch to register with link)
+//rtg:profile
 func (g *CodeGen) EmitBlr(rn int) {
 	inst := uint32(0xD63F0000) | (uint32(rn&0x1f) << 5)
 	g.EmitArm64(inst)
 }
 
 // EmitRet emits RET (return via LR, X30)
+//rtg:profile
 func (g *CodeGen) EmitRet() {
 	g.EmitArm64(0xD65F03C0) // RET
 }
 
 // emitBrk emits BRK #0 (breakpoint)
+//rtg:profile
 func (g *CodeGen) emitBrk() {
 	g.EmitArm64(0xD4200000)
 }
 
 // emitNop emits NOP
+//rtg:profile
 func (g *CodeGen) emitNop() {
 	g.EmitArm64(0xD503201F)
 }
 
 // EmitSvc emits SVC #0 (supervisor call for Linux syscalls)
+//rtg:profile
 func (g *CodeGen) EmitSvc() {
 	g.EmitArm64(0xD4000001)
 }
@@ -393,6 +426,7 @@ func (g *CodeGen) EmitSvc() {
 // EmitMovRRArm64 emits MOV Xd, Xm.
 // For SP-involving moves, uses ADD Xd, Xn, #0 (SP is only valid in ADD/SUB, not ORR).
 // For all other registers, uses ORR Xd, XZR, Xm.
+//rtg:profile
 func (g *CodeGen) EmitMovRRArm64(rd, rm int) {
 	if rd == REG_SP || rm == REG_SP {
 		// ADD Xd, Xn, #0 — handles SP correctly
@@ -405,6 +439,7 @@ func (g *CodeGen) EmitMovRRArm64(rd, rm int) {
 // === Extensions ===
 
 // emitUxtb emits UXTB Xd, Xn (zero-extend byte, alias for UBFM Xd, Xn, #0, #7)
+//rtg:profile
 func (g *CodeGen) emitUxtb(rd, rn int) {
 	// Use 32-bit form: UXTB Wd, Wn = AND Wd, Wn, #0xFF = UBFM Wd, Wn, #0, #7
 	inst := uint32(0x53001C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
@@ -412,6 +447,7 @@ func (g *CodeGen) emitUxtb(rd, rn int) {
 }
 
 // emitUxth emits UXTH Xd, Xn (zero-extend halfword)
+//rtg:profile
 func (g *CodeGen) emitUxth(rd, rn int) {
 	// UXTH Wd, Wn = UBFM Wd, Wn, #0, #15
 	inst := uint32(0x53003C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
@@ -419,6 +455,7 @@ func (g *CodeGen) emitUxth(rd, rn int) {
 }
 
 // emitSxth emits SXTH Xd, Xn (sign-extend halfword)
+//rtg:profile
 func (g *CodeGen) emitSxth(rd, rn int) {
 	// SXTH Xd, Wn = SBFM Xd, Xn, #0, #15
 	inst := uint32(0x93403C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
@@ -426,6 +463,7 @@ func (g *CodeGen) emitSxth(rd, rn int) {
 }
 
 // emitSxtw emits SXTW Xd, Wn (sign-extend 32→64)
+//rtg:profile
 func (g *CodeGen) emitSxtw(rd, rn int) {
 	// SXTW Xd, Wn = SBFM Xd, Xn, #0, #31
 	inst := uint32(0x93407C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
@@ -434,6 +472,7 @@ func (g *CodeGen) emitSxtw(rd, rn int) {
 
 // emitUxtw emits UXTW Xd, Wn (zero-extend 32→64, alias for UBFM Xd, Xn, #0, #31)
 // Actually, MOV Wd, Wn (writing Wd zeros the top 32 bits)
+//rtg:profile
 func (g *CodeGen) emitUxtw(rd, rn int) {
 	// Use 32-bit ORR: MOV Wd, Wn = ORR Wd, WZR, Wn (zero-extends)
 	inst := uint32(0x2A0003E0) | (uint32(rn&0x1f) << 16) | uint32(rd&0x1f)
@@ -441,6 +480,7 @@ func (g *CodeGen) emitUxtw(rd, rn int) {
 }
 
 // emitEorImm emits EOR Xd, Xn, #1 (for boolean NOT: XOR with 1)
+//rtg:profile
 func (g *CodeGen) emitEorImm1(rd, rn int) {
 	// EOR Xd, Xn, #1 — bitmask immediate encoding for 1:
 	// N=1, immr=0, imms=0 → encodes the value 1 for 64-bit
@@ -451,16 +491,19 @@ func (g *CodeGen) emitEorImm1(rd, rn int) {
 // === Frame access (FP-relative) ===
 
 // emitLoadLocalArm64 emits LDR Xt, [FP, #-offset]
+//rtg:profile
 func (g *CodeGen) emitLoadLocalArm64(offset int, rd int) {
 	g.emitLdr(rd, REG_FP, -offset)
 }
 
 // emitStoreLocalArm64 emits STR Xt, [FP, #-offset]
+//rtg:profile
 func (g *CodeGen) emitStoreLocalArm64(offset int, rd int) {
 	g.EmitStr(rd, REG_FP, -offset)
 }
 
 // emitLeaLocalArm64 emits SUB Xd, FP, #offset (compute address of local)
+//rtg:profile
 func (g *CodeGen) emitLeaLocalArm64(offset int, rd int) {
 	if offset > 0 && offset < 4096 {
 		g.emitSubImm(rd, REG_FP, uint32(offset))
@@ -473,6 +516,7 @@ func (g *CodeGen) emitLeaLocalArm64(offset int, rd int) {
 // === PC-relative addressing (ADRP + ADD/LDR) ===
 
 // EmitAdrp emits ADRP Xd, #0 (placeholder). Returns the code offset for later fixup.
+//rtg:profile
 func (g *CodeGen) EmitAdrp(rd int) int {
 	off := len(g.code)
 	// ADRP: 1 immlo(2) 10000 immhi(19) Rd(5) — base = 0x90000000
@@ -483,6 +527,7 @@ func (g *CodeGen) EmitAdrp(rd int) int {
 
 // EmitAdrpAdd emits ADRP+ADD pair for loading an address (PC-relative).
 // Records a fixup with the given target and raw section-relative offset.
+//rtg:profile
 func (g *CodeGen) EmitAdrpAdd(rd int, target string, rawOff uint64) {
 	off := g.EmitAdrp(rd)
 	g.emitAddImm(rd, rd, 0) // placeholder pageoff
@@ -495,6 +540,7 @@ func (g *CodeGen) EmitAdrpAdd(rd int, target string, rawOff uint64) {
 
 // emitAdrpLdr emits ADRP+LDR pair for loading a 64-bit value from a PC-relative address.
 // The LDR uses unsigned scaled offset (divided by 8). Records a fixup.
+//rtg:profile
 func (g *CodeGen) emitAdrpLdr(rd int, target string, rawOff uint64) {
 	off := g.EmitAdrp(rd)
 	// LDR Xt, [Xn, #0] — unsigned offset scaled by 8, placeholder
@@ -519,6 +565,7 @@ func (g *CodeGen) PatchArm64BAt(codeOffset int, target int) {
 }
 
 // patchArm64BCondAt patches a B.cond instruction at codeOffset.
+//rtg:profile
 func (g *CodeGen) patchArm64BCondAt(codeOffset int, target int) {
 	delta := (target - codeOffset) / 4
 	existing := getU32(g.code[codeOffset : codeOffset+4])
@@ -529,6 +576,7 @@ func (g *CodeGen) patchArm64BCondAt(codeOffset int, target int) {
 
 // patchArm64Imm64At patches a MOVZ/MOVK 4-instruction sequence at codeOffset
 // with the given 64-bit value.
+//rtg:profile
 func (g *CodeGen) patchArm64Imm64At(codeOffset int, val uint64) {
 	chunks := make([]uint16, 4)
 	chunks[0] = uint16(val & 0xFFFF)
@@ -545,6 +593,7 @@ func (g *CodeGen) patchArm64Imm64At(codeOffset int, val uint64) {
 }
 
 // PatchAdrpAddOrLdr dispatches to PatchAdrpAdd or PatchAdrpLdr based on the second instruction.
+//rtg:profile
 func (g *CodeGen) PatchAdrpAddOrLdr(codeOffset int, pcAddr, targetAddr uint64) {
 	secondInst := getU32(g.code[codeOffset+4:])
 	if secondInst&0xFFC00000 == 0xF9400000 {
@@ -558,6 +607,7 @@ func (g *CodeGen) PatchAdrpAddOrLdr(codeOffset int, pcAddr, targetAddr uint64) {
 
 // PatchAdrpAdd patches an ADRP+ADD pair at codeOffset to address targetAddr,
 // given the PC (virtual address of the ADRP instruction).
+//rtg:profile
 func (g *CodeGen) PatchAdrpAdd(codeOffset int, pcAddr, targetAddr uint64) {
 	pageDelta := int64(targetAddr>>12) - int64(pcAddr>>12)
 	pageOff := targetAddr & 0xFFF
@@ -579,6 +629,7 @@ func (g *CodeGen) PatchAdrpAdd(codeOffset int, pcAddr, targetAddr uint64) {
 // PatchAdrpLdr patches an ADRP+LDR pair at codeOffset to load from targetAddr,
 // given the PC (virtual address of the ADRP instruction).
 // The LDR uses unsigned offset scaled by 8 (for 64-bit loads).
+//rtg:profile
 func (g *CodeGen) PatchAdrpLdr(codeOffset int, pcAddr, targetAddr uint64) {
 	pageDelta := int64(targetAddr>>12) - int64(pcAddr>>12)
 	pageOff := targetAddr & 0xFFF

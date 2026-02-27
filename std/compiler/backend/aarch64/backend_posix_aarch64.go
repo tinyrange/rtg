@@ -4,6 +4,7 @@ package aarch64
 
 // compileSyscallIntrinsicArm64 implements the Syscall intrinsic for Linux ARM64.
 // Parameters in locals: num(0), a0(1), a1(2), a2(3), a3(4), a4(5), a5(6)
+//rtg:profile
 func (g *CodeGen) compileSyscallIntrinsicArm64(paramCount int) {
 	g.emitLoadLocalArm64(1*8, REG_X8)
 	g.emitLoadLocalArm64(2*8, REG_X0)
@@ -38,6 +39,7 @@ func (g *CodeGen) compileSyscallIntrinsicArm64(paramCount int) {
 }
 
 // compilePanicArm64Linux handles panic on Linux ARM64 using direct syscalls.
+//rtg:profile
 func (g *CodeGen) compilePanicArm64Linux() {
 	g.opPop(REG_X0)
 	g.emitLdr(REG_X1, REG_X0, 0)
@@ -72,6 +74,7 @@ func (g *CodeGen) compilePanicArm64Linux() {
 }
 
 // emitSyscallReturnArm64 handles the standard libSystem return convention.
+//rtg:profile
 func (g *CodeGen) emitSyscallReturnArm64() {
 	g.Flush()
 	g.EmitMovRRArm64(REG_X2, REG_X0)
@@ -96,6 +99,7 @@ func (g *CodeGen) emitSyscallReturnArm64() {
 }
 
 // emitSyscallReturnPtrArm64 handles pointer-returning calls (NULL or MAP_FAILED = error).
+//rtg:profile
 func (g *CodeGen) emitSyscallReturnPtrArm64() {
 	g.Flush()
 	g.EmitMovRRArm64(REG_X2, REG_X0)
@@ -120,6 +124,7 @@ func (g *CodeGen) emitSyscallReturnPtrArm64() {
 }
 
 // compilePanicArm64 handles panic on macOS ARM64.
+//rtg:profile
 func (g *CodeGen) compilePanicArm64() {
 	g.opPop(REG_X0)
 	g.emitLdr(REG_X1, REG_X0, 0)

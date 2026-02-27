@@ -57,8 +57,7 @@ func Write(f *File, p []byte) (int, error) {
 }
 
 func Exit(code int) {
-	// Use raw Syscall here to avoid depending on runtime.SysExit lowering.
-	runtime.Syscall(252, uintptr(code), 0, 0, 0, 0, 0)
+	runtime.Exit(uintptr(code))
 }
 
 func makeCString(s string) []byte {

@@ -52,6 +52,7 @@ type wasmModule struct {
 }
 
 // typeIdx registers a function type and returns its index, deduplicating.
+//rtg:profile
 func (m *wasmModule) typeIdx(params []byte, results []byte) int {
 	for i, t := range m.types {
 		if len(t.params) == len(params) && len(t.results) == len(results) {
@@ -85,6 +86,7 @@ func (m *wasmModule) typeIdx(params []byte, results []byte) int {
 }
 
 // addImport adds an imported function and returns its function index.
+//rtg:profile
 func (m *wasmModule) addImport(module string, name string, params []byte, results []byte) int {
 	tidx := m.typeIdx(params, results)
 	idx := len(m.imports)
@@ -93,6 +95,7 @@ func (m *wasmModule) addImport(module string, name string, params []byte, result
 }
 
 // addFunc adds a function (code body added separately) and returns its function index.
+//rtg:profile
 func (m *wasmModule) addFunc(params []byte, results []byte) int {
 	tidx := m.typeIdx(params, results)
 	m.funcs = append(m.funcs, tidx)
@@ -100,11 +103,13 @@ func (m *wasmModule) addFunc(params []byte, results []byte) int {
 }
 
 // addExport adds an export entry.
+//rtg:profile
 func (m *wasmModule) addExport(name string, kind byte, idx uint32) {
 	m.exports = append(m.exports, wasmExport{name: name, kind: kind, idx: idx})
 }
 
 // addGlobal adds a WASM global and returns its index.
+//rtg:profile
 func (m *wasmModule) addGlobal(valType byte, mutable bool, initVal int32) int {
 	idx := len(m.globals)
 	m.globals = append(m.globals, wasmGlobal{valType: valType, mutable: mutable, initVal: initVal})
@@ -112,11 +117,13 @@ func (m *wasmModule) addGlobal(valType byte, mutable bool, initVal int32) int {
 }
 
 // addData adds a data segment.
+//rtg:profile
 func (m *wasmModule) addData(offset int32, data []byte) {
 	m.datasegs = append(m.datasegs, wasmDataSeg{offset: offset, data: data})
 }
 
 // encode produces the complete .wasm binary.
+//rtg:profile
 func (m *wasmModule) encode() []byte {
 	var out []byte
 
@@ -165,6 +172,7 @@ func (m *wasmModule) encode() []byte {
 	return out
 }
 
+//rtg:profile
 func (m *wasmModule) encodeSection(out []byte, id int, payload []byte) []byte {
 	out = append(out, byte(id))
 	out = appendULEB128(out, uint32(len(payload)))
@@ -172,6 +180,7 @@ func (m *wasmModule) encodeSection(out []byte, id int, payload []byte) []byte {
 	return out
 }
 
+//rtg:profile
 func (m *wasmModule) encodeTypeSection() []byte {
 	var buf []byte
 	buf = appendULEB128(buf, uint32(len(m.types)))
@@ -185,6 +194,7 @@ func (m *wasmModule) encodeTypeSection() []byte {
 	return buf
 }
 
+//rtg:profile
 func (m *wasmModule) encodeImportSection() []byte {
 	var buf []byte
 	buf = appendULEB128(buf, uint32(len(m.imports)))
@@ -199,6 +209,7 @@ func (m *wasmModule) encodeImportSection() []byte {
 	return buf
 }
 
+//rtg:profile
 func (m *wasmModule) encodeFuncSection() []byte {
 	var buf []byte
 	buf = appendULEB128(buf, uint32(len(m.funcs)))
@@ -208,6 +219,7 @@ func (m *wasmModule) encodeFuncSection() []byte {
 	return buf
 }
 
+//rtg:profile
 func (m *wasmModule) encodeMemorySection() []byte {
 	var buf []byte
 	buf = appendULEB128(buf, 1) // 1 memory
@@ -222,6 +234,7 @@ func (m *wasmModule) encodeMemorySection() []byte {
 	return buf
 }
 
+//rtg:profile
 func (m *wasmModule) encodeGlobalSection() []byte {
 	var buf []byte
 	buf = appendULEB128(buf, uint32(len(m.globals)))
@@ -240,6 +253,7 @@ func (m *wasmModule) encodeGlobalSection() []byte {
 	return buf
 }
 
+//rtg:profile
 func (m *wasmModule) encodeExportSection() []byte {
 	var buf []byte
 	buf = appendULEB128(buf, uint32(len(m.exports)))
@@ -252,6 +266,7 @@ func (m *wasmModule) encodeExportSection() []byte {
 	return buf
 }
 
+//rtg:profile
 func (m *wasmModule) encodeCodeSection() []byte {
 	var buf []byte
 	buf = appendULEB128(buf, uint32(len(m.codes)))
@@ -262,6 +277,7 @@ func (m *wasmModule) encodeCodeSection() []byte {
 	return buf
 }
 
+//rtg:profile
 func (m *wasmModule) encodeDataSection() []byte {
 	var buf []byte
 	buf = appendULEB128(buf, uint32(len(m.datasegs)))

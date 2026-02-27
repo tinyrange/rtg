@@ -8,6 +8,7 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+//rtg:profile
 func (g *CodeGen) loadLinkStaticArgsArm64(paramCount int) {
 	maxRegs := paramCount
 	if maxRegs > 8 {
@@ -20,6 +21,7 @@ func (g *CodeGen) loadLinkStaticArgsArm64(paramCount int) {
 	}
 }
 
+//rtg:profile
 func (g *CodeGen) emitRawPtrReturnArm64() {
 	g.rawPush(REG_X0)
 	g.EmitMovZ(REG_X1, 0, 0)
@@ -42,6 +44,7 @@ func decodeLinkStaticSpec(raw string) (string, string, string, bool) {
 	return lib, sym, mode, true
 }
 
+//rtg:profile
 func (g *CodeGen) compileLinkStaticIntrinsicArm64(inst ir.Inst) bool {
 	if g.target.GOOS != "darwin" || g.irmod == nil || g.irmod.LinkStaticFuncs == nil {
 		return false

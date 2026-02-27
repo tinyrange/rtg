@@ -9,6 +9,7 @@ import (
 )
 
 // CompileFunc generates x86-64 code for a single IR function.
+//rtg:profile
 func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 	if f.Native != nil {
 		if f.Native.Arch != "amd64" {
@@ -92,6 +93,7 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 }
 
 // compileInst generates code for a single IR ir.Instruction.
+//rtg:profile
 func (g *CodeGen) compileInst(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
@@ -275,6 +277,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 
 // === Constant loading ===
 
+//rtg:profile
 func (g *CodeGen) CompileConstI64(val int64) {
 	g.prepareForClobber(REG_RAX)
 	if val == 0 {
@@ -293,6 +296,7 @@ func (g *CodeGen) CompileConstI64(val int64) {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) CompileConstStr(s string) {
 	g.prepareForClobber(REG_RAX)
 	decoded := becommon.DecodeStringLiteral(s)
@@ -327,6 +331,7 @@ func (g *CodeGen) CompileConstStr(s string) {
 
 // === Local variable access ===
 
+//rtg:profile
 func (g *CodeGen) compileLocalGet(idx int) {
 	g.prepareForClobber(REG_RAX)
 	offset := (idx + 1) * 8
@@ -334,6 +339,7 @@ func (g *CodeGen) compileLocalGet(idx int) {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileLocalSet(idx int, width int) {
 	g.OpPop(REG_RAX)
 	switch width {
@@ -348,11 +354,13 @@ func (g *CodeGen) compileLocalSet(idx int, width int) {
 	g.emitStoreLocal(offset, REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileLocalAddImm(idx int, imm int32) {
 	offset := (idx + 1) * 8
 	g.emitAddLocalImm(offset, imm)
 }
 
+//rtg:profile
 func (g *CodeGen) compileLocalAddr(idx int) {
 	g.prepareForClobber(REG_RAX)
 	offset := (idx + 1) * 8
@@ -362,6 +370,7 @@ func (g *CodeGen) compileLocalAddr(idx int) {
 
 // === Global variable access ===
 
+//rtg:profile
 func (g *CodeGen) compileGlobalGet(inst ir.Inst) {
 	g.prepareForClobber(REG_RAX, REG_RCX)
 	g.EmitMovRegImm64(REG_RCX, uint64(inst.Arg*8)) // offset placeholder
@@ -373,6 +382,7 @@ func (g *CodeGen) compileGlobalGet(inst ir.Inst) {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileGlobalSet(inst ir.Inst) {
 	g.OpPop(REG_RAX)
 	g.EmitMovRegImm64(REG_RCX, uint64(inst.Arg*8)) // offset placeholder
@@ -383,6 +393,7 @@ func (g *CodeGen) compileGlobalSet(inst ir.Inst) {
 	g.storeMem(REG_RCX, 0, REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileGlobalAddr(inst ir.Inst) {
 	g.prepareForClobber(REG_RAX)
 	g.EmitMovRegImm64(REG_RAX, uint64(inst.Arg*8)) // offset placeholder
@@ -395,6 +406,7 @@ func (g *CodeGen) compileGlobalAddr(inst ir.Inst) {
 
 // === Binary operations ===
 
+//rtg:profile
 func (g *CodeGen) compileBinOp(inst ir.Inst) {
 	// pop two values: rax = second (top), rcx = first (below), push result
 	g.OpPop(REG_RAX)
@@ -458,6 +470,7 @@ func (g *CodeGen) compileBinOp(inst ir.Inst) {
 
 // === Comparison operations ===
 
+//rtg:profile
 func (g *CodeGen) normalizeCompareRegWidth(reg int, width int, signed bool) {
 	switch width {
 	case 1:
@@ -481,6 +494,7 @@ func (g *CodeGen) normalizeCompareRegWidth(reg int, width int, signed bool) {
 	}
 }
 
+//rtg:profile
 func (g *CodeGen) compileCompare(inst ir.Inst, signedSetccOpcode byte, unsignedSetccOpcode byte) {
 	g.OpPop(REG_RAX)
 	g.OpPop(REG_RCX)
@@ -499,6 +513,7 @@ func (g *CodeGen) compileCompare(inst ir.Inst, signedSetccOpcode byte, unsignedS
 	g.OpPush(REG_RCX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileCompareJump(inst ir.Inst, cc byte, label int) {
 	g.OpPop(REG_RAX)
 	g.OpPop(REG_RCX)
@@ -519,6 +534,7 @@ func (g *CodeGen) compileCompareJump(inst ir.Inst, cc byte, label int) {
 
 // === Function calls ===
 
+//rtg:profile
 func (g *CodeGen) compileCall(inst ir.Inst) {
 	// Handle composite literals inline
 	if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
@@ -537,6 +553,7 @@ func (g *CodeGen) compileCall(inst ir.Inst) {
 // compileCompositeLitCall handles struct/slice composite literal creation.
 // Fields are on the operand stack (pushed in order). We allocate memory
 // and store each field at consecutive 8-byte slots.
+//rtg:profile
 func (g *CodeGen) compileCompositeLitCall(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * 8
@@ -583,6 +600,7 @@ func (g *CodeGen) compileCompositeLitCall(inst ir.Inst) {
 	g.OpPush(REG_RCX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileReturn(inst ir.Inst) {
 	g.Flush()
 	g.leave()
@@ -590,6 +608,7 @@ func (g *CodeGen) compileReturn(inst ir.Inst) {
 }
 
 // === Intrinsics ===
+//rtg:profile
 func (g *CodeGen) CompileSliceptrIntrinsic() {
 	// Param 0 = slice header pointer. Read [header+0] = data ptr.
 	g.EmitLoadLocal(1*8, REG_RAX)
@@ -597,6 +616,7 @@ func (g *CodeGen) CompileSliceptrIntrinsic() {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) CompileMakesliceIntrinsic() {
 	// Params: ptr (local 0), len (local 1), cap (local 2)
 	// Allocate 32 bytes for header, fill {ptr, len, cap, elem_size=1}, push header addr
@@ -621,6 +641,7 @@ func (g *CodeGen) CompileMakesliceIntrinsic() {
 	g.OpPush(REG_RCX)
 }
 
+//rtg:profile
 func (g *CodeGen) CompileStringptrIntrinsic() {
 	// Param 0 = string header pointer. Read [header+0] = data ptr.
 	g.EmitLoadLocal(1*8, REG_RAX)
@@ -628,6 +649,7 @@ func (g *CodeGen) CompileStringptrIntrinsic() {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) CompileMakestringIntrinsic() {
 	// Params: ptr (local 0), len (local 1)
 	// Allocate 16-byte header, fill {ptr, len}, push header addr
@@ -643,6 +665,7 @@ func (g *CodeGen) CompileMakestringIntrinsic() {
 	g.OpPush(REG_RCX)
 }
 
+//rtg:profile
 func (g *CodeGen) CompileTostringIntrinsic() {
 	// ir.OP_CALL_INTRINSIC is emitted inside intrinsic wrapper functions where
 	// parameters are in frame locals, not on the operand stack. Inline the
@@ -650,6 +673,7 @@ func (g *CodeGen) CompileTostringIntrinsic() {
 	g.compileTostringIntrinsicBodyX64()
 }
 
+//rtg:profile
 func (g *CodeGen) EmitTostringHelperX64() {
 	if g.hasTostringHelper {
 		return
@@ -676,6 +700,7 @@ func (g *CodeGen) EmitTostringHelperX64() {
 	g.compileReturn(ir.Inst{})
 }
 
+//rtg:profile
 func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 	// Param 0 = value (could be string ptr or interface box ptr)
 	// Heuristic:
@@ -782,6 +807,7 @@ func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 	g.PatchRel32(finalEndFixup)
 }
 
+//rtg:profile
 func (g *CodeGen) CompileReadPtrIntrinsic() {
 	// Param 0 = addr. Read 8 bytes at addr, push result.
 	g.EmitLoadLocal(1*8, REG_RAX)
@@ -789,6 +815,7 @@ func (g *CodeGen) CompileReadPtrIntrinsic() {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) CompileWritePtrIntrinsic() {
 	// Param 0 = addr, Param 1 = val. Write 8 bytes.
 	g.EmitLoadLocal(1*8, REG_RAX) // addr
@@ -796,6 +823,7 @@ func (g *CodeGen) CompileWritePtrIntrinsic() {
 	g.storeMem(REG_RAX, 0, REG_RCX)
 }
 
+//rtg:profile
 func (g *CodeGen) CompileWriteByteIntrinsic() {
 	// Param 0 = addr, Param 1 = val. Write 1 byte.
 	g.EmitLoadLocal(1*8, REG_RAX) // addr
@@ -805,6 +833,7 @@ func (g *CodeGen) CompileWriteByteIntrinsic() {
 
 // === Interface dispatch ===
 
+//rtg:profile
 func (g *CodeGen) compileIfaceBox(inst ir.Inst) {
 	// Stack: ... concreteValue
 	// Pop concrete value, allocate 16 bytes, store {type_id, value}, push box pointer
@@ -835,6 +864,7 @@ func (g *CodeGen) compileIfaceBox(inst ir.Inst) {
 	g.OpPush(REG_RCX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 	// Stack: ... ifacePtr arg0 arg1 ...
 	// inst.Arg = number of regular args (excluding receiver)
@@ -943,6 +973,7 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 
 // === Memory operations ===
 
+//rtg:profile
 func (g *CodeGen) compileLoad(size int) {
 	g.OpPop(REG_RCX)
 	g.TestRR(REG_RCX, REG_RCX)
@@ -960,6 +991,7 @@ func (g *CodeGen) compileLoad(size int) {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileStore(size int) {
 	// stack: ... value addr  → pop addr into rcx, pop value into rax, store
 	g.OpPop(REG_RCX) // addr
@@ -971,6 +1003,7 @@ func (g *CodeGen) compileStore(size int) {
 	}
 }
 
+//rtg:profile
 func (g *CodeGen) compileOffset(inst ir.Inst) {
 	g.OpPop(REG_RAX)
 	if inst.Arg != 0 {
@@ -979,6 +1012,7 @@ func (g *CodeGen) compileOffset(inst ir.Inst) {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileIndexAddr(elemSize int) {
 	// pop index, pop slice-header-ptr, compute data_ptr + index * elemSize, push
 	g.OpPop(REG_RAX) // index
@@ -1001,6 +1035,7 @@ func (g *CodeGen) compileIndexAddr(elemSize int) {
 	g.OpPush(REG_RCX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileLen() {
 	g.OpPop(REG_RAX)
 	g.TestRR(REG_RAX, REG_RAX)
@@ -1011,6 +1046,7 @@ func (g *CodeGen) compileLen() {
 	g.OpPush(REG_RAX)
 }
 
+//rtg:profile
 func (g *CodeGen) compileCap() {
 	g.OpPop(REG_RAX)
 	g.TestRR(REG_RAX, REG_RAX)
@@ -1023,6 +1059,7 @@ func (g *CodeGen) compileCap() {
 
 // === Type conversions ===
 
+//rtg:profile
 func (g *CodeGen) compileConvert(typeName string) {
 	// Most conversions are no-ops (all values are 8 bytes)
 	// string([]byte) and []byte(string) need runtime calls

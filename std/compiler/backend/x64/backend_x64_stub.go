@@ -4,10 +4,12 @@ package x64
 
 import "j5.nz/rtg/std/compiler/ir"
 
+//rtg:profile
 func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 	panic("amd64 backend disabled")
 }
 
+//rtg:profile
 func (g *CodeGen) EmitTostringHelperX64() {
 	panic("amd64 backend disabled")
 }

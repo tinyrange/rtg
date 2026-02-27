@@ -191,167 +191,200 @@ type wasmCodeWriter struct {
 	blockDepth int
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) byte(b byte) {
 	w.buf = append(w.buf, b)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) uleb(v uint32) {
 	w.buf = appendULEB128(w.buf, v)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) sleb(v int32) {
 	w.buf = appendSLEB128(w.buf, v)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) op(opcode byte) {
 	w.buf = append(w.buf, opcode)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i32Const(v int32) {
 	w.op(OP_WASM_I32_CONST)
 	w.sleb(v)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) localGet(idx uint32) {
 	w.op(OP_WASM_LOCAL_GET)
 	w.uleb(idx)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) localSet(idx uint32) {
 	w.op(OP_WASM_LOCAL_SET)
 	w.uleb(idx)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) localTee(idx uint32) {
 	w.op(OP_WASM_LOCAL_TEE)
 	w.uleb(idx)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) globalGet(idx uint32) {
 	w.op(OP_WASM_GLOBAL_GET)
 	w.uleb(idx)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) globalSet(idx uint32) {
 	w.op(OP_WASM_GLOBAL_SET)
 	w.uleb(idx)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) call(funcIdx uint32) {
 	w.op(OP_WASM_CALL)
 	w.uleb(funcIdx)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) br(depth uint32) {
 	w.op(OP_WASM_BR)
 	w.uleb(depth)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) brIf(depth uint32) {
 	w.op(OP_WASM_BR_IF)
 	w.uleb(depth)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) block(blockType byte) {
 	w.op(OP_WASM_BLOCK)
 	w.byte(blockType)
 	w.blockDepth++
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) loop(blockType byte) {
 	w.op(OP_WASM_LOOP)
 	w.byte(blockType)
 	w.blockDepth++
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) ifOp(blockType byte) {
 	w.op(OP_WASM_IF)
 	w.byte(blockType)
 	w.blockDepth++
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) elseOp() {
 	w.op(OP_WASM_ELSE)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) end() {
 	w.op(OP_WASM_END)
 	w.blockDepth = w.blockDepth - 1
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i32Load(align uint32, offset uint32) {
 	w.op(OP_WASM_I32_LOAD)
 	w.uleb(align)
 	w.uleb(offset)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i32Load8u(align uint32, offset uint32) {
 	w.op(OP_WASM_I32_LOAD8_U)
 	w.uleb(align)
 	w.uleb(offset)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i32Load16u(align uint32, offset uint32) {
 	w.op(OP_WASM_I32_LOAD16_U)
 	w.uleb(align)
 	w.uleb(offset)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i32Store(align uint32, offset uint32) {
 	w.op(OP_WASM_I32_STORE)
 	w.uleb(align)
 	w.uleb(offset)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i32Store8(align uint32, offset uint32) {
 	w.op(OP_WASM_I32_STORE8)
 	w.uleb(align)
 	w.uleb(offset)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i32Store16(align uint32, offset uint32) {
 	w.op(OP_WASM_I32_STORE16)
 	w.uleb(align)
 	w.uleb(offset)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) drop() {
 	w.op(OP_WASM_DROP)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) returnOp() {
 	w.op(OP_WASM_RETURN)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) unreachable() {
 	w.op(OP_WASM_UNREACHABLE)
 }
 
 // === i64 helpers ===
 
+//rtg:profile
 func (w *wasmCodeWriter) i64Const(v int64) {
 	w.op(OP_WASM_I64_CONST)
 	w.buf = appendSLEB128_64(w.buf, v)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i64ExtendI32U() {
 	w.op(OP_WASM_I64_EXTEND_I32_U)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i64ExtendI32S() {
 	w.op(OP_WASM_I64_EXTEND_I32_S)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i32WrapI64() {
 	w.op(OP_WASM_I32_WRAP_I64)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i64Load(align uint32, offset uint32) {
 	w.op(0x29) // i64.load
 	w.uleb(align)
 	w.uleb(offset)
 }
 
+//rtg:profile
 func (w *wasmCodeWriter) i64Store(align uint32, offset uint32) {
 	w.op(0x37) // i64.store
 	w.uleb(align)

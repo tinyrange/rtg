@@ -164,6 +164,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 
 // === WASI Imports ===
 
+//rtg:profile
 func (g *WasmGen) setupWASIImports() {
 	wasi := "wasi_snapshot_preview1"
 
@@ -249,6 +250,7 @@ func (g *WasmGen) setupWASIImports() {
 
 // === Memory Layout ===
 
+//rtg:profile
 func (g *WasmGen) setupMemoryLayout() {
 	// 0x0000 - 0x03FF: Null guard (1024 bytes)
 	// 0x0400 - 0x07FF: Scratch space (WASI structs + transient stack spills)
@@ -267,6 +269,7 @@ func (g *WasmGen) setupMemoryLayout() {
 	g.globalSP = g.mod.addGlobal(WASM_TYPE_I32, true, 0) // placeholder, updated later
 }
 
+//rtg:profile
 func (g *WasmGen) setupDataSegments() {
 	// String data segment
 	if len(g.stringData) > 0 {
@@ -294,6 +297,7 @@ func (g *WasmGen) setupDataSegments() {
 
 // === String Constants ===
 
+//rtg:profile
 func (g *WasmGen) internString(s string) int32 {
 	decoded := becommon.DecodeStringLiteral(s)
 
@@ -321,10 +325,12 @@ func (g *WasmGen) internString(s string) int32 {
 
 // === i64 type stack helpers ===
 
+//rtg:profile
 func (g *WasmGen) pushType(t byte) {
 	g.valTypes = append(g.valTypes, t)
 }
 
+//rtg:profile
 func (g *WasmGen) popType() byte {
 	if len(g.valTypes) == 0 {
 		return WASM_TYPE_I32
@@ -334,6 +340,7 @@ func (g *WasmGen) popType() byte {
 	return t
 }
 
+//rtg:profile
 func (g *WasmGen) peekType() byte {
 	if len(g.valTypes) == 0 {
 		return WASM_TYPE_I32
@@ -341,6 +348,7 @@ func (g *WasmGen) peekType() byte {
 	return g.valTypes[len(g.valTypes)-1]
 }
 
+//rtg:profile
 func (g *WasmGen) promoteI32ToI64() {
 	if g.peekType() == WASM_TYPE_I32 {
 		g.w.i64ExtendI32U()
@@ -350,6 +358,7 @@ func (g *WasmGen) promoteI32ToI64() {
 
 // ensureBothSameType promotes i32 operand to i64 if the other is i64.
 // Returns the common type after promotion.
+//rtg:profile
 func (g *WasmGen) ensureBothSameType() byte {
 	if len(g.valTypes) < 2 {
 		return WASM_TYPE_I32
@@ -378,6 +387,7 @@ func (g *WasmGen) ensureBothSameType() byte {
 
 // === Function Compilation ===
 
+//rtg:profile
 func (g *WasmGen) compileFunc(f *ir.IRFunc) []byte {
 	g.curFunc = f
 	g.w = wasmCodeWriter{}
@@ -461,6 +471,7 @@ func (g *WasmGen) compileFunc(f *ir.IRFunc) []byte {
 
 // === _start Entry Point ===
 
+//rtg:profile
 func (g *WasmGen) compileStart() []byte {
 	g.w = wasmCodeWriter{}
 
@@ -771,6 +782,7 @@ func detectPanicUnwindCheck(code []ir.Inst, jumpPos int, end int) (continueLabel
 	return continueLabel, panicLabel, dropCount, continuePos, true
 }
 
+//rtg:profile
 func (g *WasmGen) stackify(code []ir.Inst) {
 	// Pass 1: analyze labels using two separate maps
 	loopHeaders := make(map[int]bool)
@@ -812,6 +824,7 @@ func (g *WasmGen) stackify(code []ir.Inst) {
 	g.emitStructured(code, 0, len(code), loopHeaders, blockTargets, panicTargets)
 }
 
+//rtg:profile
 func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders map[int]bool, blockTargets map[int]bool, panicTargets map[int]bool) {
 	// --- Phase 1: Pre-open blocks for forward jump targets ---
 	// Collect all forward jump targets at this level, skipping loop bodies
@@ -1156,6 +1169,7 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 
 // findBreakLabel finds the break label for a loop by locating the backward
 // JMP to the loop header and returning the label that immediately follows it.
+//rtg:profile
 func (g *WasmGen) findBreakLabel(code []ir.Inst, loopStart int, end int, loopLabel int) int {
 	// Find the last backward JMP to the loop header.
 	// The label immediately after it is the break label.
@@ -1175,6 +1189,7 @@ func (g *WasmGen) findBreakLabel(code []ir.Inst, loopStart int, end int, loopLab
 }
 
 // findBlockDepth finds the br depth for jumping to a label.
+//rtg:profile
 func (g *WasmGen) findBlockDepth(labelID int) int {
 	// Search block stack from top (innermost) to bottom (outermost)
 	i := len(g.blockStack) - 1
@@ -1190,6 +1205,7 @@ func (g *WasmGen) findBlockDepth(labelID int) int {
 }
 
 // markLiveBreak sets hasLiveBreak on the block at the given br depth.
+//rtg:profile
 func (g *WasmGen) markLiveBreak(depth int) {
 	idx := len(g.blockStack) - 1 - depth
 	if idx >= 0 && idx < len(g.blockStack) {
@@ -1199,6 +1215,7 @@ func (g *WasmGen) markLiveBreak(depth int) {
 
 // compilePanicUnwindCheckBranch lowers the panic propagation pattern while
 // preserving exactly dropCount transient values on the non-branch path.
+//rtg:profile
 func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) {
 	g.popType() // PanicShouldUnwind result consumed by br_if
 
@@ -1281,6 +1298,7 @@ func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) 
 
 // === Instruction Compilation ===
 
+//rtg:profile
 func (g *WasmGen) compileInst(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
@@ -1426,6 +1444,7 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 }
 
 // compileBinaryOp emits a binary operation, promoting to i64 if either operand is i64.
+//rtg:profile
 func (g *WasmGen) compileBinaryOp(i32op byte, i64op byte) {
 	t := g.ensureBothSameType()
 	g.popType()
@@ -1440,6 +1459,7 @@ func (g *WasmGen) compileBinaryOp(i32op byte, i64op byte) {
 }
 
 // compileCompareOp emits a comparison, promoting to i64 if needed. Result is always i32.
+//rtg:profile
 func (g *WasmGen) compileCompareOp(i32op byte, i64op byte) {
 	t := g.ensureBothSameType()
 	g.popType()
@@ -1452,6 +1472,7 @@ func (g *WasmGen) compileCompareOp(i32op byte, i64op byte) {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileCompareJump(inst ir.Inst) {
 	t := g.ensureBothSameType()
 	g.popType()
@@ -1523,6 +1544,7 @@ func (g *WasmGen) compileCompareJump(inst ir.Inst) {
 }
 
 // compileDup duplicates the top of stack, using the appropriate temp local.
+//rtg:profile
 func (g *WasmGen) compileDup() {
 	t := g.peekType()
 	if t == WASM_TYPE_I64 {
@@ -1537,6 +1559,7 @@ func (g *WasmGen) compileDup() {
 
 // === Local variable access (shadow stack) ===
 
+//rtg:profile
 func (g *WasmGen) compileLocalGet(idx int) {
 	offset := g.localOffsets[idx]
 	if g.localI64[idx] {
@@ -1550,6 +1573,7 @@ func (g *WasmGen) compileLocalGet(idx int) {
 	}
 }
 
+//rtg:profile
 func (g *WasmGen) compileLocalSet(idx int) {
 	offset := g.localOffsets[idx]
 	t := g.popType()
@@ -1574,6 +1598,7 @@ func (g *WasmGen) compileLocalSet(idx int) {
 	}
 }
 
+//rtg:profile
 func (g *WasmGen) compileLocalAddImm(idx int, imm int32) {
 	g.compileLocalGet(idx)
 	if g.peekType() == WASM_TYPE_I64 {
@@ -1588,6 +1613,7 @@ func (g *WasmGen) compileLocalAddImm(idx int, imm int32) {
 	g.compileLocalSet(idx)
 }
 
+//rtg:profile
 func (g *WasmGen) compileLocalAddr(idx int) {
 	offset := g.localOffsets[idx]
 	g.w.globalGet(uint32(g.globalSP))
@@ -1598,12 +1624,14 @@ func (g *WasmGen) compileLocalAddr(idx int) {
 
 // === Global variable access (linear memory) ===
 
+//rtg:profile
 func (g *WasmGen) compileGlobalGet(inst ir.Inst) {
 	g.w.i32Const(g.globalsAddr + int32(inst.Arg*4))
 	g.w.i32Load(2, 0)
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileGlobalSet(inst ir.Inst) {
 	t := g.popType()
 	if t == WASM_TYPE_I64 {
@@ -1615,6 +1643,7 @@ func (g *WasmGen) compileGlobalSet(inst ir.Inst) {
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileGlobalAddr(inst ir.Inst) {
 	g.w.i32Const(g.globalsAddr + int32(inst.Arg*4))
 	g.pushType(WASM_TYPE_I32)
@@ -1622,6 +1651,7 @@ func (g *WasmGen) compileGlobalAddr(inst ir.Inst) {
 
 // === Memory operations ===
 
+//rtg:profile
 func (g *WasmGen) compileLoad(size int) {
 	// Stack: [addr] → [value]
 	// addr is always i32, result is always i32
@@ -1644,6 +1674,7 @@ func (g *WasmGen) compileLoad(size int) {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileStore(size int) {
 	// IR stack: [value, addr] (addr on top)
 	// WASM i32.store wants: [addr, value]
@@ -1669,6 +1700,7 @@ func (g *WasmGen) compileStore(size int) {
 	}
 }
 
+//rtg:profile
 func (g *WasmGen) compileOffset(inst ir.Inst) {
 	// Stack: [ptr] → [ptr + offset]
 	// ptr is i32 (address)
@@ -1684,6 +1716,7 @@ func (g *WasmGen) compileOffset(inst ir.Inst) {
 	// type stays i32 (or unchanged if 0 offset)
 }
 
+//rtg:profile
 func (g *WasmGen) compileIndexAddr(elemSize int) {
 	// Stack: [sliceHdrPtr, index] → [dataPtr + index*elemSize]
 	// IR: index is on top, sliceHdrPtr below
@@ -1705,6 +1738,7 @@ func (g *WasmGen) compileIndexAddr(elemSize int) {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileLen() {
 	// Stack: [headerPtr] → [length]
 	g.popType() // pop headerPtr
@@ -1719,6 +1753,7 @@ func (g *WasmGen) compileLen() {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileCap() {
 	// Stack: [headerPtr] → [capacity]
 	g.popType() // pop headerPtr
@@ -1735,6 +1770,7 @@ func (g *WasmGen) compileCap() {
 
 // === Function calls ===
 
+//rtg:profile
 func (g *WasmGen) compileCall(inst ir.Inst) {
 	if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
 		g.compileCompositeLitCall(inst)
@@ -1837,6 +1873,7 @@ func (g *WasmGen) compileCall(inst ir.Inst) {
 	}
 }
 
+//rtg:profile
 func (g *WasmGen) compileCompositeLitCall(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * 4
@@ -1904,6 +1941,7 @@ func (g *WasmGen) compileCompositeLitCall(inst ir.Inst) {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileReturn(inst ir.Inst) {
 	// Compute frame bytes from localOffsets
 	var frameBytes int32
@@ -1966,6 +2004,7 @@ func (g *WasmGen) compileReturn(inst ir.Inst) {
 
 // === Intrinsics ===
 
+//rtg:profile
 func (g *WasmGen) compileCallIntrinsic(inst ir.Inst) {
 	switch inst.Name {
 	case "SysWrite":
@@ -2171,6 +2210,7 @@ func (g *WasmGen) compileCallIntrinsic(inst ir.Inst) {
 	}
 }
 
+//rtg:profile
 func (g *WasmGen) compileSliceptrIntrinsic() {
 	// Param 0 (frame slot 0) = slice header ptr. Read data_ptr at [header+0].
 	g.w.globalGet(uint32(g.globalSP))
@@ -2179,6 +2219,7 @@ func (g *WasmGen) compileSliceptrIntrinsic() {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileMakesliceIntrinsic() {
 	// Params: ptr (0), len (1), cap (2)
 	// Allocate 16-byte header {ptr:4, len:4, cap:4, elem_size:4}
@@ -2212,6 +2253,7 @@ func (g *WasmGen) compileMakesliceIntrinsic() {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileStringptrIntrinsic() {
 	// Param 0 = string header ptr. Read data_ptr at [header+0].
 	g.w.globalGet(uint32(g.globalSP))
@@ -2220,6 +2262,7 @@ func (g *WasmGen) compileStringptrIntrinsic() {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileMakestringIntrinsic() {
 	// Params: ptr (0), len (1)
 	// Allocate 8-byte header {ptr:4, len:4}
@@ -2243,6 +2286,7 @@ func (g *WasmGen) compileMakestringIntrinsic() {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileTostringIntrinsic() {
 	// Param 0 = value (could be string ptr or interface box ptr)
 	// Heuristic: if [ptr+0] < 256, it's a type_id (interface box)
@@ -2303,6 +2347,7 @@ func (g *WasmGen) compileTostringIntrinsic() {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileTostringDispatch(typeIDLocal uint32) {
 	// Generate if/else chain for Error/String methods
 	// concrete value is in g.tempLocal
@@ -2351,6 +2396,7 @@ func (g *WasmGen) compileTostringDispatch(typeIDLocal uint32) {
 	}
 }
 
+//rtg:profile
 func (g *WasmGen) compileReadPtrIntrinsic() {
 	// Param 0 = addr. Read 4 bytes.
 	g.w.globalGet(uint32(g.globalSP))
@@ -2359,6 +2405,7 @@ func (g *WasmGen) compileReadPtrIntrinsic() {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileWritePtrIntrinsic() {
 	// Param 0 = addr, Param 1 = val. Write 4 bytes.
 	g.w.globalGet(uint32(g.globalSP))
@@ -2369,6 +2416,7 @@ func (g *WasmGen) compileWritePtrIntrinsic() {
 	// No return value
 }
 
+//rtg:profile
 func (g *WasmGen) compileWriteByteIntrinsic() {
 	// Param 0 = addr, Param 1 = val. Write 1 byte.
 	g.w.globalGet(uint32(g.globalSP))
@@ -2381,6 +2429,7 @@ func (g *WasmGen) compileWriteByteIntrinsic() {
 
 // === Syscall → WASI helpers ===
 
+//rtg:profile
 func (g *WasmGen) compileSyscallWrite(scratch int32, r1Addr int32, r2Addr int32, errAddr int32) {
 	// fd_write(fd, iovs, iovs_len, nwritten) -> errno
 	// params: fd=SP+0, buf=SP+4, count=SP+8
@@ -2421,6 +2470,7 @@ func (g *WasmGen) compileSyscallWrite(scratch int32, r1Addr int32, r2Addr int32,
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallRead(scratch int32, r1Addr int32, r2Addr int32, errAddr int32) {
 	// fd_read(fd, iovs, iovs_len, nread) -> errno
 	// params: fd=SP+0, buf=SP+4, count=SP+8
@@ -2454,6 +2504,7 @@ func (g *WasmGen) compileSyscallRead(scratch int32, r1Addr int32, r2Addr int32, 
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, errAddr int32) {
 	// path_open(dirfd, dirflags, path, path_len, oflags, rights_base, rights_base_hi, rights_inheriting, rights_inheriting_hi, fdflags, fd_out)
 	// params: path_ptr=SP+0 (C string), flags=SP+4, mode=SP+8
@@ -2606,6 +2657,7 @@ func (g *WasmGen) compileSyscallOpen(scratch int32, r1Addr int32, r2Addr int32, 
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallClose(r1Addr int32, r2Addr int32, errAddr int32) {
 	// fd_close(fd) -> errno
 	// params: fd=SP+0
@@ -2625,6 +2677,7 @@ func (g *WasmGen) compileSyscallClose(r1Addr int32, r2Addr int32, errAddr int32)
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallMmap(r1Addr int32, r2Addr int32, errAddr int32) {
 	// memory.grow for allocation
 	// params: addr=SP+0, length=SP+4, prot=SP+8, flags=SP+12, fd=SP+16, offset=SP+20
@@ -2670,6 +2723,7 @@ func (g *WasmGen) compileSyscallMmap(r1Addr int32, r2Addr int32, errAddr int32) 
 	g.w.end()
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallExit(r1Addr int32, r2Addr int32, errAddr int32) {
 	// params: code=SP+0
 	g.w.globalGet(uint32(g.globalSP))
@@ -2688,21 +2742,25 @@ func (g *WasmGen) compileSyscallExit(r1Addr int32, r2Addr int32, errAddr int32) 
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallMkdir(r1Addr int32, r2Addr int32, errAddr int32) {
 	// path_create_directory(dirfd, path, path_len) -> errno
 	// params: path=SP+0 (C string), mode=SP+4 (ignored)
 	g.compileSyscallPathOp(g.wasiPathCreateDir, r1Addr, r2Addr, errAddr)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallRmdir(r1Addr int32, r2Addr int32, errAddr int32) {
 	g.compileSyscallPathOp(g.wasiPathRemoveDir, r1Addr, r2Addr, errAddr)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallUnlink(r1Addr int32, r2Addr int32, errAddr int32) {
 	g.compileSyscallPathOp(g.wasiPathUnlinkFile, r1Addr, r2Addr, errAddr)
 }
 
 // compileSyscallPathOp handles mkdir/rmdir/unlink which all take (dirfd, path, path_len).
+//rtg:profile
 func (g *WasmGen) compileSyscallPathOp(wasiFunc int, r1Addr int32, r2Addr int32, errAddr int32) {
 	scratch := g.scratchAddr
 
@@ -2782,6 +2840,7 @@ func (g *WasmGen) compileSyscallPathOp(wasiFunc int, r1Addr int32, r2Addr int32,
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallGetcwd(r1Addr int32, r2Addr int32, errAddr int32) {
 	// WASI has no getcwd. Write "." to the buffer.
 	// params: buf=SP+0, size=SP+4
@@ -2809,6 +2868,7 @@ func (g *WasmGen) compileSyscallGetcwd(r1Addr int32, r2Addr int32, errAddr int32
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallGetdents(scratch int32, r1Addr int32, r2Addr int32, errAddr int32) {
 	// fd_readdir(fd, buf, buf_len, cookie, bufused) -> errno
 	// Linux getdents64: fd=SP+0, buf=SP+4, buf_size=SP+8
@@ -2851,6 +2911,7 @@ func (g *WasmGen) compileSyscallGetdents(scratch int32, r1Addr int32, r2Addr int
 	g.w.i32Store(2, 0)
 }
 
+//rtg:profile
 func (g *WasmGen) compileSyscallUnsupported(r1Addr int32, r2Addr int32, errAddr int32) {
 	g.w.i32Const(r1Addr)
 	g.w.i32Const(0)
@@ -2865,6 +2926,7 @@ func (g *WasmGen) compileSyscallUnsupported(r1Addr int32, r2Addr int32, errAddr 
 
 // === Interface dispatch ===
 
+//rtg:profile
 func (g *WasmGen) compileIfaceBox(inst ir.Inst) {
 	typeID := inst.Arg
 
@@ -2898,6 +2960,7 @@ func (g *WasmGen) compileIfaceBox(inst ir.Inst) {
 	g.pushType(WASM_TYPE_I32)
 }
 
+//rtg:profile
 func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 	argCount := inst.Arg
 	methodName := inst.Name
@@ -3128,6 +3191,7 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 
 // === Type conversions ===
 
+//rtg:profile
 func (g *WasmGen) compileConvert(typeName string) {
 	switch typeName {
 	case "string":
@@ -3209,6 +3273,7 @@ func (g *WasmGen) compileConvert(typeName string) {
 
 // === Panic ===
 
+//rtg:profile
 func (g *WasmGen) compilePanic() {
 	scratch := g.scratchAddr
 

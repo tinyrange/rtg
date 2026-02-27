@@ -102,7 +102,7 @@ func Write(f *File, p []byte) (int, error) {
 }
 
 func Exit(code int) {
-	sysExit(uintptr(code))
+	runtime.Exit(uintptr(code))
 }
 
 func makeCString(s string) []byte {

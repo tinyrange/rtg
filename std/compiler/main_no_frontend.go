@@ -44,6 +44,7 @@ func main() {
 	var fromIRBinaryPath string
 	var extraTags string
 	var strictMode bool
+	var profileMode bool
 	i := 1
 	for i < len(os.Args) {
 		if os.Args[i] == "-h" || os.Args[i] == "--help" {
@@ -142,6 +143,9 @@ func main() {
 		} else if os.Args[i] == "-strict" {
 			strictMode = true
 			i = i + 1
+		} else if os.Args[i] == "-profile" {
+			profileMode = true
+			i = i + 1
 		} else if os.Args[i] == "-debug" {
 			compilerDebug = true
 			i = i + 1
@@ -203,6 +207,7 @@ func main() {
 		BuildTags:     buildTags,
 		Defines:       map[string]string{},
 		Strict:        strictMode,
+		Profile:       profileMode,
 		CompilerDebug: compilerDebug,
 		StripBinary:   stripBinary,
 	}
@@ -223,6 +228,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -strict                Preserve strict-mode metadata in target config\n")
+	fmt.Fprintf(out, "  -profile               Preserve profile metadata in target config\n")
 	fmt.Fprintf(out, "  -size-analysis <path>  Write per-function size analysis JSON\n")
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
 	fmt.Fprintf(out, "  -strip, -s             Strip symbol/debug metadata from native binaries\n")
