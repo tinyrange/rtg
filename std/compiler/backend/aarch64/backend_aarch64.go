@@ -13,7 +13,6 @@ import (
 // X29 (FP) as frame pointer, X30 (LR) as link register.
 
 // CompileFuncArm64 generates ARM64 code for a single IR function.
-//rtg:profile
 func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	if f.Native != nil {
 		if f.Native.Arch != "arm64" {
@@ -246,14 +245,12 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 
 // === Constant loading ===
 
-//rtg:profile
 func (g *CodeGen) compileConstI64Arm64(val int64) {
 	g.prepareForClobber(REG_X0)
 	g.EmitLoadImm64Compact(REG_X0, uint64(val))
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileConstStrArm64(s string) {
 	g.prepareForClobber(REG_X0, REG_X1)
 	decoded := becommon.DecodeStringLiteral(s)
@@ -296,7 +293,6 @@ func (g *CodeGen) compileConstStrArm64(s string) {
 
 // === Local variable access ===
 
-//rtg:profile
 func (g *CodeGen) compileLocalGetArm64(idx int) {
 	g.prepareForClobber(REG_X0)
 	offset := (idx + 1) * 8
@@ -304,14 +300,12 @@ func (g *CodeGen) compileLocalGetArm64(idx int) {
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileLocalSetArm64(idx int) {
 	g.opPop(REG_X0)
 	offset := (idx + 1) * 8
 	g.emitStoreLocalArm64(offset, REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileLocalAddImmArm64(idx int, imm int32) {
 	offset := (idx + 1) * 8
 	g.emitLoadLocalArm64(offset, REG_X0)
@@ -326,7 +320,6 @@ func (g *CodeGen) compileLocalAddImmArm64(idx int, imm int32) {
 	g.emitStoreLocalArm64(offset, REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileLocalAddrArm64(idx int) {
 	g.prepareForClobber(REG_X0)
 	offset := (idx + 1) * 8
@@ -336,21 +329,18 @@ func (g *CodeGen) compileLocalAddrArm64(idx int) {
 
 // === Global variable access ===
 
-//rtg:profile
 func (g *CodeGen) compileGlobalGetArm64(inst ir.Inst) {
 	g.prepareForClobber(REG_X0)
 	g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(inst.Arg*8))
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileGlobalSetArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
 	g.EmitAdrpAdd(REG_X1, "$data_addr$", uint64(inst.Arg*8))
 	g.EmitStr(REG_X0, REG_X1, 0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileGlobalAddrArm64(inst ir.Inst) {
 	g.prepareForClobber(REG_X0)
 	g.EmitAdrpAdd(REG_X0, "$data_addr$", uint64(inst.Arg*8))
@@ -359,7 +349,6 @@ func (g *CodeGen) compileGlobalAddrArm64(inst ir.Inst) {
 
 // === Binary operations ===
 
-//rtg:profile
 func (g *CodeGen) compileBinOpArm64(op ir.Opcode) {
 	g.opPop(REG_X0) // second (top)
 	g.opPop(REG_X1) // first (below)
@@ -394,7 +383,6 @@ func (g *CodeGen) compileBinOpArm64(op ir.Opcode) {
 
 // === Comparison operations ===
 
-//rtg:profile
 func (g *CodeGen) compileCompareArm64(cond int) {
 	g.opPop(REG_X0) // second
 	g.opPop(REG_X1) // first
@@ -403,7 +391,6 @@ func (g *CodeGen) compileCompareArm64(cond int) {
 	g.opPush(REG_X1)
 }
 
-//rtg:profile
 func (g *CodeGen) compileCompareJumpArm64(cond int, label int) {
 	g.opPop(REG_X0)
 	g.opPop(REG_X1)
@@ -425,7 +412,6 @@ func (g *CodeGen) compileCallArm64(inst ir.Inst) {
 	g.EmitCallPlaceholderArm64(inst.Name)
 }
 
-//rtg:profile
 func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * 8
@@ -463,7 +449,6 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 	g.opPush(REG_X1)
 }
 
-//rtg:profile
 func (g *CodeGen) compileReturnArm64(inst ir.Inst) {
 	g.Flush()
 	// Epilogue: MOV SP, FP; LDP FP, LR, [SP], #16; RET
@@ -474,7 +459,6 @@ func (g *CodeGen) compileReturnArm64(inst ir.Inst) {
 
 // === Intrinsics ===
 
-//rtg:profile
 func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 	g.Flush()
 	if g.target.GOOS == "windows" {
@@ -532,14 +516,12 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) compileSliceptrIntrinsicArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // slice header ptr
 	g.emitLdr(REG_X0, REG_X0, 0)      // [header+0] = data ptr
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileMakesliceIntrinsicArm64() {
 	// Params: ptr (local 0), len (local 1), cap (local 2)
 	g.compileConstI64Arm64(32)
@@ -558,14 +540,12 @@ func (g *CodeGen) compileMakesliceIntrinsicArm64() {
 	g.opPush(REG_X1)
 }
 
-//rtg:profile
 func (g *CodeGen) compileStringptrIntrinsicArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0)
 	g.emitLdr(REG_X0, REG_X0, 0)
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileMakestringIntrinsicArm64() {
 	// Params: ptr (local 0), len (local 1)
 	g.compileConstI64Arm64(16)
@@ -580,7 +560,6 @@ func (g *CodeGen) compileMakestringIntrinsicArm64() {
 	g.opPush(REG_X1)
 }
 
-//rtg:profile
 func (g *CodeGen) compileTostringIntrinsicArm64() {
 	// ir.OP_CALL_INTRINSIC executes inside intrinsic wrapper functions where
 	// params are read from frame locals. Inline directly to avoid helper
@@ -588,7 +567,6 @@ func (g *CodeGen) compileTostringIntrinsicArm64() {
 	g.compileTostringIntrinsicBodyArm64()
 }
 
-//rtg:profile
 func (g *CodeGen) EmitTostringHelperArm64() {
 	if g.hasTostringHelper {
 		return
@@ -610,7 +588,6 @@ func (g *CodeGen) EmitTostringHelperArm64() {
 	g.compileReturnArm64(ir.Inst{})
 }
 
-//rtg:profile
 func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // load value
 
@@ -704,21 +681,18 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	g.PatchArm64BAt(finalEndFixup, len(g.code))
 }
 
-//rtg:profile
 func (g *CodeGen) compileReadPtrIntrinsicArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // addr
 	g.emitLdr(REG_X0, REG_X0, 0)      // read 8 bytes
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileWritePtrIntrinsicArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // addr
 	g.emitLoadLocalArm64(2*8, REG_X1) // val
 	g.EmitStr(REG_X1, REG_X0, 0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileWriteByteIntrinsicArm64() {
 	g.emitLoadLocalArm64(1*8, REG_X0) // addr
 	g.emitLoadLocalArm64(2*8, REG_X1) // val
@@ -727,7 +701,6 @@ func (g *CodeGen) compileWriteByteIntrinsicArm64() {
 
 // === Interface dispatch ===
 
-//rtg:profile
 func (g *CodeGen) compileIfaceBoxArm64(inst ir.Inst) {
 	typeID := inst.Arg
 
@@ -753,7 +726,6 @@ func (g *CodeGen) compileIfaceBoxArm64(inst ir.Inst) {
 	g.opPush(REG_X1)
 }
 
-//rtg:profile
 func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 	argCount := inst.Arg
 	methodName := inst.Name
@@ -855,7 +827,6 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 
 // === Memory operations ===
 
-//rtg:profile
 func (g *CodeGen) compileLoadArm64(size int) {
 	g.opPop(REG_X1) // addr
 	g.emitCmpImm(REG_X1, 0)
@@ -874,7 +845,6 @@ func (g *CodeGen) compileLoadArm64(size int) {
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileStoreArm64(size int) {
 	g.opPop(REG_X1) // addr
 	g.opPop(REG_X0) // value
@@ -885,7 +855,6 @@ func (g *CodeGen) compileStoreArm64(size int) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) compileOffsetArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
 	if inst.Arg != 0 {
@@ -899,7 +868,6 @@ func (g *CodeGen) compileOffsetArm64(inst ir.Inst) {
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileIndexAddrArm64(elemSize int) {
 	g.opPop(REG_X0) // index
 	g.opPop(REG_X1) // slice header ptr
@@ -922,7 +890,6 @@ func (g *CodeGen) compileIndexAddrArm64(elemSize int) {
 	g.opPush(REG_X1)
 }
 
-//rtg:profile
 func (g *CodeGen) compileLenArm64() {
 	g.opPop(REG_X0)
 	g.emitCmpImm(REG_X0, 0)
@@ -936,7 +903,6 @@ func (g *CodeGen) compileLenArm64() {
 	g.opPush(REG_X0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileCapArm64() {
 	g.opPop(REG_X0)
 	g.emitCmpImm(REG_X0, 0)
@@ -952,7 +918,6 @@ func (g *CodeGen) compileCapArm64() {
 
 // === Type conversions ===
 
-//rtg:profile
 func (g *CodeGen) compileConvertArm64(typeName string) {
 	switch typeName {
 	case "string":

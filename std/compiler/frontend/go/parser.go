@@ -161,7 +161,6 @@ type Token struct {
 	Col  int
 }
 
-//rtg:profile
 func (t Token) String() string {
 	if t.Val != "" {
 		return tokenName(t.Kind) + "(" + t.Val + ")"
@@ -181,10 +180,12 @@ func NewLexer(src string) *Lexer {
 	return &Lexer{src: src, pos: 0, line: 1, col: 1}
 }
 
+//rtg:noprofile
 func (l *Lexer) atEnd() bool {
 	return l.pos >= len(l.src)
 }
 
+//rtg:noprofile
 func (l *Lexer) peek() byte {
 	if l.atEnd() {
 		return 0
@@ -192,7 +193,7 @@ func (l *Lexer) peek() byte {
 	return l.src[l.pos]
 }
 
-//rtg:profile
+//rtg:noprofile
 func (l *Lexer) peekAt(offset int) byte {
 	p := l.pos + offset
 	if p >= len(l.src) {
@@ -201,6 +202,7 @@ func (l *Lexer) peekAt(offset int) byte {
 	return l.src[p]
 }
 
+//rtg:noprofile
 func (l *Lexer) advance() byte {
 	ch := l.src[l.pos]
 	l.pos++
@@ -298,7 +300,6 @@ func (l *Lexer) scanIdent() Token {
 	return Token{Kind: kind, Val: val, Line: line, Col: col}
 }
 
-//rtg:profile
 func (l *Lexer) scanNumber() Token {
 	line := l.line
 	col := l.col
@@ -354,7 +355,6 @@ func (l *Lexer) scanNumber() Token {
 	return Token{Kind: TOKEN_INT, Val: l.src[start:l.pos], Line: line, Col: col}
 }
 
-//rtg:profile
 func (l *Lexer) scanString() Token {
 	line := l.line
 	col := l.col
@@ -373,7 +373,6 @@ func (l *Lexer) scanString() Token {
 	return Token{Kind: TOKEN_STRING, Val: val, Line: line, Col: col}
 }
 
-//rtg:profile
 func (l *Lexer) scanRawString() Token {
 	line := l.line
 	col := l.col
@@ -389,7 +388,6 @@ func (l *Lexer) scanRawString() Token {
 	return Token{Kind: TOKEN_RAW_STRING, Val: val, Line: line, Col: col}
 }
 
-//rtg:profile
 func (l *Lexer) scanRune() Token {
 	line := l.line
 	col := l.col
@@ -687,7 +685,6 @@ func (p *Parser) at(kind TokenKind) bool {
 	return p.tokens[p.pos].Kind == kind
 }
 
-//rtg:profile
 func (p *Parser) match(kinds ...TokenKind) bool {
 	k := TOKEN_EOF
 	if p.pos < len(p.tokens) {
@@ -709,20 +706,17 @@ func (p *Parser) expect(kind TokenKind) Token {
 	return tok
 }
 
-//rtg:profile
 func (p *Parser) errorf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	p.errors = append(p.errors, msg)
 }
 
-//rtg:profile
 func (p *Parser) skipSemicolon() {
 	if p.at(TOKEN_SEMICOLON) {
 		p.advance()
 	}
 }
 
-//rtg:profile
 func (p *Parser) skipBlock() {
 	p.expect(TOKEN_LBRACE)
 	depth := 1
@@ -764,7 +758,6 @@ func (p *Parser) ParseFile() *Node {
 	return file
 }
 
-//rtg:profile
 func (p *Parser) parseImportGroup() []*Node {
 	p.expect(TOKEN_IMPORT)
 	var imports []*Node
@@ -784,7 +777,6 @@ func (p *Parser) parseImportGroup() []*Node {
 	return imports
 }
 
-//rtg:profile
 func (p *Parser) parseImportSpec() *Node {
 	alias := ""
 	aliasPos := p.peek().Line
@@ -884,7 +876,6 @@ func (p *Parser) parseFuncDecl() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseReceiver() *Node {
 	node := &Node{Kind: NField, Pos: p.peek().Line}
 	name := p.expect(TOKEN_IDENT)
@@ -893,7 +884,6 @@ func (p *Parser) parseReceiver() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseParamList() []*Node {
 	p.expect(TOKEN_LPAREN)
 	var params []*Node
@@ -959,7 +949,6 @@ func (p *Parser) parseParamList() []*Node {
 	return result
 }
 
-//rtg:profile
 func (p *Parser) parseParam() *Node {
 	node := &Node{Kind: NField, Pos: p.peek().Line}
 	// Check if this is "name type" or just "type"
@@ -980,7 +969,6 @@ func (p *Parser) parseParam() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseTypeDecl() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_TYPE)
@@ -1018,7 +1006,6 @@ func (p *Parser) parseTypeDecl() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseVarDecl() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_VAR)
@@ -1048,7 +1035,6 @@ func (p *Parser) parseVarDecl() *Node {
 	return &Node{Kind: NVarDecl, Nodes: decls, Pos: pos}
 }
 
-//rtg:profile
 func (p *Parser) parseVarDeclSpec() []*Node {
 	specPos := p.peek().Line
 	var names []string
@@ -1091,7 +1077,6 @@ func (p *Parser) parseVarDeclSpec() []*Node {
 	return decls
 }
 
-//rtg:profile
 func (p *Parser) parseConstDecl() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_CONST)
@@ -1130,7 +1115,6 @@ func (p *Parser) parseConstDecl() *Node {
 
 // Type parsing
 
-//rtg:profile
 func (p *Parser) parseType() *Node {
 	switch p.peek().Kind {
 	case TOKEN_IDENT:
@@ -1177,7 +1161,6 @@ func (p *Parser) parseType() *Node {
 	return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 }
 
-//rtg:profile
 func (p *Parser) parseSliceOrArrayType() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_LBRACK)
@@ -1199,7 +1182,6 @@ func (p *Parser) parseSliceOrArrayType() *Node {
 	return &Node{Kind: NArrayType, X: elem, Y: arrayLen, Name: name, Pos: pos}
 }
 
-//rtg:profile
 func (p *Parser) parseMapType() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_MAP)
@@ -1210,7 +1192,6 @@ func (p *Parser) parseMapType() *Node {
 	return &Node{Kind: NMapType, X: key, Y: val, Pos: pos}
 }
 
-//rtg:profile
 func (p *Parser) parseFuncType() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_FUNC)
@@ -1223,7 +1204,6 @@ func (p *Parser) parseFuncType() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseStructType() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_STRUCT)
@@ -1238,7 +1218,6 @@ func (p *Parser) parseStructType() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseStructField() *Node {
 	node := &Node{Kind: NField, Pos: p.peek().Line}
 	name := p.expect(TOKEN_IDENT)
@@ -1252,7 +1231,6 @@ func (p *Parser) parseStructField() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseInterfaceType() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_INTERFACE)
@@ -1400,7 +1378,6 @@ func (p *Parser) parseStmt() *Node {
 	return p.parseSimpleStmt()
 }
 
-//rtg:profile
 func (p *Parser) parseIfStmt() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_IF)
@@ -1441,7 +1418,6 @@ func (p *Parser) parseIfStmt() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseForStmt() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_FOR)
@@ -1554,7 +1530,6 @@ func (p *Parser) parseForStmt() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseSwitchStmt() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_SWITCH)
@@ -1614,7 +1589,6 @@ switchBody:
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseCaseClause() *Node {
 	pos := p.peek().Line
 	node := &Node{Kind: NCase, Pos: pos}
@@ -1647,7 +1621,6 @@ func (p *Parser) parseCaseClause() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseReturnStmt() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_RETURN)
@@ -1663,7 +1636,6 @@ func (p *Parser) parseReturnStmt() *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseDeferStmt() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_DEFER)
@@ -1672,14 +1644,12 @@ func (p *Parser) parseDeferStmt() *Node {
 	return &Node{Kind: NDeferStmt, X: expr, Pos: pos}
 }
 
-//rtg:profile
 func (p *Parser) parseSimpleStmt() *Node {
 	node := p.parseSimpleStmtNoSemicolon()
 	p.skipSemicolon()
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parseSimpleStmtNoSemicolon() *Node {
 	expr := p.parseExpr()
 
@@ -1737,7 +1707,6 @@ func (p *Parser) parseExpr() *Node {
 	return p.parseBinaryExpr(1)
 }
 
-//rtg:profile
 func (p *Parser) parseExprNoBrace() *Node {
 	old := p.noCompLit
 	p.noCompLit = true
@@ -1866,7 +1835,6 @@ func (p *Parser) parsePrimaryExpr() *Node {
 	return p.parsePostfixOps(node)
 }
 
-//rtg:profile
 func (p *Parser) isTypeLikeNode(node *Node) bool {
 	if node.Kind == NIdent || node.Kind == NSliceType || node.Kind == NArrayType || node.Kind == NMapType || node.Kind == NPointerType {
 		return true
@@ -1895,7 +1863,6 @@ func (p *Parser) parsePostfixOps(node *Node) *Node {
 	return node
 }
 
-//rtg:profile
 func (p *Parser) parsePostfixDot(node *Node) *Node {
 	p.advance()
 	if p.at(TOKEN_LPAREN) {
@@ -1915,7 +1882,6 @@ func (p *Parser) parsePostfixDot(node *Node) *Node {
 	return &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: node.Pos}
 }
 
-//rtg:profile
 func (p *Parser) parsePostfixCall(node *Node) *Node {
 	p.advance()
 	call := &Node{Kind: NCallExpr, X: node, Pos: node.Pos}
@@ -1934,7 +1900,6 @@ func (p *Parser) parsePostfixCall(node *Node) *Node {
 	return call
 }
 
-//rtg:profile
 func (p *Parser) parsePostfixIndexOrSlice(node *Node) *Node {
 	p.advance()
 	if p.at(TOKEN_COLON) {
@@ -1978,7 +1943,6 @@ func (p *Parser) parsePostfixIndexOrSlice(node *Node) *Node {
 	return &Node{Kind: NIndexExpr, X: node, Y: index, Pos: node.Pos}
 }
 
-//rtg:profile
 func (p *Parser) canParseCompositeLit(node *Node) bool {
 	allowCompLit := !p.noCompLit
 	if p.noCompLit {
@@ -1993,7 +1957,6 @@ func (p *Parser) canParseCompositeLit(node *Node) bool {
 	return allowCompLit && p.isTypeLikeNode(node)
 }
 
-//rtg:profile
 func (p *Parser) parseCompositeLit(typeNode *Node) *Node {
 	pos := typeNode.Pos
 	p.expect(TOKEN_LBRACE)

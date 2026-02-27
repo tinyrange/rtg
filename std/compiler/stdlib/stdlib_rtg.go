@@ -7,6 +7,7 @@ import (
 )
 
 // Embed the standard library tree and top-level x/ extensions.
+//
 //go:embed ../.. ../../../x
 var embeddedStd embed.FS
 

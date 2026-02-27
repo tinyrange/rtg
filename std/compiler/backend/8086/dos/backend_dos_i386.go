@@ -179,7 +179,6 @@ func GenerateDOSCOM(target *common.Target, irmod *ir.IRModule, outputPath string
 
 // ===== EXE layout / patching =====
 
-//rtg:profile
 func (g *CodeGen) buildEXE() ([]byte, error) {
 	textSize := uint32(len(g.code))
 	rodataSize := uint32(len(g.rodata))
@@ -234,20 +233,20 @@ func (g *CodeGen) buildEXE() ([]byte, error) {
 		last = 512
 	}
 	header := make([]byte, mzHeaderBytes)
-	putU16(header[0:2], 0x5A4D)                // MZ
-	putU16(header[2:4], uint16(last))          // e_cblp
-	putU16(header[4:6], uint16(pages))         // e_cp
-	putU16(header[6:8], 0)                     // e_crlc
-	putU16(header[8:10], mzHeaderParas)        // e_cparhdr
-	putU16(header[10:12], 0x0010)              // e_minalloc
-	putU16(header[12:14], 0xFFFF)              // e_maxalloc
-	putU16(header[14:16], dataSegRel)          // e_ss
-	putU16(header[16:18], 0xFFFE)              // e_sp
-	putU16(header[18:20], 0)                   // e_csum
-	putU16(header[20:22], 0x0000)              // e_ip
-	putU16(header[22:24], 0x0000)              // e_cs
-	putU16(header[24:26], 0x0040)              // e_lfarlc
-	putU16(header[26:28], 0)                   // e_ovno
+	putU16(header[0:2], 0x5A4D)         // MZ
+	putU16(header[2:4], uint16(last))   // e_cblp
+	putU16(header[4:6], uint16(pages))  // e_cp
+	putU16(header[6:8], 0)              // e_crlc
+	putU16(header[8:10], mzHeaderParas) // e_cparhdr
+	putU16(header[10:12], 0x0010)       // e_minalloc
+	putU16(header[12:14], 0xFFFF)       // e_maxalloc
+	putU16(header[14:16], dataSegRel)   // e_ss
+	putU16(header[16:18], 0xFFFE)       // e_sp
+	putU16(header[18:20], 0)            // e_csum
+	putU16(header[20:22], 0x0000)       // e_ip
+	putU16(header[22:24], 0x0000)       // e_cs
+	putU16(header[24:26], 0x0040)       // e_lfarlc
+	putU16(header[26:28], 0)            // e_ovno
 
 	out := make([]byte, fileSize)
 	copy(out, header)
@@ -261,7 +260,6 @@ func (g *CodeGen) buildEXE() ([]byte, error) {
 // - Call init funcs.
 // - Call main.main.
 // - Exit via INT 21h AH=4Ch.
-//rtg:profile
 func (g *CodeGen) emitEXEStart(irmod *ir.IRModule) {
 	g.emitBytes(0x8C, 0xC8) // mov ax, cs
 	g.emitBytes(0x05)       // add ax, imm16
@@ -286,7 +284,6 @@ func (g *CodeGen) emitEXEStart(irmod *ir.IRModule) {
 
 // ===== Instruction selection =====
 
-//rtg:profile
 func (g *CodeGen) compileFunc(f *ir.IRFunc) {
 	// Frame words = max(locals, params).
 	g.curFrameWords = len(f.Locals)
@@ -332,7 +329,6 @@ func (g *CodeGen) compileFunc(f *ir.IRFunc) {
 
 // ===== Constants / locals / globals =====
 
-//rtg:profile
 func (g *CodeGen) compileConst(v int16) {
 	if v == 0 {
 		g.xorRR16(REG16_AX, REG16_AX)
@@ -342,21 +338,18 @@ func (g *CodeGen) compileConst(v int16) {
 	g.opPush(REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) localGet(idx int) {
 	off := (idx + 1) * 2
 	g.loadLocal(off, REG16_AX)
 	g.opPush(REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) localSet(idx int) {
 	off := (idx + 1) * 2
 	g.opPop(REG16_AX)
 	g.storeLocal(off, REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) localAddImm(idx int, imm int16) {
 	off := (idx + 1) * 2
 	g.loadLocal(off, REG16_AX)
@@ -366,14 +359,12 @@ func (g *CodeGen) localAddImm(idx int, imm int16) {
 	g.storeLocal(off, REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) localAddr(idx int) {
 	off := (idx + 1) * 2
 	g.leaLocal(off, REG16_AX)
 	g.opPush(REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) globalGet(gidx int) {
 	// bx = data_base + gidx*2 (data base patched later)
 	g.emitMovImm16(REG16_BX, uint16(gidx*2))
@@ -385,7 +376,6 @@ func (g *CodeGen) globalGet(gidx int) {
 	g.opPush(REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) globalSet(gidx int) {
 	g.opPop(REG16_AX)
 	g.emitMovImm16(REG16_BX, uint16(gidx*2))
@@ -396,7 +386,6 @@ func (g *CodeGen) globalSet(gidx int) {
 	g.emitStoreRM16(EA16_BX, 0, REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) globalAddr(gidx int) {
 	g.emitMovImm16(REG16_AX, uint16(gidx*2))
 	g.callFixups = append(g.callFixups, CallFixup{
@@ -408,7 +397,6 @@ func (g *CodeGen) globalAddr(gidx int) {
 
 // ===== Arithmetic / compare / branches =====
 
-//rtg:profile
 func (g *CodeGen) binOp(op ir.Opcode) {
 	g.opPop(REG16_AX) // rhs
 	g.opPop(REG16_CX) // lhs
@@ -471,7 +459,6 @@ func (g *CodeGen) binOp(op ir.Opcode) {
 	g.opPush(REG16_CX)
 }
 
-//rtg:profile
 func (g *CodeGen) compareToBool(cc byte) {
 	g.opPop(REG16_AX)
 	g.opPop(REG16_CX)
@@ -488,7 +475,6 @@ func (g *CodeGen) compareToBool(cc byte) {
 	g.opPush(REG16_CX)
 }
 
-//rtg:profile
 func (g *CodeGen) compareJump(cc byte, label int) {
 	g.opPop(REG16_AX)
 	g.opPop(REG16_CX)
@@ -505,7 +491,6 @@ func (g *CodeGen) compareJump(cc byte, label int) {
 
 // ===== Calls / return =====
 
-//rtg:profile
 func (g *CodeGen) emitCallPlaceholder(target string) {
 	g.emitByte(0xE8) // call rel16
 	g.callFixups = append(g.callFixups, CallFixup{
@@ -515,18 +500,15 @@ func (g *CodeGen) emitCallPlaceholder(target string) {
 	g.emitU16(0)
 }
 
-//rtg:profile
 func (g *CodeGen) patchRel16At(fixupOff int, targetOff int) {
 	rel := int16(targetOff - (fixupOff + 2))
 	putU16(g.code[fixupOff:fixupOff+2], uint16(rel))
 }
 
-//rtg:profile
 func (g *CodeGen) patchRel16(fixupOff int) {
 	g.patchRel16At(fixupOff, len(g.code))
 }
 
-//rtg:profile
 func (g *CodeGen) jmpRel16() int {
 	g.emitByte(0xE9)
 	off := len(g.code)
@@ -540,7 +522,6 @@ func (g *CodeGen) jmpRel16() int {
 //	jmp rel16
 //
 // returns offset of rel16 field in the jmp instruction.
-//rtg:profile
 func (g *CodeGen) jccNearRel16(cc byte) int {
 	inv := (cc & 0x0F) ^ 0x01
 	g.emitBytes(byte(0x70|inv), 0x03, 0xE9)
@@ -551,7 +532,6 @@ func (g *CodeGen) jccNearRel16(cc byte) int {
 
 // ===== Memory / pointer ops =====
 
-//rtg:profile
 func (g *CodeGen) memLoad(size int) {
 	g.opPop(REG16_BX) // addr
 	g.testRR16(REG16_BX, REG16_BX)
@@ -574,7 +554,6 @@ func (g *CodeGen) memLoad(size int) {
 	g.opPush(REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) memStore(size int) {
 	g.opPop(REG16_BX) // addr
 	g.opPop(REG16_AX) // value
@@ -586,7 +565,6 @@ func (g *CodeGen) memStore(size int) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) offset(delta int) {
 	g.opPop(REG16_AX)
 	if delta != 0 {
@@ -595,7 +573,6 @@ func (g *CodeGen) offset(delta int) {
 	g.opPush(REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) indexAddr(elemSize int) {
 	// stack: sliceHeaderPtr, index -> address
 	g.opPop(REG16_AX) // index
@@ -624,7 +601,6 @@ func (g *CodeGen) indexAddr(elemSize int) {
 	g.opPush(REG16_BX)
 }
 
-//rtg:profile
 func (g *CodeGen) sliceLen() {
 	// if nil => 0 else [hdr+2]
 	g.opPop(REG16_BX)
@@ -638,7 +614,6 @@ func (g *CodeGen) sliceLen() {
 	g.opPush(REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) sliceCap() {
 	// if nil => 0 else [hdr+4]
 	g.opPop(REG16_BX)
@@ -654,7 +629,6 @@ func (g *CodeGen) sliceCap() {
 
 // ===== Conversions =====
 
-//rtg:profile
 func (g *CodeGen) convert(typeName string) {
 	switch typeName {
 	case "string":
@@ -675,7 +649,6 @@ func (g *CodeGen) convert(typeName string) {
 
 // ===== Intrinsics =====
 
-//rtg:profile
 func (g *CodeGen) makeSliceIntrinsic() {
 	// Allocate 4-word header {ptr,len,cap,elem_size}
 	g.compileConst(8)
@@ -696,7 +669,6 @@ func (g *CodeGen) makeSliceIntrinsic() {
 	g.opPush(REG16_BX)
 }
 
-//rtg:profile
 func (g *CodeGen) makeStringIntrinsic() {
 	// Allocate 2-word header {ptr,len}
 	g.compileConst(4)
@@ -711,7 +683,6 @@ func (g *CodeGen) makeStringIntrinsic() {
 	g.opPush(REG16_BX)
 }
 
-//rtg:profile
 func (g *CodeGen) readPtrIntrinsic() {
 	// Param0 = addr (local0). Read word at addr.
 	g.loadLocal(2, REG16_BX)
@@ -719,7 +690,6 @@ func (g *CodeGen) readPtrIntrinsic() {
 	g.opPush(REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) writePtrIntrinsic() {
 	// Param0=addr, Param1=val
 	g.loadLocal(2, REG16_BX)
@@ -727,7 +697,6 @@ func (g *CodeGen) writePtrIntrinsic() {
 	g.emitStoreRM16(EA16_BX, 0, REG16_AX)
 }
 
-//rtg:profile
 func (g *CodeGen) writeByteIntrinsic() {
 	// Param0=addr, Param1=val (low byte)
 	g.loadLocal(2, REG16_BX)
@@ -735,7 +704,6 @@ func (g *CodeGen) writeByteIntrinsic() {
 	g.emitBytes(0x88, 0x07) // mov [bx], al
 }
 
-//rtg:profile
 func (g *CodeGen) compositeLitCall(fieldCount int) {
 	structSize := fieldCount * 2
 	if structSize == 0 {
@@ -779,13 +747,11 @@ func (g *CodeGen) opPop(reg int) {
 	g.emitBytes(0x8D, 0x7D, 0x02)
 }
 
-//rtg:profile
 func (g *CodeGen) opLoad(reg int) {
 	// mov reg, [di]
 	g.emitBytes(0x8B, byte(0x05|((reg&7)<<3)))
 }
 
-//rtg:profile
 func (g *CodeGen) opDrop() {
 	// add di, 2
 	g.emitBytes(0x83, 0xC7, 0x02)
@@ -796,19 +762,16 @@ func (g *CodeGen) opDrop() {
 // Local slot i is stored at [BP-2*(i+1)].
 // We pass "offset bytes" as (idx+1)*2 to match your existing layout.
 
-//rtg:profile
 func (g *CodeGen) loadLocal(offset int, reg int) {
 	disp := int16(-offset)
 	g.emitLoadRM16(reg, EA16_BP, disp)
 }
 
-//rtg:profile
 func (g *CodeGen) storeLocal(offset int, reg int) {
 	disp := int16(-offset)
 	g.emitStoreRM16(EA16_BP, disp, reg)
 }
 
-//rtg:profile
 func (g *CodeGen) leaLocal(offset int, reg int) {
 	disp := int16(-offset)
 	g.emitLeaRM16(reg, EA16_BP, disp)
@@ -816,11 +779,8 @@ func (g *CodeGen) leaLocal(offset int, reg int) {
 
 // ===== Tiny 8086 encoder =====
 
-//rtg:profile
 func (g *CodeGen) emitByte(b byte)      { g.code = append(g.code, b) }
-//rtg:profile
 func (g *CodeGen) emitBytes(bs ...byte) { g.code = append(g.code, bs...) }
-//rtg:profile
 func (g *CodeGen) emitU16(v uint16)     { g.code = append(g.code, byte(v), byte(v>>8)) }
 func putU16(b []byte, v uint16)         { b[0], b[1] = byte(v), byte(v>>8) }
 func getU16(b []byte) uint16            { return uint16(b[0]) | uint16(b[1])<<8 }
@@ -829,50 +789,32 @@ func modrmMem16(mod byte, reg int, rm byte) byte {
 	return byte((mod << 6) | byte((reg&7)<<3) | (rm & 7))
 }
 
-//rtg:profile
 func (g *CodeGen) emitMovImm16(reg int, v uint16) {
 	g.emitByte(byte(0xB8 + (reg & 7)))
 	g.emitU16(v)
 }
 
-//rtg:profile
 func (g *CodeGen) pushR16(reg int) { g.emitByte(byte(0x50 + (reg & 7))) }
-//rtg:profile
 func (g *CodeGen) popR16(reg int)  { g.emitByte(byte(0x58 + (reg & 7))) }
 
-//rtg:profile
 func (g *CodeGen) movRR16(dst, src int) { g.emitBytes(0x89, modrmRR16(src, dst)) }
-//rtg:profile
 func (g *CodeGen) addRR16(dst, src int) { g.emitBytes(0x01, modrmRR16(src, dst)) }
-//rtg:profile
 func (g *CodeGen) subRR16(dst, src int) { g.emitBytes(0x29, modrmRR16(src, dst)) }
-//rtg:profile
 func (g *CodeGen) andRR16(dst, src int) { g.emitBytes(0x21, modrmRR16(src, dst)) }
-//rtg:profile
 func (g *CodeGen) orRR16(dst, src int)  { g.emitBytes(0x09, modrmRR16(src, dst)) }
-//rtg:profile
 func (g *CodeGen) xorRR16(dst, src int) { g.emitBytes(0x31, modrmRR16(src, dst)) }
-//rtg:profile
 func (g *CodeGen) cmpRR16(a, b int)     { g.emitBytes(0x39, modrmRR16(b, a)) }
-//rtg:profile
 func (g *CodeGen) testRR16(a, b int)    { g.emitBytes(0x85, modrmRR16(b, a)) }
 
-//rtg:profile
 func (g *CodeGen) negR16(reg int)  { g.emitBytes(0xF7, byte(0xD8|(reg&7))) }
-//rtg:profile
 func (g *CodeGen) cwd16()          { g.emitByte(0x99) }
-//rtg:profile
 func (g *CodeGen) idivR16(reg int) { g.emitBytes(0xF7, byte(0xF8|(reg&7))) }
 
 // one-operand IMUL r/m16: F7 /5
-//rtg:profile
 func (g *CodeGen) imulR16(reg int) { g.emitBytes(0xF7, byte(0xE8|(reg&7))) }
 
-//rtg:profile
 func (g *CodeGen) shlCl16(reg int) { g.emitBytes(0xD3, byte(0xE0|(reg&7))) }
-//rtg:profile
 func (g *CodeGen) sarCl16(reg int) { g.emitBytes(0xD3, byte(0xF8|(reg&7))) }
-//rtg:profile
 func (g *CodeGen) shlImm16(reg int, n byte) {
 	// 8086 has no C1 /4 imm8 form; use repeated 1-bit shifts (D1 /4).
 	for i := byte(0); i < n; i++ {
@@ -880,7 +822,6 @@ func (g *CodeGen) shlImm16(reg int, n byte) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) addImm16(reg int, v int16) {
 	if v >= -128 && v <= 127 {
 		g.emitBytes(0x83, byte(0xC0|(reg&7)), byte(v))
@@ -894,7 +835,6 @@ func (g *CodeGen) addImm16(reg int, v int16) {
 	g.emitU16(uint16(v))
 }
 
-//rtg:profile
 func (g *CodeGen) subImm16(reg int, v int16) {
 	if v >= -128 && v <= 127 {
 		g.emitBytes(0x83, byte(0xE8|(reg&7)), byte(v))
@@ -904,7 +844,6 @@ func (g *CodeGen) subImm16(reg int, v int16) {
 	g.emitU16(uint16(v))
 }
 
-//rtg:profile
 func (g *CodeGen) cmpImm16(reg int, v int16) {
 	if v >= -128 && v <= 127 {
 		g.emitBytes(0x83, byte(0xF8|(reg&7)), byte(v))
@@ -918,18 +857,14 @@ func (g *CodeGen) cmpImm16(reg int, v int16) {
 	g.emitU16(uint16(v))
 }
 
-//rtg:profile
 func (g *CodeGen) xorImm8_16(reg int, v byte) {
 	g.emitBytes(0x83, byte(0xF0|(reg&7)), v)
 }
 
-//rtg:profile
 func (g *CodeGen) leave16() { g.emitByte(0xC9) }
-//rtg:profile
 func (g *CodeGen) ret16()   { g.emitByte(0xC3) }
 
 // emitLoadRM16: mov reg16, [ea+disp]
-//rtg:profile
 func (g *CodeGen) emitLoadRM16(dst int, ea int, disp int16) {
 	mod := byte(0)
 	if ea == EA16_BP && disp == 0 {
@@ -952,7 +887,6 @@ func (g *CodeGen) emitLoadRM16(dst int, ea int, disp int16) {
 }
 
 // emitStoreRM16: mov [ea+disp], reg16
-//rtg:profile
 func (g *CodeGen) emitStoreRM16(ea int, disp int16, src int) {
 	mod := byte(0)
 	if ea == EA16_BP && disp == 0 {
@@ -975,7 +909,6 @@ func (g *CodeGen) emitStoreRM16(ea int, disp int16, src int) {
 }
 
 // emitLeaRM16: lea reg16, [ea+disp]
-//rtg:profile
 func (g *CodeGen) emitLeaRM16(dst int, ea int, disp int16) {
 	mod := byte(0)
 	if ea == EA16_BP && disp == 0 {

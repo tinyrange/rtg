@@ -4,12 +4,10 @@ package dos
 
 import "j5.nz/rtg/std/compiler/backend/becommon"
 
-//rtg:profile
 func (g *CodeGen) tostringIntrinsic() {
 	g.compileTostringBody()
 }
 
-//rtg:profile
 func (g *CodeGen) emitTostringHelper() {
 	if g.hasTostringHelper {
 		return
@@ -27,7 +25,6 @@ func (g *CodeGen) emitTostringHelper() {
 	g.ret16()
 }
 
-//rtg:profile
 func (g *CodeGen) compileTostringBody() {
 	g.loadLocal(2, REG16_BX)
 	g.emitLoadRM16(REG16_CX, EA16_BX, 0)
@@ -83,7 +80,6 @@ func (g *CodeGen) compileTostringBody() {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) ifaceBox(typeID int) {
 	g.opPop(REG16_AX)
 	g.pushR16(REG16_AX)
@@ -97,7 +93,6 @@ func (g *CodeGen) ifaceBox(typeID int) {
 	g.opPush(REG16_BX)
 }
 
-//rtg:profile
 func (g *CodeGen) ifaceCall(methodName string, argCount int) {
 	for i := 0; i < argCount; i++ {
 		g.opPop(REG16_AX)

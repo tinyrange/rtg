@@ -6,7 +6,6 @@ type profileCounter struct {
 	base int
 }
 
-//rtg:profile
 func (c profileCounter) Sum(n int) int {
 	total := 0
 	i := 0

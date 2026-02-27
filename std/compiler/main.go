@@ -133,7 +133,6 @@ func traceExit(code int) {
 	}
 }
 
-//rtg:profile
 func main() {
 	if err := loadBuiltinTargetDefinitions(); err != nil {
 		fmt.Fprintf(os.Stderr, "rtg: failed to load built-in target definitions: %v\n", err)
@@ -774,7 +773,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
 	fmt.Fprintf(out, "  -strict                Reject RTG-only language extensions in user packages\n")
-	fmt.Fprintf(out, "  -profile               Enable //rtg:profile function/method instrumentation\n")
+	fmt.Fprintf(out, "  -profile               Enable profiling (compiler/target methods+functions default-on; //rtg:noprofile opts out; //rtg:profile opts in elsewhere)\n")
 	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated callable tree\n")
 	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")

@@ -4,7 +4,6 @@ package dos
 
 import "j5.nz/rtg/std/compiler/backend/becommon"
 
-//rtg:profile
 func (g *CodeGen) compileConstStr(raw string) {
 	decoded := becommon.DecodeStringLiteral(raw)
 

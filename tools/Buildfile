@@ -3,6 +3,15 @@ default: build
 build:
   sh go build -o build/rtg ./std/compiler/
 
+profile-stage2-flamechart: build
+  sh ./build/rtg -strict -profile -o build/stage1.profiled ./std/compiler/
+  sh ./build/stage1.profiled -strict -profile -o build/stage2.profiled ./std/compiler/
+  sh rm -f build/stage2.profile build/stage2.profile.report.txt build/stage2.profile.flamechart.html
+  sh RTG_PROFILE=build/stage2.profile ./build/stage2.profiled -strict -o build/stage3 ./std/compiler/
+  sh ./build/rtg -profile-report build/stage2.profile ./std/compiler/ > build/stage2.profile.report.txt
+  sh python3 tools/profile_report_flamechart.py build/stage2.profile.report.txt -o build/stage2.profile.flamechart.html
+  sh echo "PASS: wrote build/stage2.profile.flamechart.html"
+
 selfhost: build
   sh ./build/rtg -strict -o build/stage1 ./std/compiler/
   sh ./build/stage1 -strict -o build/stage_out ./std/compiler/ && mv build/stage_out build/stage2

@@ -350,7 +350,6 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 
 // === Memory operations ===
 
-//rtg:profile
 func (vm *VM) ensureMemory(needed int) {
 	if needed <= len(vm.memory) {
 		return
@@ -369,7 +368,6 @@ func (vm *VM) ensureMemory(needed int) {
 }
 
 // trackCaller attributes an allocation to the nearest non-runtime caller.
-//rtg:profile
 func (vm *VM) trackCaller(size int64) {
 	depth := len(vm.callStack)
 	if depth == 0 {
@@ -385,7 +383,6 @@ func (vm *VM) trackCaller(size int64) {
 	vm.callerCount[caller] = vm.callerCount[caller] + 1
 }
 
-//rtg:profile
 func (vm *VM) alloc(size uint64, tag string) uint64 {
 	if size == 0 {
 		size = 1
@@ -413,7 +410,6 @@ func (vm *VM) alloc(size uint64, tag string) uint64 {
 	return addr
 }
 
-//rtg:profile
 func (vm *VM) slabAllocSmall(tag string) uint64 {
 	sz := int64(vm.slabSmallSize)
 	if vm.slabSmallFree != 0 {
@@ -455,7 +451,6 @@ func (vm *VM) slabAllocSmall(tag string) uint64 {
 	return page
 }
 
-//rtg:profile
 func (vm *VM) slabAllocLarge(tag string) uint64 {
 	sz := int64(vm.slabLargeSize)
 	if vm.slabLargeFree != 0 {
@@ -500,13 +495,11 @@ func (vm *VM) slabAllocLarge(tag string) uint64 {
 	return page
 }
 
-//rtg:profile
 func (vm *VM) slabFreeSmall(addr uint64) {
 	vm.storeWord(addr, vm.slabSmallFree)
 	vm.slabSmallFree = addr
 }
 
-//rtg:profile
 func (vm *VM) slabFreeLarge(addr uint64) {
 	vm.storeWord(addr, vm.slabLargeFree)
 	vm.slabLargeFree = addr
@@ -563,7 +556,6 @@ func vmFormatBytes(bytes int64) string {
 	return fmt.Sprintf("%dMB", mb)
 }
 
-//rtg:profile
 func (vm *VM) loadN(addr uint64, n int) uint64 {
 	if addr == 0 {
 		return 0
@@ -581,7 +573,6 @@ func (vm *VM) loadN(addr uint64, n int) uint64 {
 	return val
 }
 
-//rtg:profile
 func (vm *VM) storeN(addr uint64, val uint64, n int) {
 	a := int(addr)
 	vm.ensureMemory(a + n)
@@ -592,27 +583,22 @@ func (vm *VM) storeN(addr uint64, val uint64, n int) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) loadWord(addr uint64) uint64 {
 	return vm.loadN(addr, vm.config.WordSize)
 }
 
-//rtg:profile
 func (vm *VM) storeWord(addr uint64, val uint64) {
 	vm.storeN(addr, val&vm.config.WordMask, vm.config.WordSize)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmEmit(b ...byte) {
 	vm.asmAmd64Code = append(vm.asmAmd64Code, b...)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmEmitU32(v uint32) {
 	vm.vmAsmEmit(byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmRex(w bool, r int, b int) byte {
 	rex := byte(0x40)
 	if w {
@@ -627,7 +613,6 @@ func (vm *VM) vmAsmRex(w bool, r int, b int) byte {
 	return rex
 }
 
-//rtg:profile
 func (vm *VM) vmAsmEmitMovRegImm64(dst int, imm int64) {
 	vm.vmAsmEmit(vm.vmAsmRex(true, 0, dst), byte(0xb8+(dst&7)))
 	u := uint64(imm)
@@ -638,7 +623,6 @@ func (vm *VM) vmAsmEmitMovRegImm64(dst int, imm int64) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) vmAsmEmitLoadParam(dst int, paramIdx int) {
 	off := (paramIdx + 1) * 8
 	rex := vm.vmAsmRex(true, dst, 5)
@@ -651,7 +635,6 @@ func (vm *VM) vmAsmEmitLoadParam(dst int, paramIdx int) {
 	vm.vmAsmEmit(byte(d), byte(d>>8), byte(d>>16), byte(d>>24))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmEmitStoreLocal(src int, slot int) {
 	off := (slot + 1) * 8
 	rex := vm.vmAsmRex(true, src, 5)
@@ -664,7 +647,6 @@ func (vm *VM) vmAsmEmitStoreLocal(src int, slot int) {
 	vm.vmAsmEmit(byte(d), byte(d>>8), byte(d>>16), byte(d>>24))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmPushReg(reg int) {
 	vm.vmAsmEmit(0x4d, 0x8d, 0x7f, 0xf8)
 	rex := byte(0x49)
@@ -674,7 +656,6 @@ func (vm *VM) vmAsmPushReg(reg int) {
 	vm.vmAsmEmit(rex, 0x89, byte(0x07|((reg&7)<<3)))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmPopReg(reg int) {
 	rex := byte(0x49)
 	if reg >= 8 {
@@ -684,7 +665,6 @@ func (vm *VM) vmAsmPopReg(reg int) {
 	vm.vmAsmEmit(0x4d, 0x8d, 0x7f, 0x08)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmBegin(params int) {
 	vm.asmAmd64Code = vm.asmAmd64Code[:0]
 	vm.asmAmd64Fixups = vm.asmAmd64Fixups[:0]
@@ -708,13 +688,11 @@ func (vm *VM) vmAsmBegin(params int) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) vmAsmI386EmitMovRegImm32(dst int, imm int32) {
 	vm.vmAsmEmit(byte(0xb8 + (dst & 7)))
 	vm.vmAsmEmitU32(uint32(imm))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmI386EmitLoadParam(dst int, paramIdx int) {
 	off := (paramIdx + 1) * 4
 	if off <= 127 {
@@ -725,7 +703,6 @@ func (vm *VM) vmAsmI386EmitLoadParam(dst int, paramIdx int) {
 	vm.vmAsmEmitU32(uint32(-off))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmI386EmitStoreLocal(src int, slot int) {
 	off := (slot + 1) * 4
 	if off <= 127 {
@@ -736,19 +713,16 @@ func (vm *VM) vmAsmI386EmitStoreLocal(src int, slot int) {
 	vm.vmAsmEmitU32(uint32(-off))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmI386PushReg(reg int) {
 	vm.vmAsmEmit(0x8d, 0x7f, 0xfc)
 	vm.vmAsmEmit(0x89, byte(0x07|((reg&7)<<3)))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmI386PopReg(reg int) {
 	vm.vmAsmEmit(0x8b, byte(0x07|((reg&7)<<3)))
 	vm.vmAsmEmit(0x8d, 0x7f, 0x04)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmI386Begin(params int) {
 	vm.asmAmd64Code = vm.asmAmd64Code[:0]
 	vm.asmAmd64Fixups = vm.asmAmd64Fixups[:0]
@@ -772,44 +746,36 @@ func (vm *VM) vmAsmI386Begin(params int) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64Emit(inst uint32) {
 	vm.vmAsmEmitU32(inst)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64AddImm(rd int, rn int, imm12 uint32) {
 	vm.vmAsmArm64Emit(uint32(0x91000000) | ((imm12 & 0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64SubImm(rd int, rn int, imm12 uint32) {
 	vm.vmAsmArm64Emit(uint32(0xD1000000) | ((imm12 & 0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64SubRR(rd int, rn int, rm int) {
 	vm.vmAsmArm64Emit(uint32(0xCB000000) | (uint32(rm&0x1f) << 16) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64MovReg(rd int, rm int) {
 	vm.vmAsmArm64AddImm(rd, rm, 0)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64MovZ(rd int, imm16 uint16, shift int) {
 	hw := uint32((shift / 16) & 3)
 	vm.vmAsmArm64Emit(uint32(0xD2800000) | (hw << 21) | (uint32(imm16) << 5) | uint32(rd&0x1f))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64MovK(rd int, imm16 uint16, shift int) {
 	hw := uint32((shift / 16) & 3)
 	vm.vmAsmArm64Emit(uint32(0xF2800000) | (hw << 21) | (uint32(imm16) << 5) | uint32(rd&0x1f))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64LoadImm64(dst int, imm int64) {
 	u := uint64(imm)
 	vm.vmAsmArm64MovZ(dst, uint16(u&0xffff), 0)
@@ -818,7 +784,6 @@ func (vm *VM) vmAsmArm64LoadImm64(dst int, imm int64) {
 	vm.vmAsmArm64MovK(dst, uint16((u>>48)&0xffff), 48)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64Ldr(rt int, rn int, offset int) {
 	if offset == 0 {
 		vm.vmAsmArm64Emit(uint32(0xF9400000) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f))
@@ -833,7 +798,6 @@ func (vm *VM) vmAsmArm64Ldr(rt int, rn int, offset int) {
 	vm.vmAsmArm64Emit(uint32(0xF8400000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64Str(rt int, rn int, offset int) {
 	if offset == 0 {
 		vm.vmAsmArm64Emit(uint32(0xF9000000) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f))
@@ -848,29 +812,24 @@ func (vm *VM) vmAsmArm64Str(rt int, rn int, offset int) {
 	vm.vmAsmArm64Emit(uint32(0xF8000000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64PushReg(reg int) {
 	vm.vmAsmArm64SubImm(28, 28, 8)
 	vm.vmAsmArm64Str(reg, 28, 0)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64PopReg(reg int) {
 	vm.vmAsmArm64Ldr(reg, 28, 0)
 	vm.vmAsmArm64AddImm(28, 28, 8)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64EmitLoadParam(dst int, paramIdx int) {
 	vm.vmAsmArm64Ldr(dst, 29, -(paramIdx+1)*8)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64EmitStoreLocal(src int, slot int) {
 	vm.vmAsmArm64Str(src, 29, -(slot+1)*8)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmArm64Begin(params int) {
 	vm.asmAmd64Code = vm.asmAmd64Code[:0]
 	vm.asmAmd64Fixups = vm.asmAmd64Fixups[:0]
@@ -897,7 +856,6 @@ func (vm *VM) vmAsmArm64Begin(params int) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) vmAsmByteSlice(data []byte, tag string) uint64 {
 	ws := uint64(vm.config.WordSize)
 	dataAddr := vm.alloc(uint64(len(data)), tag+"-data")
@@ -910,7 +868,6 @@ func (vm *VM) vmAsmByteSlice(data []byte, tag string) uint64 {
 	return hdr
 }
 
-//rtg:profile
 func (vm *VM) vmAsmFixupBytes() []byte {
 	var out []byte
 	for _, fx := range vm.asmAmd64Fixups {
@@ -923,7 +880,6 @@ func (vm *VM) vmAsmFixupBytes() []byte {
 	return out
 }
 
-//rtg:profile
 func (vm *VM) signExtend(val uint64) int64 {
 	if val&vm.config.SignBit != 0 {
 		return int64(val | ^vm.config.WordMask)
@@ -966,7 +922,6 @@ func signExtendWidth(val uint64, w int) int64 {
 }
 
 // effectiveWidth returns the instruction's width, or the VM word size if 0.
-//rtg:profile
 func (vm *VM) effectiveWidth(w int) int {
 	if w == 0 {
 		return vm.config.WordSize
@@ -975,14 +930,12 @@ func (vm *VM) effectiveWidth(w int) int {
 }
 
 // maskResult masks a value to the effective width and returns the masked result.
-//rtg:profile
 func (vm *VM) maskResult(val uint64, instWidth int) uint64 {
 	w := vm.effectiveWidth(instWidth)
 	return val & widthMask(w)
 }
 
 // signExtendW sign-extends a value using the effective width.
-//rtg:profile
 func (vm *VM) signExtendW(val uint64, instWidth int) int64 {
 	w := vm.effectiveWidth(instWidth)
 	if w >= 8 {
@@ -993,7 +946,6 @@ func (vm *VM) signExtendW(val uint64, instWidth int) int64 {
 
 // === Stack operations ===
 
-//rtg:profile
 func (vm *VM) push(val uint64) {
 	if vm.sp >= len(vm.stack) {
 		vm.stack = append(vm.stack, val)
@@ -1006,7 +958,6 @@ func (vm *VM) push(val uint64) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) pop() uint64 {
 	vm.sp = vm.sp - 1
 	return vm.stack[vm.sp]
@@ -1014,7 +965,6 @@ func (vm *VM) pop() uint64 {
 
 // === String helpers ===
 
-//rtg:profile
 func (vm *VM) internString(s string) uint64 {
 	ws := uint64(vm.config.WordSize)
 	dataAddr := vm.alloc(uint64(len(s)), "str-data")
@@ -1030,7 +980,6 @@ func (vm *VM) internString(s string) uint64 {
 	return hdrAddr
 }
 
-//rtg:profile
 func (vm *VM) readCString(addr uint64) string {
 	var buf []byte
 	a := int(addr)
@@ -1041,7 +990,6 @@ func (vm *VM) readCString(addr uint64) string {
 	return string(buf)
 }
 
-//rtg:profile
 func (vm *VM) readString(addr uint64) string {
 	if addr == 0 {
 		return ""
@@ -1065,7 +1013,6 @@ func (vm *VM) readString(addr uint64) string {
 	return string(buf)
 }
 
-//rtg:profile
 func (vm *VM) writeCString(s string) uint64 {
 	addr := vm.alloc(uint64(len(s)+1), "cstr")
 	a := int(addr)
@@ -1078,7 +1025,6 @@ func (vm *VM) writeCString(s string) uint64 {
 	return addr
 }
 
-//rtg:profile
 func (vm *VM) copyToVM(dst int, src []byte, n int) {
 	vm.ensureMemory(dst + n)
 	i := 0
@@ -1088,7 +1034,6 @@ func (vm *VM) copyToVM(dst int, src []byte, n int) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) copyFromVM(dst []byte, src int, n int) {
 	i := 0
 	for i < n {
@@ -1097,7 +1042,6 @@ func (vm *VM) copyFromVM(dst []byte, src int, n int) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) copyStringToVM(dst int, s string, n int) {
 	vm.ensureMemory(dst + n)
 	i := 0
@@ -1109,7 +1053,6 @@ func (vm *VM) copyStringToVM(dst int, s string, n int) {
 
 // === Dispatch table ===
 
-//rtg:profile
 func (vm *VM) buildDispatchTable(irmod *ir.IRModule) {
 	var methods []string
 	for _, f := range irmod.Funcs {
@@ -1173,7 +1116,6 @@ func (vm *VM) buildDispatchTable(irmod *ir.IRModule) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) findDispatch(typeID int, methodID int) string {
 	i := 0
 	for i < len(vm.dispatch) {
@@ -1198,7 +1140,6 @@ func vmBareMethod(name string) string {
 
 // === Tostring ===
 
-//rtg:profile
 func (vm *VM) tostring(v uint64) uint64 {
 	if v == 0 {
 		return 0
@@ -1245,7 +1186,6 @@ func (vm *VM) tostring(v uint64) uint64 {
 
 // === Syscall return helper ===
 
-//rtg:profile
 func (vm *VM) vmSysReturn(rv int64) {
 	if rv < 0 {
 		vm.push(0)
@@ -1258,7 +1198,6 @@ func (vm *VM) vmSysReturn(rv int64) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) execIntrinsicArgs(name string, ws uint64, args ...uint64) {
 	if len(args) == 0 {
 		vm.execIntrinsic(name, 0, ws)
@@ -1283,14 +1222,12 @@ func (vm *VM) execIntrinsicArgs(name string, ws uint64, args ...uint64) {
 
 // === Local variable helper ===
 
-//rtg:profile
 func (vm *VM) localGet(localsAddr uint64, ws uint64, idx int) uint64 {
 	return vm.loadWord(localsAddr + uint64(idx)*ws)
 }
 
 // === Execution ===
 
-//rtg:profile
 func (vm *VM) execFunc(f *ir.IRFunc) {
 	if vm.exited {
 		return
@@ -1822,7 +1759,6 @@ func (vm *VM) execFunc(f *ir.IRFunc) {
 
 // === Builtin composite literal ===
 
-//rtg:profile
 func (vm *VM) builtinComposite(fieldCount int) {
 	ws := uint64(vm.config.WordSize)
 	if fieldCount <= 0 {
@@ -1846,7 +1782,6 @@ func (vm *VM) builtinComposite(fieldCount int) {
 
 // === Intrinsics ===
 
-//rtg:profile
 func (vm *VM) vmSysRemoveAll(pathAddr uint64) {
 	path := vm.readCString(pathAddr)
 	err := os.RemoveAll(path)
@@ -1857,7 +1792,6 @@ func (vm *VM) vmSysRemoveAll(pathAddr uint64) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) vmSysReaddir(localsAddr uint64, ws uint64, withType bool) {
 	handle := int(vm.localGet(localsAddr, ws, 0))
 	nameBuf := vm.localGet(localsAddr, ws, 1)
@@ -1892,7 +1826,6 @@ func (vm *VM) vmSysReaddir(localsAddr uint64, ws uint64, withType bool) {
 	vm.vmSysReturn(int64(n))
 }
 
-//rtg:profile
 func (vm *VM) vmAsmEmitBytes(localsAddr uint64, ws uint64, name string) {
 	n := int(vm.localGet(localsAddr, ws, 0))
 	if n < 0 {
@@ -1908,7 +1841,6 @@ func (vm *VM) vmAsmEmitBytes(localsAddr uint64, ws uint64, name string) {
 	}
 }
 
-//rtg:profile
 func (vm *VM) vmAsmCallAmd64(localsAddr uint64, ws uint64, argc int) {
 	dst := int(vm.localGet(localsAddr, ws, 0))
 	target := vm.readString(vm.localGet(localsAddr, ws, 1))
@@ -1923,7 +1855,6 @@ func (vm *VM) vmAsmCallAmd64(localsAddr uint64, ws uint64, argc int) {
 	vm.vmAsmPopReg(dst)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmCallI386(localsAddr uint64, ws uint64, argc int) {
 	dst := int(vm.localGet(localsAddr, ws, 0))
 	target := vm.readString(vm.localGet(localsAddr, ws, 1))
@@ -1938,7 +1869,6 @@ func (vm *VM) vmAsmCallI386(localsAddr uint64, ws uint64, argc int) {
 	vm.vmAsmI386PopReg(dst)
 }
 
-//rtg:profile
 func (vm *VM) vmAsmCallArm64(localsAddr uint64, ws uint64, argc int) {
 	dst := int(vm.localGet(localsAddr, ws, 0))
 	target := vm.readString(vm.localGet(localsAddr, ws, 1))
@@ -1953,7 +1883,6 @@ func (vm *VM) vmAsmCallArm64(localsAddr uint64, ws uint64, argc int) {
 	vm.vmAsmArm64PopReg(dst)
 }
 
-//rtg:profile
 func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 	switch name {
 	case "SysRead":

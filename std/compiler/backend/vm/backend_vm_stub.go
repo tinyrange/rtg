@@ -27,22 +27,18 @@ func NewEvalStateNoInit(target *common.Target, irmod *ir.IRModule) (*EvalState, 
 	return nil, fmt.Errorf("vm backend disabled (built with no_backend_vm tag)")
 }
 
-//rtg:profile
 func (e *EvalState) Call(funcName string, args []uint64, retCount int) ([]uint64, error) {
 	return nil, fmt.Errorf("vm backend disabled (built with no_backend_vm tag)")
 }
 
-//rtg:profile
 func (e *EvalState) WordSize() int {
 	return 0
 }
 
-//rtg:profile
 func (e *EvalState) LoadWord(addr uint64) uint64 {
 	return 0
 }
 
-//rtg:profile
 func (e *EvalState) LoadBytes(addr uint64, n int) ([]byte, error) {
 	return nil, fmt.Errorf("vm backend disabled (built with no_backend_vm tag)")
 }

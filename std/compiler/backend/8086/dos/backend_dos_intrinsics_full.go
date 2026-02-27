@@ -2,7 +2,6 @@
 
 package dos
 
-//rtg:profile
 func (g *CodeGen) callIntrinsic(name string) {
 	switch name {
 	case "Syscall":
@@ -32,7 +31,6 @@ func (g *CodeGen) callIntrinsic(name string) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) compileSyscallIntrinsic() {
 	g.loadLocal(2, REG16_AX)
 	g.cmpImm16(REG16_AX, 3)
