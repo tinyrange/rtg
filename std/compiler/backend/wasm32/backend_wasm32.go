@@ -36,6 +36,7 @@ type WasmGen struct {
 	wasiFdReaddir        int
 	wasiFdPrestatGet     int
 	wasiFdPrestatDirName int
+	wasiClockTimeGet     int
 
 	// WASM global indices
 	globalSP int // shadow stack pointer
@@ -238,6 +239,11 @@ func (g *WasmGen) setupWASIImports() {
 	// fd_prestat_dir_name(fd: i32, path: i32, path_len: i32) -> i32
 	g.wasiFdPrestatDirName = g.mod.addImport(wasi, "fd_prestat_dir_name",
 		[]byte{WASM_TYPE_I32, WASM_TYPE_I32, WASM_TYPE_I32},
+		[]byte{WASM_TYPE_I32})
+
+	// clock_time_get(clock_id: i32, precision: i64, time_ptr: i32) -> i32
+	g.wasiClockTimeGet = g.mod.addImport(wasi, "clock_time_get",
+		[]byte{WASM_TYPE_I32, WASM_TYPE_I64, WASM_TYPE_I32},
 		[]byte{WASM_TYPE_I32})
 }
 
@@ -2125,6 +2131,24 @@ func (g *WasmGen) compileCallIntrinsic(inst ir.Inst) {
 		g.w.i32Const(0)
 		g.pushType(WASM_TYPE_I32)
 		g.w.i32Const(0)
+		g.pushType(WASM_TYPE_I32)
+	case "SysNanoTime":
+		// clock_time_get(CLOCK_MONOTONIC=1, precision=1ns, out_ptr)
+		scratch := g.scratchAddr
+		tmpErr := uint32(g.tempLocal)
+		g.w.i32Const(1)
+		g.w.i64Const(1)
+		g.w.i32Const(scratch)
+		g.w.call(uint32(g.wasiClockTimeGet))
+		g.w.localSet(tmpErr)
+		g.w.localGet(tmpErr)
+		g.w.ifOp(WASM_TYPE_I32)
+		g.w.i32Const(0)
+		g.w.elseOp()
+		g.w.i32Const(scratch)
+		g.w.i64Load(3, 0)
+		g.w.i32WrapI64()
+		g.w.end()
 		g.pushType(WASM_TYPE_I32)
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic()

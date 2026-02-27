@@ -2205,6 +2205,11 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.push(0)
 		vm.push(0)
 
+	case "SysNanoTime":
+		// VM backend has no wall-clock API in self-host mode; use a strictly
+		// increasing execution counter as a monotonic process-relative source.
+		vm.push(uint64(vm.stepCount) & vm.config.WordMask)
+
 	case "SysGetdents64":
 		// Directory entry layout differs by target ABI; not emulated here.
 		vm.vmSysReturn(-38)
