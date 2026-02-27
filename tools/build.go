@@ -705,6 +705,9 @@ func fullCompilerSkipReason(backend string, targetOS string, targetArch string, 
 	if backend == "rtg" && targetOS == "semihost" && targetArch == "armv8m" && name == "04_defer_no_effect" {
 		return "known armv8m defer runtime issue"
 	}
+	if backend == "rtg" && name == "53_runtime_now" && (targetOS == "dos" || targetArch == "armv8m") {
+		return "runtime.Now is only implemented on linux/windows/darwin/wasi/c/vm targets"
+	}
 	return ""
 }
 
@@ -864,10 +867,6 @@ func (e *Executor) handleFullCompiler(args []string) error {
 		name := strings.TrimSuffix(base, fileExt(base))
 		if reason := fullCompilerSkipReason(backend, targetOS, targetArch, name); reason != "" {
 			fmt.Printf("SKIP: %s/%s (%s)\n", backend, name, reason)
-			continue
-		}
-		if backend == "rtg" && name == "53_runtime_now" && (targetOS == "dos" || targetArch == "armv8m") {
-			fmt.Printf("SKIP: %s/%s (runtime.Now is only implemented on linux/windows/darwin/wasi/c/vm targets)\n", backend, name)
 			continue
 		}
 
