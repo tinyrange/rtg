@@ -133,6 +133,7 @@ func traceExit(code int) {
 	}
 }
 
+//rtg:profile
 func main() {
 	if err := loadBuiltinTargetDefinitions(); err != nil {
 		fmt.Fprintf(os.Stderr, "rtg: failed to load built-in target definitions: %v\n", err)
@@ -773,8 +774,8 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
 	fmt.Fprintf(out, "  -strict                Reject RTG-only language extensions in user packages\n")
-	fmt.Fprintf(out, "  -profile               Enable //rtg:profile method instrumentation\n")
-	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated method tree\n")
+	fmt.Fprintf(out, "  -profile               Enable //rtg:profile function/method instrumentation\n")
+	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated callable tree\n")
 	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")
 		fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
@@ -839,7 +840,7 @@ func runProfileReport(profilePath string, entryFiles []string) error {
 
 	nameByHash := make(map[uint32]string)
 	if len(entryFiles) > 0 {
-		mapped, err := collectProfileMethodNameHashes(entryFiles)
+		mapped, err := collectProfileCallableNameHashes(entryFiles)
 		if err != nil {
 			return err
 		}
@@ -871,7 +872,7 @@ func runProfileReport(profilePath string, entryFiles []string) error {
 		fmt.Fprintf(os.Stdout, "note: ignored %d trailing bytes (incomplete record)\n", len(data)-limit)
 	}
 	if len(entryFiles) > 0 && len(nameByHash) == 0 {
-		fmt.Fprintf(os.Stdout, "note: no methods discovered in provided source inputs\n")
+		fmt.Fprintf(os.Stdout, "note: no functions or methods discovered in provided source inputs\n")
 	}
 	return nil
 }
@@ -932,6 +933,7 @@ func profileTreeAppendChildren(node *profileTreeNode, parentHash uint32, childre
 		child := buildProfileTreeNode(edge, childrenByParent, nameByHash, visited)
 		node.Children = append(node.Children, child)
 		if node.Calls == 0 {
+			// Parent-only synthetic nodes don't have direct edge stats.
 			node.Total = node.Total + child.Total
 		}
 	}
@@ -1016,20 +1018,24 @@ func profilePrintTree(node *profileTreeNode, prefix string) {
 			branch = "\\- "
 			nextPrefix = prefix + "   "
 		}
-		if len(child.Children) == 0 {
+		avg := uint64(0)
+		if child.Calls > 0 {
+			avg = child.Total / child.Calls
+		}
+		if child.Calls > 0 {
+			fmt.Fprintf(os.Stdout, "%s%s%s total=%dns calls=%d avg=%dns\n", prefix, branch, child.Name, child.Total, child.Calls, avg)
+		} else if len(child.Children) == 0 {
+			// Keep explicit zero-call leaf records stable for tooling.
 			avg := uint64(0)
-			if child.Calls > 0 {
-				avg = child.Total / child.Calls
-			}
 			fmt.Fprintf(os.Stdout, "%s%s%s total=%dns calls=%d avg=%dns\n", prefix, branch, child.Name, child.Total, child.Calls, avg)
 		} else {
 			fmt.Fprintf(os.Stdout, "%s%s%s total=%dns\n", prefix, branch, child.Name, child.Total)
-			profilePrintTree(child, nextPrefix)
 		}
+		profilePrintTree(child, nextPrefix)
 	}
 }
 
-func collectProfileMethodNameHashes(entryFiles []string) (map[uint32]string, error) {
+func collectProfileCallableNameHashes(entryFiles []string) (map[uint32]string, error) {
 	var baseDir string
 	var err error
 	if stdlib.HasEmbeddedStd() {
@@ -1043,7 +1049,7 @@ func collectProfileMethodNameHashes(entryFiles []string) (map[uint32]string, err
 	frontend.ResetDiscoveredBuildTags()
 	mod := frontend.ResolveModule(&compileTarget, baseDir, entryFiles)
 	out := make(map[uint32]string)
-	for _, qname := range frontend.CollectMethodQualNames(mod) {
+	for _, qname := range frontend.CollectCallableQualNames(mod) {
 		out[profileHash32(qname)] = qname
 	}
 	return out, nil
