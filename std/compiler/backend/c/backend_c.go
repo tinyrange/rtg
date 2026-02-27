@@ -158,6 +158,8 @@ func cEmitIntrinsicHostCall(bp *strings.Builder, name string) bool {
 		cEmitIntrinsicResultCall(bp, "rtg_host_chmod(locals[0], locals[1])")
 	case "SysGetpid":
 		bp.WriteString("  rtg_push((rtg_word)rtg_host_getpid()); rtg_push(0); rtg_push(0);\n")
+	case "SysNanoTime":
+		bp.WriteString("  rtg_push((rtg_word)rtg_host_nano_time());\n")
 	default:
 		return false
 	}
@@ -422,6 +424,30 @@ static rtg_sword rtg_host_getpid(void) {
   return (rtg_sword)GetCurrentProcessId();
 #else
   return (rtg_sword)getpid();
+#endif
+}
+
+static rtg_sword rtg_host_nano_time(void) {
+#if defined(__CC65__)
+  return 0;
+#elif defined(_WIN32)
+  LARGE_INTEGER freq;
+  LARGE_INTEGER counter;
+  unsigned long long sec;
+  unsigned long long rem;
+  if (!QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0) return 0;
+  if (!QueryPerformanceCounter(&counter)) return 0;
+  sec = (unsigned long long)(counter.QuadPart / freq.QuadPart);
+  rem = (unsigned long long)(counter.QuadPart % freq.QuadPart);
+  return (rtg_sword)(sec * 1000000000ull + (rem * 1000000000ull) / (unsigned long long)freq.QuadPart);
+#else
+#if defined(CLOCK_MONOTONIC)
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+    return (rtg_sword)((unsigned long long)ts.tv_sec * 1000000000ull + (unsigned long long)ts.tv_nsec);
+  }
+#endif
+  return 0;
 #endif
 }
 
@@ -963,6 +989,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	bp.WriteString("#ifdef _WIN32\n")
 	bp.WriteString("  #include <direct.h>\n")
 	bp.WriteString("  #include <windows.h>\n")
+	bp.WriteString("  #include <time.h>\n")
 	bp.WriteString("  #define rtg_mkdir(p) _mkdir(p)\n")
 	bp.WriteString("  #define rtg_rmdir(p) _rmdir(p)\n")
 	bp.WriteString("  #define rtg_getcwd(b,n) _getcwd(b,(int)(n))\n")
@@ -974,6 +1001,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		bp.WriteString("  #include <sys/stat.h>\n")
 		bp.WriteString("  #include <unistd.h>\n")
 		bp.WriteString("  #include <dirent.h>\n")
+		bp.WriteString("  #include <time.h>\n")
 		bp.WriteString("  #define rtg_mkdir(p) mkdir(p,0755)\n")
 		bp.WriteString("  #define rtg_rmdir(p) rmdir(p)\n")
 		bp.WriteString("  #define rtg_getcwd(b,n) getcwd(b,n)\n")
@@ -990,6 +1018,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		bp.WriteString("  #include <sys/stat.h>\n")
 		bp.WriteString("  #include <unistd.h>\n")
 		bp.WriteString("  #include <dirent.h>\n")
+		bp.WriteString("  #include <time.h>\n")
 		bp.WriteString("  #define rtg_mkdir(p) mkdir(p,0755)\n")
 		bp.WriteString("  #define rtg_rmdir(p) rmdir(p)\n")
 		bp.WriteString("  #define rtg_getcwd(b,n) getcwd(b,n)\n")
