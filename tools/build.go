@@ -756,6 +756,10 @@ func (e *Executor) handleFullCompiler(args []string) error {
 			fmt.Printf("SKIP: %s/%s (known armv8m defer runtime issue)\n", backend, name)
 			continue
 		}
+		if backend == "rtg" && name == "53_runtime_now" && ((targetOS == "baremetal" && targetArch == "armv8m") || targetOS == "dos") {
+			fmt.Printf("SKIP: %s/%s (runtime.Now is only implemented on linux/windows/darwin/wasi/c/vm targets)\n", backend, name)
+			continue
+		}
 
 		var got string
 		switch backend {

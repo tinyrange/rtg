@@ -2,20 +2,19 @@
 
 package runtime
 
-var cNowStart int
+var cNowStart uintptr
 var cNowLast int
-
-func init() {
-	cNowStart = int(SysNanoTime())
-	cNowLast = 0
-}
+var cNowReady bool
 
 func Now() int {
-	now := int(SysNanoTime())
-	if now <= cNowStart {
+	now := SysNanoTime()
+	if !cNowReady {
+		cNowStart = now
+		cNowLast = 0
+		cNowReady = true
 		return 0
 	}
-	delta := now - cNowStart
+	delta := nowDeltaWord(now, cNowStart)
 	if delta < cNowLast {
 		delta = cNowLast
 	}

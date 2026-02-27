@@ -9,14 +9,16 @@ const (
 
 var linuxNowStartARM64 int
 var linuxNowLastARM64 int
-
-func init() {
-	linuxNowStartARM64 = linuxMonotonicNowARM64()
-	linuxNowLastARM64 = 0
-}
+var linuxNowReadyARM64 bool
 
 func Now() int {
 	now := linuxMonotonicNowARM64()
+	if !linuxNowReadyARM64 {
+		linuxNowStartARM64 = now
+		linuxNowLastARM64 = 0
+		linuxNowReadyARM64 = true
+		return 0
+	}
 	if now <= linuxNowStartARM64 {
 		return 0
 	}
