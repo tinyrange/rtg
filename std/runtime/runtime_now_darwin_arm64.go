@@ -6,14 +6,16 @@ const darwinClockMonotonic = 6
 
 var darwinNowStart int
 var darwinNowLast int
-
-func init() {
-	darwinNowStart = darwinMonotonicNow()
-	darwinNowLast = 0
-}
+var darwinNowReady bool
 
 func Now() int {
 	now := darwinMonotonicNow()
+	if !darwinNowReady {
+		darwinNowStart = now
+		darwinNowLast = 0
+		darwinNowReady = true
+		return 0
+	}
 	if now <= darwinNowStart {
 		return 0
 	}

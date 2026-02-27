@@ -5,17 +5,19 @@ package runtime
 var winNowStartCounter int
 var winNowLast int
 var winNowFreq int = 1
-
-func init() {
-	winNowFreq = winQueryPerformanceFrequencyValue()
-	if winNowFreq <= 0 {
-		winNowFreq = 1
-	}
-	winNowStartCounter = winQueryPerformanceCounterValue()
-	winNowLast = 0
-}
+var winNowReady bool
 
 func Now() int {
+	if !winNowReady {
+		winNowFreq = winQueryPerformanceFrequencyValue()
+		if winNowFreq <= 0 {
+			winNowFreq = 1
+		}
+		winNowStartCounter = winQueryPerformanceCounterValue()
+		winNowLast = 0
+		winNowReady = true
+		return 0
+	}
 	counter := winQueryPerformanceCounterValue()
 	if counter <= winNowStartCounter {
 		return 0

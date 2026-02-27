@@ -81,3 +81,21 @@ func nowReadU64(ptr uintptr) int {
 	}
 	return v
 }
+
+func nowDeltaWord(now uintptr, start uintptr) int {
+	if now < start {
+		return nowMaxInt()
+	}
+	delta := now - start
+	if PtrSize <= 4 {
+		max := uintptr(nowMaxInt())
+		if delta > max {
+			return nowMaxInt()
+		}
+	}
+	v := int(delta)
+	if v < 0 {
+		return nowMaxInt()
+	}
+	return v
+}

@@ -9,14 +9,16 @@ const (
 
 var linuxNowStartAMD64 int
 var linuxNowLastAMD64 int
-
-func init() {
-	linuxNowStartAMD64 = linuxMonotonicNowAMD64()
-	linuxNowLastAMD64 = 0
-}
+var linuxNowReadyAMD64 bool
 
 func Now() int {
 	now := linuxMonotonicNowAMD64()
+	if !linuxNowReadyAMD64 {
+		linuxNowStartAMD64 = now
+		linuxNowLastAMD64 = 0
+		linuxNowReadyAMD64 = true
+		return 0
+	}
 	if now <= linuxNowStartAMD64 {
 		return 0
 	}

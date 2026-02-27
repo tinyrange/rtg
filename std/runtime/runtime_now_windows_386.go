@@ -4,14 +4,18 @@ package runtime
 
 var winNowStartTick32 uint32
 var winNowLast32 int
-
-func init() {
-	winNowStartTick32 = uint32(winGetTickCount())
-	winNowLast32 = 0
-}
+var winNowReady32 bool
 
 func Now() int {
 	cur := uint32(winGetTickCount())
+	if !winNowReady32 {
+		winNowStartTick32 = cur
+		winNowLast32 = 0
+		winNowReady32 = true
+		return 0
+	}
+	// 32-bit GetTickCount wraps roughly every 49.7 days. The modular delta
+	// below keeps monotonic behavior across wrap events.
 	deltaMS := int(cur - winNowStartTick32)
 	ns := nowSaturatingMul(deltaMS, 1000000)
 	if ns < winNowLast32 {

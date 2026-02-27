@@ -7,20 +7,30 @@ const (
 	linuxSysClockGettime386 = 265
 )
 
-var linuxNowStart386 int
+var linuxNowStartSec386 int
+var linuxNowStartNSec386 int
 var linuxNowLast386 int
-
-func init() {
-	linuxNowStart386 = linuxMonotonicNow386()
-	linuxNowLast386 = 0
-}
+var linuxNowReady386 bool
 
 func Now() int {
-	now := linuxMonotonicNow386()
-	if now <= linuxNowStart386 {
+	sec, nsec := linuxMonotonicNowSplit386()
+	if !linuxNowReady386 {
+		linuxNowStartSec386 = sec
+		linuxNowStartNSec386 = nsec
+		linuxNowLast386 = 0
+		linuxNowReady386 = true
 		return 0
 	}
-	delta := now - linuxNowStart386
+	deltaSec := sec - linuxNowStartSec386
+	deltaNSec := nsec - linuxNowStartNSec386
+	if deltaNSec < 0 {
+		deltaNSec = deltaNSec + nowNanosPerSecond
+		deltaSec = deltaSec - 1
+	}
+	if deltaSec < 0 {
+		return 0
+	}
+	delta := nowSecNsecToNs(deltaSec, deltaNSec)
 	if delta < linuxNowLast386 {
 		delta = linuxNowLast386
 	}
@@ -28,14 +38,14 @@ func Now() int {
 	return delta
 }
 
-func linuxMonotonicNow386() int {
+func linuxMonotonicNowSplit386() (int, int) {
 	ts := Alloc(8)
 	Memzero(ts, 8)
 	_, _, err := Syscall(linuxSysClockGettime386, linuxClockMonotonic386, ts, 0, 0, 0, 0)
 	if err != 0 {
-		return 0
+		return 0, 0
 	}
 	sec := nowReadU32(ts)
 	nsec := nowReadU32(ts + 4)
-	return nowSecNsecToNs(sec, nsec)
+	return sec, nsec
 }

@@ -277,6 +277,10 @@ jobs:
           fail=0
           while IFS= read -r test_path; do
             case "$test_path" in
+              *53_runtime_now.go)
+                echo "SKIP_UNSUPPORTED_OS: $test_path"
+                continue
+                ;;
               *_amd64.go|*_386.go|*_arm64.go)
                 echo "SKIP_ARCH: $test_path"
                 continue

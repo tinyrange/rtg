@@ -2,20 +2,22 @@
 
 package runtime
 
-var wasiNowStart int
+var wasiNowStart uintptr
 var wasiNowLast int
-
-func init() {
-	wasiNowStart = int(SysNanoTime())
-	wasiNowLast = 0
-}
+var wasiNowReady bool
 
 func Now() int {
-	now := int(SysNanoTime())
-	if now <= wasiNowStart {
+	now := SysNanoTime()
+	if !wasiNowReady {
+		wasiNowStart = now
+		wasiNowLast = 0
+		wasiNowReady = true
 		return 0
 	}
-	delta := now - wasiNowStart
+	delta := nowDeltaWord(now, wasiNowStart)
+	if delta <= 0 {
+		return 0
+	}
 	if delta < wasiNowLast {
 		delta = wasiNowLast
 	}
