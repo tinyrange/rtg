@@ -1,7 +1,7 @@
 package runtime
 
 const (
-	profileRecordSize    = 8
+	profileRecordSize    = 12
 	profileBufferRecords = 16384
 	profileBufferSize    = profileRecordSize * profileBufferRecords
 	profileFilePerm      = 0644
@@ -22,25 +22,25 @@ func Exit(code uintptr) {
 }
 
 // Profile records a method execution duration in nanoseconds.
-// Records are packed as: hash(uint32), duration_ns(uint32), little-endian.
+// Records are packed as: method_hash(uint32), parent_hash(uint32), duration_ns(uint32), little-endian.
 func Profile(methodName string, executionTime int) {
 	if methodName == "" {
 		return
 	}
-	ProfileHash(profileHash32(methodName), executionTime)
+	ProfileHash(profileHash32(methodName), 0, executionTime)
 }
 
 // ProfileHash records a method execution duration by pre-hashed method id.
-func ProfileHash(methodHash uint32, executionTime int) {
-	profileRecord(methodHash, executionTime)
+func ProfileHash(methodHash uint32, parentHash uint32, executionTime int) {
+	profileRecord(methodHash, parentHash, executionTime)
 }
 
 // ProfileHashNow records a duration using runtime.Now()-startTime.
-func ProfileHashNow(methodHash uint32, startTime int) {
-	profileRecord(methodHash, profileNow()-startTime)
+func ProfileHashNow(methodHash uint32, parentHash uint32, startTime int) {
+	profileRecord(methodHash, parentHash, profileNow()-startTime)
 }
 
-func profileRecord(methodHash uint32, executionTime int) {
+func profileRecord(methodHash uint32, parentHash uint32, executionTime int) {
 	profileTouched = true
 	profileEnsureInit()
 	if !profileEnabled {
@@ -52,17 +52,20 @@ func profileRecord(methodHash uint32, executionTime int) {
 			return
 		}
 	}
-	hash := methodHash
 	duration := profileDurationToU32(executionTime)
 	off := profileBufUsed
-	profileBuf[off+0] = byte(hash)
-	profileBuf[off+1] = byte(hash >> 8)
-	profileBuf[off+2] = byte(hash >> 16)
-	profileBuf[off+3] = byte(hash >> 24)
-	profileBuf[off+4] = byte(duration)
-	profileBuf[off+5] = byte(duration >> 8)
-	profileBuf[off+6] = byte(duration >> 16)
-	profileBuf[off+7] = byte(duration >> 24)
+	profileBuf[off+0] = byte(methodHash)
+	profileBuf[off+1] = byte(methodHash >> 8)
+	profileBuf[off+2] = byte(methodHash >> 16)
+	profileBuf[off+3] = byte(methodHash >> 24)
+	profileBuf[off+4] = byte(parentHash)
+	profileBuf[off+5] = byte(parentHash >> 8)
+	profileBuf[off+6] = byte(parentHash >> 16)
+	profileBuf[off+7] = byte(parentHash >> 24)
+	profileBuf[off+8] = byte(duration)
+	profileBuf[off+9] = byte(duration >> 8)
+	profileBuf[off+10] = byte(duration >> 16)
+	profileBuf[off+11] = byte(duration >> 24)
 	profileBufUsed = off + profileRecordSize
 	if profileBufUsed == profileBufferSize {
 		profileFlushBuffer()

@@ -259,6 +259,7 @@ func appendStdlibDirCandidates(candidates []string, root string, importPath stri
 }
 
 // resolveImportDirs maps an import path to possible directories on disk.
+//
 //rtg:profile
 func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []string {
 	var dirs []string
@@ -358,6 +359,7 @@ func sortStrings(s []string) {
 // shouldIncludeFile checks if a .go file should be included based on build tags.
 // If a //go:build directive exists, it takes precedence over filename-based filtering.
 // Otherwise, filename-based GOOS/GOARCH conventions are used.
+//
 //rtg:profile
 func (c *Preprocessor) shouldIncludeFile(path string, name string) bool {
 	// 1. Check //go:build directive in file content (takes precedence)
@@ -538,6 +540,7 @@ type Preprocessor struct {
 }
 
 // hasTag checks if a tag is in the active build tag set.
+//
 //rtg:profile
 func (c *Preprocessor) hasTag(tag string) bool {
 	i := 0
@@ -552,6 +555,7 @@ func (c *Preprocessor) hasTag(tag string) bool {
 
 // evalBuildExpr evaluates a //go:build expression against the active tag set.
 // Supports: bare tags, &&, ||, !, and parentheses.
+//
 //rtg:profile
 func (c *Preprocessor) evalBuildExpr(expr string) bool {
 	expr = trimLeftSpace(expr)
@@ -560,6 +564,7 @@ func (c *Preprocessor) evalBuildExpr(expr string) bool {
 }
 
 // parseBuildOr parses: term (|| term)*
+//
 //rtg:profile
 func (c *Preprocessor) parseBuildOr(expr string) (bool, string) {
 	left, rest := c.parseBuildAnd(expr)
@@ -577,6 +582,7 @@ func (c *Preprocessor) parseBuildOr(expr string) (bool, string) {
 }
 
 // parseBuildAnd parses: unary (&& unary)*
+//
 //rtg:profile
 func (c *Preprocessor) parseBuildAnd(expr string) (bool, string) {
 	left, rest := c.parseBuildUnary(expr)
@@ -594,6 +600,7 @@ func (c *Preprocessor) parseBuildAnd(expr string) (bool, string) {
 }
 
 // parseBuildUnary parses: !unary | atom
+//
 //rtg:profile
 func (c *Preprocessor) parseBuildUnary(expr string) (bool, string) {
 	expr = trimLeftSpace(expr)
@@ -605,6 +612,7 @@ func (c *Preprocessor) parseBuildUnary(expr string) (bool, string) {
 }
 
 // parseBuildAtom parses: (expr) | tag
+//
 //rtg:profile
 func (c *Preprocessor) parseBuildAtom(expr string) (bool, string) {
 	expr = trimLeftSpace(expr)
@@ -634,6 +642,7 @@ func isAlphaNum(c byte) bool {
 }
 
 // parsePackageDir lists .go files in a directory, parses each, and merges into one Package.
+//
 //rtg:profile
 func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 	entries, err := os.ReadDir(dir)
@@ -781,6 +790,7 @@ func ParseSource(name string, src string) *Node {
 
 // shouldIncludeContent checks if source content should be included based on build tags.
 // This is like shouldIncludeFile but takes content directly instead of reading from disk.
+//
 //rtg:profile
 func (c *Preprocessor) shouldIncludeContent(content string, name string) bool {
 	collectBuildTagsFromContent(content)
@@ -1080,6 +1090,15 @@ func parseProfileDirective(val string) bool {
 
 // CollectProfileMethodQualNames returns qualified method names marked with //rtg:profile.
 func CollectProfileMethodQualNames(mod *Module) []string {
+	return collectMethodQualNames(mod, true)
+}
+
+// CollectMethodQualNames returns qualified method names for all methods in the module.
+func CollectMethodQualNames(mod *Module) []string {
+	return collectMethodQualNames(mod, false)
+}
+
+func collectMethodQualNames(mod *Module, profileOnly bool) []string {
 	if mod == nil {
 		return nil
 	}
@@ -1096,15 +1115,17 @@ func CollectProfileMethodQualNames(mod *Module) []string {
 				if base == nil || base.Kind != NFunc || base.X == nil || base.X.Type == nil {
 					continue
 				}
-				hasProfile := false
-				for _, d := range directives {
-					if parseProfileDirective(d) {
-						hasProfile = true
-						break
+				if profileOnly {
+					hasProfile := false
+					for _, d := range directives {
+						if parseProfileDirective(d) {
+							hasProfile = true
+							break
+						}
 					}
-				}
-				if !hasProfile {
-					continue
+					if !hasProfile {
+						continue
+					}
 				}
 				recvType := nodeTypeName(base.X.Type)
 				if recvType == "" {
