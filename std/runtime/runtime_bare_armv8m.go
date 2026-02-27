@@ -1,4 +1,4 @@
-//go:build semihost && armv8m
+//go:build bare && armv8m
 
 package runtime
 
@@ -15,20 +15,36 @@ const (
 	MmapAnonFlags  = 0
 )
 
-var GOOS string = "semihost"
+var GOOS string = "bare"
 var GOARCH string = "armv8m"
 
 const (
-	semiScratch0 uintptr = 0
-	semiScratch1 uintptr = 0
+	// Renode/UART mapping for bare armv8m runs.
+	bareUART0Base = uintptr(0x40004000)
+	// NS16550 register index stride in bytes. Renode's model is byte-strided.
+	// Use 2 for 32-bit aligned implementations where register N is at N*4.
+	bareUARTRegShift = uintptr(0)
+	bareUARTTHR      = uintptr(0) // Transmit Holding Register index
+	bareUARTLSR      = uintptr(5) // Line Status Register index
+	bareUARTTHRE  = uintptr(0x20) // LSR bit 5: THR empty
 )
 
-var semiHeapCur uintptr = 0
-var semiHeapEnd uintptr = 0
-var semiHeapAltCur uintptr = 0
-var semiHeapAltEnd uintptr = 0
-var semiHeapHiCur uintptr = 0
-var semiHeapHiEnd uintptr = 0
+func bareUARTRegAddr(index uintptr) uintptr {
+	return bareUART0Base + (index << bareUARTRegShift)
+}
+
+func mmioRead8(addr uintptr) uintptr {
+	aligned := addr &^ uintptr(3)
+	shift := (addr & uintptr(3)) * 8
+	return (ReadPtr(aligned) >> shift) & 0xFF
+}
+
+var bareHeapCur uintptr = 0
+var bareHeapEnd uintptr = 0
+var bareHeapAltCur uintptr = 0
+var bareHeapAltEnd uintptr = 0
+var bareHeapHiCur uintptr = 0
+var bareHeapHiEnd uintptr = 0
 
 func init() {
 	// Keep mmap growth granular to avoid stranding free space near arena limits.
@@ -36,78 +52,12 @@ func init() {
 	heapChunkMax = 65536
 	// RP2350-style constrained heap budget (~520KB total RAM across stack+heap+data).
 	// Keep heap in the 0x2800_0000 bank; stack/data live in 0x2000_0000 bank.
-	semiHeapCur = 0x28001000
-	semiHeapEnd = 0x2806F000
-	semiHeapAltCur = 0
-	semiHeapAltEnd = 0
-	semiHeapHiCur = 0
-	semiHeapHiEnd = 0
-}
-
-const (
-	semiOpen         int32 = 0x01
-	semiClose        int32 = 0x02
-	semiWritec       int32 = 0x03
-	semiWrite        int32 = 0x05
-	semiRead         int32 = 0x06
-	semiSeek         int32 = 0x0A
-	semiFlen         int32 = 0x0C
-	semiRemove       int32 = 0x0E
-	semiRename       int32 = 0x0F
-	semiSystem       int32 = 0x12
-	semiErrno        int32 = 0x13
-	semiGetCmdline   int32 = 0x15
-	semiExitExtended int32 = 0x20
-)
-
-const (
-	adpStoppedApplicationExit = 0x20026
-)
-
-//rtg:internal Semihost
-func Semihost(op int32, arg uintptr) (r1 uintptr, r2 uintptr, err int32)
-
-func semihostErrno() int32 {
-	errv, _, err := Semihost(semiErrno, 0)
-	if err != 0 {
-		return err
-	}
-	return int32(errv)
-}
-
-func semihostResult(rv uintptr, apiErr int32, errWhen uintptr) (uintptr, uintptr, int32) {
-	if apiErr != 0 {
-		return 0, 0, apiErr
-	}
-	if rv == errWhen {
-		e := semihostErrno()
-		if e == 0 {
-			e = 1
-		}
-		return 0, 0, e
-	}
-	return rv, 0, 0
-}
-
-func semihostOpenMode(flags uintptr) int32 {
-	// Semihosting mode table (Arm semihosting):
-	// 0 r, 1 rb, 2 r+, 3 r+b, 4 w, 5 wb, 6 w+, 7 w+b, 8 a, 9 ab, 10 a+, 11 a+b
-	if flags == 0 {
-		return 0
-	}
-	if flags&uintptr(2) != 0 { // O_RDWR
-		if flags&uintptr(64) != 0 || flags&uintptr(512) != 0 {
-			return 6 // w+
-		}
-		return 2 // r+
-	}
-	if flags&uintptr(1) != 0 { // O_WRONLY
-		if flags&uintptr(64) != 0 || flags&uintptr(512) != 0 {
-			return 4 // w
-		}
-		return 8 // a
-	}
-	return 0 // r
+	bareHeapCur = 0x28001000
+	bareHeapEnd = 0x2806F000
+	bareHeapAltCur = 0
+	bareHeapAltEnd = 0
+	bareHeapHiCur = 0
+	bareHeapHiEnd = 0
 }
 
 func SysRead(fd, buf, count uintptr) (uintptr, uintptr, int32) {
@@ -118,20 +68,21 @@ func SysRead(fd, buf, count uintptr) (uintptr, uintptr, int32) {
 }
 
 func SysWrite(fd, buf, count uintptr) (uintptr, uintptr, int32) {
-	// QEMU semihosting does not guarantee Unix-style fixed handles 1/2.
-	// For stdout/stderr, use SYS_WRITEC directly so diagnostics are visible.
 	if fd == 1 || fd == 2 {
-		i := uintptr(0)
-		for i < count {
-			_, _, err := Semihost(semiWritec, buf+i)
-			if err != 0 {
-				return i, 0, err
-			}
-			i = i + 1
+		if count == 0 {
+			return 0, 0, 0
 		}
-		return count, 0, 0
+		b := Makeslice(buf, int(count), int(count))
+		i := 0
+		for i < len(b) {
+			for (mmioRead8(bareUARTRegAddr(bareUARTLSR)) & bareUARTTHRE) == 0 {
+			}
+			WriteByte(bareUARTRegAddr(bareUARTTHR), uintptr(b[i]))
+			i++
+		}
+		return uintptr(len(b)), 0, 0
 	}
-	return 0, 0, 38
+	return 0, 0, 9
 }
 
 func SysOpen(path, flags, mode uintptr) (uintptr, uintptr, int32) {
@@ -214,9 +165,6 @@ func SysGetdents64(fd, buf, size uintptr) (uintptr, uintptr, int32) {
 
 func SysExit(code uintptr) {
 	_ = code
-	// Param block for SYS_EXIT_EXTENDED: [reason, subcode].
-	// Fallback: try legacy exit reason.
-	Semihost(0x18, adpStoppedApplicationExit)
 	for {
 	}
 }
@@ -232,45 +180,45 @@ func SysMmap(addr, length, prot, flags, fd, offset uintptr) (uintptr, uintptr, i
 	}
 	// 8-byte alignment for runtime allocator expectations.
 	length = (length + 7) &^ uintptr(7)
-	if semiHeapEnd == 0 {
-		semiHeapCur = 0x28001000
-		semiHeapEnd = 0x2806F000
+	if bareHeapEnd == 0 {
+		bareHeapCur = 0x28001000
+		bareHeapEnd = 0x2806F000
 	}
-	if semiHeapAltEnd == 0 {
-		semiHeapAltCur = 0
-		semiHeapAltEnd = 0
+	if bareHeapAltEnd == 0 {
+		bareHeapAltCur = 0
+		bareHeapAltEnd = 0
 	}
-	if semiHeapHiEnd == 0 {
-		semiHeapHiCur = 0
-		semiHeapHiEnd = 0
+	if bareHeapHiEnd == 0 {
+		bareHeapHiCur = 0
+		bareHeapHiEnd = 0
 	}
 
-	if semiHeapCur != 0 {
-		p := semiHeapCur
+	if bareHeapCur != 0 {
+		p := bareHeapCur
 		next := p + length
-		if next >= p && next <= semiHeapEnd {
-			semiHeapCur = next
+		if next >= p && next <= bareHeapEnd {
+			bareHeapCur = next
 			return p, 0, 0
 		}
-		semiHeapCur = 0
+		bareHeapCur = 0
 	}
-	if semiHeapAltCur != 0 {
-		p := semiHeapAltCur
+	if bareHeapAltCur != 0 {
+		p := bareHeapAltCur
 		next := p + length
-		if next >= p && next <= semiHeapAltEnd {
-			semiHeapAltCur = next
+		if next >= p && next <= bareHeapAltEnd {
+			bareHeapAltCur = next
 			return p, 0, 0
 		}
-		semiHeapAltCur = 0
+		bareHeapAltCur = 0
 	}
-	if semiHeapHiCur != 0 {
-		p := semiHeapHiCur
+	if bareHeapHiCur != 0 {
+		p := bareHeapHiCur
 		next := p + length
-		if next >= p && next <= semiHeapHiEnd {
-			semiHeapHiCur = next
+		if next >= p && next <= bareHeapHiEnd {
+			bareHeapHiCur = next
 			return p, 0, 0
 		}
-		semiHeapHiCur = 0
+		bareHeapHiCur = 0
 	}
 	return 0, 0, 12
 }

@@ -19,7 +19,8 @@ const (
 	condLE = 0xD
 	condGT = 0xC
 	condGE = 0xA
-	globalDataBase = uint32(0x80FC0000)
+	// Place mutable globals in Cortex-M SRAM.
+	globalDataBase = uint32(0x20000000)
 )
 
 type callFixup struct {
@@ -631,9 +632,94 @@ func (g *CodeGen) compileIntrinsic(inst ir.Inst) error {
 		g.opPush(1)
 		return nil
 	case "Tostring":
+		// Param 0 may be either:
+		// - a direct string header pointer, or
+		// - an interface box pointer {typeID, concreteValuePtr}.
+		g.loadLocal(0, 0)
+		g.emitLoadWordUnaligned(0, 1) // candidate typeID / string.data
+		g.loadImm32(2, 256)
+		g.asm.EmitCmpRR(1, 2)
+		isIface := g.asm.EmitBCond(condLO, 0)
+
+		// String fast-path: passthrough pointer.
 		g.loadLocal(0, 0)
 		g.opPush(0)
-		g.EmitCallPlaceholder("runtime.TostringSlow")
+		done := g.emitLongJumpPlaceholder()
+
+		ifacePos := g.asm.Pos()
+		g.asm.PatchBCond(isIface, condLO, int32(ifacePos-(isIface+4)))
+
+		// Interface path: r1=typeID, r2=concrete value pointer.
+		g.loadLocal(0, 0)
+		g.asm.EmitMovReg(3, 0)
+		g.asm.EmitAddsImm(3, 4)
+		g.emitLoadWordUnaligned(3, 2)
+		g.emitLoadWordUnaligned(0, 1)
+
+		var endJumps []int
+
+		// Builtin int
+		g.asm.EmitCmpImm(1, 1)
+		skipInt := g.asm.EmitBCond(condNE, 0)
+		g.opPush(2)
+		g.EmitCallPlaceholder("runtime.IntToString")
+		endJumps = append(endJumps, g.emitLongJumpPlaceholder())
+		g.asm.PatchBCond(skipInt, condNE, int32(g.asm.Pos()-(skipInt+4)))
+
+		// Builtin string
+		g.asm.EmitCmpImm(1, 2)
+		skipStr := g.asm.EmitBCond(condNE, 0)
+		g.opPush(2)
+		endJumps = append(endJumps, g.emitLongJumpPlaceholder())
+		g.asm.PatchBCond(skipStr, condNE, int32(g.asm.Pos()-(skipStr+4)))
+
+		// User-defined Error()/String() dispatch.
+		entries := g.collectDispatch("Error")
+		strEntries := g.collectDispatch("String")
+		seen := make(map[int]bool, len(entries))
+		i := 0
+		for i < len(entries) {
+			seen[entries[i].TypeID] = true
+			i++
+		}
+		i = 0
+		for i < len(strEntries) {
+			if !seen[strEntries[i].TypeID] {
+				entries = append(entries, strEntries[i])
+			}
+			i++
+		}
+		for _, entry := range entries {
+			if entry.TypeID >= 0 && entry.TypeID <= 255 {
+				g.asm.EmitCmpImm(1, uint8(entry.TypeID))
+			} else {
+				g.loadImm32(3, uint32(entry.TypeID))
+				g.asm.EmitCmpRR(1, 3)
+			}
+			skip := g.asm.EmitBCond(condNE, 0)
+			g.opPush(2)
+			g.EmitCallPlaceholder(entry.FuncName)
+			endJumps = append(endJumps, g.emitLongJumpPlaceholder())
+			g.asm.PatchBCond(skip, condNE, int32(g.asm.Pos()-(skip+4)))
+		}
+
+		// Default: pass through concrete value pointer.
+		// For interface{} values that box strings on this target, this preserves output.
+		g.opPush(2)
+
+		end := g.asm.Pos()
+		g.jumpLits = append(g.jumpLits, jumpLiteralFixup{
+			wordOff: done,
+			target:  end,
+		})
+		i = 0
+		for i < len(endJumps) {
+			g.jumpLits = append(g.jumpLits, jumpLiteralFixup{
+				wordOff: endJumps[i],
+				target:  end,
+			})
+			i++
+		}
 		return nil
 	default:
 		return fmt.Errorf("unsupported intrinsic: %s", inst.Name)
@@ -697,34 +783,95 @@ func (g *CodeGen) opPop(reg uint8) {
 }
 
 func (g *CodeGen) emitLoadWordUnaligned(addrReg uint8, outReg uint8) {
-	if addrReg != 3 {
-		g.asm.EmitMovReg(3, addrReg)
+	// Preserve scratch registers so callers only observe outReg being clobbered.
+	// If addrReg == outReg, copy the base first to avoid destroying the address
+	// on the first byte load.
+	baseReg := addrReg
+	tmp := uint8(0xFF)
+	shift := uint8(0xFF)
+	baseCopy := uint8(0xFF)
+
+	cand := uint8(0)
+	for cand < 8 {
+		if cand != outReg && cand != addrReg {
+			if tmp == 0xFF {
+				tmp = cand
+			} else if shift == 0xFF {
+				shift = cand
+			} else if baseCopy == 0xFF {
+				baseCopy = cand
+			}
+		}
+		cand++
 	}
-	g.asm.EmitLdrbImm(outReg, 3, 0)
-	g.asm.EmitLdrbImm(1, 3, 1)
-	g.asm.EmitMovsImm(2, 8)
-	g.asm.EmitLslRR(1, 2)
-	g.asm.EmitOrrRR(outReg, 1)
-	g.asm.EmitLdrbImm(1, 3, 2)
-	g.asm.EmitMovsImm(2, 16)
-	g.asm.EmitLslRR(1, 2)
-	g.asm.EmitOrrRR(outReg, 1)
-	g.asm.EmitLdrbImm(1, 3, 3)
-	g.asm.EmitMovsImm(2, 24)
-	g.asm.EmitLslRR(1, 2)
-	g.asm.EmitOrrRR(outReg, 1)
+	if tmp == 0xFF || shift == 0xFF {
+		panic("armv8m: no scratch registers for unaligned load")
+	}
+	if addrReg == outReg {
+		if baseCopy == 0xFF {
+			panic("armv8m: no base scratch register for unaligned load")
+		}
+		baseReg = baseCopy
+	}
+
+	mask := uint8((1 << tmp) | (1 << shift))
+	if addrReg == outReg {
+		mask = mask | (1 << baseReg)
+	}
+	g.asm.EmitPush(mask, false)
+	if addrReg == outReg {
+		g.asm.EmitMovReg(baseReg, addrReg)
+	}
+
+	g.asm.EmitLdrbImm(outReg, baseReg, 0)
+	g.asm.EmitLdrbImm(tmp, baseReg, 1)
+	g.asm.EmitMovsImm(shift, 8)
+	g.asm.EmitLslRR(tmp, shift)
+	g.asm.EmitOrrRR(outReg, tmp)
+	g.asm.EmitLdrbImm(tmp, baseReg, 2)
+	g.asm.EmitMovsImm(shift, 16)
+	g.asm.EmitLslRR(tmp, shift)
+	g.asm.EmitOrrRR(outReg, tmp)
+	g.asm.EmitLdrbImm(tmp, baseReg, 3)
+	g.asm.EmitMovsImm(shift, 24)
+	g.asm.EmitLslRR(tmp, shift)
+	g.asm.EmitOrrRR(outReg, tmp)
+
+	g.asm.EmitPop(mask, false)
 }
 
 func (g *CodeGen) emitStoreWordUnaligned(addrReg uint8, valReg uint8) {
+	tmp := uint8(0xFF)
+	shift := uint8(0xFF)
+	cand := uint8(0)
+	for cand < 8 {
+		if cand != addrReg && cand != valReg {
+			if tmp == 0xFF {
+				tmp = cand
+			} else {
+				shift = cand
+				break
+			}
+		}
+		cand++
+	}
+	if tmp == 0xFF || shift == 0xFF {
+		panic("armv8m: no scratch registers for unaligned store")
+	}
+	mask := uint8((1 << tmp) | (1 << shift))
+	g.asm.EmitPush(mask, false)
+
 	g.asm.EmitStrbImm(valReg, addrReg, 0)
-	g.asm.EmitMovReg(1, valReg)
-	g.asm.EmitMovsImm(2, 8)
-	g.asm.EmitLsrRR(1, 2)
-	g.asm.EmitStrbImm(1, addrReg, 1)
-	g.asm.EmitLsrRR(1, 2)
-	g.asm.EmitStrbImm(1, addrReg, 2)
-	g.asm.EmitLsrRR(1, 2)
-	g.asm.EmitStrbImm(1, addrReg, 3)
+	g.asm.EmitMovReg(tmp, valReg)
+	g.asm.EmitMovsImm(shift, 8)
+	g.asm.EmitLsrRR(tmp, shift)
+	g.asm.EmitStrbImm(tmp, addrReg, 1)
+	g.asm.EmitLsrRR(tmp, shift)
+	g.asm.EmitStrbImm(tmp, addrReg, 2)
+	g.asm.EmitLsrRR(tmp, shift)
+	g.asm.EmitStrbImm(tmp, addrReg, 3)
+
+	g.asm.EmitPop(mask, false)
 }
 
 func (g *CodeGen) emitPushStringFromValuePtr(valReg uint8) {

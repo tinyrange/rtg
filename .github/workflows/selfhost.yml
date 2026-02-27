@@ -142,7 +142,7 @@ jobs:
         run: ./build/build test-fullcompiler-wasm
 
   fullcompiler-armv8m:
-    name: Fullcompiler suite (baremetal/armv8m)
+    name: Fullcompiler suite (armv8m)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -161,9 +161,97 @@ jobs:
       - name: Build Buildfile runner
         run: go build -o build/build ./tools/build.go
 
-      - name: Fullcompiler suite (RTG backend, baremetal/armv8m)
+      - name: QEMU semihosting smoke (armv8m)
+        run: |
+          cat > build/qemu_semihost_probe.go <<'EOF'
+          package main
+          import "runtime"
+          func main() {
+            s := "PASS"
+            runtime.SysWrite(1, runtime.Stringptr(s), uintptr(len(s)))
+          }
+          EOF
+          ./build/rtg -T semihost/armv8m -o build/qemu_semihost_probe build/qemu_semihost_probe.go
+          timeout 20s qemu-system-arm \
+            -M mps2-an505 \
+            -cpu cortex-m33 \
+            -nographic \
+            -serial mon:stdio \
+            -semihosting-config enable=on,target=native \
+            -kernel build/qemu_semihost_probe \
+            > build/qemu_semihost_probe.out 2>&1
+          grep -q "PASS" build/qemu_semihost_probe.out
+
+      - name: Install Renode
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/renode"
+          curl -fsSL https://builds.renode.io/renode-latest.linux-portable-dotnet.tar.gz \
+            | tar -xz -C "$HOME/renode"
+
+      - name: Fullcompiler suite (RTG backend, semihost/armv8m on Renode)
+        run: |
+          RENODE_BIN="$(find "$HOME/renode" -type f -name renode | head -n 1)"
+          RENODE_PATH="$RENODE_BIN" ./build/build test-fullcompiler-armv8m-renode
+
+      - name: Renode bare UART smoke (armv8m)
+        run: |
+          set -euo pipefail
+          RENODE_BIN="$(find "$HOME/renode" -type f -name renode | head -n 1)"
+          cat > build/renode_bare_probe.go <<'EOF'
+          package main
+          import "runtime"
+          func main() {
+            s := "PASS"
+            runtime.SysWrite(1, runtime.Stringptr(s), uintptr(len(s)))
+          }
+          EOF
+          ./build/rtg -T bare/armv8m -o build/renode_bare_probe build/renode_bare_probe.go
+          cat > build/renode_bare_probe.repl <<'EOF'
+          nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+              priorityMask: 0xF0
+              systickFrequency: 32000000
+              IRQ -> cpu@0
+
+          cpu: CPU.CortexM @ sysbus
+              cpuType: "cortex-m33"
+              nvic: nvic
+
+          uart0: UART.NS16550 @ sysbus 0x40004000
+
+          flash: Memory.MappedMemory @ sysbus 0x10000000
+              size: 0x01000000
+
+          sram: Memory.MappedMemory @ sysbus 0x20000000
+              size: 0x00002000
+
+          sram_alt: Memory.MappedMemory @ sysbus 0x28000000
+              size: 0x00070000
+
+          sram_stack: Memory.MappedMemory @ sysbus 0x283E0000
+              size: 0x00010000
+          EOF
+          REPL_ABS="$(pwd)/build/renode_bare_probe.repl"
+          ELF_ABS="$(pwd)/build/renode_bare_probe"
+          OUT_ABS="$(pwd)/build/renode_bare_probe.out"
+          cat > build/renode_bare_probe.resc <<EOF
+          using sysbus
+          mach create "rtg_bare_probe"
+          machine LoadPlatformDescription @${REPL_ABS}
+          uart0 CreateFileBackend @${OUT_ABS} true
+          sysbus LoadELF @${ELF_ABS}
+          cpu PerformanceInMips 1000
+          cpu SP 0x283EF000
+          cpu PC 0x10000101
+          emulation RunFor "1.0"
+          quit
+          EOF
+          timeout 30s "$RENODE_BIN" --disable-xwt -P 0 build/renode_bare_probe.resc
+          grep -q "PASS" build/renode_bare_probe.out
+
+      - name: Fullcompiler suite (RTG backend, bare/armv8m)
         continue-on-error: true
-        run: RTG_TARGET=baremetal/armv8m ./build/build test-fullcompiler-rtg
+        run: RTG_TARGET=bare/armv8m ./build/build test-fullcompiler-rtg
 
   comemu-dos:
     name: DOS COMEMU sweep (tests/*.go)

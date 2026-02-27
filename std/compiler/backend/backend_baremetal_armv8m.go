@@ -1,4 +1,4 @@
-//go:build baremetal && armv8m
+//go:build (bare || semihost) && armv8m
 
 package backend
 
@@ -32,8 +32,8 @@ func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 	if handled, err := targetcfg.Generate(triple, tgt, irmod, outputPath); handled {
 		return err
 	}
-	if tgt.GOARCH == "armv8m" && (tgt.Triple == "elf/armv8m" || tgt.GOOS == "elf" || tgt.GOOS == "baremetal") {
+	if tgt.GOARCH == "armv8m" && (tgt.Triple == "elf/armv8m" || tgt.GOOS == "elf" || tgt.GOOS == "semihost" || tgt.GOOS == "bare") {
 		return armv8melf.Generate(tgt, irmod, outputPath)
 	}
-	return fmt.Errorf("unsupported target on baremetal/armv8m runtime compiler: %s/%s", tgt.GOOS, tgt.GOARCH)
+	return fmt.Errorf("unsupported target on bare/semihost armv8m runtime compiler: %s/%s", tgt.GOOS, tgt.GOARCH)
 }
