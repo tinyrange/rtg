@@ -75,7 +75,7 @@ type Compiler struct {
 	errors               []string
 	funcRets             map[string]int      // function name → return count
 	funcParams           map[string]int      // function name → param count
-	funcParamTypes       map[string][]string // function name → param type names (receiver first for methods)
+	funcParamTypes       map[string][]string // function name → param type names (receiver first for methods; profile parent hash follows receiver in -profile mode)
 	funcVariadic         map[string]int      // variadic function name → count of fixed params
 	funcVariadicIface    map[string]bool     // variadic function name → true if ...interface{}
 	funcVariadicElem     map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
@@ -91,6 +91,7 @@ type Compiler struct {
 	ifaceMethods         map[string][]string // interface name → method names
 	ifaceMethodRets      map[string]int      // iface+"\x00"+method → return count
 	methodTable          map[string]string   // "pkg.Type.Method" → qualified IR func name
+	methodFuncNames      map[string]bool     // qualified method function names
 	typeIDs              map[string]int      // concrete type qualified name → unique int
 	nextTypeID           int
 	localTypes           map[string]string   // local var name → type name (for interface-typed locals)
@@ -124,8 +125,10 @@ type Compiler struct {
 	comptimeDisabled     bool
 	inComptimeFunc       bool
 	profileStartLocal    int
+	profileParentLocal   int
 	profileMethodHash    uint32
 	profileFlushOnExit   bool
+	currentMethodHash    uint32
 	inIfInit             bool
 	ifInitLeakedNames    map[string]bool
 	assembleFuncs        map[string]assembleInfo
@@ -172,6 +175,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		ifaceMethods:        make(map[string][]string),
 		ifaceMethodRets:     make(map[string]int),
 		methodTable:         make(map[string]string),
+		methodFuncNames:     make(map[string]bool),
 		typeIDs:             make(map[string]int),
 		nextTypeID:          4, // 1=int, 2=string, 3=bool are reserved
 		funcRetTypes:        make(map[string][]string),
@@ -399,7 +403,6 @@ func (c *Compiler) resolvePackage(pkgName string) *Package {
 
 // lookupStructTypeNode parses a qualified type name and returns the struct's type node
 // and the package path. Returns nil, "" if not found.
-//
 func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 	dotIdx := -1
 	i := 0
@@ -503,7 +506,6 @@ func (c *Compiler) resolveFieldPath(qualifiedType string, fieldName string) ([]i
 }
 
 // resolveFieldType looks up the type of a struct field given a qualified type name and field name.
-//
 func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) string {
 	if path, ok := c.resolveFieldPath(qualifiedType, fieldName); ok {
 		curType := qualifiedType
@@ -769,7 +771,6 @@ func arrayTypeNestingDepth(typeName string) int {
 }
 
 // resolveExprType returns the concrete qualified type of an expression, or "" if unknown.
-//
 func (c *Compiler) resolveExprType(node *Node) string {
 	if node == nil {
 		return ""
@@ -933,7 +934,6 @@ func (c *Compiler) isUnsignedExpr(node *Node) bool {
 
 // exprWidth infers the operand width from an AST expression.
 // Returns 0 for word-sized, or 1/2/4/8 for explicitly sized types.
-//
 func (c *Compiler) exprWidth(node *Node) int {
 	if node == nil {
 		return 0
@@ -1625,6 +1625,11 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				} else {
 					paramTypeNames = append(paramTypeNames, "")
 				}
+				if c.target != nil && c.target.Profile {
+					paramCount++
+					fixedParams++
+					paramTypeNames = append(paramTypeNames, "uint32")
+				}
 			}
 			isVariadic := false
 			isIfaceVariadic := false
@@ -1767,6 +1772,7 @@ func (c *Compiler) collectMethodDecl(pkg *Package, node *Node) {
 		qtype := pkg.QualName(recvType)
 		qname := c.dotJoin(qtype, node.Name)
 		c.methodTable[qname] = qname
+		c.methodFuncNames[qname] = true
 		// Assign type ID if not yet assigned
 		if _, ok := c.typeIDs[qtype]; !ok {
 			c.typeIDs[qtype] = c.nextTypeID
@@ -2399,11 +2405,18 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
 	c.profileStartLocal = -1
+	c.profileParentLocal = -1
 	c.profileMethodHash = 0
 	c.profileFlushOnExit = false
+	c.currentMethodHash = 0
 	c.inIfInit = false
 	c.ifInitLeakedNames = make(map[string]bool)
 	c.pushScope()
+
+	methodProfileABI := c.target != nil && c.target.Profile && node.X != nil
+	if methodProfileABI {
+		c.currentMethodHash = profileHash32FNV(qname)
+	}
 
 	// Extract return type names for interface boxing
 	var retTypeNames []string
@@ -2426,6 +2439,10 @@ func (c *Compiler) compileFunc(node *Node) {
 	if node.X != nil {
 		c.addLocal(node.X.Name)
 		f.Params++
+		if methodProfileABI {
+			c.profileParentLocal = c.addLocal("$profile_parent")
+			f.Params++
+		}
 		// Track concrete type of receiver for self-method calls
 		if node.X.Type != nil {
 			recvType := nodeTypeName(node.X.Type)
@@ -2440,6 +2457,9 @@ func (c *Compiler) compileFunc(node *Node) {
 	fixedParams := 0
 	if node.X != nil {
 		fixedParams = 1 // receiver counts as fixed
+		if methodProfileABI {
+			fixedParams++
+		}
 	}
 	for _, param := range node.Nodes {
 		pname := param.Name
@@ -2566,7 +2586,10 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.panicUnwindLabel = c.newLabel()
 	}
 	if c.funcIsProfiled[f.Name] {
-		c.profileMethodHash = profileHash32FNV(f.Name)
+		c.profileMethodHash = c.currentMethodHash
+		if c.profileMethodHash == 0 {
+			c.profileMethodHash = profileHash32FNV(f.Name)
+		}
 		c.profileStartLocal = c.addLocal("$profile_start")
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Now", Arg: 0})
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
@@ -3929,6 +3952,11 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	savedMethodRecv := c.localMethodRecv
 	savedLocalFuncCaptures := c.localFuncCaptures
 	savedActiveCaptures := c.activeCaptures
+	savedProfileStartLocal := c.profileStartLocal
+	savedProfileParentLocal := c.profileParentLocal
+	savedProfileMethodHash := c.profileMethodHash
+	savedProfileFlushOnExit := c.profileFlushOnExit
+	savedCurrentMethodHash := c.currentMethodHash
 	savedInIfInit := c.inIfInit
 	savedIfInitLeakedNames := c.ifInitLeakedNames
 
@@ -3960,6 +3988,11 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	c.localMethodRecv = savedMethodRecv
 	c.localFuncCaptures = savedLocalFuncCaptures
 	c.activeCaptures = savedActiveCaptures
+	c.profileStartLocal = savedProfileStartLocal
+	c.profileParentLocal = savedProfileParentLocal
+	c.profileMethodHash = savedProfileMethodHash
+	c.profileFlushOnExit = savedProfileFlushOnExit
+	c.currentMethodHash = savedCurrentMethodHash
 	c.inIfInit = savedInIfInit
 	c.ifInitLeakedNames = savedIfInitLeakedNames
 	target := c.curPkg.QualName(name)
@@ -4311,8 +4344,13 @@ func (c *Compiler) emitProfileExit() {
 		return
 	}
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileMethodHash)})
+	if c.profileParentLocal >= 0 {
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileParentLocal})
+	} else {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	}
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileStartLocal})
-	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ProfileHashNow", Arg: 2})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ProfileHashNow", Arg: 3})
 }
 
 func profileHash32FNV(name string) uint32 {
@@ -5814,7 +5852,6 @@ func isStringExpr(node *Node) bool {
 }
 
 // isStringTypedExpr returns true if the expression produces a string value (uses compiler context).
-//
 func (c *Compiler) isStringTypedExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -6541,6 +6578,17 @@ func (c *Compiler) packVariadicSlice(args []*Node, firstArgIdx int, varCount int
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
 }
 
+func (c *Compiler) profileParentHashForCalls() uint32 {
+	if c.target == nil || !c.target.Profile {
+		return 0
+	}
+	return c.currentMethodHash
+}
+
+func (c *Compiler) methodCallNeedsProfileParent(callName string) bool {
+	return c.target != nil && c.target.Profile && c.methodFuncNames[callName]
+}
+
 //rtg:profile
 func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName string) {
 	paramTypes := c.funcParamTypes[callName]
@@ -6548,19 +6596,31 @@ func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName s
 	if len(paramTypes) > 0 {
 		c.maybeCloneArrayForTypeName(paramTypes[0])
 	}
+	paramOffset := 1
+	argCount := len(args) + 1
+	if c.methodCallNeedsProfileParent(callName) {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileParentHashForCalls())})
+		paramOffset++
+		argCount++
+	}
 	for i, arg := range args {
 		c.compileExpr(arg)
-		if i+1 < len(paramTypes) {
-			c.maybeCloneArrayForTypeName(paramTypes[i+1])
+		if i+paramOffset < len(paramTypes) {
+			c.maybeCloneArrayForTypeName(paramTypes[i+paramOffset])
 		}
 	}
-	c.emitCallWithPanicCheck(callName, len(args)+1)
+	c.emitCallWithPanicCheck(callName, argCount)
 }
 
 //rtg:profile
 func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType string, methodName string) {
 	paramTypes := c.funcParamTypes[c.dotJoin(ifaceType, methodName)]
 	c.compileExpr(recvExpr)
+	argCount := len(args)
+	if c.target != nil && c.target.Profile {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileParentHashForCalls())})
+		argCount++
+	}
 	for i, arg := range args {
 		c.compileExpr(arg)
 		if i < len(paramTypes) {
@@ -6568,7 +6628,7 @@ func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType s
 		}
 	}
 	retCount, _ := c.ifaceMethodReturnCount(ifaceType, methodName)
-	c.emitIfaceCallWithPanicCheck(c.dotJoin(ifaceType, methodName), len(args), retCount)
+	c.emitIfaceCallWithPanicCheck(c.dotJoin(ifaceType, methodName), argCount, retCount)
 }
 
 //rtg:profile
@@ -6584,13 +6644,20 @@ func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promo
 	if len(paramTypes) > 0 {
 		c.maybeCloneArrayForTypeName(paramTypes[0])
 	}
+	paramOffset := 1
+	argCount := len(args) + 1
+	if c.methodCallNeedsProfileParent(pm.Target) {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileParentHashForCalls())})
+		paramOffset++
+		argCount++
+	}
 	for i, arg := range args {
 		c.compileExpr(arg)
-		if i+1 < len(paramTypes) {
-			c.maybeCloneArrayForTypeName(paramTypes[i+1])
+		if i+paramOffset < len(paramTypes) {
+			c.maybeCloneArrayForTypeName(paramTypes[i+paramOffset])
 		}
 	}
-	c.emitCallWithPanicCheck(pm.Target, len(args)+1)
+	c.emitCallWithPanicCheck(pm.Target, argCount)
 }
 
 //rtg:profile
@@ -6603,15 +6670,20 @@ func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedNa
 		if len(paramTypes) > 0 {
 			c.maybeCloneArrayForTypeName(paramTypes[0])
 		}
-		fixedArgCount := fixedCount - 1
+		paramOffset := 1
+		if c.methodCallNeedsProfileParent(resolvedName) {
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileParentHashForCalls())})
+			paramOffset++
+		}
+		fixedArgCount := fixedCount - paramOffset
 		if fixedArgCount < 0 {
 			fixedArgCount = 0
 		}
 		i := 0
 		for i < fixedArgCount && i < len(node.Nodes) {
 			c.compileExpr(node.Nodes[i])
-			if i+1 < len(paramTypes) {
-				c.maybeCloneArrayForTypeName(paramTypes[i+1])
+			if i+paramOffset < len(paramTypes) {
+				c.maybeCloneArrayForTypeName(paramTypes[i+paramOffset])
 			}
 			i++
 		}
@@ -6752,10 +6824,15 @@ func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 		c.errorf("%s: missing method receiver for %s", c.curFunc.Name, name)
 		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 	}
+	argCount := len(node.Nodes) + 1
+	if c.methodCallNeedsProfileParent(target) {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileParentHashForCalls())})
+		argCount++
+	}
 	for _, arg := range node.Nodes {
 		c.compileExpr(arg)
 	}
-	c.emitCallWithPanicCheck(target, len(node.Nodes)+1)
+	c.emitCallWithPanicCheck(target, argCount)
 	return true
 }
 
@@ -7828,7 +7905,6 @@ func (c *Compiler) decodeComptimeValue(raw uint64, typeNode *Node, eval *vm.Eval
 }
 
 // qualifyTypeName qualifies a type name with a package path if not already qualified.
-//
 func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	if typeName == "" || typeName == "string" || typeName == "int" || typeName == "bool" || typeName == "byte" || typeName == "error" || typeName == "interface{}" {
 		return typeName
@@ -8654,7 +8730,6 @@ func (c *Compiler) mapExprKeyKind(node *Node) int {
 }
 
 // isMapExpr returns true if the expression evaluates to a map value.
-//
 func (c *Compiler) isMapExpr(node *Node) bool {
 	if node == nil {
 		return false

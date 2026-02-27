@@ -793,18 +793,19 @@ func printHelp(program string, out *os.File) {
 	}
 }
 
-type profileStat struct {
-	Hash  uint32
-	Name  string
-	Total uint64
-	Calls uint64
-}
-
 type profileTreeNode struct {
+	Hash     uint32
 	Name     string
 	Total    uint64
 	Calls    uint64
 	Children []*profileTreeNode
+}
+
+type profileEdgeStat struct {
+	Parent uint32
+	Child  uint32
+	Total  uint64
+	Calls  uint64
 }
 
 func runProfileReport(profilePath string, entryFiles []string) error {
@@ -812,21 +813,28 @@ func runProfileReport(profilePath string, entryFiles []string) error {
 	if err != nil {
 		return err
 	}
-	if len(data) < 8 {
+	if len(data) < 12 {
 		fmt.Fprintf(os.Stdout, "Profile report for %s\n", profilePath)
 		fmt.Fprintf(os.Stdout, "no records\n")
 		return nil
 	}
-	limit := len(data) - (len(data) % 8)
-	totals := make(map[uint32]uint64)
-	calls := make(map[uint32]uint64)
+	const recordSize = 12
+	limit := len(data) - (len(data) % recordSize)
+	edgeTotals := make(map[uint64]uint64)
+	edgeCalls := make(map[uint64]uint64)
+	calleeSeen := make(map[uint32]bool)
+	totalNS := uint64(0)
 	i := 0
-	for i+8 <= limit {
-		hash := common.GetU32(data[i : i+4])
-		duration := common.GetU32(data[i+4 : i+8])
-		totals[hash] = totals[hash] + uint64(duration)
-		calls[hash] = calls[hash] + 1
-		i = i + 8
+	for i+recordSize <= limit {
+		methodHash := common.GetU32(data[i : i+4])
+		parentHash := common.GetU32(data[i+4 : i+8])
+		duration := common.GetU32(data[i+8 : i+12])
+		key := (uint64(parentHash) << 32) | uint64(methodHash)
+		edgeTotals[key] = edgeTotals[key] + uint64(duration)
+		edgeCalls[key] = edgeCalls[key] + 1
+		calleeSeen[methodHash] = true
+		totalNS = totalNS + uint64(duration)
+		i = i + recordSize
 	}
 
 	nameByHash := make(map[uint32]string)
@@ -838,63 +846,95 @@ func runProfileReport(profilePath string, entryFiles []string) error {
 		nameByHash = mapped
 	}
 
-	var stats []profileStat
-	for hash, total := range totals {
-		name := nameByHash[hash]
-		if name == "" {
-			name = fmt.Sprintf("0x%08x", hash)
-		}
-		stats = append(stats, profileStat{
-			Hash:  hash,
-			Name:  name,
-			Total: total,
-			Calls: calls[hash],
+	childrenByParent := make(map[uint32][]profileEdgeStat)
+	for key, total := range edgeTotals {
+		parentHash := uint32(key >> 32)
+		methodHash := uint32(key)
+		childrenByParent[parentHash] = append(childrenByParent[parentHash], profileEdgeStat{
+			Parent: parentHash,
+			Child:  methodHash,
+			Total:  total,
+			Calls:  edgeCalls[key],
 		})
 	}
-	sortProfileStats(stats)
-
-	root := &profileTreeNode{Name: "<root>"}
-	for _, st := range stats {
-		profileTreeInsert(root, st.Name, st.Total, st.Calls)
+	for parent, edges := range childrenByParent {
+		sortProfileEdges(edges)
+		childrenByParent[parent] = edges
 	}
-	sortProfileTree(root)
+
+	root := buildProfileTree(childrenByParent, calleeSeen, nameByHash)
 
 	fmt.Fprintf(os.Stdout, "Profile report for %s\n", profilePath)
-	fmt.Fprintf(os.Stdout, "records=%d unique=%d total_ns=%d\n", limit/8, len(stats), root.Total)
+	fmt.Fprintf(os.Stdout, "records=%d unique=%d total_ns=%d\n", limit/recordSize, len(calleeSeen), totalNS)
 	profilePrintTree(root, "")
 	if len(data) != limit {
 		fmt.Fprintf(os.Stdout, "note: ignored %d trailing bytes (incomplete record)\n", len(data)-limit)
 	}
 	if len(entryFiles) > 0 && len(nameByHash) == 0 {
-		fmt.Fprintf(os.Stdout, "note: no //rtg:profile methods discovered in provided source inputs\n")
+		fmt.Fprintf(os.Stdout, "note: no methods discovered in provided source inputs\n")
 	}
 	return nil
 }
 
-func profileTreeInsert(root *profileTreeNode, name string, total uint64, count uint64) {
-	root.Total = root.Total + total
-	parts := strings.Split(name, ".")
-	cur := root
-	for _, part := range parts {
-		if part == "" {
+func buildProfileTree(childrenByParent map[uint32][]profileEdgeStat, calleeSeen map[uint32]bool, nameByHash map[uint32]string) *profileTreeNode {
+	root := &profileTreeNode{Name: "<root>"}
+	visited := make(map[uint32]bool)
+	for _, edge := range childrenByParent[0] {
+		child := buildProfileTreeNode(edge, childrenByParent, nameByHash, visited)
+		root.Children = append(root.Children, child)
+		root.Total = root.Total + child.Total
+	}
+	var parentHashes []uint32
+	for parent := range childrenByParent {
+		if parent == 0 || calleeSeen[parent] {
 			continue
 		}
-		next := profileTreeFindOrAdd(cur, part)
-		next.Total = next.Total + total
-		cur = next
+		parentHashes = append(parentHashes, parent)
 	}
-	cur.Calls = cur.Calls + count
+	sortU32s(parentHashes)
+	for _, parent := range parentHashes {
+		node := &profileTreeNode{
+			Hash: parent,
+			Name: profileNameForHash(parent, nameByHash),
+		}
+		if visited[parent] {
+			continue
+		}
+		visited[parent] = true
+		profileTreeAppendChildren(node, parent, childrenByParent, nameByHash, visited)
+		visited[parent] = false
+		root.Children = append(root.Children, node)
+		root.Total = root.Total + node.Total
+	}
+	sortProfileTree(root)
+	return root
 }
 
-func profileTreeFindOrAdd(node *profileTreeNode, name string) *profileTreeNode {
-	for _, child := range node.Children {
-		if child.Name == name {
-			return child
+func buildProfileTreeNode(edge profileEdgeStat, childrenByParent map[uint32][]profileEdgeStat, nameByHash map[uint32]string, visited map[uint32]bool) *profileTreeNode {
+	node := &profileTreeNode{
+		Hash:  edge.Child,
+		Name:  profileNameForHash(edge.Child, nameByHash),
+		Total: edge.Total,
+		Calls: edge.Calls,
+	}
+	if visited[edge.Child] {
+		return node
+	}
+	visited[edge.Child] = true
+	profileTreeAppendChildren(node, edge.Child, childrenByParent, nameByHash, visited)
+	visited[edge.Child] = false
+	return node
+}
+
+func profileTreeAppendChildren(node *profileTreeNode, parentHash uint32, childrenByParent map[uint32][]profileEdgeStat, nameByHash map[uint32]string, visited map[uint32]bool) {
+	edges := childrenByParent[parentHash]
+	for _, edge := range edges {
+		child := buildProfileTreeNode(edge, childrenByParent, nameByHash, visited)
+		node.Children = append(node.Children, child)
+		if node.Calls == 0 {
+			node.Total = node.Total + child.Total
 		}
 	}
-	child := &profileTreeNode{Name: name}
-	node.Children = append(node.Children, child)
-	return child
 }
 
 func sortProfileTree(node *profileTreeNode) {
@@ -904,23 +944,26 @@ func sortProfileTree(node *profileTreeNode) {
 	}
 }
 
-func sortProfileStats(stats []profileStat) {
+func sortProfileEdges(edges []profileEdgeStat) {
 	i := 1
-	for i < len(stats) {
+	for i < len(edges) {
 		j := i
-		for j > 0 && profileStatLess(stats[j], stats[j-1]) {
-			stats[j], stats[j-1] = stats[j-1], stats[j]
+		for j > 0 && profileEdgeLess(edges[j], edges[j-1]) {
+			edges[j], edges[j-1] = edges[j-1], edges[j]
 			j = j - 1
 		}
 		i++
 	}
 }
 
-func profileStatLess(left profileStat, right profileStat) bool {
+func profileEdgeLess(left profileEdgeStat, right profileEdgeStat) bool {
 	if left.Total != right.Total {
 		return left.Total > right.Total
 	}
-	return left.Name < right.Name
+	if left.Child != right.Child {
+		return left.Child < right.Child
+	}
+	return left.Parent < right.Parent
 }
 
 func sortProfileTreeChildren(children []*profileTreeNode) {
@@ -940,6 +983,28 @@ func profileTreeNodeLess(left *profileTreeNode, right *profileTreeNode) bool {
 		return left.Total > right.Total
 	}
 	return left.Name < right.Name
+}
+
+func sortU32s(values []uint32) {
+	i := 1
+	for i < len(values) {
+		j := i
+		for j > 0 && values[j] < values[j-1] {
+			values[j], values[j-1] = values[j-1], values[j]
+			j = j - 1
+		}
+		i++
+	}
+}
+
+func profileNameForHash(hash uint32, nameByHash map[uint32]string) string {
+	if hash == 0 {
+		return "<root>"
+	}
+	if name, ok := nameByHash[hash]; ok && name != "" {
+		return name
+	}
+	return fmt.Sprintf("0x%08x", hash)
 }
 
 func profilePrintTree(node *profileTreeNode, prefix string) {
@@ -978,7 +1043,7 @@ func collectProfileMethodNameHashes(entryFiles []string) (map[uint32]string, err
 	frontend.ResetDiscoveredBuildTags()
 	mod := frontend.ResolveModule(&compileTarget, baseDir, entryFiles)
 	out := make(map[uint32]string)
-	for _, qname := range frontend.CollectProfileMethodQualNames(mod) {
+	for _, qname := range frontend.CollectMethodQualNames(mod) {
 		out[profileHash32(qname)] = qname
 	}
 	return out, nil
