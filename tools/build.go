@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 // ============================================================================
@@ -682,6 +684,130 @@ func equalFoldASCII(a, b string) bool {
 	return true
 }
 
+func fullCompilerSkipReason(backend string, targetOS string, targetArch string, name string) string {
+	archOnly := ""
+	if strings.HasSuffix(name, "_amd64") {
+		archOnly = "amd64"
+	} else if strings.HasSuffix(name, "_386") {
+		archOnly = "386"
+	} else if strings.HasSuffix(name, "_arm64") {
+		archOnly = "arm64"
+	}
+	if archOnly != "" && (backend != "rtg" || targetArch != archOnly) {
+		return archOnly + "-only test"
+	}
+	if backend == "wasm" && name == "iface_typeassert" {
+		return "known wasm32 type-assertion issue"
+	}
+	if name == "comptime_method" && targetArch == "386" {
+		return "known 32-bit comptime VM allocation issue"
+	}
+	if backend == "rtg" && targetOS == "semihost" && targetArch == "armv8m" && name == "04_defer_no_effect" {
+		return "known armv8m defer runtime issue"
+	}
+	return ""
+}
+
+func parsePositiveIntEnv(name string, defaultValue int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n <= 0 {
+		return defaultValue
+	}
+	return n
+}
+
+func (e *Executor) runFullCompilerRTGRenodeParallel(tests []string, rtgCompiler string, rtgTarget string, targetOS string, renodePath string) error {
+	type testJob struct {
+		index    int
+		testPath string
+		name     string
+	}
+	jobs := []testJob{}
+	for i, testPath := range tests {
+		base := filepath.Base(testPath)
+		name := strings.TrimSuffix(base, fileExt(base))
+		if reason := fullCompilerSkipReason("rtg", targetOS, "armv8m", name); reason != "" {
+			fmt.Printf("SKIP: %s/%s (%s)\n", "rtg", name, reason)
+			continue
+		}
+		jobs = append(jobs, testJob{index: i, testPath: testPath, name: name})
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	jobCount := parsePositiveIntEnv("RTG_FULLCOMPILER_JOBS", 4)
+	if jobCount > len(jobs) {
+		jobCount = len(jobs)
+	}
+	fmt.Printf("INFO: running armv8m Renode fullcompiler with %d parallel job(s)\n", jobCount)
+
+	type testResult struct {
+		index int
+		err   error
+	}
+	jobCh := make(chan testJob, len(jobs))
+	resultCh := make(chan testResult, len(jobs))
+	var wg sync.WaitGroup
+
+	worker := func() {
+		defer wg.Done()
+		for job := range jobCh {
+			out := filepath.Join("build", "fullcompiler_"+job.name)
+			compileArgs := []string{}
+			if rtgTarget != "" {
+				compileArgs = append(compileArgs, "-T", rtgTarget)
+			}
+			compileArgs = append(compileArgs, job.testPath, "-o", out)
+			if _, err := e.runAndCapture(rtgCompiler, compileArgs...); err != nil {
+				resultCh <- testResult{index: job.index, err: err}
+				continue
+			}
+			got, err := e.runArmv8mWithRenode(renodePath, out, targetOS)
+			if err != nil {
+				resultCh <- testResult{index: job.index, err: err}
+				continue
+			}
+			if got != "PASS" {
+				resultCh <- testResult{
+					index: job.index,
+					err:   fmt.Errorf("FAIL: %s/%s expected %q got %q", "rtg", job.name, "PASS", got),
+				}
+				continue
+			}
+			fmt.Printf("PASS: %s/%s\n", "rtg", job.name)
+			resultCh <- testResult{index: job.index}
+		}
+	}
+
+	wg.Add(jobCount)
+	i := 0
+	for i < jobCount {
+		go worker()
+		i++
+	}
+	for _, job := range jobs {
+		jobCh <- job
+	}
+	close(jobCh)
+	wg.Wait()
+	close(resultCh)
+
+	var firstErr error
+	firstErrIndex := len(tests) + 1
+	for result := range resultCh {
+		if result.err != nil && result.index < firstErrIndex {
+			firstErr = result.err
+			firstErrIndex = result.index
+		}
+	}
+	return firstErr
+}
+
 // handleFullCompiler runs the top-level fullcompiler suite for a backend.
 // Usage: fullcompiler <rtg|c|wasm> [rtg-target]
 func (e *Executor) handleFullCompiler(args []string) error {
@@ -728,32 +854,16 @@ func (e *Executor) handleFullCompiler(args []string) error {
 			return err
 		}
 	}
+	renodePath := strings.TrimSpace(os.Getenv("RENODE_PATH"))
+	if backend == "rtg" && runtime.GOOS == "linux" && (targetOS == "semihost" || targetOS == "bare") && targetArch == "armv8m" && renodePath != "" {
+		return e.runFullCompilerRTGRenodeParallel(tests, rtgCompiler, rtgTarget, targetOS, renodePath)
+	}
 
 	for _, testPath := range tests {
 		base := filepath.Base(testPath)
 		name := strings.TrimSuffix(base, fileExt(base))
-		archOnly := ""
-		if strings.HasSuffix(name, "_amd64") {
-			archOnly = "amd64"
-		} else if strings.HasSuffix(name, "_386") {
-			archOnly = "386"
-		} else if strings.HasSuffix(name, "_arm64") {
-			archOnly = "arm64"
-		}
-		if archOnly != "" && (backend != "rtg" || targetArch != archOnly) {
-			fmt.Printf("SKIP: %s/%s (%s-only test)\n", backend, name, archOnly)
-			continue
-		}
-		if backend == "wasm" && name == "iface_typeassert" {
-			fmt.Printf("SKIP: %s/%s (known wasm32 type-assertion issue)\n", backend, name)
-			continue
-		}
-		if name == "comptime_method" && targetArch == "386" {
-			fmt.Printf("SKIP: %s/%s (known 32-bit comptime VM allocation issue)\n", backend, name)
-			continue
-		}
-		if backend == "rtg" && targetOS == "semihost" && targetArch == "armv8m" && name == "04_defer_no_effect" {
-			fmt.Printf("SKIP: %s/%s (known armv8m defer runtime issue)\n", backend, name)
+		if reason := fullCompilerSkipReason(backend, targetOS, targetArch, name); reason != "" {
+			fmt.Printf("SKIP: %s/%s (%s)\n", backend, name, reason)
 			continue
 		}
 
@@ -800,7 +910,7 @@ func (e *Executor) handleFullCompiler(args []string) error {
 				runBin = "cmd.exe"
 				runArgs = []string{"/c", quoteForCmd(winOut)}
 			case runtime.GOOS == "linux" && (targetOS == "semihost" || targetOS == "bare") && targetArch == "armv8m":
-				if renodePath := strings.TrimSpace(os.Getenv("RENODE_PATH")); renodePath != "" {
+				if renodePath != "" {
 					got, err = e.runArmv8mWithRenode(renodePath, out, targetOS)
 					if err != nil {
 						return err
@@ -925,7 +1035,8 @@ func (e *Executor) runArmv8mWithRenode(renodePath string, elfPath string, target
 	if err != nil {
 		return "", err
 	}
-	replPath := filepath.Join("build", "fullcompiler_armv8m_renode.repl")
+	baseName := filepath.Base(elfPath)
+	replPath := filepath.Join("build", baseName+".renode.repl")
 	if err := os.WriteFile(replPath, []byte(renodeArmv8mRepl()), 0644); err != nil {
 		return "", err
 	}
@@ -937,13 +1048,13 @@ func (e *Executor) runArmv8mWithRenode(renodePath string, elfPath string, target
 	if err != nil {
 		return "", err
 	}
-	logPath := filepath.Join("build", filepath.Base(elfPath)+".renode.uart.log")
+	logPath := filepath.Join("build", baseName+".renode.uart.log")
 	_ = os.Remove(logPath)
 	logAbs, err := filepath.Abs(logPath)
 	if err != nil {
 		return "", err
 	}
-	rescPath := filepath.Join("build", filepath.Base(elfPath)+".renode.resc")
+	rescPath := filepath.Join("build", baseName+".renode.resc")
 	backendAttach := "cpu.uartSemihosting CreateFileBackend @" + logAbs + " true\n"
 	if targetOS == "bare" {
 		backendAttach = "uart0 CreateFileBackend @" + logAbs + " true\n"
@@ -954,10 +1065,10 @@ func (e *Executor) runArmv8mWithRenode(renodePath string, elfPath string, target
 		"machine LoadPlatformDescription @" + replAbs + "\n" +
 		backendAttach +
 		"sysbus LoadELF @" + elfAbs + "\n" +
-		"cpu PerformanceInMips 200\n" +
+		"cpu PerformanceInMips 1000\n" +
 		"cpu SP 0x283EF000\n" +
 		"cpu PC 0x10000101\n" +
-		"emulation RunFor \"10.0\"\n" +
+		"emulation RunFor \"1.0\"\n" +
 		"quit\n"
 	if err := os.WriteFile(rescPath, []byte(resc), 0644); err != nil {
 		return "", err
