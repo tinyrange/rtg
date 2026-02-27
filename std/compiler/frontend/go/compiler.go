@@ -1609,10 +1609,6 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 					isZeroCallFunc = true
 				}
 			}
-			if hasProfileDirective && fn.X == nil {
-				c.errorf("%s: //rtg:profile can only be used on methods", qname)
-			}
-
 			// Pre-register variadic info and param count
 			paramCount := len(fn.Nodes)
 			fixedParams := 0
@@ -1664,7 +1660,9 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			if isZeroCallFunc {
 				c.funcIsZeroCall[qname] = true
 			}
-			if hasProfileDirective && fn.X != nil && c.target != nil && c.target.Profile {
+			// In -profile mode, instrument all methods automatically.
+			// Top-level functions remain opt-in via //rtg:profile.
+			if c.target != nil && c.target.Profile && (fn.X != nil || hasProfileDirective) {
 				c.funcIsProfiled[qname] = true
 			}
 			if assembleArch != "" {
@@ -2414,7 +2412,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.pushScope()
 
 	methodProfileABI := c.target != nil && c.target.Profile && node.X != nil
-	if methodProfileABI {
+	if c.target != nil && c.target.Profile {
 		c.currentMethodHash = profileHash32FNV(qname)
 	}
 

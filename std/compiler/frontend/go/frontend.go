@@ -1090,15 +1090,20 @@ func parseProfileDirective(val string) bool {
 
 // CollectProfileMethodQualNames returns qualified method names marked with //rtg:profile.
 func CollectProfileMethodQualNames(mod *Module) []string {
-	return collectMethodQualNames(mod, true)
+	return collectCallableQualNames(mod, true, true)
 }
 
 // CollectMethodQualNames returns qualified method names for all methods in the module.
 func CollectMethodQualNames(mod *Module) []string {
-	return collectMethodQualNames(mod, false)
+	return collectCallableQualNames(mod, true, false)
 }
 
-func collectMethodQualNames(mod *Module, profileOnly bool) []string {
+// CollectCallableQualNames returns qualified function and method names in the module.
+func CollectCallableQualNames(mod *Module) []string {
+	return collectCallableQualNames(mod, false, false)
+}
+
+func collectCallableQualNames(mod *Module, methodsOnly bool, profileOnly bool) []string {
 	if mod == nil {
 		return nil
 	}
@@ -1112,7 +1117,7 @@ func collectMethodQualNames(mod *Module, profileOnly bool) []string {
 		for _, file := range pkg.Files {
 			for _, node := range file.Nodes {
 				base, directives := unwrapDirectiveNode(node)
-				if base == nil || base.Kind != NFunc || base.X == nil || base.X.Type == nil {
+				if base == nil || base.Kind != NFunc {
 					continue
 				}
 				if profileOnly {
@@ -1127,11 +1132,19 @@ func collectMethodQualNames(mod *Module, profileOnly bool) []string {
 						continue
 					}
 				}
-				recvType := nodeTypeName(base.X.Type)
-				if recvType == "" {
-					continue
+				var qname string
+				if base.X != nil && base.X.Type != nil {
+					recvType := nodeTypeName(base.X.Type)
+					if recvType == "" {
+						continue
+					}
+					qname = pkg.QualName(recvType) + "." + base.Name
+				} else {
+					if methodsOnly {
+						continue
+					}
+					qname = pkg.QualName(base.Name)
 				}
-				qname := pkg.QualName(recvType) + "." + base.Name
 				if !seen[qname] {
 					seen[qname] = true
 					out = append(out, qname)
