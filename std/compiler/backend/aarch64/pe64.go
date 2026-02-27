@@ -66,6 +66,7 @@ func formatSlashOffset(n int) []byte {
 }
 
 // getImportDirInfo returns the RVA and size of the Import Directory Table.
+//rtg:profile
 func (g *CodeGen) getImportDirInfo(imports []winImportArm64, idataRVA int) (int, int) {
 	groups := groupWinImportsArm64(imports)
 	if len(groups) == 0 {
@@ -98,6 +99,7 @@ func makeCOFFSym(name []byte, value uint32, section uint16, symType uint16, stor
 }
 
 // buildCOFFSymbols creates the COFF symbol table and string table.
+//rtg:profile
 func (g *CodeGen) buildCOFFSymbols(irmod *ir.IRModule) ([]byte, []byte, int) {
 	var coffSyms []byte
 	var coffStrtab []byte
@@ -135,6 +137,7 @@ func (g *CodeGen) buildCOFFSymbols(irmod *ir.IRModule) ([]byte, []byte, int) {
 
 // buildPE64 assembles a PE32+ (64-bit) executable from the compiled code, rodata, data,
 // and Windows import fixups.
+//rtg:profile
 func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	// PE32+ Layout:
 	// 0x000  DOS Header (64 bytes)
@@ -525,6 +528,7 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 }
 
 // buildIData64 builds the .idata section with 8-byte ILT/IAT entries for PE32+.
+//rtg:profile
 func (g *CodeGen) buildIData64(imports []winImportArm64) []byte {
 	groups := groupWinImportsArm64(imports)
 	numLibs := len(groups)
@@ -612,6 +616,7 @@ func idataOffsetAfterIAT64Arm64(imports []winImportArm64) int {
 }
 
 // fixupIData64 adjusts RVA fields in the .idata content to be actual RVAs.
+//rtg:profile
 func (g *CodeGen) fixupIData64(idata []byte, idataRVA int, imports []winImportArm64) {
 	groups := groupWinImportsArm64(imports)
 	numLibs := len(groups)
@@ -651,6 +656,7 @@ func (g *CodeGen) fixupIData64(idata []byte, idataRVA int, imports []winImportAr
 }
 
 // buildIATOffsets64 returns import key → offset within .idata of the IAT entry.
+//rtg:profile
 func (g *CodeGen) buildIATOffsets64(imports []winImportArm64) map[string]int {
 	groups := groupWinImportsArm64(imports)
 	idtSize := (len(groups) + 1) * 20
@@ -672,6 +678,7 @@ func (g *CodeGen) buildIATOffsets64(imports []winImportArm64) map[string]int {
 }
 
 // getIATInfo64 returns the RVA and size of the IAT (8-byte entries).
+//rtg:profile
 func (g *CodeGen) getIATInfo64(imports []winImportArm64, idataRVA int) (int, int) {
 	groups := groupWinImportsArm64(imports)
 	if len(groups) == 0 {
@@ -688,6 +695,7 @@ func (g *CodeGen) getIATInfo64(imports []winImportArm64, idataRVA int) (int, int
 }
 
 // buildDWARF64 generates DWARF2 sections with 8-byte addresses for PE32+.
+//rtg:profile
 func (g *CodeGen) buildDWARF64(irmod *ir.IRModule, textVA int, textSize int) ([]byte, []byte) {
 	// === .debug_abbrev ===
 	var abbrev []byte
@@ -773,6 +781,7 @@ func (g *CodeGen) buildDWARF64(irmod *ir.IRModule, textVA int, textSize int) ([]
 // buildBaseRelocations builds a .reloc section for 64-bit PE base relocations.
 // sectionRVA is the RVA of the section containing the addresses to relocate.
 // offsets are sorted offsets within that section of 8-byte absolute addresses.
+//rtg:profile
 func (g *CodeGen) buildBaseRelocations(sectionRVA int, offsets []int) []byte {
 	if len(offsets) == 0 {
 		return nil

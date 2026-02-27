@@ -102,6 +102,7 @@ type machoSymEntry struct {
 	ntype   byte
 }
 
+//rtg:profile
 func (g *CodeGen) LookupFuncOffset(name string) (int, bool) {
 	off, ok := g.FuncOffsets[name]
 	return off, ok
@@ -109,32 +110,39 @@ func (g *CodeGen) LookupFuncOffset(name string) (int, bool) {
 
 // === Shared byte emission ===
 
+//rtg:profile
 func (g *CodeGen) emitByte(b byte) {
 	g.Code = append(g.Code, b)
 }
 
+//rtg:profile
 func (g *CodeGen) emitBytes(bytes ...byte) {
 	g.Code = append(g.Code, bytes...)
 }
 
+//rtg:profile
 func (g *CodeGen) emitU32(v uint32) {
 	g.Code = append(g.Code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
+//rtg:profile
 func (g *CodeGen) emitU16(v uint16) {
 	g.Code = append(g.Code, byte(v), byte(v>>8))
 }
 
+//rtg:profile
 func (g *CodeGen) emitU64(v uint64) {
 	g.Code = append(g.Code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
 		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
 }
 
+//rtg:profile
 func (g *CodeGen) emitRodataU64(v uint64) {
 	g.Rodata = append(g.Rodata, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
 		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
 }
 
+//rtg:profile
 func (g *CodeGen) emitRodataU32(v uint32) {
 	g.Rodata = append(g.Rodata, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
@@ -174,6 +182,7 @@ func getU32(b []byte) uint32 {
 // === Shared code emission helpers ===
 
 // emitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
+//rtg:profile
 func (g *CodeGen) emitCallPlaceholder(target string) {
 	g.flush()
 	g.emitBytes(0xe8) // call rel32
@@ -185,6 +194,7 @@ func (g *CodeGen) emitCallPlaceholder(target string) {
 }
 
 // patchRel32At patches the rel32 at fixupOff to jump to targetOff.
+//rtg:profile
 func (g *CodeGen) patchRel32At(fixupOff int, targetOff int) {
 	rel := int32(targetOff - (fixupOff + 4))
 	g.Code[fixupOff] = byte(rel)
@@ -194,6 +204,7 @@ func (g *CodeGen) patchRel32At(fixupOff int, targetOff int) {
 }
 
 // patchRel32 patches the rel32 at fixupOff to jump to the current code position.
+//rtg:profile
 func (g *CodeGen) patchRel32(fixupOff int) {
 	target := len(g.Code)
 	rel := int32(target - (fixupOff + 4))
@@ -204,6 +215,7 @@ func (g *CodeGen) patchRel32(fixupOff int) {
 }
 
 // jmpRel32 emits `jmp rel32` and returns the offset of the rel32 for fixup.
+//rtg:profile
 func (g *CodeGen) jmpRel32() int {
 	g.flush()
 	g.emitByte(0xe9)
@@ -213,6 +225,7 @@ func (g *CodeGen) jmpRel32() int {
 }
 
 // jccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
+//rtg:profile
 func (g *CodeGen) jccRel32(cc byte) int {
 	g.flush()
 	g.emitBytes(0x0f, cc)
@@ -222,12 +235,14 @@ func (g *CodeGen) jccRel32(cc byte) int {
 }
 
 // jmpRel8 emits `jmp rel8`.
+//rtg:profile
 func (g *CodeGen) jmpRel8(off int8) {
 	g.flush()
 	g.emitBytes(0xeb, byte(off))
 }
 
 // jccRel8 emits `jCC rel8`.
+//rtg:profile
 func (g *CodeGen) jccRel8(cc byte, off int8) {
 	g.emitBytes(byte(0x70|(cc&0x0f)), byte(off))
 }
@@ -236,6 +251,7 @@ func fitsRel8(rel int) bool {
 	return rel >= -128 && rel <= 127
 }
 
+//rtg:profile
 func (g *CodeGen) shiftOffsetsAfterDelete(cutPos int, removed int) {
 	if removed <= 0 {
 		return
@@ -263,6 +279,7 @@ func (g *CodeGen) shiftOffsetsAfterDelete(cutPos int, removed int) {
 
 // relaxCurrentFuncJumps shortens rel32 jumps/jccs to rel8 when possible for x86 backends.
 // Must be called before resolving rel32 fixups.
+//rtg:profile
 func (g *CodeGen) relaxCurrentFuncJumps() {
 	changed := true
 	for changed {
@@ -315,16 +332,19 @@ func (g *CodeGen) relaxCurrentFuncJumps() {
 }
 
 // ret emits `ret`.
+//rtg:profile
 func (g *CodeGen) ret() {
 	g.emitByte(0xc3)
 }
 
 // leave emits `leave`.
+//rtg:profile
 func (g *CodeGen) leave() {
 	g.emitByte(0xc9)
 }
 
 // int3 emits `int3` (breakpoint trap).
+//rtg:profile
 func (g *CodeGen) int3() {
 	g.emitByte(0xcc)
 }
@@ -333,6 +353,7 @@ func (g *CodeGen) int3() {
 // These methods work for both amd64 (R15-based, 8-byte slots)
 // and i386 (EDI-based, 4-byte slots).
 
+//rtg:profile
 func (g *CodeGen) flush() {
 	if len(g.CacheRegs) > 0 {
 		if len(g.CacheStack) == 0 && !g.HasPending {
@@ -356,11 +377,13 @@ func (g *CodeGen) flush() {
 	g.rawPush(g.PendingReg)
 }
 
+//rtg:profile
 func (g *CodeGen) configureOperandCache(regs ...int) {
 	g.CacheRegs = append(g.CacheRegs[:0], regs...)
 	g.clearOperandCache()
 }
 
+//rtg:profile
 func (g *CodeGen) clearOperandCache() {
 	g.HasPending = false
 	g.CacheStack = g.CacheStack[:0]
@@ -411,15 +434,18 @@ func (g *CodeGen) rawPush(reg int) {
 	g.emitBytes(0x89, byte(0x07|(reg<<3))) // mov [edi], reg
 }
 
+//rtg:profile
 func (g *CodeGen) rawPop(reg int) {
 	g.emitBytes(0x8b, byte(0x07|(reg<<3))) // mov reg, [edi]
 	g.emitBytes(0x8d, 0x7f, 0x04)          // lea edi, [edi+4] (preserves flags)
 }
 
+//rtg:profile
 func (g *CodeGen) rawLoad(reg int) {
 	g.emitBytes(0x8b, byte(0x07|(reg<<3)))
 }
 
+//rtg:profile
 func (g *CodeGen) rawDrop() {
 	g.emitBytes(0x83, 0xc7, 0x04)
 }
@@ -474,6 +500,7 @@ func (g *CodeGen) opPop(reg int) {
 	g.rawPop(reg)
 }
 
+//rtg:profile
 func (g *CodeGen) opLoad(reg int) {
 	if len(g.CacheRegs) > 0 {
 		if g.HasPending {
@@ -495,11 +522,13 @@ func (g *CodeGen) opLoad(reg int) {
 	g.rawLoad(reg)
 }
 
+//rtg:profile
 func (g *CodeGen) opStore(reg int) {
 	g.flush()
 	g.emitBytes(0x89, byte(0x07|(reg<<3)))
 }
 
+//rtg:profile
 func (g *CodeGen) opDrop() {
 	if len(g.CacheRegs) > 0 {
 		if g.HasPending {
@@ -523,10 +552,12 @@ func (g *CodeGen) opDrop() {
 }
 
 // emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.
+//rtg:profile
 func (g *CodeGen) emitCallIAT(funcName string) {
 	g.emitCallIATInLib(winDefaultImportLibrary, funcName)
 }
 
+//rtg:profile
 func (g *CodeGen) emitCallIATInLib(libName string, funcName string) {
 	g.flush()
 	g.emitBytes(0xFF, 0x15) // call dword ptr [abs32]
@@ -538,10 +569,12 @@ func (g *CodeGen) emitCallIATInLib(libName string, funcName string) {
 }
 
 // emitJmpIAT emits `jmp dword ptr [abs32]` for jumping to Windows IAT entries.
+//rtg:profile
 func (g *CodeGen) emitJmpIAT(funcName string) {
 	g.emitJmpIATInLib(winDefaultImportLibrary, funcName)
 }
 
+//rtg:profile
 func (g *CodeGen) emitJmpIATInLib(libName string, funcName string) {
 	g.flush()
 	g.emitBytes(0xFF, 0x25) // jmp dword ptr [abs32]

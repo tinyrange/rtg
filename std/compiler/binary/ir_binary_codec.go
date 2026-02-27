@@ -15,14 +15,17 @@ type irBinWriter struct {
 	buf []byte
 }
 
+//rtg:profile
 func (w *irBinWriter) bytes() []byte {
 	return w.buf
 }
 
+//rtg:profile
 func (w *irBinWriter) writeByte(v byte) {
 	w.buf = append(w.buf, v)
 }
 
+//rtg:profile
 func (w *irBinWriter) writeBool(v bool) {
 	if v {
 		w.writeByte(1)
@@ -31,6 +34,7 @@ func (w *irBinWriter) writeBool(v bool) {
 	}
 }
 
+//rtg:profile
 func (w *irBinWriter) writeU32(v uint32) {
 	u := int(v)
 	b0 := byte(u % 256)
@@ -43,16 +47,19 @@ func (w *irBinWriter) writeU32(v uint32) {
 	w.buf = append(w.buf, b0, b1, b2, b3)
 }
 
+//rtg:profile
 func (w *irBinWriter) writeI64(v int64) {
 	u := uint64(v)
 	w.buf = append(w.buf, byte(u), byte(u>>8), byte(u>>16), byte(u>>24),
 		byte(u>>32), byte(u>>40), byte(u>>48), byte(u>>56))
 }
 
+//rtg:profile
 func (w *irBinWriter) writeInt(v int) {
 	w.writeI64(int64(v))
 }
 
+//rtg:profile
 func (w *irBinWriter) writeString(s string) {
 	w.writeU32(uint32(len(s)))
 	w.buf = append(w.buf, []byte(s)...)
@@ -63,6 +70,7 @@ type irBinReader struct {
 	off  int
 }
 
+//rtg:profile
 func (r *irBinReader) need(n int) error {
 	if r.off+n > len(r.data) {
 		return fmt.Errorf("truncated IR binary")
@@ -70,6 +78,7 @@ func (r *irBinReader) need(n int) error {
 	return nil
 }
 
+//rtg:profile
 func (r *irBinReader) readByte() (byte, error) {
 	if err := r.need(1); err != nil {
 		return 0, err
@@ -79,6 +88,7 @@ func (r *irBinReader) readByte() (byte, error) {
 	return v, nil
 }
 
+//rtg:profile
 func (r *irBinReader) readBool() (bool, error) {
 	b, err := r.readByte()
 	if err != nil {
@@ -93,6 +103,7 @@ func (r *irBinReader) readBool() (bool, error) {
 	return false, fmt.Errorf("invalid bool value %d", int(b))
 }
 
+//rtg:profile
 func (r *irBinReader) readU32() (uint32, error) {
 	if err := r.need(4); err != nil {
 		return 0, err
@@ -103,6 +114,7 @@ func (r *irBinReader) readU32() (uint32, error) {
 	return v, nil
 }
 
+//rtg:profile
 func (r *irBinReader) readI64() (int64, error) {
 	if err := r.need(8); err != nil {
 		return 0, err
@@ -120,6 +132,7 @@ func (r *irBinReader) readI64() (int64, error) {
 	return int64(u), nil
 }
 
+//rtg:profile
 func (r *irBinReader) readInt() (int, error) {
 	v, err := r.readI64()
 	if err != nil {
@@ -128,6 +141,7 @@ func (r *irBinReader) readInt() (int, error) {
 	return int(v), nil
 }
 
+//rtg:profile
 func (r *irBinReader) readString() (string, error) {
 	n, err := r.readU32()
 	if err != nil {

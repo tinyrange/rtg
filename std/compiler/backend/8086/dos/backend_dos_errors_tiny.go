@@ -4,6 +4,7 @@ package dos
 
 type tinyBackendError string
 
+//rtg:profile
 func (e tinyBackendError) Error() string { return string(e) }
 
 func reportUnresolvedCalls(unresolved []string) {

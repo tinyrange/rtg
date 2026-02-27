@@ -36,7 +36,7 @@ func runtimePanic(msg string) {
 		SysWrite(2, Stringptr(msg), uintptr(len(msg)))
 	}
 	SysWrite(2, Stringptr("\n"), 1)
-	SysExit(2)
+	Exit(2)
 }
 
 var panicActive bool

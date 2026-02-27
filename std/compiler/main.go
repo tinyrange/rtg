@@ -176,6 +176,7 @@ func main() {
 	var emitIRPath string
 	var emitIRBinaryPath string
 	var fromIRBinaryPath string
+	var profileReportPath string
 	var extractStdlibDest string
 	var runMode bool
 	var stdinInput bool
@@ -310,6 +311,16 @@ func main() {
 			compileTarget.Strict = true
 			i = i + 1
 			continue
+		case "-profile":
+			compileTarget.Profile = true
+			i = i + 1
+			continue
+		case "-profile-report":
+			if i+1 < len(args) {
+				profileReportPath = args[i+1]
+				i = i + 2
+				continue
+			}
 		case "-emit-ir":
 			if i+1 < len(args) {
 				emitIRPath = args[i+1]
@@ -466,7 +477,7 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
-	if extractStdlibDest == "" && fromIRBinaryPath == "" && len(entryFiles) == 0 {
+	if extractStdlibDest == "" && profileReportPath == "" && fromIRBinaryPath == "" && len(entryFiles) == 0 {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
@@ -500,6 +511,22 @@ func main() {
 		}
 	}
 	traceExit(10)
+
+	if profileReportPath != "" {
+		if extractStdlibDest != "" || fromIRBinaryPath != "" || runMode || stdinInput || parseOnly || emitIRPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
+			fmt.Fprintf(os.Stderr, "-profile-report cannot be combined with compilation/runtime options\n")
+			runCleanup()
+			os.Exit(1)
+		}
+		err := runProfileReport(profileReportPath, entryFiles)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "profile report error: %v\n", err)
+			runCleanup()
+			os.Exit(1)
+		}
+		runCleanup()
+		os.Exit(0)
+	}
 
 	if extractStdlibDest != "" {
 		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || stdinInput || parseOnly || emitIRPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
@@ -746,6 +773,8 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
 	fmt.Fprintf(out, "  -strict                Reject RTG-only language extensions in user packages\n")
+	fmt.Fprintf(out, "  -profile               Enable //rtg:profile method instrumentation\n")
+	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated method tree\n")
 	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")
 		fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
@@ -762,6 +791,208 @@ func printHelp(program string, out *os.File) {
 	for _, target := range possibleTargets() {
 		fmt.Fprintf(out, "  %s\n", target)
 	}
+}
+
+type profileStat struct {
+	Hash  uint32
+	Name  string
+	Total uint64
+	Calls uint64
+}
+
+type profileTreeNode struct {
+	Name     string
+	Total    uint64
+	Calls    uint64
+	Children []*profileTreeNode
+}
+
+func runProfileReport(profilePath string, entryFiles []string) error {
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return err
+	}
+	if len(data) < 8 {
+		fmt.Fprintf(os.Stdout, "Profile report for %s\n", profilePath)
+		fmt.Fprintf(os.Stdout, "no records\n")
+		return nil
+	}
+	limit := len(data) - (len(data) % 8)
+	totals := make(map[uint32]uint64)
+	calls := make(map[uint32]uint64)
+	i := 0
+	for i+8 <= limit {
+		hash := common.GetU32(data[i : i+4])
+		duration := common.GetU32(data[i+4 : i+8])
+		totals[hash] = totals[hash] + uint64(duration)
+		calls[hash] = calls[hash] + 1
+		i = i + 8
+	}
+
+	nameByHash := make(map[uint32]string)
+	if len(entryFiles) > 0 {
+		mapped, err := collectProfileMethodNameHashes(entryFiles)
+		if err != nil {
+			return err
+		}
+		nameByHash = mapped
+	}
+
+	var stats []profileStat
+	for hash, total := range totals {
+		name := nameByHash[hash]
+		if name == "" {
+			name = fmt.Sprintf("0x%08x", hash)
+		}
+		stats = append(stats, profileStat{
+			Hash:  hash,
+			Name:  name,
+			Total: total,
+			Calls: calls[hash],
+		})
+	}
+	sortProfileStats(stats)
+
+	root := &profileTreeNode{Name: "<root>"}
+	for _, st := range stats {
+		profileTreeInsert(root, st.Name, st.Total, st.Calls)
+	}
+	sortProfileTree(root)
+
+	fmt.Fprintf(os.Stdout, "Profile report for %s\n", profilePath)
+	fmt.Fprintf(os.Stdout, "records=%d unique=%d total_ns=%d\n", limit/8, len(stats), root.Total)
+	profilePrintTree(root, "")
+	if len(data) != limit {
+		fmt.Fprintf(os.Stdout, "note: ignored %d trailing bytes (incomplete record)\n", len(data)-limit)
+	}
+	if len(entryFiles) > 0 && len(nameByHash) == 0 {
+		fmt.Fprintf(os.Stdout, "note: no //rtg:profile methods discovered in provided source inputs\n")
+	}
+	return nil
+}
+
+func profileTreeInsert(root *profileTreeNode, name string, total uint64, count uint64) {
+	root.Total = root.Total + total
+	parts := strings.Split(name, ".")
+	cur := root
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		next := profileTreeFindOrAdd(cur, part)
+		next.Total = next.Total + total
+		cur = next
+	}
+	cur.Calls = cur.Calls + count
+}
+
+func profileTreeFindOrAdd(node *profileTreeNode, name string) *profileTreeNode {
+	for _, child := range node.Children {
+		if child.Name == name {
+			return child
+		}
+	}
+	child := &profileTreeNode{Name: name}
+	node.Children = append(node.Children, child)
+	return child
+}
+
+func sortProfileTree(node *profileTreeNode) {
+	sortProfileTreeChildren(node.Children)
+	for _, child := range node.Children {
+		sortProfileTree(child)
+	}
+}
+
+func sortProfileStats(stats []profileStat) {
+	i := 1
+	for i < len(stats) {
+		j := i
+		for j > 0 && profileStatLess(stats[j], stats[j-1]) {
+			stats[j], stats[j-1] = stats[j-1], stats[j]
+			j = j - 1
+		}
+		i++
+	}
+}
+
+func profileStatLess(left profileStat, right profileStat) bool {
+	if left.Total != right.Total {
+		return left.Total > right.Total
+	}
+	return left.Name < right.Name
+}
+
+func sortProfileTreeChildren(children []*profileTreeNode) {
+	i := 1
+	for i < len(children) {
+		j := i
+		for j > 0 && profileTreeNodeLess(children[j], children[j-1]) {
+			children[j], children[j-1] = children[j-1], children[j]
+			j = j - 1
+		}
+		i++
+	}
+}
+
+func profileTreeNodeLess(left *profileTreeNode, right *profileTreeNode) bool {
+	if left.Total != right.Total {
+		return left.Total > right.Total
+	}
+	return left.Name < right.Name
+}
+
+func profilePrintTree(node *profileTreeNode, prefix string) {
+	for i, child := range node.Children {
+		last := i == len(node.Children)-1
+		branch := "|- "
+		nextPrefix := prefix + "|  "
+		if last {
+			branch = "\\- "
+			nextPrefix = prefix + "   "
+		}
+		if len(child.Children) == 0 {
+			avg := uint64(0)
+			if child.Calls > 0 {
+				avg = child.Total / child.Calls
+			}
+			fmt.Fprintf(os.Stdout, "%s%s%s total=%dns calls=%d avg=%dns\n", prefix, branch, child.Name, child.Total, child.Calls, avg)
+		} else {
+			fmt.Fprintf(os.Stdout, "%s%s%s total=%dns\n", prefix, branch, child.Name, child.Total)
+			profilePrintTree(child, nextPrefix)
+		}
+	}
+}
+
+func collectProfileMethodNameHashes(entryFiles []string) (map[uint32]string, error) {
+	var baseDir string
+	var err error
+	if stdlib.HasEmbeddedStd() {
+		baseDir = "."
+	} else {
+		baseDir, err = detectStdlibBaseDir()
+		if err != nil {
+			return nil, err
+		}
+	}
+	frontend.ResetDiscoveredBuildTags()
+	mod := frontend.ResolveModule(&compileTarget, baseDir, entryFiles)
+	out := make(map[uint32]string)
+	for _, qname := range frontend.CollectProfileMethodQualNames(mod) {
+		out[profileHash32(qname)] = qname
+	}
+	return out, nil
+}
+
+func profileHash32(name string) uint32 {
+	var h uint32 = 2166136261
+	i := 0
+	for i < len(name) {
+		h = h ^ uint32(name[i])
+		h = h * 16777619
+		i++
+	}
+	return h
 }
 
 func parseDefineArg(raw string) (string, string, bool) {

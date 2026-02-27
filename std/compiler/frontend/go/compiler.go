@@ -81,6 +81,7 @@ type Compiler struct {
 	funcVariadicElem     map[string]int      // variadic function name → variadic elem size (1 for ...byte, 8 otherwise)
 	funcIsInternal       map[string]bool     // function name → true if declared via //rtg:internal
 	funcIsLinkStatic     map[string]bool     // function name → true if declared via //rtg:linkstatic
+	funcIsProfiled       map[string]bool     // function/method name → true if marked //rtg:profile and enabled via -profile
 	funcIsZeroCall       map[string]bool     // function/method name → true if calls must be inlined at callsites
 	typeIsZeroCall       map[string]bool     // qualified type name → true if methods default to zerocall
 	comptimeFuncs        map[string]bool     // function/method name → true if marked //rtg:comptime
@@ -122,6 +123,9 @@ type Compiler struct {
 	comptimeSeq          int
 	comptimeDisabled     bool
 	inComptimeFunc       bool
+	profileStartLocal    int
+	profileMethodHash    uint32
+	profileFlushOnExit   bool
 	inIfInit             bool
 	ifInitLeakedNames    map[string]bool
 	assembleFuncs        map[string]assembleInfo
@@ -159,6 +163,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		funcVariadicElem:    make(map[string]int),
 		funcIsInternal:      make(map[string]bool),
 		funcIsLinkStatic:    make(map[string]bool),
+		funcIsProfiled:      make(map[string]bool),
 		funcIsZeroCall:      make(map[string]bool),
 		typeIsZeroCall:      make(map[string]bool),
 		comptimeFuncs:       make(map[string]bool),
@@ -287,6 +292,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 	return c.irmod, c.errors
 }
 
+//rtg:profile
 func (c *Compiler) initBuiltinTypes() {
 	c.types["bool"] = &ir.TypeInfo{Kind: ir.TY_BOOL, Name: "bool", Size: 1, Align: 1}
 	c.types["byte"] = &ir.TypeInfo{Kind: ir.TY_BYTE, Name: "byte", Size: 1, Align: 1}
@@ -304,6 +310,7 @@ func (c *Compiler) initBuiltinTypes() {
 	c.ifaceMethodRets["error\x00Error"] = 1
 }
 
+//rtg:profile
 func (c *Compiler) errorf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	c.errors = append(c.errors, msg)
@@ -323,6 +330,7 @@ func (c *Compiler) lookupCurrentTypeDecl(name string) (*Node, bool) {
 	return nil, false
 }
 
+//rtg:profile
 func (c *Compiler) registerLocalTypeDecl(node *Node) {
 	if node == nil || node.Kind != NTypeDecl || node.Name == "" {
 		return
@@ -391,6 +399,7 @@ func (c *Compiler) resolvePackage(pkgName string) *Package {
 
 // lookupStructTypeNode parses a qualified type name and returns the struct's type node
 // and the package path. Returns nil, "" if not found.
+//
 func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 	dotIdx := -1
 	i := 0
@@ -430,6 +439,8 @@ func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 
 // lookupStructField parses a qualified type name and returns the matching field node
 // and the package path. Returns nil, "" if not found.
+//
+//rtg:profile
 func (c *Compiler) lookupStructField(qualifiedType string, fieldName string) (*Node, string) {
 	typeNode, pkgPath := c.lookupStructTypeNode(qualifiedType)
 	if typeNode == nil {
@@ -492,6 +503,7 @@ func (c *Compiler) resolveFieldPath(qualifiedType string, fieldName string) ([]i
 }
 
 // resolveFieldType looks up the type of a struct field given a qualified type name and field name.
+//
 func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) string {
 	if path, ok := c.resolveFieldPath(qualifiedType, fieldName); ok {
 		curType := qualifiedType
@@ -533,6 +545,8 @@ func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) stri
 }
 
 // getStructFields returns the field names of a struct type in declaration order.
+//
+//rtg:profile
 func (c *Compiler) getStructFields(typeName string) []string {
 	qualifiedType := c.qualifyTypeName(typeName, "")
 	typeNode, _ := c.lookupStructTypeNode(qualifiedType)
@@ -548,6 +562,7 @@ func (c *Compiler) getStructFields(typeName string) []string {
 	return fields
 }
 
+//rtg:profile
 func (c *Compiler) structFieldIsInterface(typeName string, fieldName string) bool {
 	if typeName == "" || fieldName == "" {
 		return false
@@ -563,6 +578,8 @@ func (c *Compiler) structFieldIsInterface(typeName string, fieldName string) boo
 }
 
 // resolveFieldOffset looks up the byte offset of a struct field given a qualified type name and field name.
+//
+//rtg:profile
 func (c *Compiler) resolveFieldOffset(qualifiedType string, fieldName string) int {
 	if path, ok := c.resolveFieldPath(qualifiedType, fieldName); ok && len(path) > 0 {
 		return path[0]
@@ -570,6 +587,7 @@ func (c *Compiler) resolveFieldOffset(qualifiedType string, fieldName string) in
 	return -1
 }
 
+//rtg:profile
 func (c *Compiler) resolveStructSlotCount(qualifiedType string) int {
 	typeNode, _ := c.lookupStructTypeNode(qualifiedType)
 	if typeNode == nil {
@@ -587,6 +605,8 @@ func (c *Compiler) resolveStructSlotCount(qualifiedType string) int {
 // typeElemSize returns storage size in bytes for values of typeName when used as
 // slice elements in this compiler's lowered representation.
 // Non-byte elements are pointer-sized handles to values.
+//
+//rtg:profile
 func (c *Compiler) typeElemSize(typeName string) int {
 	if typeName == "" {
 		return c.target.PtrSize
@@ -598,6 +618,8 @@ func (c *Compiler) typeElemSize(typeName string) int {
 }
 
 // resolveFieldElemSize looks up a struct field's type and returns its element size for indexing.
+//
+//rtg:profile
 func (c *Compiler) resolveFieldElemSize(qualifiedType string, fieldName string) int {
 	field, _ := c.lookupStructField(qualifiedType, fieldName)
 	if field == nil || field.Type == nil {
@@ -615,6 +637,8 @@ func (c *Compiler) resolveFieldElemSize(qualifiedType string, fieldName string) 
 }
 
 // resolveFieldIsMap checks if a struct field is a map type.
+//
+//rtg:profile
 func (c *Compiler) resolveFieldIsMap(qualifiedType string, fieldName string) bool {
 	field, _ := c.lookupStructField(qualifiedType, fieldName)
 	if field == nil || field.Type == nil {
@@ -624,6 +648,8 @@ func (c *Compiler) resolveFieldIsMap(qualifiedType string, fieldName string) boo
 }
 
 // resolveFieldMapKeyKind returns the key kind (0=int, 1=string) for a struct field that is a map.
+//
+//rtg:profile
 func (c *Compiler) resolveFieldMapKeyKind(qualifiedType string, fieldName string) int {
 	field, _ := c.lookupStructField(qualifiedType, fieldName)
 	if field == nil || field.Type == nil || field.Type.Kind != NMapType {
@@ -634,6 +660,8 @@ func (c *Compiler) resolveFieldMapKeyKind(qualifiedType string, fieldName string
 
 // resolveMapValueType returns the value type name for a map expression.
 // For example, if the map is a struct field like ts.pkgs (map[string]*Package), returns "*Package".
+//
+//rtg:profile
 func (c *Compiler) resolveMapValueType(mapExpr *Node) string {
 	if mapExpr == nil {
 		return ""
@@ -679,6 +707,8 @@ func (c *Compiler) resolveMapValueType(mapExpr *Node) string {
 }
 
 // resolveFieldMapValueType returns the value type name for a struct field that is a map.
+//
+//rtg:profile
 func (c *Compiler) resolveFieldMapValueType(qualifiedType string, fieldName string) string {
 	field, _ := c.lookupStructField(qualifiedType, fieldName)
 	if field == nil || field.Type == nil || field.Type.Kind != NMapType || field.Type.Y == nil {
@@ -688,6 +718,8 @@ func (c *Compiler) resolveFieldMapValueType(qualifiedType string, fieldName stri
 }
 
 // resolveFieldSliceElemType returns the qualified element type of a struct field that is a slice or array.
+//
+//rtg:profile
 func (c *Compiler) resolveFieldSliceElemType(qualifiedType string, fieldName string) string {
 	field, pkgPath := c.lookupStructField(qualifiedType, fieldName)
 	if field == nil || field.Type == nil || field.Type.X == nil {
@@ -737,6 +769,7 @@ func arrayTypeNestingDepth(typeName string) int {
 }
 
 // resolveExprType returns the concrete qualified type of an expression, or "" if unknown.
+//
 func (c *Compiler) resolveExprType(node *Node) string {
 	if node == nil {
 		return ""
@@ -870,6 +903,7 @@ func isUnsignedTypeName(name string) bool {
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) isUnsignedComparison(node *Node) bool {
 	if node == nil || node.X == nil || node.Y == nil {
 		return false
@@ -885,6 +919,7 @@ func (c *Compiler) isUnsignedComparison(node *Node) bool {
 	return isUnsignedTypeName(left) || isUnsignedTypeName(right)
 }
 
+//rtg:profile
 func (c *Compiler) isUnsignedExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -898,6 +933,7 @@ func (c *Compiler) isUnsignedExpr(node *Node) bool {
 
 // exprWidth infers the operand width from an AST expression.
 // Returns 0 for word-sized, or 1/2/4/8 for explicitly sized types.
+//
 func (c *Compiler) exprWidth(node *Node) int {
 	if node == nil {
 		return 0
@@ -945,6 +981,8 @@ func (c *Compiler) exprWidth(node *Node) int {
 
 // precomputeConsts walks all const declarations in a package, tracking iota,
 // and stores computed values in c.constValues.
+//
+//rtg:profile
 func (c *Compiler) precomputeConsts(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
@@ -979,6 +1017,8 @@ func (c *Compiler) precomputeConsts(pkg *Package) {
 }
 
 // evalConstExprWithIota evaluates a constant expression, substituting the given iota value.
+//
+//rtg:profile
 func (c *Compiler) evalConstExprWithIota(node *Node, iotaVal int64) int64 {
 	if node == nil {
 		return iotaVal
@@ -1077,6 +1117,7 @@ func (c *Compiler) evalConstExprWithIota(node *Node, iotaVal int64) int64 {
 	return 0
 }
 
+//rtg:profile
 func (c *Compiler) evalRightShiftViaConstLeftShift(leftExpr *Node, rightShift int64, iotaVal int64) (int64, bool) {
 	if leftExpr == nil || leftExpr.Kind != NIdent || rightShift < 0 {
 		return 0, false
@@ -1104,6 +1145,7 @@ func (c *Compiler) evalRightShiftViaConstLeftShift(leftExpr *Node, rightShift in
 	return base >> uint(rightShift-leftShift), true
 }
 
+//rtg:profile
 func (c *Compiler) isConstStringExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -1123,6 +1165,7 @@ func (c *Compiler) isConstStringExpr(node *Node) bool {
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) evalConstString(node *Node) string {
 	if node == nil {
 		return ""
@@ -1142,6 +1185,7 @@ func (c *Compiler) evalConstString(node *Node) string {
 	return ""
 }
 
+//rtg:profile
 func (c *Compiler) compilePackage(pkg *Package) {
 	c.checkTopLevelRedeclarations(pkg)
 	// Build interface and method tables for this package
@@ -1197,6 +1241,7 @@ func appendTopDeclNames(node *Node, out []string) []string {
 	return out
 }
 
+//rtg:profile
 func (c *Compiler) checkTopLevelRedeclarations(pkg *Package) {
 	seen := make(map[string]bool)
 	for _, file := range pkg.Files {
@@ -1234,6 +1279,9 @@ func hasZeroCallDirective(directives []string) bool {
 
 func isStrictDirectiveAllowed(directive string) bool {
 	trimmed := strings.TrimSpace(directive)
+	if parseProfileDirective(trimmed) {
+		return true
+	}
 	return len(trimmed) > len("embed ") && strings.HasPrefix(trimmed, "embed ")
 }
 
@@ -1250,6 +1298,7 @@ func isRTGImplementationPackagePath(path string) bool {
 	return strings.HasPrefix(path, "compiler/")
 }
 
+//rtg:profile
 func (c *Compiler) strictDirectiveChecksEnabled(pkg *Package) bool {
 	if c == nil || c.target == nil || !c.target.Strict || pkg == nil {
 		return false
@@ -1287,6 +1336,7 @@ func isPointerTypeNameForStrict(typeName string) bool {
 	return dot >= 0 && dot+1 < len(typeName) && typeName[dot+1] == '*'
 }
 
+//rtg:profile
 func (c *Compiler) isPointerExprForStrict(node *Node) bool {
 	if node == nil {
 		return false
@@ -1301,6 +1351,7 @@ func (c *Compiler) isPointerExprForStrict(node *Node) bool {
 	return isPointerTypeNameForStrict(t)
 }
 
+//rtg:profile
 func (c *Compiler) isSliceExprForStrict(node *Node) bool {
 	if node == nil {
 		return false
@@ -1324,6 +1375,7 @@ func (c *Compiler) isSliceExprForStrict(node *Node) bool {
 	return strings.HasPrefix(t, "[]")
 }
 
+//rtg:profile
 func (c *Compiler) isFuncExprForStrict(node *Node) bool {
 	if node == nil {
 		return false
@@ -1370,6 +1422,7 @@ func (c *Compiler) isFuncExprForStrict(node *Node) bool {
 	return strings.HasPrefix(t, "func(")
 }
 
+//rtg:profile
 func (c *Compiler) strictCheckComparison(op string, left *Node, right *Node) {
 	if !isComparisonOp(op) {
 		return
@@ -1418,6 +1471,7 @@ func (c *Compiler) strictCheckComparison(op string, left *Node, right *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) strictCheckPointerArithmetic(op string, left *Node, right *Node) {
 	switch op {
 	case "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>":
@@ -1429,6 +1483,7 @@ func (c *Compiler) strictCheckPointerArithmetic(op string, left *Node, right *No
 	}
 }
 
+//rtg:profile
 func (c *Compiler) filterDirectivesForStrict(pkg *Package, node *Node, directives []string, report bool) []string {
 	if !c.strictDirectiveChecksEnabled(pkg) || len(directives) == 0 {
 		return directives
@@ -1450,6 +1505,7 @@ func (c *Compiler) filterDirectivesForStrict(pkg *Package, node *Node, directive
 	return filtered
 }
 
+//rtg:profile
 func (c *Compiler) collectZeroCallTypeDirectives(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
@@ -1474,6 +1530,7 @@ func (c *Compiler) collectZeroCallTypeDirectives(pkg *Package) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 	c.collectZeroCallTypeDirectives(pkg)
 
@@ -1524,6 +1581,7 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			c.funcRetTypeNodes[qname] = firstRet
 			isComptimeFunc := false
 			isZeroCallFunc := false
+			hasProfileDirective := false
 			assembleArch := ""
 			for _, d := range directives {
 				if isComptimeDirective(d) {
@@ -1531,6 +1589,9 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				}
 				if isZeroCallDirective(d) {
 					isZeroCallFunc = true
+				}
+				if parseProfileDirective(d) {
+					hasProfileDirective = true
 				}
 				if arch, ok := parseAssembleDirective(d); ok {
 					assembleArch = arch
@@ -1547,6 +1608,9 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				if recvBase != "" && c.typeIsZeroCall[pkg.QualName(recvBase)] {
 					isZeroCallFunc = true
 				}
+			}
+			if hasProfileDirective && fn.X == nil {
+				c.errorf("%s: //rtg:profile can only be used on methods", qname)
 			}
 
 			// Pre-register variadic info and param count
@@ -1595,6 +1659,9 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			if isZeroCallFunc {
 				c.funcIsZeroCall[qname] = true
 			}
+			if hasProfileDirective && fn.X != nil && c.target != nil && c.target.Profile {
+				c.funcIsProfiled[qname] = true
+			}
 			if assembleArch != "" {
 				c.assembleFuncs[qname] = assembleInfo{
 					Arch:     assembleArch,
@@ -1611,6 +1678,7 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) isComptimeCallAllowed(callName string) bool {
 	if !c.inComptimeFunc {
 		return true
@@ -1628,6 +1696,7 @@ func (c *Compiler) isComptimeCallAllowed(callName string) bool {
 	return true
 }
 
+//rtg:profile
 func (c *Compiler) buildInterfaceTable(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
@@ -1637,6 +1706,7 @@ func (c *Compiler) buildInterfaceTable(pkg *Package) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 	if node == nil {
 		return
@@ -1669,6 +1739,7 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) ifaceMethodReturnCount(ifaceType string, methodName string) (int, bool) {
 	if ifaceType == "" || methodName == "" {
 		return 0, false
@@ -1680,6 +1751,7 @@ func (c *Compiler) ifaceMethodReturnCount(ifaceType string, methodName string) (
 	return 0, false
 }
 
+//rtg:profile
 func (c *Compiler) collectMethodDecl(pkg *Package, node *Node) {
 	if node == nil {
 		return
@@ -1747,6 +1819,7 @@ func abiDirectiveRegistry(retType string) (string, bool) {
 	return "", false
 }
 
+//rtg:profile
 func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]directiveInit, []directiveInit, []directiveInit, []directiveInit) {
 	var targetInits []directiveInit
 	var abiInits []directiveInit
@@ -1885,6 +1958,7 @@ func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]directiveInit, [
 	return targetInits, abiInits, asmInits, fmtInits
 }
 
+//rtg:profile
 func (c *Compiler) compileGlobalInits(pkg *Package) {
 	// Collect all global var decls with initializers
 	var inits []*Node
@@ -2021,6 +2095,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.namedResultNames = savedNamedResultNames
 }
 
+//rtg:profile
 func (c *Compiler) lookupDefineValue(qualifiedName string, shortName string) (string, bool) {
 	if c == nil || c.target == nil || c.target.Defines == nil {
 		return "", false
@@ -2034,6 +2109,7 @@ func (c *Compiler) lookupDefineValue(qualifiedName string, shortName string) (st
 	return "", false
 }
 
+//rtg:profile
 func (c *Compiler) compileEmbedInit(pkg *Package, gidx int, pattern string) {
 	patterns := splitEmbedPatterns(pattern)
 	if len(patterns) == 0 {
@@ -2212,6 +2288,7 @@ func encodeLinkStaticDirective(spec LinkStaticDirective) string {
 	return spec.Library + "," + spec.Symbol + "," + spec.Mode
 }
 
+//rtg:profile
 func (c *Compiler) compileTopDecl(node *Node) {
 	if node == nil {
 		return
@@ -2283,6 +2360,7 @@ func containsDeferStmt(node *Node) bool {
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) compileFunc(node *Node) {
 	qname := c.curPkg.QualName(node.Name)
 	if node.X != nil {
@@ -2320,6 +2398,9 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.profileStartLocal = -1
+	c.profileMethodHash = 0
+	c.profileFlushOnExit = false
 	c.inIfInit = false
 	c.ifInitLeakedNames = make(map[string]bool)
 	c.pushScope()
@@ -2484,6 +2565,15 @@ func (c *Compiler) compileFunc(node *Node) {
 	} else {
 		c.panicUnwindLabel = c.newLabel()
 	}
+	if c.funcIsProfiled[f.Name] {
+		c.profileMethodHash = profileHash32FNV(f.Name)
+		c.profileStartLocal = c.addLocal("$profile_start")
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Now", Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
+	}
+	if c.target != nil && c.target.Profile && c.curPkg != nil && c.curPkg.Path == "main" && node.X == nil && node.Name == "main" {
+		c.profileFlushOnExit = true
+	}
 
 	for _, name := range c.namedResultNames {
 		if idx, ok := c.lookupLocal(name); ok {
@@ -2516,6 +2606,8 @@ func (c *Compiler) compileFunc(node *Node) {
 			if len(c.deferSites) > 0 {
 				c.emitDeferredCalls()
 			}
+			c.emitProfileExit()
+			c.emitProfileFinalize()
 			c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 		}
 	}
@@ -2530,6 +2622,8 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicWasRecovered", Arg: 0})
 		c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: recoveredLabel})
 		if f.Name == "main.main" {
+			c.emitProfileExit()
+			c.emitProfileFinalize()
 			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicValueToString", Arg: 0})
 			c.emit(ir.Inst{Op: ir.OP_PANIC})
 		} else {
@@ -2553,6 +2647,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.inComptimeFunc = savedInComptimeFunc
 }
 
+//rtg:profile
 func (c *Compiler) compileAssembleFunc(node *Node, arch string) {
 	if node == nil {
 		return
@@ -2605,6 +2700,7 @@ func (c *Compiler) compileAssembleFunc(node *Node, arch string) {
 	c.assembleFuncs[qname] = info
 }
 
+//rtg:profile
 func (c *Compiler) compileIntrinsicFunc(node *Node, intern string) {
 	qname := c.curPkg.QualName(node.Name)
 
@@ -2658,6 +2754,7 @@ func (c *Compiler) compileIntrinsicFunc(node *Node, intern string) {
 	c.curFunc = nil
 }
 
+//rtg:profile
 func (c *Compiler) compileLinkStaticFunc(node *Node, spec LinkStaticDirective) {
 	if node.X != nil {
 		c.errors = append(c.errors, "linkstatic methods are not supported")
@@ -2737,16 +2834,19 @@ func (c *Compiler) compileLinkStaticFunc(node *Node, spec LinkStaticDirective) {
 
 // === Scope management ===
 
+//rtg:profile
 func (c *Compiler) pushScope() {
 	c.scopes = append(c.scopes, make(map[string]int))
 }
 
+//rtg:profile
 func (c *Compiler) popScope() {
 	if len(c.scopes) > 0 {
 		c.scopes = c.scopes[0 : len(c.scopes)-1]
 	}
 }
 
+//rtg:profile
 func (c *Compiler) addLocal(name string) int {
 	idx := len(c.curFunc.Locals)
 	c.curFunc.Locals = append(c.curFunc.Locals, ir.IRLocal{Name: name, Index: idx})
@@ -2875,6 +2975,7 @@ func (c *Compiler) instStackDelta(inst ir.Inst) int {
 	panic("ICE: unknown opcode in instStackDelta")
 }
 
+//rtg:profile
 func (c *Compiler) blockEndsWithReturn() bool {
 	if c.curFunc == nil || len(c.curFunc.Code) == 0 {
 		return false
@@ -2971,6 +3072,7 @@ func (c *Compiler) compileStmt(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileDeferStmt(node *Node) {
 	if node == nil {
 		return
@@ -3138,6 +3240,7 @@ func (c *Compiler) compileDeferStmt(node *Node) {
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
 }
 
+//rtg:profile
 func (c *Compiler) emitStoreDeferredArg(recLocal int, argIndex int) {
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recLocal})
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(2*c.target.PtrSize + argIndex*c.target.PtrSize)})
@@ -3145,6 +3248,7 @@ func (c *Compiler) emitStoreDeferredArg(recLocal int, argIndex int) {
 	c.emit(ir.Inst{Op: ir.OP_STORE, Arg: c.target.PtrSize})
 }
 
+//rtg:profile
 func (c *Compiler) emitLoadDeferredArg(recLocal int, argIndex int) {
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recLocal})
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(2*c.target.PtrSize + argIndex*c.target.PtrSize)})
@@ -3168,6 +3272,7 @@ func sharedVarDeclRHS(decls []*Node) (*Node, bool) {
 	return rhs, true
 }
 
+//rtg:profile
 func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
 	i := len(lhsNodes) - 1
 	for i >= 0 {
@@ -3186,6 +3291,7 @@ func (c *Compiler) assignStackValuesToLHS(lhsNodes []*Node, define bool) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) lvalueTypeName(node *Node) string {
 	if node == nil {
 		return ""
@@ -3216,15 +3322,18 @@ func (c *Compiler) maybeCloneArrayForTypeName(typeName string) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) maybeCloneArrayForLValue(node *Node) {
 	c.maybeCloneArrayForTypeName(c.lvalueTypeName(node))
 }
 
+//rtg:profile
 func (c *Compiler) emitLocalZeroSet(localIdx int, width int) {
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: localIdx, Width: width})
 }
 
+//rtg:profile
 func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
 	if op == ir.OP_ADD || op == ir.OP_SUB || op == ir.OP_MUL || op == ir.OP_DIV || op == ir.OP_MOD || op == ir.OP_AND || op == ir.OP_OR || op == ir.OP_XOR || op == ir.OP_SHL || op == ir.OP_SHR {
 		c.strictCheckPointerArithmetic("+", node.X, node.Y)
@@ -3240,6 +3349,7 @@ func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
 	c.compileLValueSet(node.X)
 }
 
+//rtg:profile
 func (c *Compiler) setLocalMapMetadata(name string, keyType string, valType string) {
 	if keyType == "string" {
 		c.localMapVars[name] = 1
@@ -3249,12 +3359,14 @@ func (c *Compiler) setLocalMapMetadata(name string, keyType string, valType stri
 	c.localMapValueTypes[name] = valType
 }
 
+//rtg:profile
 func (c *Compiler) setLocalMapMetadataFromQualified(name string, qtype string) {
 	if keyType, valType, ok := parseMapTypeName(qtype); ok {
 		c.setLocalMapMetadata(name, keyType, valType)
 	}
 }
 
+//rtg:profile
 func (c *Compiler) setLocalMapMetadataFromMapType(name string, mapType *Node) {
 	if mapType == nil || mapType.Kind != NMapType || name == "" {
 		return
@@ -3265,6 +3377,7 @@ func (c *Compiler) setLocalMapMetadataFromMapType(name string, mapType *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) isShortDeclNameNew(scope map[string]int, name string) bool {
 	if scope == nil || name == "" {
 		return false
@@ -3275,6 +3388,7 @@ func (c *Compiler) isShortDeclNameNew(scope map[string]int, name string) bool {
 	return c.ifInitLeakedNames != nil && c.ifInitLeakedNames[name]
 }
 
+//rtg:profile
 func (c *Compiler) bindLocalFuncValue(localName string, rhs *Node, localIdx int, width int, allowMethod bool) bool {
 	if localName == "" {
 		return false
@@ -3298,6 +3412,7 @@ func (c *Compiler) bindLocalFuncValue(localName string, rhs *Node, localIdx int,
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) compileVarDecl(node *Node) {
 	if len(c.scopes) > 0 {
 		scope := c.scopes[len(c.scopes)-1]
@@ -3425,6 +3540,7 @@ func isBuiltinTypeName(t string) bool {
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) compileAssign(node *Node) {
 	if len(node.Nodes) > 0 {
 		isDefine := node.Name == ":="
@@ -3724,6 +3840,7 @@ func localWidth(locals []ir.IRLocal, idx int) int {
 	return 0
 }
 
+//rtg:profile
 func (c *Compiler) bindFuncCaptures(localName string, target string) {
 	captures, ok := c.funcLiteralCaptures[target]
 	if !ok || len(captures) == 0 {
@@ -3743,6 +3860,7 @@ func (c *Compiler) bindFuncCaptures(localName string, target string) {
 	c.localFuncCaptures[localName] = bindings
 }
 
+//rtg:profile
 func (c *Compiler) collectFuncLiteralCaptures(lit *Node) []closureCaptureSpec {
 	_ = lit
 	var captures []closureCaptureSpec
@@ -3767,6 +3885,7 @@ func (c *Compiler) collectFuncLiteralCaptures(lit *Node) []closureCaptureSpec {
 	return captures
 }
 
+//rtg:profile
 func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	name := fmt.Sprintf("$lit_%d", c.funcLitSeq)
 	c.funcLitSeq++
@@ -3848,6 +3967,7 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	return target
 }
 
+//rtg:profile
 func (c *Compiler) registerFuncValueBinding(localName string, rhs *Node) bool {
 	if rhs == nil || localName == "" {
 		return false
@@ -3877,6 +3997,7 @@ func (c *Compiler) registerFuncValueBinding(localName string, rhs *Node) bool {
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) registerMethodValueBinding(localName string, rhs *Node, localIdx int) bool {
 	if rhs == nil || localName == "" || localIdx < 0 {
 		return false
@@ -3910,6 +4031,7 @@ func (c *Compiler) registerMethodValueBinding(localName string, rhs *Node, local
 	return true
 }
 
+//rtg:profile
 func (c *Compiler) lvalueInterfaceType(node *Node) (string, bool) {
 	if node == nil {
 		return "", false
@@ -3930,6 +4052,7 @@ func (c *Compiler) lvalueInterfaceType(node *Node) (string, bool) {
 	return "", false
 }
 
+//rtg:profile
 func (c *Compiler) compileLValueSet(node *Node) {
 	if node == nil {
 		return
@@ -4010,6 +4133,7 @@ func (c *Compiler) compileLValueSet(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileLValueGet(node *Node) {
 	if node == nil {
 		return
@@ -4026,6 +4150,7 @@ func (c *Compiler) compileLValueGet(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) emitDeferredCalls() {
 	if len(c.deferSites) == 0 || c.deferHeadLocal < 0 {
 		return
@@ -4067,6 +4192,7 @@ func (c *Compiler) emitDeferredCalls() {
 	c.emitLabel(doneLabel)
 }
 
+//rtg:profile
 func (c *Compiler) emitDeferredSiteCall(site deferSite, recIdx int) {
 	argCount := site.argCount
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverEnter", Arg: 0})
@@ -4153,6 +4279,7 @@ func (c *Compiler) emitDeferredSiteCall(site deferSite, recIdx int) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) emitNamedReturnValues(retTypes []string) int {
 	count := 0
 	for i, name := range c.namedResultNames {
@@ -4178,6 +4305,36 @@ func (c *Compiler) emitNamedReturnValues(retTypes []string) int {
 	return count
 }
 
+//rtg:profile
+func (c *Compiler) emitProfileExit() {
+	if c.profileStartLocal < 0 {
+		return
+	}
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileMethodHash)})
+	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileStartLocal})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ProfileHashNow", Arg: 2})
+}
+
+func profileHash32FNV(name string) uint32 {
+	var h uint32 = 2166136261
+	i := 0
+	for i < len(name) {
+		h = h ^ uint32(name[i])
+		h = h * 16777619
+		i++
+	}
+	return h
+}
+
+//rtg:profile
+func (c *Compiler) emitProfileFinalize() {
+	if !c.profileFlushOnExit {
+		return
+	}
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ProfileFlush", Arg: 0})
+}
+
+//rtg:profile
 func (c *Compiler) emitRecoveredPanicReturn() {
 	retTypes := c.funcRetTypes[c.curFunc.Name]
 	count := 0
@@ -4192,9 +4349,12 @@ func (c *Compiler) emitRecoveredPanicReturn() {
 			i++
 		}
 	}
+	c.emitProfileExit()
+	c.emitProfileFinalize()
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
 }
 
+//rtg:profile
 func (c *Compiler) emitPanicPropagationCheck(retCount int) {
 	if c.panicUnwindLabel < 0 {
 		return
@@ -4215,6 +4375,7 @@ func (c *Compiler) emitPanicPropagationCheck(retCount int) {
 	c.emitLabel(continueLabel)
 }
 
+//rtg:profile
 func (c *Compiler) emitCallWithPanicCheck(callName string, argCount int) {
 	if c.panicUnwindLabel >= 0 {
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
@@ -4230,6 +4391,7 @@ func (c *Compiler) emitCallWithPanicCheck(callName string, argCount int) {
 	c.emitPanicPropagationCheck(retCount)
 }
 
+//rtg:profile
 func (c *Compiler) emitIfaceCallWithPanicCheck(callName string, argCount int, retCount int) {
 	if c.panicUnwindLabel >= 0 {
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
@@ -4241,6 +4403,7 @@ func (c *Compiler) emitIfaceCallWithPanicCheck(callName string, argCount int, re
 	c.emitPanicPropagationCheck(retCount)
 }
 
+//rtg:profile
 func (c *Compiler) compileReturn(node *Node) {
 	count := 0
 	retTypes := c.funcRetTypes[c.curFunc.Name]
@@ -4312,6 +4475,8 @@ func (c *Compiler) compileReturn(node *Node) {
 				if len(c.deferSites) > 0 {
 					c.emitDeferredCalls()
 				}
+				c.emitProfileExit()
+				c.emitProfileFinalize()
 				c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
 				return
 			}
@@ -4320,6 +4485,8 @@ func (c *Compiler) compileReturn(node *Node) {
 			c.emitDeferredCalls()
 		}
 		count = c.emitNamedReturnValues(retTypes)
+		c.emitProfileExit()
+		c.emitProfileFinalize()
 		c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
 		return
 	}
@@ -4345,11 +4512,15 @@ func (c *Compiler) compileReturn(node *Node) {
 	if len(c.deferSites) > 0 {
 		c.emitDeferredCalls()
 	}
+	c.emitProfileExit()
+	c.emitProfileFinalize()
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
 }
 
 // maybeBoxInterface checks if the return value at position idx needs boxing
 // (i.e., the expected return type is an interface). If so, emits OP_IFACE_BOX.
+//
+//rtg:profile
 func (c *Compiler) maybeBoxInterface(expr *Node, retTypes []string, idx int) {
 	if idx >= len(retTypes) {
 		return
@@ -4400,6 +4571,8 @@ func (c *Compiler) maybeBoxInterface(expr *Node, retTypes []string, idx int) {
 // exprPrimitiveTypeID returns the type ID for boxing a primitive value as interface{}.
 // Returns 1 for int, 2 for string, or the concrete type ID for named types.
 // Returns 0 if the value is already an interface or doesn't need boxing.
+//
+//rtg:profile
 func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 	if expr == nil {
 		return 0
@@ -4457,6 +4630,8 @@ func (c *Compiler) exprPrimitiveTypeID(expr *Node) int {
 }
 
 // resolveConcreteTypeID detects the concrete type from AST patterns and returns its type ID.
+//
+//rtg:profile
 func (c *Compiler) resolveConcreteTypeID(expr *Node) int {
 	if expr == nil {
 		return 0
@@ -4499,6 +4674,8 @@ func (c *Compiler) resolveConcreteTypeID(expr *Node) int {
 }
 
 // exprConcreteType returns the qualified concrete type name for an expression, or "".
+//
+//rtg:profile
 func (c *Compiler) exprConcreteType(expr *Node) string {
 	if expr == nil {
 		return ""
@@ -4619,6 +4796,7 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 	return ""
 }
 
+//rtg:profile
 func (c *Compiler) compileIf(node *Node) {
 	elseLabel := c.newLabel()
 	endLabel := c.newLabel()
@@ -4686,6 +4864,7 @@ func (c *Compiler) compileIf(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) invertCmpOp(op string) string {
 	switch op {
 	case "==":
@@ -4705,6 +4884,7 @@ func (c *Compiler) invertCmpOp(op string) string {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
 	var irOp ir.Opcode
 	switch op {
@@ -4736,6 +4916,8 @@ func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
 // compileCondJump emits control flow for a boolean condition.
 // If jumpIfTrue is true, it jumps to targetLabel when cond is true.
 // Otherwise it jumps when cond is false.
+//
+//rtg:profile
 func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int) {
 	if cond == nil {
 		if !jumpIfTrue {
@@ -4818,6 +5000,7 @@ func (c *Compiler) compileCondJump(cond *Node, jumpIfTrue bool, targetLabel int)
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileFor(node *Node, stmtLabels []string) {
 	savedDepth := c.stackDepth
 	loopLabel := c.newLabel()
@@ -4885,6 +5068,7 @@ func (c *Compiler) compileFor(node *Node, stmtLabels []string) {
 	c.stackDepth = savedDepth // for loops should have net-zero effect
 }
 
+//rtg:profile
 func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int, breakLabel int) {
 	if c.isDefinitelyInvalidRangeArg(node.Type) {
 		c.errorf("%s: cannot range over non-iterable expression", c.curFunc.Name)
@@ -5037,6 +5221,7 @@ func (c *Compiler) compileForRange(node *Node, loopLabel int, continueLabel int,
 	c.popScope()
 }
 
+//rtg:profile
 func (c *Compiler) compileSwitch(node *Node, stmtLabels []string) {
 	savedDepth := c.stackDepth
 	endLabel := c.newLabel()
@@ -5197,6 +5382,7 @@ func (c *Compiler) compileSwitch(node *Node, stmtLabels []string) {
 	c.stackDepth = savedDepth // switch should have net-zero effect
 }
 
+//rtg:profile
 func (c *Compiler) bindTypeSwitchVar(typeSwitchVarName string, typeSwitchVarIdx int, typeSwitchIfaceIdx int, caseExprs []*Node, isDefault bool) {
 	if typeSwitchVarName == "" || typeSwitchVarIdx < 0 || typeSwitchIfaceIdx < 0 {
 		return
@@ -5239,6 +5425,7 @@ func (c *Compiler) bindTypeSwitchVar(typeSwitchVarName string, typeSwitchVarIdx 
 	}
 }
 
+//rtg:profile
 func (c *Compiler) typeIDForTypeName(tname string) int {
 	if tname == "" {
 		return 0
@@ -5262,6 +5449,7 @@ func (c *Compiler) typeIDForTypeName(tname string) int {
 	return id
 }
 
+//rtg:profile
 func (c *Compiler) typeIDForTypeNode(t *Node) int {
 	if t == nil {
 		return 0
@@ -5280,6 +5468,7 @@ func (c *Compiler) isInterfaceTypeName(typeName string) bool {
 	return ok
 }
 
+//rtg:profile
 func (c *Compiler) maybeBoxValueForInterface(expr *Node) {
 	if expr == nil {
 		return
@@ -5302,6 +5491,7 @@ func (c *Compiler) maybeBoxValueForInterface(expr *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileTypeAssert(node *Node, commaOk bool) {
 	if node == nil || node.X == nil || node.Type == nil {
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -5340,14 +5530,17 @@ func (c *Compiler) compileTypeAssert(node *Node, commaOk bool) {
 	c.emitLabel(endLabel)
 }
 
+//rtg:profile
 func (c *Compiler) compileTypeAssertExpr(node *Node) {
 	c.compileTypeAssert(node, false)
 }
 
+//rtg:profile
 func (c *Compiler) compileTypeAssertCommaOk(node *Node) {
 	c.compileTypeAssert(node, true)
 }
 
+//rtg:profile
 func (c *Compiler) compileInc(node *Node) {
 	if c.isPointerExprForStrict(node.X) {
 		c.errorf("%s: pointer arithmetic is not allowed", c.curFunc.Name)
@@ -5363,6 +5556,7 @@ func (c *Compiler) compileInc(node *Node) {
 	c.compileLValueSet(node.X)
 }
 
+//rtg:profile
 func (c *Compiler) compileDec(node *Node) {
 	if c.isPointerExprForStrict(node.X) {
 		c.errorf("%s: pointer arithmetic is not allowed", c.curFunc.Name)
@@ -5378,6 +5572,7 @@ func (c *Compiler) compileDec(node *Node) {
 	c.compileLValueSet(node.X)
 }
 
+//rtg:profile
 func (c *Compiler) compileBranch(node *Node) {
 	switch node.Name {
 	case "break":
@@ -5478,6 +5673,7 @@ func (c *Compiler) compileExpr(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileIntLit(node *Node) {
 	val, ok := parseIntLiteralChecked(node.Name)
 	if !ok {
@@ -5487,6 +5683,7 @@ func (c *Compiler) compileIntLit(node *Node) {
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: val})
 }
 
+//rtg:profile
 func (c *Compiler) compileStringLit(node *Node) {
 	if !isValidStringLiteralContents(node.Name) {
 		c.errorf("%s: invalid string escape in literal", c.curFunc.Name)
@@ -5496,6 +5693,7 @@ func (c *Compiler) compileStringLit(node *Node) {
 	c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: node.Name})
 }
 
+//rtg:profile
 func (c *Compiler) compileRuneLit(node *Node) {
 	val, ok := parseRuneLiteralChecked(node.Name)
 	if !ok {
@@ -5505,6 +5703,7 @@ func (c *Compiler) compileRuneLit(node *Node) {
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(val)})
 }
 
+//rtg:profile
 func (c *Compiler) compileBasicLit(node *Node) {
 	if node.Name == "true" {
 		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 1})
@@ -5573,6 +5772,8 @@ func (c *Compiler) compileIdent(node *Node) {
 }
 
 // resolveConstValue evaluates a constant declaration's value at compile time.
+//
+//rtg:profile
 func (c *Compiler) resolveConstValue(node *Node) int64 {
 	if node == nil {
 		return 0
@@ -5583,6 +5784,7 @@ func (c *Compiler) resolveConstValue(node *Node) int64 {
 	return 0
 }
 
+//rtg:profile
 func (c *Compiler) lookupGlobal(name string) (int, bool) {
 	// Try qualified name with current package
 	qname := c.curPkg.QualName(name)
@@ -5612,6 +5814,7 @@ func isStringExpr(node *Node) bool {
 }
 
 // isStringTypedExpr returns true if the expression produces a string value (uses compiler context).
+//
 func (c *Compiler) isStringTypedExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -5680,6 +5883,7 @@ func (c *Compiler) isStringTypedExpr(node *Node) bool {
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) isBoolTypedExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -5705,6 +5909,7 @@ func (c *Compiler) isBoolTypedExpr(node *Node) bool {
 	return c.resolveExprType(node) == "bool"
 }
 
+//rtg:profile
 func (c *Compiler) isDefinitelyNonBoolExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -5728,6 +5933,7 @@ func (c *Compiler) isDefinitelyNonBoolExpr(node *Node) bool {
 	return t != "" && t != "bool"
 }
 
+//rtg:profile
 func (c *Compiler) boolOperandMismatch(left *Node, right *Node) bool {
 	leftBool := c.isBoolTypedExpr(left)
 	rightBool := c.isBoolTypedExpr(right)
@@ -5735,6 +5941,8 @@ func (c *Compiler) boolOperandMismatch(left *Node, right *Node) bool {
 }
 
 // isExprByte returns true if the expression is known to produce a single byte value.
+//
+//rtg:profile
 func (c *Compiler) isExprByte(node *Node) bool {
 	if node == nil {
 		return false
@@ -5763,6 +5971,8 @@ func (c *Compiler) isExprByte(node *Node) bool {
 }
 
 // isExprByteSlice returns true if the expression is known to produce []byte.
+//
+//rtg:profile
 func (c *Compiler) isExprByteSlice(node *Node) bool {
 	if node == nil {
 		return false
@@ -5783,6 +5993,8 @@ func isIntegerTypeName(t string) bool {
 }
 
 // isExprIntegerLike reports whether expression is known to be integer-like.
+//
+//rtg:profile
 func (c *Compiler) isExprIntegerLike(node *Node) bool {
 	if node == nil {
 		return false
@@ -5802,6 +6014,7 @@ func (c *Compiler) isExprIntegerLike(node *Node) bool {
 	return isIntegerTypeName(c.exprConcreteType(node))
 }
 
+//rtg:profile
 func (c *Compiler) constIntArg(node *Node) (int, bool) {
 	if node == nil {
 		return 0, false
@@ -5832,12 +6045,14 @@ func (c *Compiler) constIntArg(node *Node) (int, bool) {
 	return 0, false
 }
 
+//rtg:profile
 func (c *Compiler) emitStringEqualCall(x *Node, y *Node) {
 	c.compileExpr(x)
 	c.compileExpr(y)
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.StringEqual", Arg: 2})
 }
 
+//rtg:profile
 func (c *Compiler) emitStringLessCall(x *Node, y *Node) {
 	c.compileExpr(x)
 	c.compileExpr(y)
@@ -5846,6 +6061,8 @@ func (c *Compiler) emitStringLessCall(x *Node, y *Node) {
 
 // emitStringCompareResult emits code that leaves a bool result on the stack for
 // string comparison op x <op> y.
+//
+//rtg:profile
 func (c *Compiler) emitStringCompareResult(op string, x *Node, y *Node) bool {
 	switch op {
 	case "==":
@@ -5874,6 +6091,7 @@ func (c *Compiler) emitStringCompareResult(op string, x *Node, y *Node) bool {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileLogicalBinary(node *Node, isAnd bool) {
 	branchLabel := c.newLabel()
 	endLabel := c.newLabel()
@@ -5898,6 +6116,7 @@ func (c *Compiler) compileLogicalBinary(node *Node, isAnd bool) {
 	c.emitLabel(endLabel)
 }
 
+//rtg:profile
 func (c *Compiler) compileBinaryExpr(node *Node) {
 	// Short-circuit for && and ||
 	if node.Name == "&&" {
@@ -6022,6 +6241,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileUnaryExpr(node *Node) {
 	switch node.Name {
 	case "!":
@@ -6058,6 +6278,8 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 // needsSelectorDeref checks if a selector base needs an extra LOAD for auto-deref.
 // For pp.X where pp is *Point, we need to load through pp to get the struct pointer.
 // Returns false for unknowns (conservative — no extra deref).
+//
+//rtg:profile
 func (c *Compiler) needsSelectorDeref(node *Node) bool {
 	if node == nil || node.Kind != NIdent {
 		return false
@@ -6119,6 +6341,8 @@ func (c *Compiler) needsSelectorDeref(node *Node) bool {
 // In this compiler, struct values are heap-allocated pointers, so *ptr where ptr is *StructType
 // should be a no-op (the value IS the pointer). For non-struct pointer types (*[]string, *int, etc.),
 // a LOAD is needed to read the pointed-to value.
+//
+//rtg:profile
 func (c *Compiler) isPointerToStructDeref(node *Node) bool {
 	if node == nil || node.Kind != NIdent {
 		return false
@@ -6183,6 +6407,7 @@ func (c *Compiler) isPointerToStructDeref(node *Node) bool {
 	return typeNode.Kind == NStructType
 }
 
+//rtg:profile
 func (c *Compiler) isDefinitelyNonPointerExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -6208,6 +6433,7 @@ func (c *Compiler) isDefinitelyNonPointerExpr(node *Node) bool {
 	return true
 }
 
+//rtg:profile
 func (c *Compiler) compileAddrOf(node *Node) {
 	if node == nil {
 		return
@@ -6257,6 +6483,8 @@ func (c *Compiler) compileAddrOf(node *Node) {
 // args is the list of argument nodes, firstArgIdx is the index of the first variadic arg,
 // varCount is the number of variadic args, elemSz is the element size,
 // and ifaceKey is the function name to check in funcVariadicIface.
+//
+//rtg:profile
 func (c *Compiler) packVariadicSlice(args []*Node, firstArgIdx int, varCount int, elemSz int, ifaceKey string) {
 	if varCount == 0 {
 		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
@@ -6313,6 +6541,7 @@ func (c *Compiler) packVariadicSlice(args []*Node, firstArgIdx int, varCount int
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
 }
 
+//rtg:profile
 func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName string) {
 	paramTypes := c.funcParamTypes[callName]
 	c.compileExpr(receiver)
@@ -6328,6 +6557,7 @@ func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName s
 	c.emitCallWithPanicCheck(callName, len(args)+1)
 }
 
+//rtg:profile
 func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType string, methodName string) {
 	paramTypes := c.funcParamTypes[c.dotJoin(ifaceType, methodName)]
 	c.compileExpr(recvExpr)
@@ -6341,6 +6571,7 @@ func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType s
 	c.emitIfaceCallWithPanicCheck(c.dotJoin(ifaceType, methodName), len(args), retCount)
 }
 
+//rtg:profile
 func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promotedMethodMatch) {
 	c.compileExpr(recvExpr)
 	i := 0
@@ -6362,6 +6593,7 @@ func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promo
 	c.emitCallWithPanicCheck(pm.Target, len(args)+1)
 }
 
+//rtg:profile
 func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedName string) {
 	fixedCount, isVariadic := c.funcVariadic[resolvedName]
 	isSpread := node.Name == "spread"
@@ -6408,6 +6640,7 @@ func runtimeMemBuiltinReturnCount(name string) (int, bool) {
 	return 0, false
 }
 
+//rtg:profile
 func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool {
 	if callName == "runtime.ReadPtr" && len(args) == 1 {
 		c.compileExpr(args[0])
@@ -6429,6 +6662,7 @@ func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) compileNewBuiltin(node *Node) bool {
 	if node == nil || len(node.Nodes) != 1 {
 		return false
@@ -6458,6 +6692,7 @@ func (c *Compiler) compileNewBuiltin(node *Node) bool {
 	return true
 }
 
+//rtg:profile
 func (c *Compiler) emitSysWriteStringLocal(localIdx int) {
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: localIdx})
@@ -6471,6 +6706,7 @@ func (c *Compiler) emitSysWriteStringLocal(localIdx int) {
 	c.emit(ir.Inst{Op: ir.OP_DROP})
 }
 
+//rtg:profile
 func (c *Compiler) compilePrintBuiltin(node *Node, withNewline bool) {
 	tmpIdx := c.addLocal(fmt.Sprintf("$print_%d", len(c.curFunc.Locals)))
 	for i, arg := range node.Nodes {
@@ -6492,6 +6728,7 @@ func (c *Compiler) compilePrintBuiltin(node *Node, withNewline bool) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 	if node == nil || node.X == nil || node.X.Kind != NIdent {
 		return false
@@ -6522,6 +6759,7 @@ func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 	return true
 }
 
+//rtg:profile
 func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		if target, ok := c.localFuncTargets[node.X.Name]; ok {
@@ -6962,6 +7200,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) tryCompileComptimeCall(node *Node, callName string) bool {
 	if node == nil || callName == "" || c.comptimeDisabled {
 		return false
@@ -7020,6 +7259,7 @@ func (c *Compiler) tryCompileComptimeCall(node *Node, callName string) bool {
 	return true
 }
 
+//rtg:profile
 func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.IRFunc, error) {
 	c.comptimeSeq = c.comptimeSeq + 1
 	wrapName := fmt.Sprintf("%s.comptime$%d", c.curPkg.Path, c.comptimeSeq)
@@ -7121,6 +7361,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	return wrapName, f, nil
 }
 
+//rtg:profile
 func (c *Compiler) findIRFunc(name string) *ir.IRFunc {
 	for _, f := range c.irmod.Funcs {
 		if f != nil && f.Name == name {
@@ -7171,6 +7412,7 @@ func evalSliceBytes(eval *vm.EvalState, raw uint64) ([]byte, error) {
 	return vm.EvalLoadBytes(eval, dataPtr, n)
 }
 
+//rtg:profile
 func (c *Compiler) buildAssembleWrapper(runtimeName string, info assembleInfo) *ir.IRFunc {
 	c.comptimeSeq = c.comptimeSeq + 1
 	pkgPath := runtimeName
@@ -7209,6 +7451,7 @@ func (c *Compiler) buildAssembleWrapper(runtimeName string, info assembleInfo) *
 	return f
 }
 
+//rtg:profile
 func (c *Compiler) compileAssembledFunctions() {
 	if len(c.assembleFuncs) == 0 {
 		return
@@ -7312,6 +7555,7 @@ func assemblePkgForArch(arch string) string {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) exprUsesLocalIdentifier(node *Node) bool {
 	if node == nil {
 		return false
@@ -7366,6 +7610,7 @@ func cloneTypeNode(node *Node) *Node {
 	return out
 }
 
+//rtg:profile
 func (c *Compiler) resolveTypeAliasNode(typeNode *Node) *Node {
 	if typeNode == nil {
 		return nil
@@ -7414,6 +7659,7 @@ func intNode(v int64) *Node {
 	return &Node{Kind: NIntLit, Name: fmt.Sprintf("%d", v)}
 }
 
+//rtg:profile
 func (c *Compiler) decodeComptimeValue(raw uint64, typeNode *Node, eval *vm.EvalState, depth int) (*Node, error) {
 	if depth > 64 {
 		return nil, fmt.Errorf("value nesting too deep")
@@ -7582,6 +7828,7 @@ func (c *Compiler) decodeComptimeValue(raw uint64, typeNode *Node, eval *vm.Eval
 }
 
 // qualifyTypeName qualifies a type name with a package path if not already qualified.
+//
 func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	if typeName == "" || typeName == "string" || typeName == "int" || typeName == "bool" || typeName == "byte" || typeName == "error" || typeName == "interface{}" {
 		return typeName
@@ -7602,6 +7849,7 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	return result
 }
 
+//rtg:profile
 func (c *Compiler) qualifyTypeNameInner(typeName string, pkgPath string) string {
 	// Map types: recursively qualify key and value types
 	if len(typeName) >= 4 && typeName[0] == 'm' && typeName[1] == 'a' && typeName[2] == 'p' && typeName[3] == '[' {
@@ -7726,6 +7974,8 @@ func (c *Compiler) resolveMethodByConcreteType(concreteType string, methodName s
 
 // findUniqueMethodByName finds a method implementation by bare method name.
 // Returns (resolvedName, true) only when exactly one method matches.
+//
+//rtg:profile
 func (c *Compiler) findUniqueMethodByName(methodName string) (string, bool) {
 	found := ""
 	for key, resolved := range c.methodTable {
@@ -7885,6 +8135,7 @@ func (c *Compiler) resolveCallName(node *Node) string {
 	return "unknown"
 }
 
+//rtg:profile
 func (c *Compiler) compileAppend(node *Node) {
 	if len(node.Nodes) < 2 {
 		return
@@ -7922,6 +8173,7 @@ func (c *Compiler) compileAppend(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileCopy(node *Node) {
 	if len(node.Nodes) < 2 {
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -7933,6 +8185,7 @@ func (c *Compiler) compileCopy(node *Node) {
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.SliceCopy", Arg: 2})
 }
 
+//rtg:profile
 func (c *Compiler) compileMake(node *Node) {
 	// make([]T, len) or make([]T, len, cap) or make(map[K]V)
 	if node.Nodes[0].Kind == NMapType {
@@ -7960,6 +8213,8 @@ func (c *Compiler) compileMake(node *Node) {
 }
 
 // mapKeyKind returns the key kind for a map key type node: 0=int/pointer, 1=string.
+//
+//rtg:profile
 func (c *Compiler) mapKeyKind(keyTypeNode *Node) int {
 	if keyTypeNode != nil && keyTypeNode.Kind == NIdent && keyTypeNode.Name == "string" {
 		return 1
@@ -7968,6 +8223,8 @@ func (c *Compiler) mapKeyKind(keyTypeNode *Node) int {
 }
 
 // exprReturnCount returns how many values an expression pushes onto the operand stack.
+//
+//rtg:profile
 func (c *Compiler) exprReturnCount(node *Node) int {
 	if node == nil {
 		return 1
@@ -8013,6 +8270,8 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 
 // exprElemSize determines the element size for indexing an expression.
 // Returns 1 for strings and []byte, 8 for all other slice types.
+//
+//rtg:profile
 func (c *Compiler) exprElemSize(node *Node) int {
 	if node == nil {
 		return 1
@@ -8084,6 +8343,8 @@ func (c *Compiler) exprElemSize(node *Node) int {
 }
 
 // sliceElemSize returns the element size for a slice type node.
+//
+//rtg:profile
 func (c *Compiler) sliceElemSize(typeNode *Node) int {
 	if typeNode == nil {
 		return c.target.PtrSize
@@ -8094,6 +8355,7 @@ func (c *Compiler) sliceElemSize(typeNode *Node) int {
 	return c.target.PtrSize
 }
 
+//rtg:profile
 func (c *Compiler) compileSelectorExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		// Check if it's a package-qualified access
@@ -8160,6 +8422,7 @@ type promotedMethodMatch struct {
 	Target  string
 }
 
+//rtg:profile
 func (c *Compiler) findPromotedMethodRec(qualifiedType string, methodName string, visited map[string]bool) (promotedMethodMatch, bool) {
 	if qualifiedType == "" || visited[qualifiedType] {
 		return promotedMethodMatch{}, false
@@ -8199,10 +8462,12 @@ func (c *Compiler) findPromotedMethodRec(qualifiedType string, methodName string
 	return promotedMethodMatch{}, false
 }
 
+//rtg:profile
 func (c *Compiler) findPromotedMethod(qualifiedType string, methodName string) (promotedMethodMatch, bool) {
 	return c.findPromotedMethodRec(qualifiedType, methodName, make(map[string]bool))
 }
 
+//rtg:profile
 func (c *Compiler) compileIndexExpr(node *Node) {
 	// Check for map index read: m[key]
 	if c.isMapExpr(node.X) {
@@ -8226,6 +8491,7 @@ func (c *Compiler) compileIndexExpr(node *Node) {
 	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: elemSize})
 }
 
+//rtg:profile
 func (c *Compiler) isDefinitelyNonIndexableExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -8243,6 +8509,7 @@ func (c *Compiler) isDefinitelyNonIndexableExpr(node *Node) bool {
 	return true
 }
 
+//rtg:profile
 func (c *Compiler) isDefinitelyInvalidLenArg(node *Node) bool {
 	if node == nil {
 		return true
@@ -8264,6 +8531,7 @@ func (c *Compiler) isDefinitelyInvalidLenArg(node *Node) bool {
 	return isDefinitelyScalarTypeName(t)
 }
 
+//rtg:profile
 func (c *Compiler) isDefinitelyInvalidCapArg(node *Node) bool {
 	if node == nil {
 		return true
@@ -8288,6 +8556,7 @@ func (c *Compiler) isDefinitelyInvalidCapArg(node *Node) bool {
 	return isDefinitelyScalarTypeName(t)
 }
 
+//rtg:profile
 func (c *Compiler) isDefinitelyInvalidRangeArg(node *Node) bool {
 	if node == nil {
 		return true
@@ -8323,6 +8592,8 @@ func isDefinitelyScalarTypeName(t string) bool {
 }
 
 // mapExprKeyKind returns the key kind of a map expression (0=int, 1=string, -1=not a map).
+//
+//rtg:profile
 func (c *Compiler) mapExprKeyKind(node *Node) int {
 	if node == nil {
 		return -1
@@ -8383,6 +8654,7 @@ func (c *Compiler) mapExprKeyKind(node *Node) int {
 }
 
 // isMapExpr returns true if the expression evaluates to a map value.
+//
 func (c *Compiler) isMapExpr(node *Node) bool {
 	if node == nil {
 		return false
@@ -8424,6 +8696,7 @@ func (c *Compiler) isMapExpr(node *Node) bool {
 	return false
 }
 
+//rtg:profile
 func (c *Compiler) compileSliceExpr(node *Node) {
 	c.compileExpr(node.X)
 	c.compileExpr(node.Y)
@@ -8445,6 +8718,7 @@ func (c *Compiler) compileSliceExpr(node *Node) {
 	}
 }
 
+//rtg:profile
 func (c *Compiler) compileCompositeLit(node *Node) {
 	// Handle map composite literals: map[K]V{k1: v1, k2: v2, ...}
 	if node.Type != nil && node.Type.Kind == NMapType {

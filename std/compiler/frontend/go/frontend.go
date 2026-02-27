@@ -56,6 +56,7 @@ func (pkg *Package) QualName(name string) string {
 	return q
 }
 
+//rtg:profile
 func (pkg *Package) QualPtrName(name string) string {
 	if q, ok := pkg.qualPtrNames[name]; ok {
 		return q
@@ -258,6 +259,7 @@ func appendStdlibDirCandidates(candidates []string, root string, importPath stri
 }
 
 // resolveImportDirs maps an import path to possible directories on disk.
+//rtg:profile
 func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []string {
 	var dirs []string
 	importCandidates := importPathCandidates(importPath)
@@ -275,6 +277,7 @@ func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []st
 	return dirs
 }
 
+//rtg:profile
 func (c *Preprocessor) parsePackageFromStdlibSources(baseDir string, importPath string) *Package {
 	importCandidates := importPathCandidates(importPath)
 	if ShouldUseEmbeddedStdlib(c.target) {
@@ -355,6 +358,7 @@ func sortStrings(s []string) {
 // shouldIncludeFile checks if a .go file should be included based on build tags.
 // If a //go:build directive exists, it takes precedence over filename-based filtering.
 // Otherwise, filename-based GOOS/GOARCH conventions are used.
+//rtg:profile
 func (c *Preprocessor) shouldIncludeFile(path string, name string) bool {
 	// 1. Check //go:build directive in file content (takes precedence)
 	src, err := os.ReadFile(path)
@@ -534,6 +538,7 @@ type Preprocessor struct {
 }
 
 // hasTag checks if a tag is in the active build tag set.
+//rtg:profile
 func (c *Preprocessor) hasTag(tag string) bool {
 	i := 0
 	for i < len(c.target.BuildTags) {
@@ -547,6 +552,7 @@ func (c *Preprocessor) hasTag(tag string) bool {
 
 // evalBuildExpr evaluates a //go:build expression against the active tag set.
 // Supports: bare tags, &&, ||, !, and parentheses.
+//rtg:profile
 func (c *Preprocessor) evalBuildExpr(expr string) bool {
 	expr = trimLeftSpace(expr)
 	result, _ := c.parseBuildOr(expr)
@@ -554,6 +560,7 @@ func (c *Preprocessor) evalBuildExpr(expr string) bool {
 }
 
 // parseBuildOr parses: term (|| term)*
+//rtg:profile
 func (c *Preprocessor) parseBuildOr(expr string) (bool, string) {
 	left, rest := c.parseBuildAnd(expr)
 	for {
@@ -570,6 +577,7 @@ func (c *Preprocessor) parseBuildOr(expr string) (bool, string) {
 }
 
 // parseBuildAnd parses: unary (&& unary)*
+//rtg:profile
 func (c *Preprocessor) parseBuildAnd(expr string) (bool, string) {
 	left, rest := c.parseBuildUnary(expr)
 	for {
@@ -586,6 +594,7 @@ func (c *Preprocessor) parseBuildAnd(expr string) (bool, string) {
 }
 
 // parseBuildUnary parses: !unary | atom
+//rtg:profile
 func (c *Preprocessor) parseBuildUnary(expr string) (bool, string) {
 	expr = trimLeftSpace(expr)
 	if len(expr) > 0 && expr[0] == '!' {
@@ -596,6 +605,7 @@ func (c *Preprocessor) parseBuildUnary(expr string) (bool, string) {
 }
 
 // parseBuildAtom parses: (expr) | tag
+//rtg:profile
 func (c *Preprocessor) parseBuildAtom(expr string) (bool, string) {
 	expr = trimLeftSpace(expr)
 	if len(expr) > 0 && expr[0] == '(' {
@@ -624,6 +634,7 @@ func isAlphaNum(c byte) bool {
 }
 
 // parsePackageDir lists .go files in a directory, parses each, and merges into one Package.
+//rtg:profile
 func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -770,6 +781,7 @@ func ParseSource(name string, src string) *Node {
 
 // shouldIncludeContent checks if source content should be included based on build tags.
 // This is like shouldIncludeFile but takes content directly instead of reading from disk.
+//rtg:profile
 func (c *Preprocessor) shouldIncludeContent(content string, name string) bool {
 	collectBuildTagsFromContent(content)
 	collectBuildTagsFromFilename(name)
@@ -857,6 +869,7 @@ type topoState struct {
 	order   []string
 }
 
+//rtg:profile
 func (ts *topoState) visit(path string) {
 	if ts.visited[path] {
 		return
@@ -1059,6 +1072,53 @@ func isComptimeDirective(val string) bool {
 
 func isZeroCallDirective(val string) bool {
 	return strings.TrimSpace(val) == "zerocall"
+}
+
+func parseProfileDirective(val string) bool {
+	return strings.TrimSpace(val) == "profile"
+}
+
+// CollectProfileMethodQualNames returns qualified method names marked with //rtg:profile.
+func CollectProfileMethodQualNames(mod *Module) []string {
+	if mod == nil {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, pkgPath := range mod.Order {
+		pkg, ok := mod.Packages[pkgPath]
+		if !ok {
+			continue
+		}
+		for _, file := range pkg.Files {
+			for _, node := range file.Nodes {
+				base, directives := unwrapDirectiveNode(node)
+				if base == nil || base.Kind != NFunc || base.X == nil || base.X.Type == nil {
+					continue
+				}
+				hasProfile := false
+				for _, d := range directives {
+					if parseProfileDirective(d) {
+						hasProfile = true
+						break
+					}
+				}
+				if !hasProfile {
+					continue
+				}
+				recvType := nodeTypeName(base.X.Type)
+				if recvType == "" {
+					continue
+				}
+				qname := pkg.QualName(recvType) + "." + base.Name
+				if !seen[qname] {
+					seen[qname] = true
+					out = append(out, qname)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func parseAssembleDirective(val string) (string, bool) {

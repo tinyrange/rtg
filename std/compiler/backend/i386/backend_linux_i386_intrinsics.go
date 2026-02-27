@@ -2,6 +2,7 @@
 
 package i386
 
+//rtg:profile
 func (g *CodeGen) compileSyscallIntrinsic_linux386(paramCount int) {
 	_ = paramCount
 	// i386 syscall ABI: int 0x80
@@ -46,6 +47,7 @@ func (g *CodeGen) compileSyscallIntrinsic_linux386(paramCount int) {
 	g.opPush(REG32_EDX)
 }
 
+//rtg:profile
 func (g *CodeGen) compilePanic_linux386() {
 	g.opPop(REG32_EAX)
 

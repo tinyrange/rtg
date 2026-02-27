@@ -132,35 +132,43 @@ type SymEntry struct {
 
 // === Accessors ===
 
+//rtg:profile
 func (g *CodeGen) StringMap() map[string]int {
 	return g.stringMap
 }
 
+//rtg:profile
 func (g *CodeGen) Target() *common.Target {
 	return g.target
 }
 
+//rtg:profile
 func (g *CodeGen) IRModule() *ir.IRModule {
 	return g.irmod
 }
 
+//rtg:profile
 func (g *CodeGen) GetFuncOffset(name string) int {
 	return g.funcOffsets[name]
 }
 
+//rtg:profile
 func (g *CodeGen) FuncOffsets() map[string]int {
 	return g.funcOffsets
 }
 
+//rtg:profile
 func (g *CodeGen) MaybeGetFuncOffsets(name string) (int, bool) {
 	offset, ok := g.funcOffsets[name]
 	return offset, ok
 }
 
+//rtg:profile
 func (g *CodeGen) CallFixups() []CallFixup {
 	return g.callFixups
 }
 
+//rtg:profile
 func (g *CodeGen) AddCallFixup(target string) {
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.Code),
@@ -168,6 +176,7 @@ func (g *CodeGen) AddCallFixup(target string) {
 	})
 }
 
+//rtg:profile
 func (g *CodeGen) ResolveLinuxCallFixups() []string {
 	var unresolved []string
 	for _, fix := range g.callFixups {
@@ -184,6 +193,7 @@ func (g *CodeGen) ResolveLinuxCallFixups() []string {
 	return unresolved
 }
 
+//rtg:profile
 func (g *CodeGen) PatchLinuxDataAndRodataFixups(rodataVAddr uint64, dataVAddr uint64) {
 	for _, fix := range g.callFixups {
 		if fix.Target == "$rodata_header$" {
@@ -196,6 +206,7 @@ func (g *CodeGen) PatchLinuxDataAndRodataFixups(rodataVAddr uint64, dataVAddr ui
 	}
 }
 
+//rtg:profile
 func (g *CodeGen) PatchLinuxStringHeaders(rodataVAddr uint64) {
 	for _, headerOff := range g.stringMap {
 		dataOff := common.GetU64(g.Rodata[headerOff : headerOff+8])
@@ -205,6 +216,7 @@ func (g *CodeGen) PatchLinuxStringHeaders(rodataVAddr uint64) {
 
 // === Public Methods ===
 
+//rtg:profile
 func (g *CodeGen) EmitAllFunctions(irmod *ir.IRModule) {
 	// Compile all functions
 	for _, f := range irmod.Funcs {
@@ -218,6 +230,7 @@ func (g *CodeGen) EmitAllFunctions(irmod *ir.IRModule) {
 	}
 }
 
+//rtg:profile
 func (g *CodeGen) CheckUnresolvedCalls(unresolved []string) error {
 	if len(unresolved) > 0 {
 		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
@@ -236,27 +249,33 @@ func (g *CodeGen) CheckUnresolvedCalls(unresolved []string) error {
 
 // === Shared byte emission ===
 
+//rtg:profile
 func (g *CodeGen) EmitByte(b byte) {
 	g.Code = append(g.Code, b)
 }
 
+//rtg:profile
 func (g *CodeGen) EmitBytes(bytes ...byte) {
 	g.Code = append(g.Code, bytes...)
 }
 
+//rtg:profile
 func (g *CodeGen) EmitU32(v uint32) {
 	g.Code = append(g.Code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
+//rtg:profile
 func (g *CodeGen) EmitU16(v uint16) {
 	g.Code = append(g.Code, byte(v), byte(v>>8))
 }
 
+//rtg:profile
 func (g *CodeGen) EmitU64(v uint64) {
 	g.Code = append(g.Code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
 		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
 }
 
+//rtg:profile
 func (g *CodeGen) EmitRodataU64(v uint64) {
 	g.Rodata = append(g.Rodata, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
 		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
@@ -265,6 +284,7 @@ func (g *CodeGen) EmitRodataU64(v uint64) {
 // === Shared code emission helpers ===
 
 // EmitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
+//rtg:profile
 func (g *CodeGen) EmitCallPlaceholder(target string) {
 	g.Flush()
 	g.EmitBytes(0xe8) // call rel32
@@ -276,6 +296,7 @@ func (g *CodeGen) EmitCallPlaceholder(target string) {
 }
 
 // PatchRel32At patches the rel32 at fixupOff to jump to targetOff.
+//rtg:profile
 func (g *CodeGen) PatchRel32At(fixupOff int, targetOff int) {
 	rel := int32(targetOff - (fixupOff + 4))
 	g.Code[fixupOff] = byte(rel)
@@ -285,6 +306,7 @@ func (g *CodeGen) PatchRel32At(fixupOff int, targetOff int) {
 }
 
 // PatchRel32 patches the rel32 at fixupOff to jump to the current code position.
+//rtg:profile
 func (g *CodeGen) PatchRel32(fixupOff int) {
 	target := len(g.Code)
 	rel := int32(target - (fixupOff + 4))
@@ -295,6 +317,7 @@ func (g *CodeGen) PatchRel32(fixupOff int) {
 }
 
 // JmpRel32 emits `jmp rel32` and returns the offset of the rel32 for fixup.
+//rtg:profile
 func (g *CodeGen) JmpRel32() int {
 	g.Flush()
 	g.EmitByte(0xe9)
@@ -304,6 +327,7 @@ func (g *CodeGen) JmpRel32() int {
 }
 
 // JccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
+//rtg:profile
 func (g *CodeGen) JccRel32(cc byte) int {
 	g.Flush()
 	g.EmitBytes(0x0f, cc)
@@ -316,6 +340,7 @@ func fitsRel8(rel int) bool {
 	return rel >= -128 && rel <= 127
 }
 
+//rtg:profile
 func (g *CodeGen) shiftOffsetsAfterDelete(cutPos int, removed int) {
 	if removed <= 0 {
 		return
@@ -343,6 +368,7 @@ func (g *CodeGen) shiftOffsetsAfterDelete(cutPos int, removed int) {
 
 // relaxCurrentFuncJumps shortens rel32 jumps/jccs to rel8 when possible for x86 backends.
 // Must be called before resolving rel32 fixups.
+//rtg:profile
 func (g *CodeGen) relaxCurrentFuncJumps() {
 	changed := true
 	for changed {
@@ -395,6 +421,7 @@ func (g *CodeGen) relaxCurrentFuncJumps() {
 }
 
 // ret emits `ret`.
+//rtg:profile
 func (g *CodeGen) ret() {
 	if g.target.GOOS == "dos" && g.wordSize == 4 {
 		g.EmitByte(0x66)
@@ -403,11 +430,13 @@ func (g *CodeGen) ret() {
 }
 
 // leave emits `leave`.
+//rtg:profile
 func (g *CodeGen) leave() {
 	g.EmitByte(0xc9)
 }
 
 // int3 emits `int3` (breakpoint trap).
+//rtg:profile
 func (g *CodeGen) int3() {
 	g.EmitByte(0xcc)
 }
@@ -439,11 +468,13 @@ func (g *CodeGen) Flush() {
 	g.rawPush(g.pendingReg)
 }
 
+//rtg:profile
 func (g *CodeGen) configureOperandCache(regs ...int) {
 	g.cacheRegs = append(g.cacheRegs[:0], regs...)
 	g.ClearOperandCache()
 }
 
+//rtg:profile
 func (g *CodeGen) ClearOperandCache() {
 	g.hasPending = false
 	g.cacheStack = g.cacheStack[:0]
@@ -517,6 +548,7 @@ func (g *CodeGen) rawPush(reg int) {
 	g.EmitBytes(rex, 0x89, byte(0x07|((reg&7)<<3)))
 }
 
+//rtg:profile
 func (g *CodeGen) rawPop(reg int) {
 	rex := byte(0x49)
 	if reg >= 8 {
@@ -526,6 +558,7 @@ func (g *CodeGen) rawPop(reg int) {
 	g.EmitBytes(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8] (preserves flags)
 }
 
+//rtg:profile
 func (g *CodeGen) rawLoad(reg int) {
 	rex := byte(0x49)
 	if reg >= 8 {
@@ -534,10 +567,12 @@ func (g *CodeGen) rawLoad(reg int) {
 	g.EmitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
 }
 
+//rtg:profile
 func (g *CodeGen) rawDrop() {
 	g.EmitBytes(0x49, 0x83, 0xc7, 0x08)
 }
 
+//rtg:profile
 func (g *CodeGen) OpPush(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
@@ -562,6 +597,7 @@ func (g *CodeGen) OpPush(reg int) {
 	g.pendingReg = reg
 }
 
+//rtg:profile
 func (g *CodeGen) OpPop(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
@@ -588,6 +624,7 @@ func (g *CodeGen) OpPop(reg int) {
 	g.rawPop(reg)
 }
 
+//rtg:profile
 func (g *CodeGen) opLoad(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
@@ -609,6 +646,7 @@ func (g *CodeGen) opLoad(reg int) {
 	g.rawLoad(reg)
 }
 
+//rtg:profile
 func (g *CodeGen) opDrop() {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
