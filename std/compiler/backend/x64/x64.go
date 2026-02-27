@@ -42,7 +42,6 @@ const (
 // === Register-immediate64 move ===
 
 // EmitMovRegImm64 emits `movabs reg, imm64` (REX.W + B8+rd + imm64)
-//rtg:profile
 func (g *CodeGen) EmitMovRegImm64(reg int, val uint64) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -56,7 +55,6 @@ func (g *CodeGen) EmitMovRegImm64(reg int, val uint64) {
 // === Local variable access (rbp-relative) ===
 
 // EmitLoadLocal emits `mov reg, [rbp - offset]`
-//rtg:profile
 func (g *CodeGen) EmitLoadLocal(offset int, reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -74,7 +72,6 @@ func (g *CodeGen) EmitLoadLocal(offset int, reg int) {
 }
 
 // emitStoreLocal emits `mov [rbp - offset], reg`
-//rtg:profile
 func (g *CodeGen) emitStoreLocal(offset int, reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -92,7 +89,6 @@ func (g *CodeGen) emitStoreLocal(offset int, reg int) {
 }
 
 // emitLeaLocal emits `lea reg, [rbp - offset]`
-//rtg:profile
 func (g *CodeGen) emitLeaLocal(offset int, reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -110,7 +106,6 @@ func (g *CodeGen) emitLeaLocal(offset int, reg int) {
 }
 
 // emitAddLocalImm emits `add qword [rbp - offset], imm{8,32}`.
-//rtg:profile
 func (g *CodeGen) emitAddLocalImm(offset int, imm int32) {
 	negOff := -offset
 	if imm >= -128 && imm <= 127 {
@@ -138,7 +133,6 @@ func (g *CodeGen) emitAddLocalImm(offset int, imm int32) {
 // === x86 stack push/pop ===
 
 // PushR emits `push reg` (handles r8-r15 with REX.B prefix)
-//rtg:profile
 func (g *CodeGen) PushR(reg int) {
 	if reg >= 8 {
 		g.EmitBytes(0x41, byte(0x50+(reg&7)))
@@ -148,7 +142,6 @@ func (g *CodeGen) PushR(reg int) {
 }
 
 // PopR emits `pop reg` (handles r8-r15 with REX.B prefix)
-//rtg:profile
 func (g *CodeGen) PopR(reg int) {
 	if reg >= 8 {
 		g.EmitBytes(0x41, byte(0x58+(reg&7)))
@@ -177,55 +170,46 @@ func modrmRR(dst, src int) byte {
 }
 
 // MovRR emits `mov dst, src`
-//rtg:profile
 func (g *CodeGen) MovRR(dst, src int) {
 	g.EmitBytes(rexRR(src, dst), 0x89, modrmRR(src, dst))
 }
 
 // AddRR emits `add dst, src`
-//rtg:profile
 func (g *CodeGen) AddRR(dst, src int) {
 	g.EmitBytes(rexRR(src, dst), 0x01, modrmRR(src, dst))
 }
 
 // subRR emits `sub dst, src`
-//rtg:profile
 func (g *CodeGen) subRR(dst, src int) {
 	g.EmitBytes(rexRR(src, dst), 0x29, modrmRR(src, dst))
 }
 
 // andRR emits `and dst, src`
-//rtg:profile
 func (g *CodeGen) andRR(dst, src int) {
 	g.EmitBytes(rexRR(src, dst), 0x21, modrmRR(src, dst))
 }
 
 // orRR emits `or dst, src`
-//rtg:profile
 func (g *CodeGen) orRR(dst, src int) {
 	g.EmitBytes(rexRR(src, dst), 0x09, modrmRR(src, dst))
 }
 
 // XorRR emits `xor dst, src`
-//rtg:profile
 func (g *CodeGen) XorRR(dst, src int) {
 	g.EmitBytes(rexRR(src, dst), 0x31, modrmRR(src, dst))
 }
 
 // CmpRR emits `cmp a, b`
-//rtg:profile
 func (g *CodeGen) CmpRR(a, b int) {
 	g.EmitBytes(rexRR(b, a), 0x39, modrmRR(b, a))
 }
 
 // TestRR emits `test a, b`
-//rtg:profile
 func (g *CodeGen) TestRR(a, b int) {
 	g.EmitBytes(rexRR(b, a), 0x85, modrmRR(b, a))
 }
 
 // imulRR emits `imul dst, src` (2-byte opcode 0F AF)
-//rtg:profile
 func (g *CodeGen) imulRR(dst, src int) {
 	g.EmitBytes(rexRR(dst, src), 0x0f, 0xaf, modrmRR(dst, src))
 }
@@ -233,7 +217,6 @@ func (g *CodeGen) imulRR(dst, src int) {
 // === Single-register / no-operand instructions ===
 
 // negR emits `neg reg`
-//rtg:profile
 func (g *CodeGen) negR(reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -243,13 +226,11 @@ func (g *CodeGen) negR(reg int) {
 }
 
 // cqo emits `cqo` (sign-extend rax into rdx:rax)
-//rtg:profile
 func (g *CodeGen) cqo() {
 	g.EmitBytes(0x48, 0x99)
 }
 
 // idivR emits `idiv reg`
-//rtg:profile
 func (g *CodeGen) idivR(reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -259,7 +240,6 @@ func (g *CodeGen) idivR(reg int) {
 }
 
 // divR emits `div reg` (unsigned divide)
-//rtg:profile
 func (g *CodeGen) divR(reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -269,7 +249,6 @@ func (g *CodeGen) divR(reg int) {
 }
 
 // shlCl emits `shl reg, cl`
-//rtg:profile
 func (g *CodeGen) shlCl(reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -279,7 +258,6 @@ func (g *CodeGen) shlCl(reg int) {
 }
 
 // sarCl emits `sar reg, cl` (arithmetic shift right)
-//rtg:profile
 func (g *CodeGen) sarCl(reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -289,7 +267,6 @@ func (g *CodeGen) sarCl(reg int) {
 }
 
 // shrCl emits `shr reg, cl` (logical shift right)
-//rtg:profile
 func (g *CodeGen) shrCl(reg int) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -299,7 +276,6 @@ func (g *CodeGen) shrCl(reg int) {
 }
 
 // shlImm emits `shl reg, imm8`
-//rtg:profile
 func (g *CodeGen) shlImm(reg int, n byte) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -309,7 +285,6 @@ func (g *CodeGen) shlImm(reg int, n byte) {
 }
 
 // emitSyscall emits the `syscall` instruction (0x0f, 0x05)
-//rtg:profile
 func (g *CodeGen) emitSyscall() {
 	g.EmitBytes(0x0f, 0x05)
 }
@@ -317,7 +292,6 @@ func (g *CodeGen) emitSyscall() {
 // === Register-immediate operations ===
 
 // AddRI emits `add reg, imm` (auto-selects imm8 or imm32)
-//rtg:profile
 func (g *CodeGen) AddRI(reg int, val int32) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -336,7 +310,6 @@ func (g *CodeGen) AddRI(reg int, val int32) {
 }
 
 // SubRI emits `sub reg, imm` (auto-selects imm8 or imm32)
-//rtg:profile
 func (g *CodeGen) SubRI(reg int, val int32) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -351,7 +324,6 @@ func (g *CodeGen) SubRI(reg int, val int32) {
 }
 
 // cmpRI emits `cmp reg, imm` (auto-selects imm8 or imm32)
-//rtg:profile
 func (g *CodeGen) cmpRI(reg int, val int32) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -366,7 +338,6 @@ func (g *CodeGen) cmpRI(reg int, val int32) {
 }
 
 // xorRI8 emits `xor reg, imm8`
-//rtg:profile
 func (g *CodeGen) xorRI8(reg int, val byte) {
 	rex := byte(0x48)
 	if reg >= 8 {
@@ -376,7 +347,6 @@ func (g *CodeGen) xorRI8(reg int, val byte) {
 }
 
 // imulRRI32 emits `imul dst, src, imm32`
-//rtg:profile
 func (g *CodeGen) imulRRI32(dst, src int, val int32) {
 	g.EmitBytes(rexRR(dst, src), 0x69, modrmRR(dst, src))
 	g.EmitU32(uint32(val))
@@ -385,7 +355,6 @@ func (g *CodeGen) imulRRI32(dst, src int, val int32) {
 // === Memory load/store with fixed offsets ===
 
 // LoadMem emits `mov dst, [base+off]` (64-bit, handles 0/disp8/disp32)
-//rtg:profile
 func (g *CodeGen) LoadMem(dst, base, off int) {
 	rex := rexRR(dst, base)
 	if off == 0 && (base&7) != REG_RBP {
@@ -411,7 +380,6 @@ func (g *CodeGen) LoadMem(dst, base, off int) {
 }
 
 // storeMem emits `mov [base+off], src` (64-bit, handles 0/disp8/disp32)
-//rtg:profile
 func (g *CodeGen) storeMem(base, off, src int) {
 	rex := rexRR(src, base)
 	if off == 0 && (base&7) != REG_RBP {
@@ -436,7 +404,6 @@ func (g *CodeGen) storeMem(base, off, src int) {
 }
 
 // loadMemByte emits `movzx dst, byte [base+off]`
-//rtg:profile
 func (g *CodeGen) loadMemByte(dst, base, off int) {
 	rex := rexRR(dst, base)
 	if off == 0 && (base&7) != REG_RBP {
@@ -450,7 +417,6 @@ func (g *CodeGen) loadMemByte(dst, base, off int) {
 }
 
 // storeMemByte emits `mov byte [base+off], src_lo8`
-//rtg:profile
 func (g *CodeGen) storeMemByte(base, off, src int) {
 	rex := byte(0x40)
 	if src >= 8 {
@@ -472,42 +438,36 @@ func (g *CodeGen) storeMemByte(base, off, src int) {
 // === Extend/truncate ===
 
 // movzxB emits `movzx reg, reg_lo8`
-//rtg:profile
 func (g *CodeGen) movzxB(reg int) {
 	rex := rexRR(reg, reg)
 	g.EmitBytes(rex, 0x0f, 0xb6, modrmRR(reg, reg))
 }
 
 // movzxW emits `movzx reg, reg_lo16`
-//rtg:profile
 func (g *CodeGen) movzxW(reg int) {
 	rex := rexRR(reg, reg)
 	g.EmitBytes(rex, 0x0f, 0xb7, modrmRR(reg, reg))
 }
 
 // movsxB emits `movsx reg, reg_lo8`
-//rtg:profile
 func (g *CodeGen) movsxB(reg int) {
 	rex := rexRR(reg, reg)
 	g.EmitBytes(rex, 0x0f, 0xbe, modrmRR(reg, reg))
 }
 
 // movsxW emits `movsx reg, reg_lo16`
-//rtg:profile
 func (g *CodeGen) movsxW(reg int) {
 	rex := rexRR(reg, reg)
 	g.EmitBytes(rex, 0x0f, 0xbf, modrmRR(reg, reg))
 }
 
 // movsxD emits `movsxd reg, reg_lo32`
-//rtg:profile
 func (g *CodeGen) movsxD(reg int) {
 	rex := rexRR(reg, reg)
 	g.EmitBytes(rex, 0x63, modrmRR(reg, reg))
 }
 
 // clearHi32 emits `mov e_reg, e_reg` (zero-extends 32→64)
-//rtg:profile
 func (g *CodeGen) clearHi32(reg int) {
 	prefix := byte(0)
 	if reg >= 8 {
@@ -522,7 +482,6 @@ func (g *CodeGen) clearHi32(reg int) {
 // === Setcc ===
 
 // setcc emits `setCC reg_lo8` where cc is a condition code constant
-//rtg:profile
 func (g *CodeGen) setcc(cc byte, reg int) {
 	setccOp := byte(0x90 | (cc & 0x0f))
 	rex := byte(0)

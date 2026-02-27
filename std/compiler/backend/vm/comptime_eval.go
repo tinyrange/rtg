@@ -122,7 +122,6 @@ func newEvalState(target *common.Target, irmod *ir.IRModule, runInit bool) (*Eva
 	return &EvalState{vm: vm}, nil
 }
 
-//rtg:profile
 func (e *EvalState) WordSize() int {
 	return e.vm.config.WordSize
 }
@@ -134,7 +133,6 @@ func EvalWordSize(e *EvalState) int {
 	return e.WordSize()
 }
 
-//rtg:profile
 func (e *EvalState) LoadWord(addr uint64) uint64 {
 	return e.vm.loadWord(addr)
 }
@@ -146,7 +144,6 @@ func EvalLoadWord(e *EvalState, addr uint64) uint64 {
 	return e.LoadWord(addr)
 }
 
-//rtg:profile
 func (e *EvalState) LoadBytes(addr uint64, n int) ([]byte, error) {
 	if n < 0 {
 		return nil, fmt.Errorf("negative byte count: %d", n)
@@ -172,7 +169,6 @@ func EvalLoadBytes(e *EvalState, addr uint64, n int) ([]byte, error) {
 }
 
 // Call executes funcName with args and returns its return values.
-//rtg:profile
 func (e *EvalState) Call(funcName string, args []uint64, retCount int) ([]uint64, error) {
 	f, ok := e.vm.funcs[funcName]
 	if !ok {

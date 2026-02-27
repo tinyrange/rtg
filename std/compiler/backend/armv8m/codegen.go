@@ -48,10 +48,10 @@ type CodeGen struct {
 	jumpLits    []jumpLiteralFixup
 	allJumpWord []int
 
-	curLabels map[int]int
-	curFixups []jumpFixup
-	curFunc   *ir.IRFunc
-	locals    int
+	curLabels  map[int]int
+	curFixups  []jumpFixup
+	curFunc    *ir.IRFunc
+	locals     int
 	funcLabels map[string]map[int]int
 
 	rodata []byte
@@ -83,43 +83,35 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule) *CodeGen {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) Code() []byte {
 	return g.asm.Code()
 }
 
-//rtg:profile
 func (g *CodeGen) Asm() *Assembler {
 	return g.asm
 }
 
-//rtg:profile
 func (g *CodeGen) EmitMovsImm(rd uint8, imm uint8) {
 	g.asm.EmitMovsImm(rd, imm)
 }
 
-//rtg:profile
 func (g *CodeGen) EmitBkpt(imm uint8) {
 	g.asm.EmitBkpt(imm)
 }
 
-//rtg:profile
 func (g *CodeGen) EmitBSelf() {
 	g.asm.EmitBSelf()
 }
 
-//rtg:profile
 func (g *CodeGen) LoadImm32(reg uint8, v uint32) {
 	g.loadImm32(reg, v)
 }
 
-//rtg:profile
 func (g *CodeGen) FunctionOffset(name string) (int, bool) {
 	off, ok := g.funcOffsets[name]
 	return off, ok
 }
 
-//rtg:profile
 func (g *CodeGen) FunctionLabels(name string) map[int]int {
 	src, ok := g.funcLabels[name]
 	if !ok {
@@ -132,13 +124,11 @@ func (g *CodeGen) FunctionLabels(name string) map[int]int {
 	return out
 }
 
-//rtg:profile
 func (g *CodeGen) EmitCallPlaceholder(target string) {
 	at := g.asm.EmitBLPlaceholder()
 	g.callFixups = append(g.callFixups, callFixup{at: at, target: target})
 }
 
-//rtg:profile
 func (g *CodeGen) ResolveCalls(codeBaseAddr uint32) error {
 	var unresolvedStubOff int
 	var haveUnresolvedStub bool
@@ -173,7 +163,6 @@ func (g *CodeGen) ResolveCalls(codeBaseAddr uint32) error {
 	return nil
 }
 
-//rtg:profile
 func (g *CodeGen) CompileModuleFuncs() error {
 	for _, f := range g.irmod.Funcs {
 		g.funcOffsets[f.Name] = g.asm.Pos()
@@ -185,7 +174,6 @@ func (g *CodeGen) CompileModuleFuncs() error {
 	return nil
 }
 
-//rtg:profile
 func (g *CodeGen) compileFunc(f *ir.IRFunc) error {
 	if f.Native != nil {
 		g.asm.code = append(g.asm.code, f.Native.Code...)
@@ -255,7 +243,6 @@ func (g *CodeGen) compileFunc(f *ir.IRFunc) error {
 	return nil
 }
 
-//rtg:profile
 func (g *CodeGen) compileInst(inst ir.Inst) error {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
@@ -575,7 +562,6 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 	return nil
 }
 
-//rtg:profile
 func (g *CodeGen) compileIntrinsic(inst ir.Inst) error {
 	switch inst.Name {
 	case "Sliceptr", "Stringptr":
@@ -740,7 +726,6 @@ func (g *CodeGen) compileIntrinsic(inst ir.Inst) error {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) compileCompositeLitCall(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * 4
@@ -778,7 +763,6 @@ func (g *CodeGen) compileCompositeLitCall(inst ir.Inst) {
 	g.opPush(1)
 }
 
-//rtg:profile
 func (g *CodeGen) emitEpilogue() {
 	g.asm.EmitMovReg(13, 7)
 	g.asm.EmitPop((1<<4)|(1<<5)|(1<<7), true)
@@ -789,7 +773,6 @@ func (g *CodeGen) opPush(reg uint8) {
 	g.asm.EmitStrImm(reg, 6, 0)
 }
 
-//rtg:profile
 func (g *CodeGen) PushOperand(reg uint8) {
 	g.opPush(reg)
 }
@@ -799,7 +782,6 @@ func (g *CodeGen) opPop(reg uint8) {
 	g.asm.EmitAddsImm(6, 4)
 }
 
-//rtg:profile
 func (g *CodeGen) emitLoadWordUnaligned(addrReg uint8, outReg uint8) {
 	// Preserve scratch registers so callers only observe outReg being clobbered.
 	// If addrReg == outReg, copy the base first to avoid destroying the address
@@ -858,7 +840,6 @@ func (g *CodeGen) emitLoadWordUnaligned(addrReg uint8, outReg uint8) {
 	g.asm.EmitPop(mask, false)
 }
 
-//rtg:profile
 func (g *CodeGen) emitStoreWordUnaligned(addrReg uint8, valReg uint8) {
 	tmp := uint8(0xFF)
 	shift := uint8(0xFF)
@@ -893,7 +874,6 @@ func (g *CodeGen) emitStoreWordUnaligned(addrReg uint8, valReg uint8) {
 	g.asm.EmitPop(mask, false)
 }
 
-//rtg:profile
 func (g *CodeGen) emitPushStringFromValuePtr(valReg uint8) {
 	// If valReg already points at a {data,len} header, pass it through.
 	// Otherwise treat valReg as a C-style data pointer and build a header.
@@ -922,7 +902,6 @@ func (g *CodeGen) emitPushStringFromValuePtr(valReg uint8) {
 	})
 }
 
-//rtg:profile
 func (g *CodeGen) compareToBool(cond int) {
 	g.opPop(1)
 	g.opPop(0)
@@ -938,7 +917,6 @@ func (g *CodeGen) compareToBool(cond int) {
 	g.opPush(0)
 }
 
-//rtg:profile
 func (g *CodeGen) compareJump(cond int, labelID int) {
 	g.opPop(1)
 	g.opPop(0)
@@ -950,7 +928,6 @@ func (g *CodeGen) compareJump(cond int, labelID int) {
 	g.curFixups = append(g.curFixups, jumpFixup{wordOff: wordOff, labelID: labelID})
 }
 
-//rtg:profile
 func (g *CodeGen) emitDivMod(wantMod bool) {
 	// Stack: ... dividend, divisor
 	// Uses a simple repeated-subtraction algorithm for bringup.
@@ -981,7 +958,6 @@ func (g *CodeGen) emitDivMod(wantMod bool) {
 	g.opPush(0)
 }
 
-//rtg:profile
 func (g *CodeGen) compileIfaceBox(inst ir.Inst) error {
 	// box layout: [typeID, concreteValue]
 	g.opPop(0)
@@ -998,7 +974,6 @@ func (g *CodeGen) compileIfaceBox(inst ir.Inst) error {
 	return nil
 }
 
-//rtg:profile
 func (g *CodeGen) collectDispatch(methodName string) []becommon.DispatchEntry {
 	dotIdx := len(methodName) - 1
 	for dotIdx >= 0 {
@@ -1023,7 +998,6 @@ func (g *CodeGen) collectDispatch(methodName string) []becommon.DispatchEntry {
 	return out
 }
 
-//rtg:profile
 func (g *CodeGen) compileIfaceCall(inst ir.Inst) error {
 	argCount := inst.Arg
 	entries := g.collectDispatch(inst.Name)
@@ -1084,7 +1058,6 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) error {
 	return nil
 }
 
-//rtg:profile
 func (g *CodeGen) loadImm32(reg uint8, v uint32) int {
 	ldrOff := g.asm.EmitLdrLiteral(reg, 0)
 	bOff := g.asm.EmitBImm11(0)
@@ -1101,7 +1074,6 @@ func (g *CodeGen) loadImm32(reg uint8, v uint32) int {
 	return off
 }
 
-//rtg:profile
 func (g *CodeGen) emitLongJumpPlaceholder() int {
 	wordOff := g.loadImm32(3, 0)
 	g.asm.Emit16(0x4718) // bx r3
@@ -1109,7 +1081,6 @@ func (g *CodeGen) emitLongJumpPlaceholder() int {
 	return wordOff
 }
 
-//rtg:profile
 func (g *CodeGen) localAddr(slot int, outReg uint8) {
 	if slot < 0 {
 		panic("negative local slot")
@@ -1126,7 +1097,6 @@ func (g *CodeGen) localAddr(slot int, outReg uint8) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) loadLocal(slot int, outReg uint8) {
 	if slot < 0 {
 		panic("negative local slot")
@@ -1139,7 +1109,6 @@ func (g *CodeGen) loadLocal(slot int, outReg uint8) {
 	g.asm.EmitLdrImm(outReg, 1, 0)
 }
 
-//rtg:profile
 func (g *CodeGen) storeLocal(slot int, inReg uint8) {
 	if slot < 0 {
 		panic("negative local slot")
@@ -1152,14 +1121,12 @@ func (g *CodeGen) storeLocal(slot int, inReg uint8) {
 	g.asm.EmitStrImm(inReg, 1, 0)
 }
 
-//rtg:profile
 func (g *CodeGen) alignRodata(a int) {
 	for (len(g.rodata) % a) != 0 {
 		g.rodata = append(g.rodata, 0)
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) internString(s string) int {
 	if idx, ok := g.strIndex[s]; ok {
 		return idx
@@ -1191,7 +1158,6 @@ func putU32(b []byte, v uint32) {
 	b[3] = byte(v >> 24)
 }
 
-//rtg:profile
 func (g *CodeGen) finalizeRodata() {
 	if len(g.rodata) == 0 {
 		return

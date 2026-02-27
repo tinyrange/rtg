@@ -4,7 +4,6 @@ package aarch64
 
 import "j5.nz/rtg/std/compiler/ir"
 
-//rtg:profile
 func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	panic("arm64 backend disabled")
 }

@@ -7,23 +7,19 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
-//rtg:profile
 func (g *CodeGen) slotBytes_i386() int {
 	return 4
 }
 
-//rtg:profile
 func (g *CodeGen) ptrBytes_i386() int {
 	return g.slotBytes_i386()
 }
 
-//rtg:profile
 func (g *CodeGen) initOperandCache_i386() {
 	g.configureOperandCache(REG32_EBX, REG32_ESI)
 }
 
 // compileFunc_i386 generates i386 code for a single IR function.
-//rtg:profile
 func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 	if f.Native != nil {
 		if f.Native.Arch != "386" {
@@ -97,7 +93,6 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 }
 
 // compileInst_i386 generates code for a single IR instruction (i386).
-//rtg:profile
 func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
@@ -267,7 +262,6 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 
 // === Constant loading (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileConstI32(val int64) {
 	g.prepareForClobber(REG32_EAX)
 	v32 := uint32(val)
@@ -279,7 +273,6 @@ func (g *CodeGen) compileConstI32(val int64) {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileConstStr_i386(s string) {
 	g.prepareForClobber(REG32_EAX)
 	decoded := becommon.DecodeStringLiteral(s)
@@ -311,7 +304,6 @@ func (g *CodeGen) compileConstStr_i386(s string) {
 
 // === Local variable access (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileLocalGet_i386(idx int) {
 	g.prepareForClobber(REG32_EAX)
 	offset := (idx + 1) * g.slotBytes_i386()
@@ -319,14 +311,12 @@ func (g *CodeGen) compileLocalGet_i386(idx int) {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileLocalSet_i386(idx int) {
 	g.opPop(REG32_EAX)
 	offset := (idx + 1) * g.slotBytes_i386()
 	g.emitStoreLocal32(offset, REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileLocalAddImm_i386(idx int, imm int32) {
 	offset := (idx + 1) * g.slotBytes_i386()
 	g.emitLoadLocal32(offset, REG32_EAX)
@@ -334,7 +324,6 @@ func (g *CodeGen) compileLocalAddImm_i386(idx int, imm int32) {
 	g.emitStoreLocal32(offset, REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileLocalAddr_i386(idx int) {
 	g.prepareForClobber(REG32_EAX)
 	offset := (idx + 1) * g.slotBytes_i386()
@@ -344,7 +333,6 @@ func (g *CodeGen) compileLocalAddr_i386(idx int) {
 
 // === Global variable access (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileGlobalGet_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX, REG32_ECX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
@@ -356,7 +344,6 @@ func (g *CodeGen) compileGlobalGet_i386(inst ir.Inst) {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileGlobalSet_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
@@ -367,7 +354,6 @@ func (g *CodeGen) compileGlobalSet_i386(inst ir.Inst) {
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileGlobalAddr_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX)
 	g.emitMovRegImm32(REG32_EAX, uint32(inst.Arg*g.slotBytes_i386()))
@@ -380,7 +366,6 @@ func (g *CodeGen) compileGlobalAddr_i386(inst ir.Inst) {
 
 // === Binary operations (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileBinOP_i386(op ir.Opcode) {
 	g.opPop(REG32_EAX)
 	g.opPop(REG32_ECX)
@@ -429,7 +414,6 @@ func (g *CodeGen) compileBinOP_i386(op ir.Opcode) {
 
 // === Comparison operations (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileCompare_i386(setccOpcode byte) {
 	g.opPop(REG32_EAX)
 	g.opPop(REG32_ECX)
@@ -439,7 +423,6 @@ func (g *CodeGen) compileCompare_i386(setccOpcode byte) {
 	g.opPush(REG32_ECX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileCompareJump_i386(cc byte, label int) {
 	g.opPop(REG32_EAX)
 	g.opPop(REG32_ECX)
@@ -455,7 +438,6 @@ func (g *CodeGen) compileCompareJump_i386(cc byte, label int) {
 
 // === Function calls (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileCall_i386(inst ir.Inst) {
 	if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
 		g.compileCompositeLitCall_i386(inst)
@@ -464,7 +446,6 @@ func (g *CodeGen) compileCall_i386(inst ir.Inst) {
 	g.emitCallPlaceholder(inst.Name)
 }
 
-//rtg:profile
 func (g *CodeGen) compileCompositeLitCall_i386(inst ir.Inst) {
 	fieldCount := inst.Arg
 	structSize := fieldCount * g.slotBytes_i386()
@@ -499,7 +480,6 @@ func (g *CodeGen) compileCompositeLitCall_i386(inst ir.Inst) {
 	g.opPush(REG32_ECX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileReturn_i386(inst ir.Inst) {
 	g.flush()
 	g.leave()
@@ -508,7 +488,6 @@ func (g *CodeGen) compileReturn_i386(inst ir.Inst) {
 
 // === Intrinsics (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	g.flush()
 	if g.compileLinkStaticIntrinsicWin386(inst) {
@@ -539,7 +518,6 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) compileSliceptrIntrinsic_i386() {
 	// Param 0 = slice header pointer. Read [header+0] = data ptr.
 	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
@@ -547,7 +525,6 @@ func (g *CodeGen) compileSliceptrIntrinsic_i386() {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileMakesliceIntrinsic_i386() {
 	// Params: ptr (local 0), len (local 1), cap (local 2)
 	// Allocate 4-word header {ptr, len, cap, elem_size}
@@ -570,7 +547,6 @@ func (g *CodeGen) compileMakesliceIntrinsic_i386() {
 	g.opPush(REG32_ECX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileStringptrIntrinsic_i386() {
 	// Param 0 = string header pointer. Read [header+0] = data ptr.
 	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
@@ -578,7 +554,6 @@ func (g *CodeGen) compileStringptrIntrinsic_i386() {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileMakestringIntrinsic_i386() {
 	// Params: ptr (local 0), len (local 1)
 	// Allocate 2-word header {ptr, len}
@@ -595,7 +570,6 @@ func (g *CodeGen) compileMakestringIntrinsic_i386() {
 	g.opPush(REG32_ECX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileTostringIntrinsic_i386() {
 	// ir.OP_CALL_INTRINSIC is emitted inside intrinsic wrapper functions where
 	// parameters are in frame locals, not on the operand stack. Inline the
@@ -603,7 +577,6 @@ func (g *CodeGen) compileTostringIntrinsic_i386() {
 	g.compileTostringIntrinsicBody_i386()
 }
 
-//rtg:profile
 func (g *CodeGen) emitTostringHelperI386() {
 	if g.HasTostringHelper {
 		return
@@ -626,7 +599,6 @@ func (g *CodeGen) emitTostringHelperI386() {
 	g.compileReturn_i386(ir.Inst{})
 }
 
-//rtg:profile
 func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 	// Param 0 = value (could be string ptr or interface box ptr)
 	// Heuristic: if [ptr+0] < 256, it's a type_id (interface box)
@@ -706,7 +678,6 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) compileReadPtrIntrinsic_i386() {
 	// Param 0 = addr. Read 4 bytes at addr, push result.
 	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
@@ -714,7 +685,6 @@ func (g *CodeGen) compileReadPtrIntrinsic_i386() {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileWritePtrIntrinsic_i386() {
 	// Param 0 = addr, Param 1 = val. Write 4 bytes.
 	w := g.slotBytes_i386()
@@ -723,7 +693,6 @@ func (g *CodeGen) compileWritePtrIntrinsic_i386() {
 	g.storeMem32(REG32_EAX, 0, REG32_ECX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileWriteByteIntrinsic_i386() {
 	// Param 0 = addr, Param 1 = val. Write 1 byte.
 	w := g.slotBytes_i386()
@@ -734,7 +703,6 @@ func (g *CodeGen) compileWriteByteIntrinsic_i386() {
 
 // === Interface dispatch (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileIfaceBox_i386(inst ir.Inst) {
 	typeID := inst.Arg
 
@@ -757,7 +725,6 @@ func (g *CodeGen) compileIfaceBox_i386(inst ir.Inst) {
 	g.opPush(REG32_ECX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 	argCount := inst.Arg
 	methodName := inst.Name
@@ -841,7 +808,6 @@ func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 
 // === Memory operations (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileLoad_i386(size int) {
 	g.opPop(REG32_ECX)
 	g.testRR32(REG32_ECX, REG32_ECX)
@@ -859,7 +825,6 @@ func (g *CodeGen) compileLoad_i386(size int) {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileStore_i386(size int) {
 	g.opPop(REG32_ECX) // addr
 	g.opPop(REG32_EAX) // value
@@ -870,7 +835,6 @@ func (g *CodeGen) compileStore_i386(size int) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) compileOffset_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
 	if inst.Arg != 0 {
@@ -879,7 +843,6 @@ func (g *CodeGen) compileOffset_i386(inst ir.Inst) {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileIndexAddr_i386(elemSize int) {
 	g.opPop(REG32_EAX) // index
 	g.opPop(REG32_ECX) // slice header ptr
@@ -901,7 +864,6 @@ func (g *CodeGen) compileIndexAddr_i386(elemSize int) {
 	g.opPush(REG32_ECX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileLen_i386() {
 	g.opPop(REG32_EAX)
 	g.testRR32(REG32_EAX, REG32_EAX)
@@ -914,7 +876,6 @@ func (g *CodeGen) compileLen_i386() {
 	g.opPush(REG32_EAX)
 }
 
-//rtg:profile
 func (g *CodeGen) compileCap_i386() {
 	g.opPop(REG32_EAX)
 	g.testRR32(REG32_EAX, REG32_EAX)
@@ -929,7 +890,6 @@ func (g *CodeGen) compileCap_i386() {
 
 // === Type conversions (i386) ===
 
-//rtg:profile
 func (g *CodeGen) compileConvert_i386(typeName string) {
 	switch typeName {
 	case "string":

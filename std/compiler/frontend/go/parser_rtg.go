@@ -6,7 +6,6 @@ import (
 	"j5.nz/rtg/std/compiler/stdlib"
 )
 
-//rtg:profile
 func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 	// Enumerate all embedded files and filter by package prefix. Some embed
 	// runtimes are unreliable for non-dot walk roots.

@@ -107,11 +107,14 @@ func init() {
 
 const csMask32 = 0xFFFFFFFF
 
+//rtg:noprofile
 func csRotr(x uint32, n uint32) uint32 {
 	return ((x >> n) | (x << (32 - n))) & csMask32
 }
 
 // csSha256Block processes a single 64-byte block, updating state in place.
+//
+//rtg:noprofile
 func csSha256Block(st []uint32, data []byte) {
 	w := make([]uint32, 64)
 	i := 0
@@ -166,6 +169,8 @@ func csSha256Block(st []uint32, data []byte) {
 }
 
 // csSha256 computes the SHA-256 hash of data and returns a 32-byte digest.
+//
+//rtg:noprofile
 func csSha256(data []byte) []byte {
 	st := make([]uint32, 8)
 	st[0] = 0x6a09e667

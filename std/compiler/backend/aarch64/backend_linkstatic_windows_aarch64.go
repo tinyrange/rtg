@@ -4,7 +4,6 @@ package aarch64
 
 import "j5.nz/rtg/std/compiler/ir"
 
-//rtg:profile
 func (g *CodeGen) emitGenericLinkStaticCallWinArm64(paramCount int, lib string, sym string) {
 	if paramCount < 0 {
 		panic("ICE: invalid linkstatic arg count")
@@ -37,7 +36,6 @@ func (g *CodeGen) emitGenericLinkStaticCallWinArm64(paramCount int, lib string, 
 	g.emitAddImm(REG_SP, REG_SP, uint32(frame))
 }
 
-//rtg:profile
 func (g *CodeGen) emitLinkStaticPtrReturnWinArm64() {
 	g.Flush()
 	g.emitTstRR(REG_X0, REG_X0)
@@ -76,7 +74,6 @@ func (g *CodeGen) emitLinkStaticPtrReturnWinArm64() {
 	g.ClearOperandCache()
 }
 
-//rtg:profile
 func (g *CodeGen) emitLinkStaticReturnWinArm64(mode string) {
 	switch mode {
 	case "syscall":
@@ -100,7 +97,6 @@ func (g *CodeGen) emitLinkStaticReturnWinArm64(mode string) {
 	}
 }
 
-//rtg:profile
 func (g *CodeGen) compileLinkStaticIntrinsicArm64Windows(inst ir.Inst) bool {
 	if g.target.GOOS != "windows" || g.irmod == nil || g.irmod.LinkStaticFuncs == nil {
 		return false

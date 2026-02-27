@@ -2,27 +2,22 @@
 
 package dos
 
-//rtg:profile
 func (g *CodeGen) tostringIntrinsic() {
 	panic("ICE: Tostring intrinsic disabled in tiny_dos_backend")
 }
 
-//rtg:profile
 func (g *CodeGen) emitTostringHelper() {
 	panic("ICE: tostring helper disabled in tiny_dos_backend")
 }
 
-//rtg:profile
 func (g *CodeGen) compileTostringBody() {
 	panic("ICE: tostring body disabled in tiny_dos_backend")
 }
 
-//rtg:profile
 func (g *CodeGen) ifaceBox(typeID int) {
 	panic("ICE: iface box disabled in tiny_dos_backend")
 }
 
-//rtg:profile
 func (g *CodeGen) ifaceCall(methodName string, argCount int) {
 	panic("ICE: iface call disabled in tiny_dos_backend")
 }
