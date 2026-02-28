@@ -56,6 +56,12 @@ const (
 	cDeclArray
 )
 
+type cTypeInfo struct {
+	Kind     cDeclKind
+	ArrayLen int64
+	IsVoid   bool
+}
+
 type cIntrinsicWrapper struct {
 	IRName   string
 	Params   int
@@ -63,8 +69,9 @@ type cIntrinsicWrapper struct {
 }
 
 type cLocalBinding struct {
-	Index int
-	Kind  cDeclKind
+	Index    int
+	Kind     cDeclKind
+	ArrayLen int64
 }
 
 // CompileUnits lowers parsed C units to RTG IR.
@@ -86,6 +93,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		funcs:        make(map[string]*cFuncSig),
 		globalIndex:  make(map[string]int),
 		globalKind:   make(map[string]cDeclKind),
+		globalArray:  make(map[string]int64),
 		intrinsics:   make(map[string]cIntrinsicWrapper),
 		externFns:    make(map[string]string),
 		nextLabelSeq: 1,
@@ -123,6 +131,7 @@ type compiler struct {
 
 	globalIndex map[string]int
 	globalKind  map[string]cDeclKind
+	globalArray map[string]int64
 	globalInits []cGlobalInit
 
 	intrinsics map[string]cIntrinsicWrapper
@@ -311,10 +320,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		c.globalIndex[it.Name] = idx
 		c.globalKind[it.Name] = it.Kind
 		if it.Kind == cDeclArray {
-			if len(it.Init) > 0 {
-				c.errorf(file, n.Line, n.Col, "array initializers are not yet supported: %s", it.Name)
-				continue
-			}
+			c.globalArray[it.Name] = it.ArrayLen
 			base := len(c.irmod.Globals)
 			for i := int64(0); i < it.ArrayLen; i++ {
 				elemIdx := len(c.irmod.Globals)
@@ -327,7 +333,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 				Kind:      it.Kind,
 				ArrayBase: base,
 				ArrayLen:  it.ArrayLen,
-				Init:      nil,
+				Init:      append([]Token{}, it.Init...),
 				File:      file,
 				Line:      n.Line,
 				Col:       n.Col,
@@ -366,6 +372,20 @@ func (c *compiler) emitGlobalInit() {
 		if g.Kind == cDeclArray {
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: g.ArrayBase})
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: g.Index})
+			initElems, err := parseArrayInitializerExprs(g.Init, g.ArrayLen)
+			if err != nil {
+				c.errorf(g.File, g.Line, g.Col, "invalid array initializer for %s: %v", g.Name, err)
+				continue
+			}
+			for i, initExpr := range initElems {
+				fc.emitExprTokens(g.File, g.Line, g.Col, initExpr)
+				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: g.Index})
+				if i > 0 {
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i * c.target.PtrSize)})
+					fc.emit(ir.Inst{Op: ir.OP_ADD})
+				}
+				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: c.target.PtrSize})
+			}
 			continue
 		}
 		fc.emitExprTokens(g.File, g.Line, g.Col, g.Init)
@@ -848,6 +868,130 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
 	return items, hasExtern, nil
 }
 
+func isTypeSpecifierKeyword(text string) bool {
+	switch text {
+	case "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool", "_Complex", "_Imaginary":
+		return true
+	case "const", "volatile", "restrict", "inline":
+		return true
+	case "auto", "register", "static", "extern", "typedef":
+		return true
+	case "struct", "union", "enum":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
+	tokens = trimTokens(tokens)
+	if len(tokens) == 0 {
+		return cTypeInfo{}, fmt.Errorf("empty type name")
+	}
+
+	info := cTypeInfo{Kind: cDeclScalar}
+
+	if len(tokens) >= 2 && tokens[len(tokens)-1].Kind == TokPunct && tokens[len(tokens)-1].Text == "]" {
+		closeIdx := len(tokens) - 1
+		openIdx := -1
+		depth := 0
+		for i := closeIdx; i >= 0; i-- {
+			t := tokens[i]
+			if t.Kind != TokPunct {
+				continue
+			}
+			if t.Text == "]" {
+				depth++
+			} else if t.Text == "[" {
+				depth--
+				if depth == 0 {
+					openIdx = i
+					break
+				}
+			}
+		}
+		if openIdx < 0 {
+			return cTypeInfo{}, fmt.Errorf("unterminated array type")
+		}
+		n, err := parseArrayLength(tokens[openIdx+1 : closeIdx])
+		if err != nil {
+			return cTypeInfo{}, err
+		}
+		info.Kind = cDeclArray
+		info.ArrayLen = n
+		tokens = trimTokens(tokens[:openIdx])
+		if len(tokens) == 0 {
+			return cTypeInfo{}, fmt.Errorf("missing array element type")
+		}
+	}
+
+	hasBase := false
+	ptrDepth := 0
+	for _, t := range tokens {
+		switch t.Kind {
+		case TokIdent:
+			if !isTypeSpecifierKeyword(t.Text) {
+				return cTypeInfo{}, fmt.Errorf("unsupported type token %q", t.Text)
+			}
+			hasBase = true
+			if t.Text == "void" {
+				info.IsVoid = true
+			}
+		case TokPunct:
+			switch t.Text {
+			case "*":
+				ptrDepth++
+			case "(", ")":
+				// Keep parser permissive for simple abstract declarators.
+			default:
+				return cTypeInfo{}, fmt.Errorf("unsupported type punctuation %q", t.Text)
+			}
+		default:
+			return cTypeInfo{}, fmt.Errorf("unsupported type token %q", t.Text)
+		}
+	}
+	if !hasBase {
+		return cTypeInfo{}, fmt.Errorf("missing type specifier")
+	}
+	if ptrDepth > 0 {
+		info.Kind = cDeclPointer
+		info.ArrayLen = 0
+	}
+	return info, nil
+}
+
+func parseArrayInitializerExprs(init []Token, arrayLen int64) ([][]Token, error) {
+	init = trimTokens(init)
+	if len(init) == 0 {
+		return nil, nil
+	}
+	if len(init) < 2 || init[0].Kind != TokPunct || init[0].Text != "{" || init[len(init)-1].Kind != TokPunct || init[len(init)-1].Text != "}" {
+		return nil, fmt.Errorf("expected brace initializer list")
+	}
+	inner := trimTokens(init[1 : len(init)-1])
+	if len(inner) == 0 {
+		return nil, nil
+	}
+
+	parts := splitTopLevel(inner, ",")
+	out := make([][]Token, 0, len(parts))
+	for _, p := range parts {
+		p = trimTokens(p)
+		if len(p) == 0 {
+			// Allow trailing comma.
+			continue
+		}
+		if p[0].Kind == TokPunct && p[0].Text == "{" {
+			return nil, fmt.Errorf("nested initializer lists are not yet supported")
+		}
+		out = append(out, p)
+	}
+	if int64(len(out)) > arrayLen {
+		return nil, fmt.Errorf("too many initializer elements (%d > %d)", len(out), arrayLen)
+	}
+	return out, nil
+}
+
 type funcCompiler struct {
 	c   *compiler
 	sig *cFuncSig
@@ -878,10 +1022,14 @@ func (fc *funcCompiler) popScope() {
 }
 
 func (fc *funcCompiler) addLocal(name string, file string, line int, col int) int {
-	return fc.addLocalKind(name, cDeclScalar, file, line, col)
+	return fc.addLocalDecl(name, cDeclScalar, 0, file, line, col)
 }
 
 func (fc *funcCompiler) addLocalKind(name string, kind cDeclKind, file string, line int, col int) int {
+	return fc.addLocalDecl(name, kind, 0, file, line, col)
+}
+
+func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, arrayLen int64, file string, line int, col int) int {
 	if len(fc.scopes) == 0 {
 		fc.pushScope()
 	}
@@ -891,7 +1039,7 @@ func (fc *funcCompiler) addLocalKind(name string, kind cDeclKind, file string, l
 	}
 	idx := len(fc.fn.Locals)
 	fc.fn.Locals = append(fc.fn.Locals, ir.IRLocal{Name: name, Index: idx})
-	cur[name] = cLocalBinding{Index: idx, Kind: kind}
+	cur[name] = cLocalBinding{Index: idx, Kind: kind, ArrayLen: arrayLen}
 	return idx
 }
 
@@ -909,6 +1057,14 @@ func (fc *funcCompiler) lookupLocalKind(name string) (cDeclKind, bool) {
 		return cDeclScalar, false
 	}
 	return b.Kind, true
+}
+
+func (fc *funcCompiler) lookupLocalArrayLen(name string) (int64, bool) {
+	b, ok := fc.lookupLocalBinding(name)
+	if !ok {
+		return 0, false
+	}
+	return b.ArrayLen, b.Kind == cDeclArray
 }
 
 func (fc *funcCompiler) lookupLocalBinding(name string) (cLocalBinding, bool) {
@@ -931,6 +1087,11 @@ func (fc *funcCompiler) lookupGlobalKind(name string) (cDeclKind, bool) {
 		return cDeclScalar, false
 	}
 	return kind, true
+}
+
+func (fc *funcCompiler) lookupGlobalArrayLen(name string) (int64, bool) {
+	n, ok := fc.c.globalArray[name]
+	return n, ok
 }
 
 func (fc *funcCompiler) compileCompound(n *Node, pushScope bool) {
@@ -1104,11 +1265,8 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 		return
 	}
 	for _, it := range items {
-		idx := fc.addLocalKind(it.Name, it.Kind, fc.sig.File, n.Line, n.Col)
+		idx := fc.addLocalDecl(it.Name, it.Kind, it.ArrayLen, fc.sig.File, n.Line, n.Col)
 		if it.Kind == cDeclArray {
-			if len(it.Init) > 0 {
-				fc.errorf(fc.sig.File, n.Line, n.Col, "array initializers are not yet supported: %s", it.Name)
-			}
 			firstElem := -1
 			for i := int64(0); i < it.ArrayLen; i++ {
 				elemName := fmt.Sprintf("$%s$elem$%d$%d", it.Name, idx, i)
@@ -1127,6 +1285,20 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 			}
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			initElems, err := parseArrayInitializerExprs(it.Init, it.ArrayLen)
+			if err != nil {
+				fc.errorf(fc.sig.File, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
+				continue
+			}
+			for i, initExpr := range initElems {
+				fc.emitExprTokens(fc.sig.File, n.Line, n.Col, initExpr)
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+				if i > 0 {
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i * fc.c.target.PtrSize)})
+					fc.emit(ir.Inst{Op: ir.OP_ADD})
+				}
+				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: fc.c.target.PtrSize})
+			}
 			continue
 		}
 		if len(it.Init) == 0 {
@@ -1282,11 +1454,8 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 		return
 	}
 	for _, it := range items {
-		idx := fc.addLocalKind(it.Name, it.Kind, file, n.Line, n.Col)
+		idx := fc.addLocalDecl(it.Name, it.Kind, it.ArrayLen, file, n.Line, n.Col)
 		if it.Kind == cDeclArray {
-			if len(it.Init) > 0 {
-				fc.errorf(file, n.Line, n.Col, "array initializers are not yet supported: %s", it.Name)
-			}
 			firstElem := -1
 			for i := int64(0); i < it.ArrayLen; i++ {
 				elemName := fmt.Sprintf("$%s$elem$%d$%d", it.Name, idx, i)
@@ -1305,6 +1474,20 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 			}
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			initElems, err := parseArrayInitializerExprs(it.Init, it.ArrayLen)
+			if err != nil {
+				fc.errorf(file, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
+				continue
+			}
+			for i, initExpr := range initElems {
+				fc.emitExprTokens(file, n.Line, n.Col, initExpr)
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+				if i > 0 {
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i * fc.c.target.PtrSize)})
+					fc.emit(ir.Inst{Op: ir.OP_ADD})
+				}
+				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: fc.c.target.PtrSize})
+			}
 			continue
 		}
 		if len(it.Init) == 0 {
@@ -1455,9 +1638,103 @@ func (fc *funcCompiler) exprIsPointer(ex *expr) bool {
 			return lp && !rp
 		}
 		return false
+	case exprCast:
+		return ex.typeInfo.Kind == cDeclPointer
+	case exprSizeof:
+		return false
 	default:
 		return false
 	}
+}
+
+func (fc *funcCompiler) sizeofType(info cTypeInfo) int64 {
+	word := int64(fc.c.target.PtrSize)
+	switch info.Kind {
+	case cDeclPointer:
+		return word
+	case cDeclArray:
+		return info.ArrayLen * word
+	default:
+		if info.IsVoid {
+			fc.errorf(fc.sig.File, 0, 0, "sizeof(void) is not supported")
+			return 1
+		}
+		return word
+	}
+}
+
+func (fc *funcCompiler) sizeofExpr(ex *expr) int64 {
+	if ex == nil {
+		return int64(fc.c.target.PtrSize)
+	}
+	word := int64(fc.c.target.PtrSize)
+	switch ex.kind {
+	case exprStringLit:
+		return int64(len(ex.strVal) + 1)
+	case exprVar:
+		if n, ok := fc.lookupLocalArrayLen(ex.name); ok {
+			return n * word
+		}
+		if n, ok := fc.lookupGlobalArrayLen(ex.name); ok {
+			return n * word
+		}
+		return word
+	case exprCast:
+		return fc.sizeofType(ex.typeInfo)
+	case exprCall:
+		sig, ok := fc.c.funcs[ex.name]
+		if ok && sig.RetCount == 0 {
+			fc.errorf(fc.sig.File, 0, 0, "sizeof applied to void expression")
+		}
+		return word
+	case exprUnary:
+		if ex.op == "*" {
+			return word
+		}
+		if ex.op == "&" {
+			return word
+		}
+		return word
+	case exprIndex:
+		return word
+	default:
+		return word
+	}
+}
+
+func (fc *funcCompiler) isNullPointerLiteral(ex *expr) bool {
+	return ex != nil && ex.kind == exprIntLit && ex.intVal == 0
+}
+
+func (fc *funcCompiler) checkCallArgs(sig *cFuncSig, call *expr) bool {
+	if sig == nil || call == nil {
+		return false
+	}
+	if len(call.args) != sig.ParamCount {
+		fc.errorf(fc.sig.File, 0, 0, "call to %q has %d arguments; expected %d", sig.Name, len(call.args), sig.ParamCount)
+		return false
+	}
+	ok := true
+	for i, arg := range call.args {
+		want := cDeclScalar
+		if i < len(sig.ParamKinds) {
+			want = sig.ParamKinds[i]
+		}
+		gotPtr := fc.exprIsPointer(arg)
+		if want == cDeclPointer {
+			if gotPtr || fc.isNullPointerLiteral(arg) {
+				continue
+			}
+			fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects pointer value", i+1, sig.Name)
+			ok = false
+			continue
+		}
+		if gotPtr {
+			fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects scalar value", i+1, sig.Name)
+			ok = false
+		}
+	}
+	return ok
 }
 
 func (fc *funcCompiler) emitExpr(ex *expr) {
@@ -1673,19 +1950,23 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		fc.emitIndexAddr(ex.left, ex.right)
 		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.c.target.PtrSize})
 	case exprCall:
-		for _, a := range ex.args {
-			fc.emitExpr(a)
-		}
 		sig, ok := fc.c.funcs[ex.name]
 		if !ok {
 			fc.errorf(fc.sig.File, 0, 0, "call to unknown function %q", ex.name)
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}
+		if !fc.checkCallArgs(sig, ex) {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return
+		}
+		for _, a := range ex.args {
+			fc.emitExpr(a)
+		}
 		if !sig.Defined {
 			if fc.c.target.Backend == "c" {
-				wrap := fc.c.ensureExternWrapper(sig.Name, len(ex.args), sig.RetCount)
-				fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: len(ex.args)})
+				wrap := fc.c.ensureExternWrapper(sig.Name, sig.ParamCount, sig.RetCount)
+				fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: sig.ParamCount})
 				if sig.RetCount == 0 {
 					// Preserve expression stack shape for continued lowering.
 					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -1696,10 +1977,18 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}
-		fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: len(ex.args)})
+		fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount})
 		if sig.RetCount == 0 {
 			// Preserve expression stack shape for continued lowering.
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		}
+	case exprCast:
+		fc.emitExpr(ex.left)
+	case exprSizeof:
+		if ex.left == nil {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: fc.sizeofType(ex.typeInfo)})
+		} else {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: fc.sizeofExpr(ex.left)})
 		}
 	default:
 		fc.errorf(fc.sig.File, 0, 0, "unsupported expression form")
@@ -1747,6 +2036,8 @@ const (
 	exprBinary
 	exprIndex
 	exprCall
+	exprCast
+	exprSizeof
 )
 
 type expr struct {
@@ -1760,6 +2051,8 @@ type expr struct {
 	left  *expr
 	right *expr
 	args  []*expr
+
+	typeInfo cTypeInfo
 }
 
 type cExprParser struct {
@@ -1804,6 +2097,57 @@ func (p *cExprParser) matchPunct(op string) bool {
 		return true
 	}
 	return false
+}
+
+func (p *cExprParser) matchIdent(name string) bool {
+	if p.atEnd() {
+		return false
+	}
+	t := p.peek()
+	if t.Kind == TokIdent && t.Text == name {
+		p.pos++
+		return true
+	}
+	return false
+}
+
+func (p *cExprParser) tryParseParenType(allowArray bool) (cTypeInfo, int, bool) {
+	if p.pos >= len(p.toks) {
+		return cTypeInfo{}, 0, false
+	}
+	start := p.pos
+	if p.toks[start].Kind != TokPunct || p.toks[start].Text != "(" {
+		return cTypeInfo{}, 0, false
+	}
+	depth := 0
+	end := -1
+	for i := start; i < len(p.toks); i++ {
+		t := p.toks[i]
+		if t.Kind != TokPunct {
+			continue
+		}
+		if t.Text == "(" {
+			depth++
+		} else if t.Text == ")" {
+			depth--
+			if depth == 0 {
+				end = i
+				break
+			}
+		}
+	}
+	if end < 0 {
+		return cTypeInfo{}, 0, false
+	}
+	inner := trimTokens(p.toks[start+1 : end])
+	info, err := parseCTypeInfo(inner)
+	if err != nil {
+		return cTypeInfo{}, 0, false
+	}
+	if !allowArray && info.Kind == cDeclArray {
+		return cTypeInfo{}, 0, false
+	}
+	return info, end - start + 1, true
 }
 
 func (p *cExprParser) parseExpression() *expr {
@@ -1976,6 +2320,25 @@ func (p *cExprParser) parseMultiplicative() *expr {
 }
 
 func (p *cExprParser) parseUnary() *expr {
+	if p.matchIdent("sizeof") {
+		if info, consumed, ok := p.tryParseParenType(true); ok {
+			p.pos += consumed
+			return &expr{kind: exprSizeof, typeInfo: info}
+		}
+		operand := p.parseUnary()
+		if operand == nil {
+			operand = &expr{kind: exprIntLit, intVal: 0}
+		}
+		return &expr{kind: exprSizeof, left: operand}
+	}
+	if info, consumed, ok := p.tryParseParenType(false); ok {
+		p.pos += consumed
+		rhs := p.parseUnary()
+		if rhs == nil {
+			rhs = &expr{kind: exprIntLit, intVal: 0}
+		}
+		return &expr{kind: exprCast, left: rhs, typeInfo: info}
+	}
 	if p.matchPunct("+") {
 		return &expr{kind: exprUnary, op: "+", left: p.parseUnary()}
 	}
