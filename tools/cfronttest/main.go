@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,35 @@ type testCase struct {
 	mode       string // lex, pp, or parse
 	inputPath  string
 	expectPath string
+}
+
+type skippedError struct {
+	reason string
+}
+
+func (e skippedError) Error() string {
+	return e.reason
+}
+
+func hostBinaryPath(base string) string {
+	if runtime.GOOS == "windows" && filepath.Ext(base) == "" {
+		return base + ".exe"
+	}
+	return base
+}
+
+func runCmdWithTimeout(cmd *exec.Cmd) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("timed out after 2s\n%s", string(out))
+	}
+	if err != nil {
+		return fmt.Errorf("%v\n%s", err, string(out))
+	}
+	return nil
 }
 
 func listCases(dir string, mode string) ([]testCase, error) {
@@ -110,55 +140,38 @@ func runCase(tc testCase) (string, error) {
 
 func runRunCase(tc testCase) (string, error) {
 	base := strings.TrimSuffix(filepath.Base(tc.inputPath), ".c")
-	outPath := filepath.Join("build", "cfront_run_"+base)
+	compilerPath := filepath.Join(".", hostBinaryPath(filepath.Join("build", "rtg")))
+	outStem := filepath.Join("build", "cfront_run_"+base)
 	useCBackend := strings.HasSuffix(base, "_cbackend")
 	if useCBackend {
-		srcPath := outPath + ".c"
-		binPath := outPath + ".bin"
+		srcPath := outStem + ".c"
+		binPath := hostBinaryPath(outStem + ".bin")
 		defer os.Remove(srcPath)
 		defer os.Remove(binPath)
 
-		runCmd := func(cmd *exec.Cmd) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
-			out, err := cmd.CombinedOutput()
-			if ctx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("timed out after 2s\n%s", string(out))
-			}
-			if err != nil {
-				return fmt.Errorf("%v\n%s", err, string(out))
-			}
-			return nil
-		}
-
-		if err := runCmd(exec.Command(filepath.Join(".", "build", "rtg"), "-x", "c99", "-T", "c/64", "-o", srcPath, tc.inputPath)); err != nil {
+		if err := runCmdWithTimeout(exec.Command(compilerPath, "-x", "c99", "-T", "c/64", "-o", srcPath, tc.inputPath)); err != nil {
 			return "", err
 		}
 		cc := os.Getenv("CC")
 		if cc == "" {
 			cc = "cc"
 		}
-		if err := runCmd(exec.Command(cc, "-x", "c", srcPath, "-o", binPath)); err != nil {
+		if _, err := exec.LookPath(cc); err != nil {
+			return "", skippedError{reason: fmt.Sprintf("skipping %s: C compiler %q not found in PATH", tc.inputPath, cc)}
+		}
+		if err := runCmdWithTimeout(exec.Command(cc, "-x", "c", srcPath, "-o", binPath)); err != nil {
 			return "", err
 		}
-		if err := runCmd(exec.Command(filepath.Join(".", binPath))); err != nil {
+		if err := runCmdWithTimeout(exec.Command(filepath.Join(".", binPath))); err != nil {
 			return "", err
 		}
 		return "", nil
 	}
 
+	outPath := hostBinaryPath(outStem)
 	defer os.Remove(outPath)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(".", "build", "rtg"), "-x", "c99", "-run", "-o", outPath, tc.inputPath)
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("timed out after 2s\n%s", string(out))
-	}
-	if err != nil {
-		return "", fmt.Errorf("%v\n%s", err, string(out))
+	if err := runCmdWithTimeout(exec.Command(compilerPath, "-x", "c99", "-run", "-o", outPath, tc.inputPath)); err != nil {
+		return "", err
 	}
 	return "", nil
 }
@@ -215,6 +228,10 @@ func main() {
 	for _, tc := range cases {
 		got, err := runCase(tc)
 		if err != nil {
+			if skip, ok := err.(skippedError); ok {
+				fmt.Printf("SKIP %s %s: %s\n", tc.mode, tc.inputPath, skip.reason)
+				continue
+			}
 			failed = true
 			fmt.Fprintf(os.Stderr, "FAIL %s %s: %v\n", tc.mode, tc.inputPath, err)
 			continue

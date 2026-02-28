@@ -111,6 +111,11 @@ jobs:
       - name: Fullcompiler suite (RTG backend)
         run: RTG_TARGET=${{ matrix.target }} ./build/build${{ matrix.suffix }} test-fullcompiler-rtg
 
+      - name: C frontend suite
+        env:
+          CC: ${{ matrix.cc }}
+        run: ./build/build${{ matrix.suffix }} test-c-frontend
+
       - name: C self-hosting (3-stage)
         if: matrix.suffix != '.exe'
         run: |
