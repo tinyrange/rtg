@@ -20,6 +20,7 @@ type cFuncSig struct {
 	RetCount   int
 	ParamCount int
 	ParamNames []string
+	ParamKinds []cDeclKind
 	Defined    bool
 	Body       *Node
 	File       string
@@ -55,6 +56,11 @@ const (
 	cDeclArray
 )
 
+type cLocalBinding struct {
+	Index int
+	Kind  cDeclKind
+}
+
 // CompileUnits lowers parsed C units to RTG IR.
 //
 // Current scope intentionally targets a small executable subset:
@@ -73,6 +79,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		},
 		funcs:        make(map[string]*cFuncSig),
 		globalIndex:  make(map[string]int),
+		globalKind:   make(map[string]cDeclKind),
 		nextLabelSeq: 1,
 	}
 
@@ -107,6 +114,7 @@ type compiler struct {
 	funcOrder []*cFuncSig
 
 	globalIndex map[string]int
+	globalKind  map[string]cDeclKind
 	globalInits []cGlobalInit
 
 	nextLabelSeq int
@@ -167,6 +175,7 @@ func (c *compiler) collectFunctionDef(file string, n *Node) {
 		prev.RetCount = sig.RetCount
 		prev.ParamCount = sig.ParamCount
 		prev.ParamNames = append([]string{}, sig.ParamNames...)
+		prev.ParamKinds = append([]cDeclKind{}, sig.ParamKinds...)
 		prev.Body = sig.Body
 		prev.File = file
 		prev.Line = n.Line
@@ -224,6 +233,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		irName := "c." + it.Name
 		c.irmod.Globals = append(c.irmod.Globals, ir.IRGlobal{Name: irName, Index: idx})
 		c.globalIndex[it.Name] = idx
+		c.globalKind[it.Name] = it.Kind
 		if it.Kind == cDeclArray {
 			if len(it.Init) > 0 {
 				c.errorf(file, n.Line, n.Col, "array initializers are not yet supported: %s", it.Name)
@@ -274,7 +284,7 @@ func (c *compiler) emitGlobalInit() {
 		c:      c,
 		sig:    &cFuncSig{Name: "c.init$globals", IRName: "c.init$globals", RetCount: 0},
 		fn:     f,
-		scopes: []map[string]int{{}},
+		scopes: []map[string]cLocalBinding{{}},
 	}
 	for _, g := range c.globalInits {
 		if g.Kind == cDeclArray {
@@ -300,14 +310,18 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		c:      c,
 		sig:    sig,
 		fn:     f,
-		scopes: []map[string]int{{}},
+		scopes: []map[string]cLocalBinding{{}},
 	}
 	for i, p := range sig.ParamNames {
 		name := p
 		if name == "" {
 			name = fmt.Sprintf("$p%d", i)
 		}
-		fc.addLocal(name, sig.File, sig.Line, sig.Col)
+		kind := cDeclScalar
+		if i < len(sig.ParamKinds) {
+			kind = sig.ParamKinds[i]
+		}
+		fc.addLocalKind(name, kind, sig.File, sig.Line, sig.Col)
 	}
 
 	fc.compileCompound(sig.Body, true)
@@ -520,6 +534,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	paramTokens := toks[lpar+1 : rpar]
 	paramTokens = trimTokens(paramTokens)
 	var paramNames []string
+	var paramKinds []cDeclKind
 	paramCount := 0
 	if len(paramTokens) > 0 {
 		parts := splitTopLevel(paramTokens, ",")
@@ -544,7 +559,13 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			if pname == "" {
 				pname = fmt.Sprintf("$p%d", i)
 			}
+			pkind := cDeclScalar
+			if containsPunct(p, "*") || containsPunct(p, "[") {
+				// In parameter lists, arrays decay to pointers.
+				pkind = cDeclPointer
+			}
 			paramNames = append(paramNames, pname)
+			paramKinds = append(paramKinds, pkind)
 			paramCount++
 		}
 	}
@@ -555,6 +576,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 		RetCount:   retCount,
 		ParamCount: paramCount,
 		ParamNames: paramNames,
+		ParamKinds: paramKinds,
 		Defined:    false,
 		File:       file,
 		Line:       line,
@@ -684,7 +706,7 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
 				// Handled by suffix parsing below.
 				continue
 			}
-			if (t.Text == "(" || t.Text == ")") && i >= namePos {
+			if t.Text == "(" && i >= namePos {
 				return nil, false, fmt.Errorf("complex declarators are not yet supported (%s)", name)
 			}
 		}
@@ -692,8 +714,12 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
 			kind = cDeclPointer
 		}
 
-		if namePos+1 < len(lhs) {
-			if lhs[namePos+1].Kind != TokPunct || lhs[namePos+1].Text != "[" {
+		suffixPos := namePos + 1
+		for suffixPos < len(lhs) && lhs[suffixPos].Kind == TokPunct && lhs[suffixPos].Text == ")" {
+			suffixPos++
+		}
+		if suffixPos < len(lhs) {
+			if lhs[suffixPos].Kind != TokPunct || lhs[suffixPos].Text != "[" {
 				return nil, false, fmt.Errorf("complex declarators are not yet supported (%s)", name)
 			}
 			if ptrDepth > 0 {
@@ -701,7 +727,7 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
 			}
 			closeIdx := -1
 			depth := 0
-			for i := namePos + 1; i < len(lhs); i++ {
+			for i := suffixPos; i < len(lhs); i++ {
 				if lhs[i].Kind != TokPunct {
 					continue
 				}
@@ -721,7 +747,7 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
 			if closeIdx != len(lhs)-1 {
 				return nil, false, fmt.Errorf("complex declarators are not yet supported (%s)", name)
 			}
-			n, err := parseArrayLength(lhs[namePos+2 : closeIdx])
+			n, err := parseArrayLength(lhs[suffixPos+1 : closeIdx])
 			if err != nil {
 				return nil, false, fmt.Errorf("invalid array bounds for %s: %v", name, err)
 			}
@@ -742,7 +768,7 @@ type funcCompiler struct {
 	sig *cFuncSig
 	fn  *ir.IRFunc
 
-	scopes []map[string]int
+	scopes []map[string]cLocalBinding
 
 	breakTargets    []int
 	continueTargets []int
@@ -757,7 +783,7 @@ func (fc *funcCompiler) emit(inst ir.Inst) {
 }
 
 func (fc *funcCompiler) pushScope() {
-	fc.scopes = append(fc.scopes, make(map[string]int))
+	fc.scopes = append(fc.scopes, make(map[string]cLocalBinding))
 }
 
 func (fc *funcCompiler) popScope() {
@@ -767,6 +793,10 @@ func (fc *funcCompiler) popScope() {
 }
 
 func (fc *funcCompiler) addLocal(name string, file string, line int, col int) int {
+	return fc.addLocalKind(name, cDeclScalar, file, line, col)
+}
+
+func (fc *funcCompiler) addLocalKind(name string, kind cDeclKind, file string, line int, col int) int {
 	if len(fc.scopes) == 0 {
 		fc.pushScope()
 	}
@@ -776,22 +806,46 @@ func (fc *funcCompiler) addLocal(name string, file string, line int, col int) in
 	}
 	idx := len(fc.fn.Locals)
 	fc.fn.Locals = append(fc.fn.Locals, ir.IRLocal{Name: name, Index: idx})
-	cur[name] = idx
+	cur[name] = cLocalBinding{Index: idx, Kind: kind}
 	return idx
 }
 
 func (fc *funcCompiler) lookupLocal(name string) (int, bool) {
+	b, ok := fc.lookupLocalBinding(name)
+	if !ok {
+		return 0, false
+	}
+	return b.Index, true
+}
+
+func (fc *funcCompiler) lookupLocalKind(name string) (cDeclKind, bool) {
+	b, ok := fc.lookupLocalBinding(name)
+	if !ok {
+		return cDeclScalar, false
+	}
+	return b.Kind, true
+}
+
+func (fc *funcCompiler) lookupLocalBinding(name string) (cLocalBinding, bool) {
 	for i := len(fc.scopes) - 1; i >= 0; i-- {
-		if idx, ok := fc.scopes[i][name]; ok {
-			return idx, true
+		if b, ok := fc.scopes[i][name]; ok {
+			return b, true
 		}
 	}
-	return 0, false
+	return cLocalBinding{}, false
 }
 
 func (fc *funcCompiler) lookupGlobal(name string) (int, bool) {
 	idx, ok := fc.c.globalIndex[name]
 	return idx, ok
+}
+
+func (fc *funcCompiler) lookupGlobalKind(name string) (cDeclKind, bool) {
+	kind, ok := fc.c.globalKind[name]
+	if !ok {
+		return cDeclScalar, false
+	}
+	return kind, true
 }
 
 func (fc *funcCompiler) compileCompound(n *Node, pushScope bool) {
@@ -965,7 +1019,7 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 		return
 	}
 	for _, it := range items {
-		idx := fc.addLocal(it.Name, fc.sig.File, n.Line, n.Col)
+		idx := fc.addLocalKind(it.Name, it.Kind, fc.sig.File, n.Line, n.Col)
 		if it.Kind == cDeclArray {
 			if len(it.Init) > 0 {
 				fc.errorf(fc.sig.File, n.Line, n.Col, "array initializers are not yet supported: %s", it.Name)
@@ -1143,7 +1197,7 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 		return
 	}
 	for _, it := range items {
-		idx := fc.addLocal(it.Name, file, n.Line, n.Col)
+		idx := fc.addLocalKind(it.Name, it.Kind, file, n.Line, n.Col)
 		if it.Kind == cDeclArray {
 			if len(it.Init) > 0 {
 				fc.errorf(file, n.Line, n.Col, "array initializers are not yet supported: %s", it.Name)
@@ -1257,6 +1311,68 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 	}
 }
 
+func (fc *funcCompiler) stepForKind(kind cDeclKind) int64 {
+	if kind == cDeclPointer || kind == cDeclArray {
+		return int64(fc.c.target.PtrSize)
+	}
+	return 1
+}
+
+func (fc *funcCompiler) variableKind(name string) cDeclKind {
+	if kind, ok := fc.lookupLocalKind(name); ok {
+		return kind
+	}
+	if kind, ok := fc.lookupGlobalKind(name); ok {
+		return kind
+	}
+	return cDeclScalar
+}
+
+func (fc *funcCompiler) exprIsPointer(ex *expr) bool {
+	if ex == nil {
+		return false
+	}
+	switch ex.kind {
+	case exprVar:
+		kind := fc.variableKind(ex.name)
+		return kind == cDeclPointer || kind == cDeclArray
+	case exprAssign:
+		return fc.exprIsPointer(ex.left)
+	case exprUnary:
+		switch ex.op {
+		case "&":
+			return true
+		case "*":
+			// The current subset models unary dereference as loading an int.
+			// Pointer-to-pointer types are parsed, but depth is not tracked yet.
+			return false
+		case "++", "--":
+			return fc.exprIsPointer(ex.left)
+		default:
+			return false
+		}
+	case exprPostfix:
+		if ex.op == "++" || ex.op == "--" {
+			return fc.exprIsPointer(ex.left)
+		}
+		return false
+	case exprBinary:
+		if ex.op == "+" {
+			lp := fc.exprIsPointer(ex.left)
+			rp := fc.exprIsPointer(ex.right)
+			return (lp && !rp) || (!lp && rp)
+		}
+		if ex.op == "-" {
+			lp := fc.exprIsPointer(ex.left)
+			rp := fc.exprIsPointer(ex.right)
+			return lp && !rp
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 func (fc *funcCompiler) emitExpr(ex *expr) {
 	if ex == nil {
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -1299,9 +1415,10 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				return
 			}
 			name := ex.left.name
+			step := fc.stepForKind(fc.variableKind(name))
 			if idx, ok := fc.lookupLocal(name); ok {
 				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
 				if ex.op == "++" {
 					fc.emit(ir.Inst{Op: ir.OP_ADD})
 				} else {
@@ -1313,7 +1430,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			}
 			if idx, ok := fc.lookupGlobal(name); ok {
 				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: idx})
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
 				if ex.op == "++" {
 					fc.emit(ir.Inst{Op: ir.OP_ADD})
 				} else {
@@ -1327,13 +1444,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}
-		fc.emitExpr(ex.left)
-		switch ex.op {
-		case "+":
-			// no-op
-		case "-":
-			fc.emit(ir.Inst{Op: ir.OP_NEG})
-		case "&":
+		if ex.op == "&" {
 			// &*x simplifies to x; otherwise take address of lvalue.
 			if ex.left != nil && ex.left.kind == exprUnary && ex.left.op == "*" {
 				fc.emitExpr(ex.left.left)
@@ -1343,6 +1454,14 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				fc.errorf(fc.sig.File, 0, 0, "cannot take address of expression")
 				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			}
+			break
+		}
+		fc.emitExpr(ex.left)
+		switch ex.op {
+		case "+":
+			// no-op
+		case "-":
+			fc.emit(ir.Inst{Op: ir.OP_NEG})
 		case "*":
 			fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.c.target.PtrSize})
 		case "!":
@@ -1379,7 +1498,8 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
 		}
 		fc.emit(ir.Inst{Op: ir.OP_DUP})
-		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+		step := fc.stepForKind(fc.variableKind(name))
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
 		if ex.op == "++" {
 			fc.emit(ir.Inst{Op: ir.OP_ADD})
 		} else {
@@ -1394,6 +1514,30 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		if ex.op == "&&" || ex.op == "||" {
 			fc.emitLogicalExpr(ex)
 			return
+		}
+		if ex.op == "+" || ex.op == "-" {
+			leftPtr := fc.exprIsPointer(ex.left)
+			rightPtr := fc.exprIsPointer(ex.right)
+			if leftPtr && !rightPtr {
+				fc.emitExpr(ex.left)
+				fc.emitExpr(ex.right)
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(fc.c.target.PtrSize)})
+				fc.emit(ir.Inst{Op: ir.OP_MUL})
+				if ex.op == "+" {
+					fc.emit(ir.Inst{Op: ir.OP_ADD})
+				} else {
+					fc.emit(ir.Inst{Op: ir.OP_SUB})
+				}
+				return
+			}
+			if ex.op == "+" && !leftPtr && rightPtr {
+				fc.emitExpr(ex.left)
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(fc.c.target.PtrSize)})
+				fc.emit(ir.Inst{Op: ir.OP_MUL})
+				fc.emitExpr(ex.right)
+				fc.emit(ir.Inst{Op: ir.OP_ADD})
+				return
+			}
 		}
 		fc.emitExpr(ex.left)
 		fc.emitExpr(ex.right)
