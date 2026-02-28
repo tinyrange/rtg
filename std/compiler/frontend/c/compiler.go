@@ -87,6 +87,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		globalIndex:  make(map[string]int),
 		globalKind:   make(map[string]cDeclKind),
 		intrinsics:   make(map[string]cIntrinsicWrapper),
+		externFns:    make(map[string]string),
 		nextLabelSeq: 1,
 	}
 
@@ -125,6 +126,7 @@ type compiler struct {
 	globalInits []cGlobalInit
 
 	intrinsics map[string]cIntrinsicWrapper
+	externFns  map[string]string
 
 	nextLabelSeq int
 }
@@ -158,6 +160,25 @@ func (c *compiler) ensureIntrinsicWrapper(name string, params int, retCount int)
 	f.Code = append(f.Code, ir.Inst{Op: ir.OP_RETURN, Arg: retCount})
 	c.irmod.Funcs = append(c.irmod.Funcs, f)
 	c.intrinsics[key] = cIntrinsicWrapper{IRName: irName, Params: params, RetCount: retCount}
+	return irName
+}
+
+func (c *compiler) ensureExternWrapper(name string, params int, retCount int) string {
+	key := fmt.Sprintf("%s|%d|%d", name, params, retCount)
+	if irName, ok := c.externFns[key]; ok {
+		return irName
+	}
+	irName := fmt.Sprintf("c.extern$%s$%d$%d", name, params, retCount)
+	intrinsic := fmt.Sprintf("c.extern.%s|%d|%d", name, params, retCount)
+	f := &ir.IRFunc{
+		Name:     irName,
+		Params:   params,
+		RetCount: retCount,
+	}
+	f.Code = append(f.Code, ir.Inst{Op: ir.OP_CALL_INTRINSIC, Name: intrinsic, Arg: params})
+	f.Code = append(f.Code, ir.Inst{Op: ir.OP_RETURN, Arg: retCount})
+	c.irmod.Funcs = append(c.irmod.Funcs, f)
+	c.externFns[key] = irName
 	return irName
 }
 
@@ -436,18 +457,27 @@ func hasTopLevelPunct(tokens []Token, punct string) bool {
 		}
 		switch t.Text {
 		case "(":
+			if punct == "(" && depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+				return true
+			}
 			depthParen++
 		case ")":
 			if depthParen > 0 {
 				depthParen--
 			}
 		case "[":
+			if punct == "[" && depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+				return true
+			}
 			depthBracket++
 		case "]":
 			if depthBracket > 0 {
 				depthBracket--
 			}
 		case "{":
+			if punct == "{" && depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+				return true
+			}
 			depthBrace++
 		case "}":
 			if depthBrace > 0 {
@@ -1653,7 +1683,16 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			return
 		}
 		if !sig.Defined {
-			fc.errorf(fc.sig.File, 0, 0, "calls to external function %q are not yet supported", ex.name)
+			if fc.c.target.Backend == "c" {
+				wrap := fc.c.ensureExternWrapper(sig.Name, len(ex.args), sig.RetCount)
+				fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: len(ex.args)})
+				if sig.RetCount == 0 {
+					// Preserve expression stack shape for continued lowering.
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				}
+				return
+			}
+			fc.errorf(fc.sig.File, 0, 0, "calls to external function %q are only supported with -T c/* targets", ex.name)
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}

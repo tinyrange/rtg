@@ -111,6 +111,43 @@ func runCase(tc testCase) (string, error) {
 func runRunCase(tc testCase) (string, error) {
 	base := strings.TrimSuffix(filepath.Base(tc.inputPath), ".c")
 	outPath := filepath.Join("build", "cfront_run_"+base)
+	useCBackend := strings.HasSuffix(base, "_cbackend")
+	if useCBackend {
+		srcPath := outPath + ".c"
+		binPath := outPath + ".bin"
+		defer os.Remove(srcPath)
+		defer os.Remove(binPath)
+
+		runCmd := func(cmd *exec.Cmd) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+			out, err := cmd.CombinedOutput()
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("timed out after 2s\n%s", string(out))
+			}
+			if err != nil {
+				return fmt.Errorf("%v\n%s", err, string(out))
+			}
+			return nil
+		}
+
+		if err := runCmd(exec.Command(filepath.Join(".", "build", "rtg"), "-x", "c99", "-T", "c/64", "-o", srcPath, tc.inputPath)); err != nil {
+			return "", err
+		}
+		cc := os.Getenv("CC")
+		if cc == "" {
+			cc = "cc"
+		}
+		if err := runCmd(exec.Command(cc, "-x", "c", srcPath, "-o", binPath)); err != nil {
+			return "", err
+		}
+		if err := runCmd(exec.Command(filepath.Join(".", binPath))); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
+
 	defer os.Remove(outPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
