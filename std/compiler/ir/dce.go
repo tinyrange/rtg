@@ -74,6 +74,11 @@ func EliminateDeadFunctions(irmod *IRModule) {
 	worklist = dceAddRoot("runtime.Makestring", funcIndex, reachable, worklist)
 	worklist = dceAddRoot("runtime.runtimePanic", funcIndex, reachable, worklist)
 
+	// Root set: callback functions (called by the OS, not by RTG code)
+	for name := range irmod.CallbackFuncs {
+		worklist = dceAddRoot(name, funcIndex, reachable, worklist)
+	}
+
 	neededIfaceMethods := make(map[string]bool)
 
 	for {
@@ -130,6 +135,12 @@ func EliminateDeadFunctions(irmod *IRModule) {
 							reachable["runtime.StringToBytes"] = true
 							worklist = append(worklist, "runtime.StringToBytes")
 						}
+					}
+				} else if inst.Op == OP_CONST_I64 && len(inst.Name) > 10 && inst.Name[0:10] == "$funcaddr$" {
+					refName := inst.Name[10:]
+					if !reachable[refName] {
+						reachable[refName] = true
+						worklist = append(worklist, refName)
 					}
 				} else if inst.Op == OP_IFACE_CALL {
 					methodName := dceMethodName(inst.Name)

@@ -95,7 +95,11 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 func (g *CodeGen) compileInst(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
-		g.CompileConstI64(inst.Val)
+		if len(inst.Name) > 10 && inst.Name[0:10] == "$funcaddr$" {
+			g.compileFuncAddr(inst.Name)
+		} else {
+			g.CompileConstI64(inst.Val)
+		}
 	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.CompileConstI64(1)
@@ -271,6 +275,24 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	default:
 		panic("ICE: unhandled ir.Opcode in compileInst")
 	}
+}
+
+// compileFuncAddr emits a movabs rax, imm64 with a fixup to be resolved
+// to the virtual address of the named function (or its callback thunk).
+func (g *CodeGen) compileFuncAddr(marker string) {
+	g.prepareForClobber(REG_RAX)
+	funcName := marker[10:] // strip "$funcaddr$"
+	// If it's a callback function, reference the thunk wrapper instead
+	thunkName := funcName
+	if g.irmod != nil && g.irmod.CallbackFuncs != nil && g.irmod.CallbackFuncs[funcName] {
+		thunkName = "$callback_thunk$" + funcName
+	}
+	g.EmitMovRegImm64(REG_RAX, 0) // placeholder imm64
+	g.callFixups = append(g.callFixups, CallFixup{
+		CodeOffset: len(g.Code) - 8,
+		Target:     "$funcaddr$" + thunkName,
+	})
+	g.OpPush(REG_RAX)
 }
 
 // === Constant loading ===

@@ -144,6 +144,10 @@ func (g *CodeGen) IRModule() *ir.IRModule {
 	return g.irmod
 }
 
+func (g *CodeGen) SetFuncOffset(name string, offset int) {
+	g.funcOffsets[name] = offset
+}
+
 func (g *CodeGen) GetFuncOffset(name string) int {
 	return g.funcOffsets[name]
 }
@@ -164,6 +168,13 @@ func (g *CodeGen) CallFixups() []CallFixup {
 func (g *CodeGen) AddCallFixup(target string) {
 	g.callFixups = append(g.callFixups, CallFixup{
 		CodeOffset: len(g.Code),
+		Target:     target,
+	})
+}
+
+func (g *CodeGen) AddCallFixupAt(target string, offset int) {
+	g.callFixups = append(g.callFixups, CallFixup{
+		CodeOffset: offset,
 		Target:     target,
 	})
 }

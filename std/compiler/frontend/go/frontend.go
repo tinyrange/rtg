@@ -1136,6 +1136,10 @@ func collectCallableQualNames(mod *Module, methodsOnly bool, profileOnly bool) [
 	return out
 }
 
+func isCallbackDirective(val string) bool {
+	return strings.TrimSpace(val) == "callback"
+}
+
 func parseAssembleDirective(val string) (string, bool) {
 	prefix := "assemble "
 	trimmed := strings.TrimSpace(val)

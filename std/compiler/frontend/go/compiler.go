@@ -83,6 +83,7 @@ type Compiler struct {
 	funcIsInternal       map[string]bool     // function name → true if declared via //rtg:internal
 	funcIsLinkStatic     map[string]bool     // function name → true if declared via //rtg:linkstatic
 	funcIsProfiled       map[string]bool     // function/method name → true when profiling is enabled (methods/functions default-on unless //rtg:noprofile)
+	funcIsCallback       map[string]bool     // function name → true if declared via //rtg:callback
 	funcIsZeroCall       map[string]bool     // function/method name → true if calls must be inlined at callsites
 	typeIsZeroCall       map[string]bool     // qualified type name → true if methods default to zerocall
 	comptimeFuncs        map[string]bool     // function/method name → true if marked //rtg:comptime
@@ -169,6 +170,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		funcIsInternal:       make(map[string]bool),
 		funcIsLinkStatic:     make(map[string]bool),
 		funcIsProfiled:       make(map[string]bool),
+		funcIsCallback:       make(map[string]bool),
 		funcIsZeroCall:       make(map[string]bool),
 		typeIsZeroCall:       make(map[string]bool),
 		comptimeFuncs:        make(map[string]bool),
@@ -1585,6 +1587,9 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				if _, ok := parseLinkStaticDirective(d); ok {
 					c.funcIsLinkStatic[qname] = true
 				}
+				if isCallbackDirective(d) {
+					c.funcIsCallback[qname] = true
+				}
 			}
 			if !isZeroCallFunc && fn.X != nil && fn.X.Type != nil {
 				recvBase := receiverBaseTypeName(nodeTypeName(fn.X.Type))
@@ -2313,6 +2318,7 @@ func (c *Compiler) compileTopDecl(node *Node) {
 			var linkspec LinkStaticDirective
 			hasLinkStatic := false
 			assembleArch := ""
+			hasCallback := false
 			for _, d := range directives {
 				in := parseInternalDirective(d)
 				if in != "" {
@@ -2326,6 +2332,9 @@ func (c *Compiler) compileTopDecl(node *Node) {
 				if arch, ok := parseAssembleDirective(d); ok {
 					assembleArch = arch
 				}
+				if isCallbackDirective(d) {
+					hasCallback = true
+				}
 			}
 			if intern != "" {
 				c.compileIntrinsicFunc(base, intern)
@@ -2335,6 +2344,13 @@ func (c *Compiler) compileTopDecl(node *Node) {
 				c.compileAssembleFunc(base, assembleArch)
 			} else {
 				c.compileFunc(base)
+			}
+			if hasCallback {
+				qname := c.curPkg.QualName(base.Name)
+				if c.irmod.CallbackFuncs == nil {
+					c.irmod.CallbackFuncs = make(map[string]bool)
+				}
+				c.irmod.CallbackFuncs[qname] = true
 			}
 		}
 	case NVarDecl:
@@ -6675,7 +6691,7 @@ func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedNa
 }
 
 func runtimeMemBuiltinReturnCount(name string) (int, bool) {
-	if name == "runtime.ReadPtr" {
+	if name == "runtime.ReadPtr" || name == "runtime.Funcptr" {
 		return 1, true
 	}
 	if name == "runtime.WritePtr" || name == "runtime.WriteByte" {
@@ -6700,6 +6716,13 @@ func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool
 		c.compileExpr(args[1])
 		c.compileExpr(args[0])
 		c.emit(ir.Inst{Op: ir.OP_STORE, Arg: 1})
+		return true
+	}
+	if callName == "runtime.Funcptr" && len(args) == 1 {
+		if args[0].Kind == NIdent {
+			funcName := c.curPkg.QualName(args[0].Name)
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0, Name: "$funcaddr$" + funcName})
+		}
 		return true
 	}
 	return false
@@ -8070,7 +8093,7 @@ func parseMapTypeName(typeName string) (string, string, bool) {
 }
 
 func isRuntimeMemBuiltinName(name string) bool {
-	return name == "ReadPtr" || name == "WritePtr" || name == "WriteByte"
+	return name == "ReadPtr" || name == "WritePtr" || name == "WriteByte" || name == "Funcptr"
 }
 
 func (c *Compiler) resolveCallName(node *Node) string {

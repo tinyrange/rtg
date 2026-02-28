@@ -182,4 +182,5 @@ type IRModule struct {
 	MethodTable     map[string]string   // "pkg.Type.Method" → IR func name
 	IfaceMethods    map[string][]string // interface name → method names
 	IfaceMethodRets map[string]int      // iface+"\x00"+method → return count
+	CallbackFuncs   map[string]bool     // function name → true if Win32 callback
 }
