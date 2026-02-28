@@ -96,7 +96,11 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
-		g.compileConstI32(inst.Val)
+		if len(inst.Name) > 10 && inst.Name[0:10] == "$funcaddr$" {
+			g.compileFuncAddr_i386(inst.Name)
+		} else {
+			g.compileConstI32(inst.Val)
+		}
 	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.compileConstI32(1)
@@ -270,6 +274,24 @@ func (g *CodeGen) compileConstI32(val int64) {
 	} else {
 		g.emitMovRegImm32(REG32_EAX, v32)
 	}
+	g.opPush(REG32_EAX)
+}
+
+// compileFuncAddr_i386 emits a mov eax, imm32 with a fixup to be resolved
+// to the virtual address of the named function (or its callback thunk).
+func (g *CodeGen) compileFuncAddr_i386(marker string) {
+	g.prepareForClobber(REG32_EAX)
+	funcName := marker[10:] // strip "$funcaddr$"
+	// If it's a callback function, reference the thunk wrapper instead
+	thunkName := funcName
+	if g.IRMod != nil && g.IRMod.CallbackFuncs != nil && g.IRMod.CallbackFuncs[funcName] {
+		thunkName = "$callback_thunk$" + funcName
+	}
+	g.emitMovRegImm32(REG32_EAX, 0) // placeholder imm32
+	g.CallFixups = append(g.CallFixups, CallFixup{
+		CodeOffset: len(g.Code) - 4,
+		Target:     "$funcaddr$" + thunkName,
+	})
 	g.opPush(REG32_EAX)
 }
 
