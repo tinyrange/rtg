@@ -1,5 +1,5 @@
 // WASI shim for RTG2 playground
-// Provides VirtualFS and all 14 wasi_snapshot_preview1 imports
+// Provides VirtualFS and wasi_snapshot_preview1 imports used by RTG
 
 export class WASIExit extends Error {
   constructor(code) {
@@ -170,12 +170,14 @@ function normalizePath(p) {
 // WASI error codes
 const ESUCCESS = 0;
 const EBADF = 8;
+const EINVAL = 28;
 const ENOENT = 44;
 const EEXIST = 20;
 
 export function createWASI(fs, args, callbacks = {}) {
   const { onStdout, onStderr } = callbacks;
   let memory = null;
+  const perfOriginNs = BigInt(Math.floor(performance.timeOrigin * 1e6));
 
   function setMemory(mem) {
     memory = mem;
@@ -197,6 +199,11 @@ export function createWASI(fs, args, callbacks = {}) {
     const bytes = new TextEncoder().encode(str);
     new Uint8Array(memory.buffer).set(bytes, ptr);
     return bytes.length;
+  }
+
+  function writeU64(ptr, value) {
+    const view = getMemView();
+    view.setBigUint64(ptr, value, true);
   }
 
   // Encode args as null-terminated C strings
@@ -302,6 +309,23 @@ export function createWASI(fs, args, callbacks = {}) {
 
     proc_exit(code) {
       throw new WASIExit(code);
+    },
+
+    // clock_time_get(clock_id, precision, time_ptr) -> errno
+    clock_time_get(clockID, _precision, timePtr) {
+      let nowNs;
+      if (clockID === 0) {
+        // CLOCK_REALTIME
+        nowNs = BigInt(Date.now()) * 1000000n;
+      } else if (clockID === 1) {
+        // CLOCK_MONOTONIC
+        nowNs = perfOriginNs + BigInt(Math.floor(performance.now() * 1e6));
+      } else {
+        return EINVAL;
+      }
+
+      writeU64(timePtr, nowNs);
+      return ESUCCESS;
     },
 
     path_create_directory(dirfd, pathPtr, pathLen) {
