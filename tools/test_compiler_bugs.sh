@@ -2,8 +2,8 @@
 set -euo pipefail
 
 rtg=${RTG_COMPILER:-./build/rtg}
-manifest=${1:-tests/compiler_bugs/manifest.txt}
-harness_file=tests/compiler_bugs/_exit_harness.inc
+manifest=${1:-tests/go/compiler_bugs/manifest.txt}
+harness_file=tests/go/compiler_bugs/_exit_harness.inc
 
 if [[ ! -x "$rtg" ]]; then
   echo "missing compiler: $rtg" >&2

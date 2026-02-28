@@ -843,13 +843,13 @@ func (e *Executor) handleFullCompiler(args []string) error {
 		}
 	}
 
-	tests, err := listGoFilesInDir("tests")
+	tests, err := listGoFilesInDir("tests/go")
 	if err != nil {
 		return err
 	}
 	sort.Strings(tests)
 	if len(tests) == 0 {
-		return fmt.Errorf("no tests found under tests/*.go")
+		return fmt.Errorf("no tests found under tests/go/*.go")
 	}
 
 	rtgCompiler, err := detectRTGCompilerPath()

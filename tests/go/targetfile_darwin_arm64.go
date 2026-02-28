@@ -12,7 +12,7 @@ func binfmtProvider() string { return "builtin.macho64" }
 func darwinArm64Spec() target.Spec {
 	return target.Spec{
 		Triple:      "darwin/arm64",
-		PackagePath: "targetfile:tests/targetfile_darwin_arm64.go",
+		PackagePath: "targetfile:tests/go/targetfile_darwin_arm64.go",
 		Defaults: target.Defaults{
 			GOOS:     "darwin",
 			GOARCH:   "arm64",

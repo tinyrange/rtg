@@ -107,7 +107,7 @@ func emitStartWin386(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 		}
 	}
 
-	g.EmitCallPlaceholder(entryFunc)
+	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 
 	pushImm32(g, 0)
 	g.EmitCallIAT("ExitProcess")

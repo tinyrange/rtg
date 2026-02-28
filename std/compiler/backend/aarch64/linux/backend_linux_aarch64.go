@@ -86,8 +86,8 @@ func emitStartArm64Linux(g *aarch64.CodeGen, irmod *ir.IRModule, entryFunc strin
 		}
 	}
 
-	// Call entry function.
-	g.EmitCallPlaceholderArm64(entryFunc)
+	// Call entrypoint
+	g.EmitCallPlaceholderArm64(ir.EntryFuncName(irmod))
 
 	// exit_group(0): X8=94, X0=0
 	g.EmitMovZ(aarch64.REG_X0, 0, 0)

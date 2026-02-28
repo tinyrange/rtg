@@ -23,13 +23,13 @@ if [[ -n "${RTG_DOS_TESTS:-}" ]]; then
   read -r -a TESTS <<<"$RTG_DOS_TESTS"
 else
   TESTS=(
-    tests/func_basic.go
-    tests/ops_arithmetic.go
-    tests/flow_if.go
-    tests/func_recursion.go
-    tests/func_closure.go
-    tests/iface_typeassert.go
-    tests/dos_cases/method_file_io.go
+    tests/go/func_basic.go
+    tests/go/ops_arithmetic.go
+    tests/go/flow_if.go
+    tests/go/func_recursion.go
+    tests/go/func_closure.go
+    tests/go/iface_typeassert.go
+    tests/go/dos_cases/method_file_io.go
   )
 fi
 

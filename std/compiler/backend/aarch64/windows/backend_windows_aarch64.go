@@ -82,7 +82,7 @@ func emitStartArm64Windows(g *aarch64.CodeGen, irmod *ir.IRModule, entryFunc str
 		}
 	}
 
-	g.EmitCallPlaceholderArm64(entryFunc)
+	g.EmitCallPlaceholderArm64(ir.EntryFuncName(irmod))
 
 	g.EmitMovZ(aarch64.REG_X0, 0, 0)
 	emitCallIATArm64(g, "ExitProcess")

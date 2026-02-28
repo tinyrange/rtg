@@ -3,7 +3,7 @@ PASS
 
 == 02_unnamed_receiver_rejected target=linux/amd64 ==
 FAIL
-parse errors in tests/compiler_bugs_repros/02_unnamed_receiver_rejected.go:
+parse errors in tests/go/compiler_bugs_repros/02_unnamed_receiver_rejected.go:
   expected type, got ) at line 5
   expected ), got IDENT(M) at line 5 col 10
   expected IDENT, got ( at line 5 col 11

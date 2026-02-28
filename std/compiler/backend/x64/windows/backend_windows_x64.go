@@ -105,8 +105,8 @@ func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 		}
 	}
 
-	// Call entry function.
-	g.EmitCallPlaceholder(entryFunc)
+	// Call entrypoint
+	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 
 	// ExitProcess(0)
 	g.XorRR(core.REG_RCX, core.REG_RCX) // uExitCode = 0

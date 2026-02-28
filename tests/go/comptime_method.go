@@ -17,7 +17,7 @@ type ComptimeStruct struct {
 
 var comptimeBuilder = ComptimeBuilder{
 	Base: 7,
-	Path: "tests/comptime_fixture.txt",
+	Path: "tests/go/comptime_fixture.txt",
 }
 
 //rtg:comptime
@@ -83,7 +83,7 @@ func main() {
 		panic("struct")
 	}
 
-	comptimeBuilder.Path = "tests/comptime_fixture_missing.txt"
+	comptimeBuilder.Path = "tests/go/comptime_fixture_missing.txt"
 	fileText := comptimeBuilder.ReadLocalFile()
 	expected := "compile-time fixture data\n"
 	altExpected := "compile-time fixture data\r\n"

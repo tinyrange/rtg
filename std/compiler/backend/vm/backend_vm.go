@@ -299,11 +299,11 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		}
 	}
 
-	// Run entry function.
-	entryFuncName := common.EntryFuncName(target)
-	mainFunc, ok := vm.funcs[entryFuncName]
+	// Run entrypoint
+	entryName := ir.EntryFuncName(irmod)
+	mainFunc, ok := vm.funcs[entryName]
 	if !ok {
-		return fmt.Errorf("%s not found", entryFuncName)
+		return fmt.Errorf("entrypoint %q not found", entryName)
 	}
 	vm.execFunc(mainFunc)
 

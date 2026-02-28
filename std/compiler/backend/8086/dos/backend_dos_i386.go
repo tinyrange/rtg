@@ -258,7 +258,7 @@ func (g *CodeGen) buildEXE() ([]byte, error) {
 // - Initialize DS/ES = CS + data segment relative paragraph.
 // - Set operand stack DI near top of segment.
 // - Call init funcs.
-// - Call main.main.
+// - Call program entrypoint.
 // - Exit via INT 21h AH=4Ch.
 func (g *CodeGen) emitEXEStart(irmod *ir.IRModule) {
 	g.emitBytes(0x8C, 0xC8) // mov ax, cs
@@ -276,7 +276,7 @@ func (g *CodeGen) emitEXEStart(irmod *ir.IRModule) {
 			g.emitCallPlaceholder(f.Name)
 		}
 	}
-	g.emitCallPlaceholder(common.EntryFuncName(g.target))
+	g.emitCallPlaceholder(ir.EntryFuncName(irmod))
 
 	g.emitMovImm16(REG16_AX, 0x4C00) // AH=4Ch, AL=0
 	g.emitBytes(0xCD, 0x21)          // int 21h

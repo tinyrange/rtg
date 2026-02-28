@@ -23,7 +23,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	// Startup:
 	//   initialize software operand stack pointer (r6)
 	//   call init funcs
-	//   call main.main
+	//   call program entrypoint
 	//   exit via runtime.SysExit(0)
 	g.EmitMovsImm(0, 0)
 	g.LoadImm32(6, 0x283F0000)
@@ -32,7 +32,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			g.EmitCallPlaceholder(f.Name)
 		}
 	}
-	g.EmitCallPlaceholder(common.EntryFuncName(target))
+	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 	g.EmitMovsImm(0, 0x18)
 	g.LoadImm32(1, 0x00020026)
 	g.EmitBkpt(0xAB)

@@ -3,7 +3,7 @@
 Command used for the matrix:
 
 ```bash
-for f in tests/compiler_bugs_repros/*.go; do
+for f in tests/go/compiler_bugs_repros/*.go; do
   ./build/rtg -T <target> -o /tmp/bugrepro_out/<name> "$f"
 done
 ```

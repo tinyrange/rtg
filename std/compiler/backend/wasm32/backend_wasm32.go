@@ -727,8 +727,9 @@ func (g *WasmGen) compileStart() []byte {
 		}
 	}
 
-	// Call entry function.
-	if idx, ok := g.funcMap[g.entryFn]; ok {
+	// Call entrypoint
+	entryName := ir.EntryFuncName(g.irmod)
+	if idx, ok := g.funcMap[entryName]; ok {
 		g.w.call(uint32(idx))
 	}
 

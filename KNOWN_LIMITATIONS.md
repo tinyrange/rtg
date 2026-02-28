@@ -20,7 +20,7 @@ The following language/runtime areas are intentionally out of scope for current 
 
 ## Repro Files
 Out-of-scope repro programs are kept in:
-- `/Users/joshua/dev/projects/rtg/tests/limitations/`
+- `/Users/joshua/dev/projects/rtg/tests/go/limitations/`
 
 ## Deferred Repros
 Deferred examples are kept in the limitations folder and excluded from the strict

@@ -1,0 +1,1096 @@
+package frontend
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Macro is a C preprocessor macro definition.
+type Macro struct {
+	Name         string
+	FunctionLike bool
+	Params       []string
+	Variadic     bool
+	Body         []Token
+}
+
+// Options configures preprocessing behavior.
+type Options struct {
+	IncludePaths       []string
+	SystemIncludePaths []string
+	Defines            []string // NAME or NAME=VALUE
+	Undefs             []string
+	MaxIncludeDepth    int
+}
+
+// Preprocessor preprocesses token streams.
+type Preprocessor struct {
+	includePaths       []string
+	systemIncludePaths []string
+	macros             map[string]*Macro
+	once               map[string]bool
+	included           map[string]bool
+	activeFiles        map[string]bool
+	maxIncludeDepth    int
+}
+
+func NewPreprocessor(opts Options) *Preprocessor {
+	maxDepth := opts.MaxIncludeDepth
+	if maxDepth <= 0 {
+		maxDepth = 64
+	}
+	p := &Preprocessor{
+		includePaths:       append([]string{}, opts.IncludePaths...),
+		systemIncludePaths: append([]string{}, opts.SystemIncludePaths...),
+		macros:             make(map[string]*Macro),
+		once:               make(map[string]bool),
+		included:           make(map[string]bool),
+		activeFiles:        make(map[string]bool),
+		maxIncludeDepth:    maxDepth,
+	}
+	for _, d := range opts.Defines {
+		p.applyCommandLineDefine(d)
+	}
+	for _, u := range opts.Undefs {
+		p.macros[u] = nil
+	}
+	return p
+}
+
+func cloneTokens(in []Token) []Token {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Token, len(in))
+	copy(out, in)
+	return out
+}
+
+func copyDisabled(disabled map[string]bool, name string) map[string]bool {
+	out := make(map[string]bool)
+	for k, v := range disabled {
+		if v {
+			out[k] = true
+		}
+	}
+	out[name] = true
+	return out
+}
+
+func tokenizeDefineBody(spec string) []Token {
+	lx := NewLexer("<define>", spec)
+	toks, err := lx.Tokenize()
+	if err != nil {
+		return nil
+	}
+	if len(toks) > 0 && toks[len(toks)-1].Kind == TokEOF {
+		toks = toks[:len(toks)-1]
+	}
+	var out []Token
+	for _, t := range toks {
+		if t.Kind != TokNewline {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (p *Preprocessor) applyCommandLineDefine(spec string) {
+	name := spec
+	value := "1"
+	if eq := strings.Index(spec, "="); eq >= 0 {
+		name = spec[:eq]
+		value = spec[eq+1:]
+	}
+	if name == "" {
+		return
+	}
+	p.macros[name] = &Macro{Name: name, Body: tokenizeDefineBody(value)}
+}
+
+func fileExists(path string) bool {
+	_, err := os.ReadFile(path)
+	return err == nil
+}
+
+func (p *Preprocessor) resolveInclude(include string, quoted bool, currentFile string) (string, error) {
+	if isAbsPath(include) {
+		if fileExists(include) {
+			return absPath(include)
+		}
+		return "", fmt.Errorf("include not found: %s", include)
+	}
+	var search []string
+	if quoted && currentFile != "" {
+		search = append(search, filepath.Dir(currentFile))
+	}
+	search = append(search, p.includePaths...)
+	search = append(search, p.systemIncludePaths...)
+	for _, dir := range search {
+		if dir == "" {
+			continue
+		}
+		candidate := cleanPath(filepath.Join(dir, include))
+		if fileExists(candidate) {
+			abs, err := absPath(candidate)
+			if err != nil {
+				return "", err
+			}
+			return abs, nil
+		}
+	}
+	if fileExists(include) {
+		return absPath(include)
+	}
+	return "", fmt.Errorf("include not found: %s", include)
+}
+
+func (p *Preprocessor) processPath(path string, depth int) ([]Token, error) {
+	if depth > p.maxIncludeDepth {
+		return nil, fmt.Errorf("preprocessor: include depth exceeded (%d)", p.maxIncludeDepth)
+	}
+	abs, err := absPath(path)
+	if err != nil {
+		return nil, err
+	}
+	if p.once[abs] && p.included[abs] {
+		return nil, nil
+	}
+	if p.activeFiles[abs] {
+		return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", abs)
+	}
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	p.activeFiles[abs] = true
+	p.included[abs] = true
+	out, procErr := p.processSource(abs, string(content), depth)
+	p.activeFiles[abs] = false
+	return out, procErr
+}
+
+// ProcessFile preprocesses a C source file and emits tokens.
+func (p *Preprocessor) ProcessFile(path string) ([]Token, error) {
+	toks, err := p.processPath(path, 0)
+	if err != nil {
+		return nil, err
+	}
+	toks = append(toks, Token{Kind: TokEOF, File: path})
+	return toks, nil
+}
+
+// ProcessSource preprocesses source content with the given logical filename.
+func (p *Preprocessor) ProcessSource(file string, src string) ([]Token, error) {
+	toks, err := p.processSource(file, src, 0)
+	if err != nil {
+		return nil, err
+	}
+	toks = append(toks, Token{Kind: TokEOF, File: file})
+	return toks, nil
+}
+
+type condFrame struct {
+	parentActive bool
+	active       bool
+	branchTaken  bool
+	sawElse      bool
+}
+
+type condState struct {
+	frames []condFrame
+	active bool
+}
+
+func (p *Preprocessor) processSource(file string, src string, depth int) ([]Token, error) {
+	lx := NewLexer(file, src)
+	toks, err := lx.Tokenize()
+	if err != nil {
+		return nil, err
+	}
+	if len(toks) > 0 && toks[len(toks)-1].Kind == TokEOF {
+		toks = toks[:len(toks)-1]
+	}
+
+	state := condState{active: true}
+	var out []Token
+	i := 0
+	for i < len(toks) {
+		lineStart := i
+		for i < len(toks) && toks[i].Kind != TokNewline {
+			i++
+		}
+		line := toks[lineStart:i]
+		hasNL := i < len(toks) && toks[i].Kind == TokNewline
+		var nlTok Token
+		if hasNL {
+			nlTok = toks[i]
+		}
+
+		if len(line) > 0 && line[0].Kind == TokPunct && line[0].Text == "#" {
+			emitted, err := p.handleDirective(file, line, &state, depth)
+			if err != nil {
+				return nil, err
+			}
+			if len(emitted) > 0 {
+				out = append(out, emitted...)
+			}
+		} else if state.active {
+			if len(line) > 0 {
+				expanded, err := p.expandTokens(file, line, nil, 0)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, expanded...)
+			}
+			if hasNL {
+				out = append(out, nlTok)
+			}
+		}
+
+		if hasNL {
+			i++
+		}
+	}
+
+	if len(state.frames) > 0 {
+		return nil, fmt.Errorf("%s: unterminated conditional directive", file)
+	}
+
+	return out, nil
+}
+
+func isDirectiveName(line []Token, name string) bool {
+	return len(line) >= 2 && line[1].Kind == TokIdent && line[1].Text == name
+}
+
+func lineToText(toks []Token) string {
+	if len(toks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, t := range toks {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(t.Text)
+	}
+	return b.String()
+}
+
+func (p *Preprocessor) handleDirective(file string, line []Token, state *condState, depth int) ([]Token, error) {
+	if len(line) < 2 || line[1].Kind != TokIdent {
+		return nil, nil
+	}
+	name := line[1].Text
+	args := line[2:]
+
+	switch name {
+	case "if":
+		cond, err := p.evalIfExpression(args)
+		if err != nil {
+			return nil, err
+		}
+		parent := state.active
+		f := condFrame{parentActive: parent, active: parent && cond, branchTaken: parent && cond}
+		state.frames = append(state.frames, f)
+		state.active = f.active
+		return nil, nil
+	case "ifdef":
+		cond := len(args) > 0 && args[0].Kind == TokIdent && p.isDefined(args[0].Text)
+		parent := state.active
+		f := condFrame{parentActive: parent, active: parent && cond, branchTaken: parent && cond}
+		state.frames = append(state.frames, f)
+		state.active = f.active
+		return nil, nil
+	case "ifndef":
+		cond := len(args) > 0 && args[0].Kind == TokIdent && !p.isDefined(args[0].Text)
+		parent := state.active
+		f := condFrame{parentActive: parent, active: parent && cond, branchTaken: parent && cond}
+		state.frames = append(state.frames, f)
+		state.active = f.active
+		return nil, nil
+	case "elif":
+		if len(state.frames) == 0 {
+			return nil, fmt.Errorf("%s: #elif without #if", file)
+		}
+		idx := len(state.frames) - 1
+		f := state.frames[idx]
+		if f.sawElse {
+			return nil, fmt.Errorf("%s: #elif after #else", file)
+		}
+		cond, err := p.evalIfExpression(args)
+		if err != nil {
+			return nil, err
+		}
+		if !f.parentActive {
+			f.active = false
+		} else if f.branchTaken {
+			f.active = false
+		} else {
+			f.active = cond
+			if cond {
+				f.branchTaken = true
+			}
+		}
+		state.frames[idx] = f
+		state.active = f.active
+		return nil, nil
+	case "else":
+		if len(state.frames) == 0 {
+			return nil, fmt.Errorf("%s: #else without #if", file)
+		}
+		idx := len(state.frames) - 1
+		f := state.frames[idx]
+		if f.sawElse {
+			return nil, fmt.Errorf("%s: duplicate #else", file)
+		}
+		f.sawElse = true
+		if !f.parentActive || f.branchTaken {
+			f.active = false
+		} else {
+			f.active = true
+			f.branchTaken = true
+		}
+		state.frames[idx] = f
+		state.active = f.active
+		return nil, nil
+	case "endif":
+		if len(state.frames) == 0 {
+			return nil, fmt.Errorf("%s: #endif without #if", file)
+		}
+		state.frames = state.frames[:len(state.frames)-1]
+		if len(state.frames) == 0 {
+			state.active = true
+		} else {
+			top := state.frames[len(state.frames)-1]
+			state.active = top.active
+		}
+		return nil, nil
+	}
+
+	if state.active == false {
+		return nil, nil
+	}
+
+	switch name {
+	case "define":
+		return nil, p.handleDefine(file, args)
+	case "undef":
+		return nil, p.handleUndef(file, args)
+	case "include":
+		return p.handleInclude(file, args, depth+1)
+	case "pragma":
+		if len(args) > 0 && args[0].Kind == TokIdent && args[0].Text == "once" {
+			abs, err := absPath(file)
+			if err != nil {
+				return nil, err
+			}
+			p.once[abs] = true
+		}
+		return nil, nil
+	case "error":
+		return nil, fmt.Errorf("%s: #error %s", file, lineToText(args))
+	default:
+		return nil, nil
+	}
+}
+
+func (p *Preprocessor) handleDefine(file string, args []Token) error {
+	if len(args) == 0 || args[0].Kind != TokIdent {
+		return fmt.Errorf("%s: invalid #define", file)
+	}
+	m := &Macro{Name: args[0].Text}
+	i := 1
+	if i < len(args) && args[i].Kind == TokPunct && args[i].Text == "(" && !args[i].LeadingSpace {
+		m.FunctionLike = true
+		i++
+		if i < len(args) && args[i].Kind == TokPunct && args[i].Text == ")" {
+			i++
+		} else {
+			for {
+				if i >= len(args) {
+					return fmt.Errorf("%s: unterminated macro parameter list", file)
+				}
+				if args[i].Kind == TokPunct && args[i].Text == "..." {
+					m.Variadic = true
+					m.Params = append(m.Params, "__VA_ARGS__")
+					i++
+					if i >= len(args) || args[i].Kind != TokPunct || args[i].Text != ")" {
+						return fmt.Errorf("%s: variadic macro must end with )", file)
+					}
+					i++
+					break
+				}
+				if args[i].Kind != TokIdent {
+					return fmt.Errorf("%s: invalid macro parameter", file)
+				}
+				m.Params = append(m.Params, args[i].Text)
+				i++
+				if i >= len(args) {
+					return fmt.Errorf("%s: unterminated macro parameter list", file)
+				}
+				if args[i].Kind == TokPunct && args[i].Text == ")" {
+					i++
+					break
+				}
+				if args[i].Kind == TokPunct && args[i].Text == "," {
+					i++
+					continue
+				}
+				return fmt.Errorf("%s: expected ',' or ')' in macro parameter list", file)
+			}
+		}
+	}
+	if i < len(args) {
+		m.Body = cloneTokens(args[i:])
+	}
+	p.macros[m.Name] = m
+	return nil
+}
+
+func (p *Preprocessor) handleUndef(file string, args []Token) error {
+	if len(args) == 0 || args[0].Kind != TokIdent {
+		return fmt.Errorf("%s: invalid #undef", file)
+	}
+	p.macros[args[0].Text] = nil
+	return nil
+}
+
+func decodeStringToken(tok Token) (string, error) {
+	if len(tok.Text) < 2 {
+		return "", fmt.Errorf("invalid string token %q", tok.Text)
+	}
+	q := tok.Text
+	if q[0] == 'L' || q[0] == 'u' || q[0] == 'U' {
+		q = q[1:]
+	} else if len(q) >= 2 && q[0] == 'u' && q[1] == '8' {
+		q = q[2:]
+	}
+	if len(q) < 2 || q[0] != '"' {
+		return "", fmt.Errorf("invalid include string %q", tok.Text)
+	}
+	v, err := unquoteCString(q)
+	if err != nil {
+		return "", err
+	}
+	return v, nil
+}
+
+func (p *Preprocessor) handleInclude(file string, args []Token, depth int) ([]Token, error) {
+	expanded, err := p.expandTokens(file, args, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(expanded) == 0 {
+		return nil, fmt.Errorf("%s: empty #include", file)
+	}
+
+	include := ""
+	quoted := false
+	if expanded[0].Kind == TokString {
+		v, err := decodeStringToken(expanded[0])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %v", file, err)
+		}
+		include = v
+		quoted = true
+	} else if expanded[0].Kind == TokPunct && expanded[0].Text == "<" {
+		j := 1
+		var b strings.Builder
+		for j < len(expanded) {
+			if expanded[j].Kind == TokPunct && expanded[j].Text == ">" {
+				break
+			}
+			b.WriteString(expanded[j].Text)
+			j++
+		}
+		if j >= len(expanded) {
+			return nil, fmt.Errorf("%s: unterminated #include <...>", file)
+		}
+		include = b.String()
+		quoted = false
+	} else {
+		return nil, fmt.Errorf("%s: invalid #include operand", file)
+	}
+
+	resolved, err := p.resolveInclude(include, quoted, file)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v", file, err)
+	}
+	return p.processPath(resolved, depth)
+}
+
+func (p *Preprocessor) isDefined(name string) bool {
+	m, ok := p.macros[name]
+	return ok && m != nil
+}
+
+func (p *Preprocessor) expandTokens(file string, in []Token, disabled map[string]bool, depth int) ([]Token, error) {
+	if depth > 128 {
+		return nil, fmt.Errorf("preprocessor: macro expansion depth exceeded")
+	}
+	var out []Token
+	for i := 0; i < len(in); i++ {
+		tok := in[i]
+		if tok.Kind == TokIdent {
+			if tok.Text == "__LINE__" {
+				out = append(out, Token{Kind: TokNumber, Text: decimalItoa(tok.Line), File: file, Line: tok.Line, Col: tok.Col})
+				continue
+			}
+			if tok.Text == "__FILE__" {
+				out = append(out, Token{Kind: TokString, Text: quoteTokenText(file), File: file, Line: tok.Line, Col: tok.Col})
+				continue
+			}
+			m, ok := p.macros[tok.Text]
+			if ok && m != nil && !disabled[tok.Text] {
+				if m.FunctionLike {
+					if i+1 >= len(in) || in[i+1].Kind != TokPunct || in[i+1].Text != "(" {
+						out = append(out, tok)
+						continue
+					}
+					args, end, ok := parseMacroArgs(in, i+1)
+					if !ok {
+						return nil, fmt.Errorf("%s:%d:%d: unterminated macro call", file, tok.Line, tok.Col)
+					}
+					repl, err := p.applyMacro(file, tok, m, args)
+					if err != nil {
+						return nil, err
+					}
+					nextDisabled := copyDisabled(disabled, tok.Text)
+					repl, err = p.expandTokens(file, repl, nextDisabled, depth+1)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, repl...)
+					i = end
+					continue
+				}
+				nextDisabled := copyDisabled(disabled, tok.Text)
+				repl, err := p.expandTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, repl...)
+				continue
+			}
+		}
+		out = append(out, tok)
+	}
+	return out, nil
+}
+
+func parseMacroArgs(tokens []Token, openParen int) ([][]Token, int, bool) {
+	if openParen >= len(tokens) || tokens[openParen].Kind != TokPunct || tokens[openParen].Text != "(" {
+		return nil, 0, false
+	}
+	depth := 0
+	j := openParen + 1
+	var args [][]Token
+	var cur []Token
+	sawAny := false
+	for j < len(tokens) {
+		t := tokens[j]
+		if t.Kind == TokPunct && t.Text == "(" {
+			depth++
+			cur = append(cur, t)
+			sawAny = true
+			j++
+			continue
+		}
+		if t.Kind == TokPunct && t.Text == ")" {
+			if depth == 0 {
+				if sawAny || len(args) > 0 {
+					args = append(args, cur)
+				}
+				return args, j, true
+			}
+			depth--
+			cur = append(cur, t)
+			sawAny = true
+			j++
+			continue
+		}
+		if t.Kind == TokPunct && t.Text == "," && depth == 0 {
+			args = append(args, cur)
+			cur = nil
+			sawAny = true
+			j++
+			continue
+		}
+		cur = append(cur, t)
+		sawAny = true
+		j++
+	}
+	return nil, 0, false
+}
+
+func stringifyTokens(tokens []Token) string {
+	if len(tokens) == 0 {
+		return "\"\""
+	}
+	var b strings.Builder
+	for i, t := range tokens {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(t.Text)
+	}
+	return quoteTokenText(b.String())
+}
+
+func (p *Preprocessor) applyMacro(file string, callTok Token, m *Macro, args [][]Token) ([]Token, error) {
+	paramMap := make(map[string][]Token)
+	if m.FunctionLike {
+		if !m.Variadic {
+			for i, name := range m.Params {
+				if i < len(args) {
+					paramMap[name] = cloneTokens(args[i])
+				} else {
+					paramMap[name] = nil
+				}
+			}
+		} else {
+			fixed := len(m.Params) - 1
+			if fixed < 0 {
+				fixed = 0
+			}
+			for i := 0; i < fixed; i++ {
+				name := m.Params[i]
+				if i < len(args) {
+					paramMap[name] = cloneTokens(args[i])
+				} else {
+					paramMap[name] = nil
+				}
+			}
+			var varg []Token
+			for i := fixed; i < len(args); i++ {
+				if i > fixed {
+					varg = append(varg, Token{Kind: TokPunct, Text: ",", File: file, Line: callTok.Line, Col: callTok.Col})
+				}
+				varg = append(varg, cloneTokens(args[i])...)
+			}
+			paramMap["__VA_ARGS__"] = varg
+		}
+	}
+
+	var out []Token
+	for i := 0; i < len(m.Body); i++ {
+		t := m.Body[i]
+		if t.Kind == TokPunct && t.Text == "#" && i+1 < len(m.Body) {
+			next := m.Body[i+1]
+			if next.Kind == TokIdent {
+				if arg, ok := paramMap[next.Text]; ok {
+					out = append(out, Token{Kind: TokString, Text: stringifyTokens(arg), File: file, Line: callTok.Line, Col: callTok.Col})
+					i++
+					continue
+				}
+			}
+		}
+		if t.Kind == TokPunct && t.Text == "##" {
+			if len(out) == 0 || i+1 >= len(m.Body) {
+				continue
+			}
+			right := []Token{m.Body[i+1]}
+			if m.Body[i+1].Kind == TokIdent {
+				if arg, ok := paramMap[m.Body[i+1].Text]; ok {
+					right = cloneTokens(arg)
+				}
+			}
+			if len(right) == 0 {
+				i++
+				continue
+			}
+			merged := out[len(out)-1]
+			merged.Text = merged.Text + right[0].Text
+			out[len(out)-1] = merged
+			if len(right) > 1 {
+				out = append(out, right[1:]...)
+			}
+			i++
+			continue
+		}
+		if t.Kind == TokIdent {
+			if arg, ok := paramMap[t.Text]; ok {
+				out = append(out, cloneTokens(arg)...)
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+func parseIntConstant(text string) (int64, error) {
+	s := text
+	for len(s) > 0 {
+		c := s[len(s)-1]
+		if c == 'u' || c == 'U' || c == 'l' || c == 'L' {
+			s = s[:len(s)-1]
+			continue
+		}
+		break
+	}
+	if s == "" {
+		return 0, fmt.Errorf("invalid integer constant %q", text)
+	}
+	base := 10
+	start := 0
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		base = 16
+		start = 2
+	} else if len(s) > 1 && s[0] == '0' {
+		base = 8
+		start = 1
+	}
+	if start >= len(s) {
+		return 0, nil
+	}
+	u, err := parseUintBase(s[start:], base, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(u), nil
+}
+
+type exprParser struct {
+	tokens []Token
+	pos    int
+	pp     *Preprocessor
+}
+
+func (e *exprParser) atEnd() bool {
+	return e.pos >= len(e.tokens)
+}
+
+func (e *exprParser) peek() Token {
+	if e.atEnd() {
+		return Token{Kind: TokEOF}
+	}
+	return e.tokens[e.pos]
+}
+
+func (e *exprParser) advance() Token {
+	t := e.peek()
+	if !e.atEnd() {
+		e.pos++
+	}
+	return t
+}
+
+func (e *exprParser) matchPunct(op string) bool {
+	if e.atEnd() {
+		return false
+	}
+	t := e.tokens[e.pos]
+	if t.Kind == TokPunct && t.Text == op {
+		e.pos++
+		return true
+	}
+	return false
+}
+
+func (e *exprParser) parsePrimary() (int64, error) {
+	if e.matchPunct("(") {
+		v, err := e.parseOr()
+		if err != nil {
+			return 0, err
+		}
+		if !e.matchPunct(")") {
+			return 0, fmt.Errorf("unterminated parenthesized expression")
+		}
+		return v, nil
+	}
+	t := e.peek()
+	if t.Kind == TokNumber {
+		e.advance()
+		v, err := parseIntConstant(t.Text)
+		if err != nil {
+			return 0, err
+		}
+		return v, nil
+	}
+	if t.Kind == TokIdent {
+		e.advance()
+		if m, ok := e.pp.macros[t.Text]; ok && m != nil && !m.FunctionLike && len(m.Body) == 1 && m.Body[0].Kind == TokNumber {
+			v, err := parseIntConstant(m.Body[0].Text)
+			if err == nil {
+				return v, nil
+			}
+		}
+		return 0, nil
+	}
+	return 0, fmt.Errorf("unexpected token in #if expression: %s", t.String())
+}
+
+func (e *exprParser) parseUnary() (int64, error) {
+	if e.matchPunct("!") {
+		v, err := e.parseUnary()
+		if err != nil {
+			return 0, err
+		}
+		if v == 0 {
+			return 1, nil
+		}
+		return 0, nil
+	}
+	if e.matchPunct("+") {
+		return e.parseUnary()
+	}
+	if e.matchPunct("-") {
+		v, err := e.parseUnary()
+		if err != nil {
+			return 0, err
+		}
+		return -v, nil
+	}
+	if e.matchPunct("~") {
+		v, err := e.parseUnary()
+		if err != nil {
+			return 0, err
+		}
+		return ^v, nil
+	}
+	if !e.atEnd() && e.peek().Kind == TokIdent && e.peek().Text == "defined" {
+		e.advance()
+		if e.matchPunct("(") {
+			if e.atEnd() || e.peek().Kind != TokIdent {
+				return 0, fmt.Errorf("defined() expects identifier")
+			}
+			name := e.advance().Text
+			if !e.matchPunct(")") {
+				return 0, fmt.Errorf("defined() missing closing )")
+			}
+			if e.pp.isDefined(name) {
+				return 1, nil
+			}
+			return 0, nil
+		}
+		if e.atEnd() || e.peek().Kind != TokIdent {
+			return 0, fmt.Errorf("defined expects identifier")
+		}
+		name := e.advance().Text
+		if e.pp.isDefined(name) {
+			return 1, nil
+		}
+		return 0, nil
+	}
+	return e.parsePrimary()
+}
+
+func (e *exprParser) parseMul() (int64, error) {
+	v, err := e.parseUnary()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if e.matchPunct("*") {
+			r, err := e.parseUnary()
+			if err != nil {
+				return 0, err
+			}
+			v = v * r
+			continue
+		}
+		if e.matchPunct("/") {
+			r, err := e.parseUnary()
+			if err != nil {
+				return 0, err
+			}
+			if r == 0 {
+				return 0, fmt.Errorf("division by zero in #if expression")
+			}
+			v = v / r
+			continue
+		}
+		if e.matchPunct("%") {
+			r, err := e.parseUnary()
+			if err != nil {
+				return 0, err
+			}
+			if r == 0 {
+				return 0, fmt.Errorf("modulo by zero in #if expression")
+			}
+			v = v % r
+			continue
+		}
+		break
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseAdd() (int64, error) {
+	v, err := e.parseMul()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if e.matchPunct("+") {
+			r, err := e.parseMul()
+			if err != nil {
+				return 0, err
+			}
+			v = v + r
+			continue
+		}
+		if e.matchPunct("-") {
+			r, err := e.parseMul()
+			if err != nil {
+				return 0, err
+			}
+			v = v - r
+			continue
+		}
+		break
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseRel() (int64, error) {
+	v, err := e.parseAdd()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if e.matchPunct("<") {
+			r, err := e.parseAdd()
+			if err != nil {
+				return 0, err
+			}
+			if v < r {
+				v = 1
+			} else {
+				v = 0
+			}
+			continue
+		}
+		if e.matchPunct(">") {
+			r, err := e.parseAdd()
+			if err != nil {
+				return 0, err
+			}
+			if v > r {
+				v = 1
+			} else {
+				v = 0
+			}
+			continue
+		}
+		if e.matchPunct("<=") {
+			r, err := e.parseAdd()
+			if err != nil {
+				return 0, err
+			}
+			if v <= r {
+				v = 1
+			} else {
+				v = 0
+			}
+			continue
+		}
+		if e.matchPunct(">=") {
+			r, err := e.parseAdd()
+			if err != nil {
+				return 0, err
+			}
+			if v >= r {
+				v = 1
+			} else {
+				v = 0
+			}
+			continue
+		}
+		break
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseEq() (int64, error) {
+	v, err := e.parseRel()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if e.matchPunct("==") {
+			r, err := e.parseRel()
+			if err != nil {
+				return 0, err
+			}
+			if v == r {
+				v = 1
+			} else {
+				v = 0
+			}
+			continue
+		}
+		if e.matchPunct("!=") {
+			r, err := e.parseRel()
+			if err != nil {
+				return 0, err
+			}
+			if v != r {
+				v = 1
+			} else {
+				v = 0
+			}
+			continue
+		}
+		break
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseAnd() (int64, error) {
+	v, err := e.parseEq()
+	if err != nil {
+		return 0, err
+	}
+	for e.matchPunct("&&") {
+		r, err := e.parseEq()
+		if err != nil {
+			return 0, err
+		}
+		if v != 0 && r != 0 {
+			v = 1
+		} else {
+			v = 0
+		}
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseOr() (int64, error) {
+	v, err := e.parseAnd()
+	if err != nil {
+		return 0, err
+	}
+	for e.matchPunct("||") {
+		r, err := e.parseAnd()
+		if err != nil {
+			return 0, err
+		}
+		if v != 0 || r != 0 {
+			v = 1
+		} else {
+			v = 0
+		}
+	}
+	return v, nil
+}
+
+func (p *Preprocessor) evalIfExpression(tokens []Token) (bool, error) {
+	if len(tokens) == 0 {
+		return false, nil
+	}
+	e := &exprParser{tokens: tokens, pp: p}
+	v, err := e.parseOr()
+	if err != nil {
+		return false, err
+	}
+	if !e.atEnd() {
+		return false, fmt.Errorf("trailing tokens in #if expression")
+	}
+	return v != 0, nil
+}

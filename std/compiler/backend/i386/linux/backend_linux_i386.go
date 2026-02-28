@@ -13,7 +13,7 @@ func EmitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	//   mmap2(NULL, 1MB, PROT_RW, MAP_PRIV|MAP_ANON, 0, 0) via int 0x80
 	//   edi = eax + 1MB (operand stack top, grows down)
 	//   call init funcs
-	//   call main.main
+	//   call program entrypoint
 	//   exit(0)
 
 	// i386 syscall ABI: int 0x80
@@ -46,8 +46,8 @@ func EmitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 		}
 	}
 
-	// Call entry function.
-	g.EmitCallPlaceholder(entryFunc)
+	// Call entrypoint
+	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 
 	// exit(0): mov eax, 252 (SYS_EXIT_GROUP); xor ebx, ebx; int 0x80
 	g.XorRR32(core.REG32_EBX, core.REG32_EBX)

@@ -17,7 +17,7 @@ import (
 func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// _start:
 	//   mmap 1MB for operand stack → R15
-	//   call main.main
+	//   call program entrypoint
 	//   mov rdi, 0    ; exit code
 	//   mov rax, 231  ; SYS_EXIT_GROUP
 	//   syscall
@@ -50,8 +50,8 @@ func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 		}
 	}
 
-	// Call entry function.
-	g.EmitCallPlaceholder(entryFunc)
+	// Call entrypoint
+	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 
 	// exit(0)
 	g.XorRR(core.REG_RDI, core.REG_RDI) // exit code 0

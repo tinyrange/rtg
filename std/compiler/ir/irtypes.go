@@ -214,6 +214,7 @@ type IRGlobal struct {
 
 // IRModule holds all compiled IR.
 type IRModule struct {
+	EntryFunc       string
 	Funcs           []*IRFunc
 	Globals         []IRGlobal
 	Types           []*TypeInfo

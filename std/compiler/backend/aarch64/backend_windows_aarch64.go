@@ -113,8 +113,8 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule, entryFunc string) {
 
 	emitDebugMarkerArm64(g, 'C')
 
-	// Call entry function.
-	g.EmitCallPlaceholderArm64(entryFunc)
+	// Call entrypoint
+	g.EmitCallPlaceholderArm64(ir.EntryFuncName(irmod))
 
 	emitDebugMarkerArm64(g, 'D')
 

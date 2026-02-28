@@ -99,7 +99,7 @@ func emitBuiltinAArch64MachoStart(g *aarch64.CodeGen, irmod *ir.IRModule, abi bu
 			g.EmitCallPlaceholderArm64(f.Name)
 		}
 	}
-	g.EmitCallPlaceholderArm64(entryFunc)
+	g.EmitCallPlaceholderArm64(ir.EntryFuncName(irmod))
 
 	g.EmitMovZ(aarch64.REG_X0, uint16(abi.ExitCode), 0)
 	g.EmitCallGOT(abi.ExitSymbol)
