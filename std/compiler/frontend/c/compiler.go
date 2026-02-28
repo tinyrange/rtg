@@ -56,6 +56,12 @@ const (
 	cDeclArray
 )
 
+type cIntrinsicWrapper struct {
+	IRName   string
+	Params   int
+	RetCount int
+}
+
 type cLocalBinding struct {
 	Index int
 	Kind  cDeclKind
@@ -80,6 +86,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		funcs:        make(map[string]*cFuncSig),
 		globalIndex:  make(map[string]int),
 		globalKind:   make(map[string]cDeclKind),
+		intrinsics:   make(map[string]cIntrinsicWrapper),
 		nextLabelSeq: 1,
 	}
 
@@ -117,6 +124,8 @@ type compiler struct {
 	globalKind  map[string]cDeclKind
 	globalInits []cGlobalInit
 
+	intrinsics map[string]cIntrinsicWrapper
+
 	nextLabelSeq int
 }
 
@@ -132,6 +141,52 @@ func (c *compiler) nextLabel() int {
 	v := c.nextLabelSeq
 	c.nextLabelSeq++
 	return v
+}
+
+func (c *compiler) ensureIntrinsicWrapper(name string, params int, retCount int) string {
+	key := fmt.Sprintf("%s|%d|%d", name, params, retCount)
+	if w, ok := c.intrinsics[key]; ok {
+		return w.IRName
+	}
+	irName := fmt.Sprintf("c.intrinsic$%s$%d$%d", name, params, retCount)
+	f := &ir.IRFunc{
+		Name:     irName,
+		Params:   params,
+		RetCount: retCount,
+	}
+	f.Code = append(f.Code, ir.Inst{Op: ir.OP_CALL_INTRINSIC, Name: name, Arg: params})
+	f.Code = append(f.Code, ir.Inst{Op: ir.OP_RETURN, Arg: retCount})
+	c.irmod.Funcs = append(c.irmod.Funcs, f)
+	c.intrinsics[key] = cIntrinsicWrapper{IRName: irName, Params: params, RetCount: retCount}
+	return irName
+}
+
+func encodeIRStringLiteral(raw string) string {
+	var out []byte
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		switch ch {
+		case '\\':
+			out = append(out, '\\', '\\')
+		case '"':
+			out = append(out, '\\', '"')
+		case '\n':
+			out = append(out, '\\', 'n')
+		case '\r':
+			out = append(out, '\\', 'r')
+		case '\t':
+			out = append(out, '\\', 't')
+		case 0:
+			out = append(out, '\\', '0')
+		default:
+			if ch < 32 || ch >= 127 {
+				out = append(out, '\\', 'x', common.HexDigit(ch>>4), common.HexDigit(ch&0x0f))
+			} else {
+				out = append(out, ch)
+			}
+		}
+	}
+	return string(out)
 }
 
 func (c *compiler) collectTopLevel() {
@@ -1333,6 +1388,8 @@ func (fc *funcCompiler) exprIsPointer(ex *expr) bool {
 		return false
 	}
 	switch ex.kind {
+	case exprStringLit:
+		return true
 	case exprVar:
 		kind := fc.variableKind(ex.name)
 		return kind == cDeclPointer || kind == cDeclArray
@@ -1381,6 +1438,11 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 	switch ex.kind {
 	case exprIntLit:
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: ex.intVal})
+	case exprStringLit:
+		// C string literals are NUL-terminated arrays that decay to pointers.
+		fc.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeIRStringLiteral(ex.strVal + "\x00")})
+		stringPtr := fc.c.ensureIntrinsicWrapper("Stringptr", 1, 1)
+		fc.emit(ir.Inst{Op: ir.OP_CALL, Name: stringPtr, Arg: 1})
 	case exprVar:
 		if idx, ok := fc.lookupLocal(ex.name); ok {
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
@@ -1638,6 +1700,7 @@ type exprKind int
 
 const (
 	exprIntLit exprKind = iota
+	exprStringLit
 	exprVar
 	exprAssign
 	exprUnary
@@ -1652,6 +1715,7 @@ type expr struct {
 	op   string
 
 	intVal int64
+	strVal string
 	name   string
 
 	left  *expr
@@ -1976,6 +2040,26 @@ func (p *cExprParser) parsePrimary() *expr {
 			v = 0
 		}
 		return &expr{kind: exprIntLit, intVal: v}
+	case TokString:
+		s, err := decodeStringToken(t)
+		if err != nil {
+			p.errorf("invalid string literal %q: %v", t.Text, err)
+			s = ""
+		}
+		for !p.atEnd() {
+			next := p.peek()
+			if next.Kind != TokString {
+				break
+			}
+			t2 := p.advance()
+			part, err := decodeStringToken(t2)
+			if err != nil {
+				p.errorf("invalid string literal %q: %v", t2.Text, err)
+				continue
+			}
+			s += part
+		}
+		return &expr{kind: exprStringLit, strVal: s}
 	case TokIdent:
 		return &expr{kind: exprVar, name: t.Text}
 	case TokPunct:

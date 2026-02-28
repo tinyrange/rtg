@@ -13,4 +13,4 @@ This package currently provides:
 - Parse-only frontend (`Parser`) for translation units/statements.
 - A limited C99-to-IR lowering pass (`CompileUnits`) suitable for simple executable programs.
 
-Current lowering scope is intentionally small: integer-centric functions, local/global declarations (including simple `int *p` pointers and fixed-size `int a[N]` arrays), arithmetic/comparisons, direct function calls, and core control flow (`if`, `while`, `do/while`, `for`, `switch/case/default`, `break`, `continue`, `return`).
+Current lowering scope is intentionally small: integer-centric functions, local/global declarations (including simple `int *p` pointers and fixed-size `int a[N]` arrays), string literal pointer decay (`"abc"`), arithmetic/comparisons, direct function calls, and core control flow (`if`, `while`, `do/while`, `for`, `switch/case/default`, `break`, `continue`, `return`).
