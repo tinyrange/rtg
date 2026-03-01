@@ -131,6 +131,54 @@ var heapChunk int = 65536
 
 var heapChunkMax int = 1048576
 
+const (
+	// OptMapStrEqualPtrLoop replaces Makeslice-based string compares in map keys
+	// with raw pointer-byte compares.
+	OptMapStrEqualPtrLoop = 1 << iota
+	// OptMapSetReverseScan searches map entries from newest to oldest in MapSet.
+	OptMapSetReverseScan
+	// OptMapGetReverseScan searches map entries from newest to oldest in MapGet.
+	OptMapGetReverseScan
+	// OptMapSetLastHitCache enables a tiny last-hit cache for MapSet updates.
+	OptMapSetLastHitCache
+	// OptMapGetLastHitCache enables a tiny last-hit cache for MapGet lookups.
+	OptMapGetLastHitCache
+	// OptMapInitCap32 increases initial map capacity from 8 to 32 entries.
+	OptMapInitCap32
+	// OptMapGrowX4 grows maps by 4x instead of 2x when capacity is exhausted.
+	OptMapGrowX4
+	// OptMapBidirScan uses bidirectional map scans (both ends toward center).
+	OptMapBidirScan
+	// OptStringConcatEmptyFastPath avoids alloc when one concat operand is empty.
+	OptStringConcatEmptyFastPath
+	// OptStringConcatSmallInlineCopy uses inline byte copy for tiny concats.
+	OptStringConcatSmallInlineCopy
+)
+
+var optExperimentsMask int
+
+var mapSetCacheHdr uintptr
+var mapSetCacheKey uintptr
+var mapSetCacheLen uintptr
+var mapSetCacheIdx uintptr
+
+var mapGetCacheHdr uintptr
+var mapGetCacheKey uintptr
+var mapGetCacheLen uintptr
+var mapGetCacheIdx uintptr
+
+// SetOptExperimentsMask configures runtime map/string experiment flags.
+func SetOptExperimentsMask(mask int) {
+	if mask < 0 {
+		mask = 0
+	}
+	optExperimentsMask = mask
+}
+
+func optEnabled(bit int) bool {
+	return (optExperimentsMask & bit) != 0
+}
+
 // Alloc allocates size bytes via mmap, using a bump allocator over
 // growth-sized regions to avoid per-allocation syscall overhead while
 // keeping startup memory lower.
@@ -168,6 +216,9 @@ func Alloc(size int) uintptr {
 		heapEnd = ptr + uintptr(chunk)
 	}
 	arenaRecordAlloc(size, mmapChunk)
+	if allocDebugEnabled {
+		allocDebugRecord(size, mmapChunk)
+	}
 
 	result := heapPtr
 	heapPtr = heapPtr + uintptr(size)
@@ -398,16 +449,39 @@ func StringSlice(s string, low int, high int) string {
 func StringConcat(a string, b string) string {
 	alen := len(a)
 	blen := len(b)
+	if optEnabled(OptStringConcatEmptyFastPath) {
+		if alen == 0 {
+			return b
+		}
+		if blen == 0 {
+			return a
+		}
+	}
 	total := alen + blen
 	if total == 0 {
 		return Makestring(0, 0)
 	}
 	ptr := Alloc(total)
-	if alen > 0 {
-		Memcopy(ptr, Stringptr(a), alen)
-	}
-	if blen > 0 {
-		Memcopy(ptr+uintptr(alen), Stringptr(b), blen)
+	if optEnabled(OptStringConcatSmallInlineCopy) && total <= 32 {
+		aptr := Stringptr(a)
+		bptr := Stringptr(b)
+		i := 0
+		for i < alen {
+			WriteByte(ptr+uintptr(i), byte(ReadPtr(aptr+uintptr(i))))
+			i = i + 1
+		}
+		j := 0
+		for j < blen {
+			WriteByte(ptr+uintptr(alen+j), byte(ReadPtr(bptr+uintptr(j))))
+			j = j + 1
+		}
+	} else {
+		if alen > 0 {
+			Memcopy(ptr, Stringptr(a), alen)
+		}
+		if blen > 0 {
+			Memcopy(ptr+uintptr(alen), Stringptr(b), blen)
+		}
 	}
 	return Makestring(ptr, total)
 }
@@ -702,6 +776,16 @@ func mapStrEqual(a uintptr, b uintptr) bool {
 	}
 	aptr := ReadPtr(a)
 	bptr := ReadPtr(b)
+	if optEnabled(OptMapStrEqualPtrLoop) {
+		i := 0
+		for i < alen {
+			if byte(ReadPtr(aptr+uintptr(i))) != byte(ReadPtr(bptr+uintptr(i))) {
+				return false
+			}
+			i = i + 1
+		}
+		return true
+	}
 	ab := Makeslice(aptr, alen, alen)
 	bb := Makeslice(bptr, blen, blen)
 	j := 0
@@ -714,13 +798,116 @@ func mapStrEqual(a uintptr, b uintptr) bool {
 	return true
 }
 
+func mapKeyEqual(keyKind int, lhs uintptr, rhs uintptr) bool {
+	if keyKind == 1 {
+		return mapStrEqual(lhs, rhs)
+	}
+	return lhs == rhs
+}
+
+func mapSetCacheLookup(hdr uintptr, key uintptr, mlen int, keyKind int, data uintptr) (int, bool) {
+	if mapSetCacheHdr != hdr || mapSetCacheKey != key || mapSetCacheLen != uintptr(mlen) {
+		return 0, false
+	}
+	idx := int(mapSetCacheIdx)
+	if idx < 0 || idx >= mlen {
+		return 0, false
+	}
+	entryAddr := data + uintptr(idx*MapEntrySize)
+	if !mapKeyEqual(keyKind, ReadPtr(entryAddr), key) {
+		return 0, false
+	}
+	return idx, true
+}
+
+func mapSetCacheStore(hdr uintptr, key uintptr, mlen int, idx int) {
+	mapSetCacheHdr = hdr
+	mapSetCacheKey = key
+	mapSetCacheLen = uintptr(mlen)
+	mapSetCacheIdx = uintptr(idx)
+}
+
+func mapGetCacheLookup(hdr uintptr, key uintptr, mlen int, keyKind int, data uintptr) (int, bool) {
+	if mapGetCacheHdr != hdr || mapGetCacheKey != key || mapGetCacheLen != uintptr(mlen) {
+		return 0, false
+	}
+	idx := int(mapGetCacheIdx)
+	if idx < 0 || idx >= mlen {
+		return 0, false
+	}
+	entryAddr := data + uintptr(idx*MapEntrySize)
+	if !mapKeyEqual(keyKind, ReadPtr(entryAddr), key) {
+		return 0, false
+	}
+	return idx, true
+}
+
+func mapGetCacheStore(hdr uintptr, key uintptr, mlen int, idx int) {
+	mapGetCacheHdr = hdr
+	mapGetCacheKey = key
+	mapGetCacheLen = uintptr(mlen)
+	mapGetCacheIdx = uintptr(idx)
+}
+
+func mapFindKey(data uintptr, mlen int, keyKind int, key uintptr, reverse bool, bidir bool) int {
+	if mlen <= 0 {
+		return -1
+	}
+	if bidir {
+		lo := 0
+		hi := mlen - 1
+		for lo <= hi {
+			loAddr := data + uintptr(lo*MapEntrySize)
+			if mapKeyEqual(keyKind, ReadPtr(loAddr), key) {
+				return lo
+			}
+			if lo != hi {
+				hiAddr := data + uintptr(hi*MapEntrySize)
+				if mapKeyEqual(keyKind, ReadPtr(hiAddr), key) {
+					return hi
+				}
+			}
+			lo = lo + 1
+			hi = hi - 1
+		}
+		return -1
+	}
+	if reverse {
+		i := mlen - 1
+		for i >= 0 {
+			entryAddr := data + uintptr(i*MapEntrySize)
+			if mapKeyEqual(keyKind, ReadPtr(entryAddr), key) {
+				return i
+			}
+			if i == 0 {
+				break
+			}
+			i = i - 1
+		}
+		return -1
+	}
+	i := 0
+	for i < mlen {
+		entryAddr := data + uintptr(i*MapEntrySize)
+		if mapKeyEqual(keyKind, ReadPtr(entryAddr), key) {
+			return i
+		}
+		i = i + 1
+	}
+	return -1
+}
+
 // MapMake allocates an empty map header. keyKind: 0=int, 1=string.
 func MapMake(keyKind int) uintptr {
+	capHint := 8
+	if optEnabled(OptMapInitCap32) {
+		capHint = 32
+	}
 	hdr := Alloc(SliceHdrSize)
-	data := Alloc(8 * MapEntrySize)
+	data := Alloc(capHint * MapEntrySize)
 	WritePtr(hdr, data)
 	WritePtr(hdr+uintptr(SliceOffLen), 0)
-	WritePtr(hdr+uintptr(SliceOffCap), 8)
+	WritePtr(hdr+uintptr(SliceOffCap), uintptr(capHint))
 	WritePtr(hdr+uintptr(SliceOffEsz), uintptr(keyKind))
 	return hdr
 }
@@ -733,20 +920,21 @@ func MapGet(hdr uintptr, key uintptr) (uintptr, bool) {
 	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
 	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
 	data := ReadPtr(hdr)
-	i := 0
-	for i < mlen {
-		entryAddr := data + uintptr(i*MapEntrySize)
-		entryKey := ReadPtr(entryAddr)
-		if keyKind == 1 {
-			if mapStrEqual(entryKey, key) {
-				return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
-			}
-		} else {
-			if entryKey == key {
-				return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
-			}
+	if optEnabled(OptMapGetLastHitCache) {
+		if idx, ok := mapGetCacheLookup(hdr, key, mlen, keyKind, data); ok {
+			entryAddr := data + uintptr(idx*MapEntrySize)
+			return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
 		}
-		i = i + 1
+	}
+	reverse := optEnabled(OptMapGetReverseScan)
+	bidir := optEnabled(OptMapBidirScan)
+	idx := mapFindKey(data, mlen, keyKind, key, reverse, bidir)
+	if idx >= 0 {
+		if optEnabled(OptMapGetLastHitCache) {
+			mapGetCacheStore(hdr, key, mlen, idx)
+		}
+		entryAddr := data + uintptr(idx*MapEntrySize)
+		return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
 	}
 	return 0, false
 }
@@ -761,27 +949,35 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
 	data := ReadPtr(hdr)
 	// Search for existing key
-	i := 0
-	for i < mlen {
-		entryAddr := data + uintptr(i*MapEntrySize)
-		entryKey := ReadPtr(entryAddr)
-		if keyKind == 1 {
-			if mapStrEqual(entryKey, key) {
-				WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
-				return hdr
-			}
-		} else {
-			if entryKey == key {
-				WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
-				return hdr
-			}
+	if optEnabled(OptMapSetLastHitCache) {
+		if idx, ok := mapSetCacheLookup(hdr, key, mlen, keyKind, data); ok {
+			entryAddr := data + uintptr(idx*MapEntrySize)
+			WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+			return hdr
 		}
-		i = i + 1
+	}
+	reverse := optEnabled(OptMapSetReverseScan)
+	bidir := optEnabled(OptMapBidirScan)
+	idx := mapFindKey(data, mlen, keyKind, key, reverse, bidir)
+	if idx >= 0 {
+		entryAddr := data + uintptr(idx*MapEntrySize)
+		WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+		if optEnabled(OptMapSetLastHitCache) {
+			mapSetCacheStore(hdr, key, mlen, idx)
+		}
+		if optEnabled(OptMapGetLastHitCache) {
+			mapGetCacheStore(hdr, key, mlen, idx)
+		}
+		return hdr
 	}
 	// Not found — append
 	mcap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
 	if mlen >= mcap {
-		newCap := mcap * 2
+		growMul := 2
+		if optEnabled(OptMapGrowX4) {
+			growMul = 4
+		}
+		newCap := mcap * growMul
 		if newCap < 8 {
 			newCap = 8
 		}
@@ -796,7 +992,14 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 	entryAddr := data + uintptr(mlen*MapEntrySize)
 	WritePtr(entryAddr, key)
 	WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
-	WritePtr(hdr+uintptr(SliceOffLen), uintptr(mlen+1))
+	newLen := mlen + 1
+	WritePtr(hdr+uintptr(SliceOffLen), uintptr(newLen))
+	if optEnabled(OptMapSetLastHitCache) {
+		mapSetCacheStore(hdr, key, newLen, mlen)
+	}
+	if optEnabled(OptMapGetLastHitCache) {
+		mapGetCacheStore(hdr, key, newLen, mlen)
+	}
 	return hdr
 }
 
