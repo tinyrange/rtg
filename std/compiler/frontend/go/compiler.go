@@ -55,6 +55,14 @@ type deferSite struct {
 	variadicIsIface bool
 }
 
+type structTypeLookupResult struct {
+	typeNode *Node
+	pkgPath  string
+	ok       bool
+}
+
+const structTypeLookupMaxEntries = 8192
+
 // === Compiler ===
 
 // Compiler lowers AST from a Module into stack machine IR.
@@ -127,6 +135,7 @@ type Compiler struct {
 	captureIfaceTypes    map[string]string
 	dotJoinCache         map[string]map[string]string // a → b → "a.b"
 	qualifyTypeCache     map[string]string            // "typeName\x00pkgPath" → qualified result
+	structTypeLookup     map[string]structTypeLookupResult
 	comptimeSeq          int
 	comptimeDisabled     bool
 	inComptimeFunc       bool
@@ -195,6 +204,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		localFuncCaptures:    make(map[string][]closureCaptureBinding),
 		dotJoinCache:         make(map[string]map[string]string),
 		qualifyTypeCache:     make(map[string]string),
+		structTypeLookup:     make(map[string]structTypeLookupResult),
 		assembleFuncs:        make(map[string]assembleInfo),
 	}
 	c.initBuiltinTypes()
@@ -410,6 +420,12 @@ func (c *Compiler) resolvePackage(pkgName string) *Package {
 // lookupStructTypeNode parses a qualified type name and returns the struct's type node
 // and the package path. Returns nil, "" if not found.
 func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
+	if cached, ok := c.structTypeLookup[qualifiedType]; ok {
+		if cached.ok {
+			return cached.typeNode, cached.pkgPath
+		}
+		return nil, ""
+	}
 	dotIdx := -1
 	i := 0
 	for i < len(qualifiedType) {
@@ -419,6 +435,7 @@ func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 		i++
 	}
 	if dotIdx < 0 {
+		c.structTypeLookup[qualifiedType] = structTypeLookupResult{}
 		return nil, ""
 	}
 	pkgPath := qualifiedType[0:dotIdx]
@@ -428,6 +445,7 @@ func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 	}
 	pkg, ok := c.mod.Packages[pkgPath]
 	if !ok {
+		c.structTypeLookup[qualifiedType] = structTypeLookupResult{}
 		return nil, ""
 	}
 	if pkgPath == c.curPkg.Path {
@@ -437,11 +455,23 @@ func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 	}
 	sym, ok := pkg.Symbols[typeName]
 	if !ok || sym.Kind != SymType || sym.Node == nil {
+		c.structTypeLookup[qualifiedType] = structTypeLookupResult{}
 		return nil, ""
 	}
 	typeNode := sym.Node.Type
 	if typeNode == nil {
+		c.structTypeLookup[qualifiedType] = structTypeLookupResult{}
 		return nil, ""
+	}
+	if len(c.structTypeLookup) >= structTypeLookupMaxEntries {
+		for key := range c.structTypeLookup {
+			delete(c.structTypeLookup, key)
+		}
+	}
+	c.structTypeLookup[qualifiedType] = structTypeLookupResult{
+		typeNode: typeNode,
+		pkgPath:  pkgPath,
+		ok:       true,
 	}
 	return typeNode, pkgPath
 }
@@ -2588,7 +2618,11 @@ func (c *Compiler) compileFunc(node *Node) {
 		recvType := nodeTypeName(node.X.Type)
 		qname = c.dotJoin(c.curPkg.QualName(recvType), node.Name)
 	}
-	f := &ir.IRFunc{Name: qname}
+	codeCap := 64
+	if node.Body != nil {
+		codeCap += len(node.Body.Nodes) * 12
+	}
+	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, codeCap)}
 	savedInComptimeFunc := c.inComptimeFunc
 	if savedInComptimeFunc || c.comptimeFuncs[qname] {
 		c.inComptimeFunc = true
@@ -6911,28 +6945,35 @@ func (c *Compiler) rewriteProfileParentCalls() {
 			continue
 		}
 		maxArgs := 0
+		extraInst := 0
+		rewriteCount := 0
 		for _, inst := range f.Code {
-			if inst.Op == ir.OP_CALL && c.callNeedsProfileParent(inst.Name) {
+			if inst.Op == ir.OP_CALL && c.funcProfileParentABI[inst.Name] {
+				rewriteCount++
 				if inst.Arg > maxArgs {
 					maxArgs = inst.Arg
 				}
+				extraInst += inst.Arg*2 + 1
 			}
+		}
+		if rewriteCount == 0 {
+			continue
 		}
 		tempBase := len(f.Locals)
 		if maxArgs > 0 {
 			i := 0
 			for i < maxArgs {
 				f.Locals = append(f.Locals, ir.IRLocal{
-					Name:  fmt.Sprintf("$profile_call_arg_%d", i),
+					Name:  "",
 					Index: tempBase + i,
 				})
 				i++
 			}
 		}
 		callerHash := profileHash32FNV(f.Name)
-		rewritten := make([]ir.Inst, 0, len(f.Code))
+		rewritten := make([]ir.Inst, 0, len(f.Code)+extraInst)
 		for _, inst := range f.Code {
-			if inst.Op == ir.OP_CALL && c.callNeedsProfileParent(inst.Name) {
+			if inst.Op == ir.OP_CALL && c.funcProfileParentABI[inst.Name] {
 				argCount := inst.Arg
 				i := argCount - 1
 				for i >= 0 {
