@@ -785,7 +785,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
 	fmt.Fprintf(out, "  -strict                Reject RTG-only language extensions in user packages\n")
 	fmt.Fprintf(out, "  -profile               Enable profiling (compiler/target methods+functions default-on; //rtg:noprofile opts out; //rtg:profile opts in elsewhere)\n")
-	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated callable tree\n")
+	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated timing and allocation trees\n")
 	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")
 		fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
@@ -820,32 +820,76 @@ type profileEdgeStat struct {
 	Calls  uint64
 }
 
+const (
+	profileRecordSizeV1    = 12
+	profileRecordSizeV2    = 16
+	profileHeaderSizeV2    = 8
+	profileRecordKindTime  = 1
+	profileRecordKindAlloc = 2
+)
+
 func runProfileReport(profilePath string, entryFiles []string) error {
 	data, err := os.ReadFile(profilePath)
 	if err != nil {
 		return err
 	}
-	if len(data) < 12 {
+	recordSize := profileRecordSizeV1
+	recordStart := 0
+	typedRecords := false
+	if len(data) >= profileHeaderSizeV2 && data[0] == 'R' && data[1] == 'T' && data[2] == 'P' && data[3] == '2' {
+		recordSize = profileRecordSizeV2
+		recordStart = profileHeaderSizeV2
+		typedRecords = true
+	}
+	if len(data) < recordStart+recordSize {
 		fmt.Fprintf(os.Stdout, "Profile report for %s\n", profilePath)
 		fmt.Fprintf(os.Stdout, "no records\n")
 		return nil
 	}
-	const recordSize = 12
-	limit := len(data) - (len(data) % recordSize)
-	edgeTotals := make(map[uint64]uint64)
-	edgeCalls := make(map[uint64]uint64)
+	limit := len(data) - ((len(data) - recordStart) % recordSize)
+	edgeTimeTotals := make(map[uint64]uint64)
+	edgeTimeCalls := make(map[uint64]uint64)
+	edgeAllocTotals := make(map[uint64]uint64)
+	edgeAllocCalls := make(map[uint64]uint64)
 	calleeSeen := make(map[uint32]bool)
+	timeCalleeSeen := make(map[uint32]bool)
+	allocCalleeSeen := make(map[uint32]bool)
 	totalNS := uint64(0)
-	i := 0
+	totalAllocBytes := uint64(0)
+	records := 0
+	timeRecords := 0
+	allocSamples := 0
+	ignoredKindRecords := 0
+	i := recordStart
 	for i+recordSize <= limit {
 		methodHash := common.GetU32(data[i : i+4])
 		parentHash := common.GetU32(data[i+4 : i+8])
-		duration := common.GetU32(data[i+8 : i+12])
+		value := common.GetU32(data[i+8 : i+12])
+		kind := uint32(profileRecordKindTime)
+		if typedRecords {
+			kind = common.GetU32(data[i+12 : i+16])
+		}
 		key := (uint64(parentHash) << 32) | uint64(methodHash)
-		edgeTotals[key] = edgeTotals[key] + uint64(duration)
-		edgeCalls[key] = edgeCalls[key] + 1
-		calleeSeen[methodHash] = true
-		totalNS = totalNS + uint64(duration)
+		switch kind {
+		case profileRecordKindTime:
+			edgeTimeTotals[key] = edgeTimeTotals[key] + uint64(value)
+			edgeTimeCalls[key] = edgeTimeCalls[key] + 1
+			timeCalleeSeen[methodHash] = true
+			calleeSeen[methodHash] = true
+			totalNS = totalNS + uint64(value)
+			timeRecords++
+			records++
+		case profileRecordKindAlloc:
+			edgeAllocTotals[key] = edgeAllocTotals[key] + uint64(value)
+			edgeAllocCalls[key] = edgeAllocCalls[key] + 1
+			allocCalleeSeen[methodHash] = true
+			calleeSeen[methodHash] = true
+			totalAllocBytes = totalAllocBytes + uint64(value)
+			allocSamples++
+			records++
+		default:
+			ignoredKindRecords++
+		}
 		i = i + recordSize
 	}
 
@@ -858,34 +902,70 @@ func runProfileReport(profilePath string, entryFiles []string) error {
 		nameByHash = mapped
 	}
 
-	childrenByParent := make(map[uint32][]profileEdgeStat)
-	for key, total := range edgeTotals {
-		parentHash := uint32(key >> 32)
-		methodHash := uint32(key)
-		childrenByParent[parentHash] = append(childrenByParent[parentHash], profileEdgeStat{
-			Parent: parentHash,
-			Child:  methodHash,
-			Total:  total,
-			Calls:  edgeCalls[key],
-		})
-	}
-	for parent, edges := range childrenByParent {
-		sortProfileEdges(edges)
-		childrenByParent[parent] = edges
+	buildChildrenByParent := func(totals map[uint64]uint64, calls map[uint64]uint64) map[uint32][]profileEdgeStat {
+		childrenByParent := make(map[uint32][]profileEdgeStat)
+		for key, total := range totals {
+			parentHash := uint32(key >> 32)
+			methodHash := uint32(key)
+			childrenByParent[parentHash] = append(childrenByParent[parentHash], profileEdgeStat{
+				Parent: parentHash,
+				Child:  methodHash,
+				Total:  total,
+				Calls:  calls[key],
+			})
+		}
+		for parent, edges := range childrenByParent {
+			sortProfileEdges(edges)
+			childrenByParent[parent] = edges
+		}
+		return childrenByParent
 	}
 
-	root := buildProfileTree(childrenByParent, calleeSeen, nameByHash)
+	childrenByParent := buildChildrenByParent(edgeTimeTotals, edgeTimeCalls)
+	allocChildrenByParent := buildChildrenByParent(edgeAllocTotals, edgeAllocCalls)
+
+	root := buildProfileTree(childrenByParent, timeCalleeSeen, nameByHash)
+	allocRoot := buildProfileTree(allocChildrenByParent, allocCalleeSeen, nameByHash)
 
 	fmt.Fprintf(os.Stdout, "Profile report for %s\n", profilePath)
-	fmt.Fprintf(os.Stdout, "records=%d unique=%d total_ns=%d\n", limit/recordSize, len(calleeSeen), totalNS)
+	fmt.Fprintf(os.Stdout, "records=%d unique=%d total_ns=%d\n", records, len(calleeSeen), totalNS)
 	profilePrintTree(root, "")
+	if allocSamples > 0 {
+		fmt.Fprintf(os.Stdout, "Allocation report\n")
+		fmt.Fprintf(os.Stdout, "alloc_samples=%d total_alloc_bytes=%d\n", allocSamples, totalAllocBytes)
+		profilePrintAllocTree(allocRoot, "")
+	}
 	if len(data) != limit {
 		fmt.Fprintf(os.Stdout, "note: ignored %d trailing bytes (incomplete record)\n", len(data)-limit)
+	}
+	if ignoredKindRecords > 0 {
+		fmt.Fprintf(os.Stdout, "note: ignored %d records with unknown kind\n", ignoredKindRecords)
 	}
 	if len(entryFiles) > 0 && len(nameByHash) == 0 {
 		fmt.Fprintf(os.Stdout, "note: no functions or methods discovered in provided source inputs\n")
 	}
+	if timeRecords == 0 && allocSamples > 0 {
+		fmt.Fprintf(os.Stdout, "note: file contains allocation samples but no timing records\n")
+	}
 	return nil
+}
+
+func profilePrintAllocTree(node *profileTreeNode, prefix string) {
+	for i, child := range node.Children {
+		last := i == len(node.Children)-1
+		branch := "|- "
+		nextPrefix := prefix + "|  "
+		if last {
+			branch = "\\- "
+			nextPrefix = prefix + "   "
+		}
+		avg := uint64(0)
+		if child.Calls > 0 {
+			avg = child.Total / child.Calls
+		}
+		fmt.Fprintf(os.Stdout, "%s%s%s bytes=%d calls=%d avg=%dB\n", prefix, branch, child.Name, child.Total, child.Calls, avg)
+		profilePrintAllocTree(child, nextPrefix)
+	}
 }
 
 func buildProfileTree(childrenByParent map[uint32][]profileEdgeStat, calleeSeen map[uint32]bool, nameByHash map[uint32]string) *profileTreeNode {

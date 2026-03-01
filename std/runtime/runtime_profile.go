@@ -1,10 +1,13 @@
 package runtime
 
 const (
-	profileRecordSize    = 12
-	profileBufferRecords = 16384
-	profileBufferSize    = profileRecordSize * profileBufferRecords
-	profileFilePerm      = 0644
+	profileHeaderSize      = 8
+	profileRecordSize      = 16
+	profileBufferRecords   = 16384
+	profileBufferSize      = profileRecordSize * profileBufferRecords
+	profileFilePerm        = 0644
+	profileRecordKindTime  = 1
+	profileRecordKindAlloc = 2
 )
 
 var profileInitDone bool
@@ -22,7 +25,9 @@ func Exit(code uintptr) {
 }
 
 // Profile records a method execution duration in nanoseconds.
-// Records are packed as: method_hash(uint32), parent_hash(uint32), duration_ns(uint32), little-endian.
+// Records are packed as:
+// method_hash(uint32), parent_hash(uint32), value(uint32), kind(uint32), little-endian.
+// kind=1 stores duration nanoseconds; kind=2 stores allocation bytes.
 func Profile(methodName string, executionTime int) {
 	if methodName == "" {
 		return
@@ -32,15 +37,20 @@ func Profile(methodName string, executionTime int) {
 
 // ProfileHash records a method execution duration by pre-hashed method id.
 func ProfileHash(methodHash uint32, parentHash uint32, executionTime int) {
-	profileRecord(methodHash, parentHash, executionTime)
+	profileRecord(profileRecordKindTime, methodHash, parentHash, profileDurationToU32(executionTime))
 }
 
 // ProfileHashNow records a duration using runtime.Now()-startTime.
 func ProfileHashNow(methodHash uint32, parentHash uint32, startTime int) {
-	profileRecord(methodHash, parentHash, profileNow()-startTime)
+	profileRecord(profileRecordKindTime, methodHash, parentHash, profileDurationToU32(profileNow()-startTime))
 }
 
-func profileRecord(methodHash uint32, parentHash uint32, executionTime int) {
+// ProfileAllocHash records an allocation sample in bytes for a call-tree edge.
+func ProfileAllocHash(size int, methodHash uint32, parentHash uint32) {
+	profileRecord(profileRecordKindAlloc, methodHash, parentHash, profileSizeToU32(size))
+}
+
+func profileRecord(kind uint32, methodHash uint32, parentHash uint32, value uint32) {
 	profileTouched = true
 	profileEnsureInit()
 	if !profileEnabled {
@@ -52,7 +62,6 @@ func profileRecord(methodHash uint32, parentHash uint32, executionTime int) {
 			return
 		}
 	}
-	duration := profileDurationToU32(executionTime)
 	off := profileBufUsed
 	profileBuf[off+0] = byte(methodHash)
 	profileBuf[off+1] = byte(methodHash >> 8)
@@ -62,10 +71,14 @@ func profileRecord(methodHash uint32, parentHash uint32, executionTime int) {
 	profileBuf[off+5] = byte(parentHash >> 8)
 	profileBuf[off+6] = byte(parentHash >> 16)
 	profileBuf[off+7] = byte(parentHash >> 24)
-	profileBuf[off+8] = byte(duration)
-	profileBuf[off+9] = byte(duration >> 8)
-	profileBuf[off+10] = byte(duration >> 16)
-	profileBuf[off+11] = byte(duration >> 24)
+	profileBuf[off+8] = byte(value)
+	profileBuf[off+9] = byte(value >> 8)
+	profileBuf[off+10] = byte(value >> 16)
+	profileBuf[off+11] = byte(value >> 24)
+	profileBuf[off+12] = byte(kind)
+	profileBuf[off+13] = byte(kind >> 8)
+	profileBuf[off+14] = byte(kind >> 16)
+	profileBuf[off+15] = byte(kind >> 24)
 	profileBufUsed = off + profileRecordSize
 	if profileBufUsed == profileBufferSize {
 		profileFlushBuffer()
@@ -106,6 +119,15 @@ func profileEnsureInit() {
 	// Some targets may create the file with restrictive default mode despite O_CREAT mode.
 	// Normalize permissions so external tools can read profile output.
 	profileNormalizePermissions(cpath)
+	var header [profileHeaderSize]byte
+	header[0] = 'R'
+	header[1] = 'T'
+	header[2] = 'P'
+	header[3] = '2'
+	if !profileWriteAll(fd, header[:]) {
+		SysClose(fd)
+		return
+	}
 	profileFD = fd
 	profileFDOpen = true
 	profileEnabled = true
@@ -141,6 +163,22 @@ func profileFlushBuffer() {
 	profileBufUsed = 0
 }
 
+func profileWriteAll(fd uintptr, data []byte) bool {
+	remaining := len(data)
+	offset := 0
+	for remaining > 0 {
+		chunk := data[offset : offset+remaining]
+		wrote, _, errn := SysWrite(fd, Sliceptr(chunk), uintptr(remaining))
+		if errn != 0 || wrote == 0 {
+			return false
+		}
+		n := int(wrote)
+		offset += n
+		remaining -= n
+	}
+	return true
+}
+
 func profileHash32(name string) uint32 {
 	var h uint32 = 2166136261
 	i := 0
@@ -162,6 +200,18 @@ func profileDurationToU32(ns int) uint32 {
 		}
 	}
 	return uint32(ns)
+}
+
+func profileSizeToU32(size int) uint32 {
+	if size <= 0 {
+		return 0
+	}
+	if PtrSize > 4 {
+		if (size >> 32) > 0 {
+			return ^uint32(0)
+		}
+	}
+	return uint32(size)
 }
 
 func profileMakeCString(s string) []byte {

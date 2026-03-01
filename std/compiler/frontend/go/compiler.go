@@ -2624,6 +2624,18 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.profileStartLocal = c.addLocal("$profile_start")
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Now", Arg: 0})
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
+		arenaMethodHash := c.currentMethodHash
+		if arenaMethodHash == 0 {
+			arenaMethodHash = profileHash32FNV(f.Name)
+		}
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(arenaMethodHash)})
+		if c.profileParentLocal >= 0 {
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileParentLocal})
+		} else {
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		}
+		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: qname})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ArenaEnter", Arg: 3})
 	}
 	if c.target != nil && c.target.Profile && c.curPkg != nil && c.curPkg.Path == "main" && node.X == nil && node.Name == "main" {
 		c.profileFlushOnExit = true
@@ -3206,7 +3218,7 @@ func (c *Compiler) compileDeferStmt(node *Node) {
 	recIdx := c.addLocal(fmt.Sprintf("$defer_rec_%d", siteID))
 	recordSize := 2*c.target.PtrSize + site.argCount*c.target.PtrSize
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(recordSize)})
-	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
+	c.emitRuntimeAllocCall()
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: recIdx})
 
 	// rec.next = head
@@ -3547,7 +3559,7 @@ func (c *Compiler) compileVarDecl(node *Node) {
 					size = c.target.PtrSize
 				}
 				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
-				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
+				c.emitRuntimeAllocCall()
 				c.emit(ir.Inst{Op: ir.OP_DUP})
 				c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
 				c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Memzero", Arg: 2})
@@ -4275,7 +4287,7 @@ func (c *Compiler) emitDeferredSiteCall(site deferSite, recIdx int) {
 			sliceHdrSize := 4 * c.target.PtrSize
 			allocSize := sliceHdrSize + variadicCount*varElemSz
 			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(allocSize)})
-			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
+			c.emitRuntimeAllocCall()
 			tmpIdx := c.addLocal("$defer_varslice")
 			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: tmpIdx})
 			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
@@ -4366,17 +4378,47 @@ func (c *Compiler) emitNamedReturnValues(retTypes []string) int {
 }
 
 func (c *Compiler) emitProfileExit() {
+	if c.profileStartLocal >= 0 {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileMethodHash)})
+		if c.profileParentLocal >= 0 {
+			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileParentLocal})
+		} else {
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		}
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileStartLocal})
+		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ProfileHashNow", Arg: 3})
+		if c.target != nil && c.target.Profile {
+			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ArenaLeave", Arg: 0})
+		}
+	}
+}
+
+func (c *Compiler) emitProfileAllocSample() {
+	if c.target == nil || !c.target.Profile {
+		return
+	}
 	if c.profileStartLocal < 0 {
 		return
 	}
+	if c.profileMethodHash == 0 {
+		return
+	}
+	// Stack before: [..., size]
+	// Stack after:  [..., size]
+	// ProfileAllocHash signature is (size, methodHash, parentHash).
+	c.emit(ir.Inst{Op: ir.OP_DUP})
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.profileMethodHash)})
 	if c.profileParentLocal >= 0 {
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileParentLocal})
 	} else {
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 	}
-	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileStartLocal})
-	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ProfileHashNow", Arg: 3})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ProfileAllocHash", Arg: 3})
+}
+
+func (c *Compiler) emitRuntimeAllocCall() {
+	c.emitProfileAllocSample()
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
 }
 
 func profileHash32FNV(name string) uint32 {
@@ -4395,6 +4437,7 @@ func (c *Compiler) emitProfileFinalize() {
 		return
 	}
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ProfileFlush", Arg: 0})
+	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ArenaFlush", Arg: 0})
 }
 
 func (c *Compiler) emitRecoveredPanicReturn() {
@@ -4437,6 +4480,9 @@ func (c *Compiler) emitPanicPropagationCheck(retCount int) {
 }
 
 func (c *Compiler) emitCallWithPanicCheck(callName string, argCount int) {
+	if callName == "runtime.Alloc" && argCount == 1 {
+		c.emitProfileAllocSample()
+	}
 	if c.panicUnwindLabel >= 0 {
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
 	}
@@ -6492,7 +6538,7 @@ func (c *Compiler) packVariadicSlice(args []*Node, firstArgIdx int, varCount int
 	sliceHdrSize := 4 * c.target.PtrSize // 32 on amd64, 16 on i386
 	allocSize := sliceHdrSize + varCount*elemSz
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(allocSize)})
-	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.Alloc", Arg: 1})
+	c.emitRuntimeAllocCall()
 	tmpIdx := c.addLocal("$varslice")
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: tmpIdx})
 	// header[0] = data_ptr (header + sliceHdrSize)

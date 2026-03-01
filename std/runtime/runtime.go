@@ -139,6 +139,7 @@ func Alloc(size int) uintptr {
 	size = (size + 7) &^ 7
 
 	needGrow := heapPtr == 0
+	mmapChunk := 0
 	if !needGrow {
 		avail := heapEnd - heapPtr
 		if uintptr(size) > avail {
@@ -162,9 +163,11 @@ func Alloc(size int) uintptr {
 		if err != 0 || ptr == 0 {
 			runtimePanic("out of memory")
 		}
+		mmapChunk = chunk
 		heapPtr = ptr
 		heapEnd = ptr + uintptr(chunk)
 	}
+	arenaRecordAlloc(size, mmapChunk)
 
 	result := heapPtr
 	heapPtr = heapPtr + uintptr(size)

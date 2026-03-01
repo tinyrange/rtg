@@ -252,9 +252,10 @@ func isExpDigitStart(ch byte, next byte) bool {
 	return false
 }
 
-func (l *Lexer) skipWhitespaceAndComments() (bool, *Token) {
+func (l *Lexer) skipWhitespaceAndComments() (bool, Token, bool) {
 	sawNewline := false
-	var directive *Token
+	var directive Token
+	hasDirective := false
 	for !l.atEnd() {
 		ch := l.peek()
 		if ch == '\n' {
@@ -277,16 +278,18 @@ func (l *Lexer) skipWhitespaceAndComments() (bool, *Token) {
 				trimmed = trimmed[1:]
 			}
 			if len(trimmed) >= 4 && trimmed[0:4] == "rtg:" {
-				directive = &Token{Kind: TOKEN_DIRECTIVE, Val: trimmed[4:len(trimmed)], Line: cLine, Col: cCol}
+				directive = Token{Kind: TOKEN_DIRECTIVE, Val: trimmed[4:len(trimmed)], Line: cLine, Col: cCol}
+				hasDirective = true
 			} else if len(trimmed) >= 9 && trimmed[0:9] == "go:embed " {
-				directive = &Token{Kind: TOKEN_DIRECTIVE, Val: "embed " + trimmed[9:len(trimmed)], Line: cLine, Col: cCol}
+				directive = Token{Kind: TOKEN_DIRECTIVE, Val: "embed " + trimmed[9:len(trimmed)], Line: cLine, Col: cCol}
+				hasDirective = true
 			}
 			sawNewline = true
 		} else {
 			break
 		}
 	}
-	return sawNewline, directive
+	return sawNewline, directive, hasDirective
 }
 
 func (l *Lexer) scanIdent() Token {
@@ -413,17 +416,20 @@ func (l *Lexer) scanRune() Token {
 }
 
 func (l *Lexer) Tokenize() []Token {
-	tokens := make([]Token, 0, len(l.src)/4)
+	capHint := len(l.src)/3 + 2
+	if capHint < 32 {
+		capHint = 32
+	}
+	tokens := make([]Token, 0, capHint)
 	lastKind := TOKEN_EOF
 	for {
-		sawNewline, directive := l.skipWhitespaceAndComments()
+		sawNewline, directive, hasDirective := l.skipWhitespaceAndComments()
 		if sawNewline && needsSemicolon(lastKind) {
 			tokens = append(tokens, Token{Kind: TOKEN_SEMICOLON, Val: "", Line: l.line, Col: l.col})
 			lastKind = TOKEN_SEMICOLON
 		}
-		if directive != nil {
-			tok := Token{Kind: directive.Kind, Val: directive.Val, Line: directive.Line, Col: directive.Col}
-			tokens = append(tokens, tok)
+		if hasDirective {
+			tokens = append(tokens, directive)
 			lastKind = TOKEN_DIRECTIVE
 		}
 		if l.atEnd() {
@@ -764,7 +770,7 @@ func (p *Parser) ParseFile() *Node {
 
 func (p *Parser) parseImportGroup() []*Node {
 	p.expect(TOKEN_IMPORT)
-	var imports []*Node
+	imports := make([]*Node, 0, 1)
 	if p.at(TOKEN_LPAREN) {
 		p.advance()
 		for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
@@ -890,7 +896,7 @@ func (p *Parser) parseReceiver() *Node {
 
 func (p *Parser) parseParamList() []*Node {
 	p.expect(TOKEN_LPAREN)
-	var params []*Node
+	params := make([]*Node, 0, 8)
 	for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
 		param := p.parseParam()
 		params = append(params, param)
@@ -899,13 +905,25 @@ func (p *Parser) parseParamList() []*Node {
 		}
 	}
 	p.expect(TOKEN_RPAREN)
+	needsRegroup := false
+	i := 0
+	for i+1 < len(params) {
+		if params[i].Name == "" && params[i].Type != nil && params[i].Type.Kind == NIdent && params[i+1].Name != "" && params[i+1].Type != nil {
+			needsRegroup = true
+			break
+		}
+		i++
+	}
+	if !needsRegroup {
+		return params
+	}
 
 	// Fix grouped parameters: (a, b int) → two NField nodes each with type int.
 	// parseParam sees "a" followed by comma and treats it as a type-only param.
 	// If a later param has both name and type, preceding type-only params whose
 	// "type" is a bare ident are actually names sharing that type.
-	var result []*Node
-	i := 0
+	result := make([]*Node, 0, len(params))
+	i = 0
 	for i < len(params) {
 		if params[i].Name != "" || i+1 >= len(params) {
 			// Already has a name, or last param — keep as-is
@@ -1041,7 +1059,7 @@ func (p *Parser) parseVarDecl() *Node {
 
 func (p *Parser) parseVarDeclSpec() []*Node {
 	specPos := p.peek().Line
-	var names []string
+	names := make([]string, 0, 2)
 	first := p.expect(TOKEN_IDENT)
 	names = append(names, first.Val)
 	for p.at(TOKEN_COMMA) {
@@ -1055,7 +1073,7 @@ func (p *Parser) parseVarDeclSpec() []*Node {
 		typ = p.parseType()
 	}
 
-	var rhs []*Node
+	rhs := make([]*Node, 0, 1)
 	if p.at(TOKEN_ASSIGN) {
 		p.advance()
 		rhs = append(rhs, p.parseExpr())
@@ -1275,7 +1293,7 @@ func (p *Parser) parseInterfaceType() *Node {
 func (p *Parser) parseBlock() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_LBRACE)
-	block := &Node{Kind: NBlock, Pos: pos}
+	block := &Node{Kind: NBlock, Pos: pos, Nodes: make([]*Node, 0, 8)}
 	for !p.at(TOKEN_RBRACE) && !p.at(TOKEN_EOF) {
 		stmt := p.parseStmt()
 		if stmt != nil {
@@ -1888,7 +1906,7 @@ func (p *Parser) parsePostfixDot(node *Node) *Node {
 
 func (p *Parser) parsePostfixCall(node *Node) *Node {
 	p.advance()
-	call := &Node{Kind: NCallExpr, X: node, Pos: node.Pos}
+	call := &Node{Kind: NCallExpr, X: node, Pos: node.Pos, Nodes: make([]*Node, 0, 2)}
 	for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
 		arg := p.parseExpr()
 		if p.at(TOKEN_ELLIPSIS) {
@@ -1964,7 +1982,7 @@ func (p *Parser) canParseCompositeLit(node *Node) bool {
 func (p *Parser) parseCompositeLit(typeNode *Node) *Node {
 	pos := typeNode.Pos
 	p.expect(TOKEN_LBRACE)
-	node := &Node{Kind: NCompositeLit, Type: typeNode, Pos: pos}
+	node := &Node{Kind: NCompositeLit, Type: typeNode, Pos: pos, Nodes: make([]*Node, 0, 4)}
 	// Infer element type for nested composite literals
 	var elemType *Node
 	if typeNode.Kind == NSliceType || typeNode.Kind == NArrayType {
