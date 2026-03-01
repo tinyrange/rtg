@@ -8,6 +8,26 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+func sortDispatchEntries(entries []DispatchEntry) {
+	i := 1
+	for i < len(entries) {
+		key := entries[i]
+		j := i - 1
+		for j >= 0 {
+			if entries[j].typeID < key.typeID {
+				break
+			}
+			if entries[j].typeID == key.typeID && entries[j].funcName <= key.funcName {
+				break
+			}
+			entries[j+1] = entries[j]
+			j = j - 1
+		}
+		entries[j+1] = key
+		i = i + 1
+	}
+}
+
 // CompileFunc generates x86-64 code for a single IR function.
 func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 	if f.Native != nil {
@@ -744,6 +764,7 @@ func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 			}
 		}
 	}
+	sortDispatchEntries(entries)
 
 	g.PatchRel32(dispatchFixup)
 
@@ -922,6 +943,7 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 			}
 		}
 	}
+	sortDispatchEntries(entries)
 
 	// Restore type_id from call stack
 	g.PopR(REG_RCX)
