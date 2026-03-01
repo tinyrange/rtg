@@ -8,10 +8,17 @@ int main(void) {
   myint lhs = 2;
   myint rhs = 5;
   u8 clipped = (u8)258;
-  binop_t op = 0;
+  binop_t op = &add2;
   if (add2(lhs, rhs) != 7) {
     return 1;
   }
+  if (op(lhs, rhs) != 7) {
+    return 4;
+  }
+  if ((*op)(lhs, rhs) != 7) {
+    return 5;
+  }
+  op = 0;
   if (clipped != 2) {
     return 2;
   }

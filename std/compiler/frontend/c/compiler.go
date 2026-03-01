@@ -135,6 +135,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		globalArray:    make(map[string]int64),
 		globalBase:     make(map[string]cScalarType),
 		typedefs:       make(map[string]cTypeInfo),
+		funcIDs:        make(map[string]int64),
 		intrinsics:     make(map[string]cIntrinsicWrapper),
 		externFns:      make(map[string]string),
 		nextLabelSeq:   1,
@@ -149,6 +150,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 	if len(c.errors) > 0 {
 		return nil, c.errors
 	}
+	c.assignFunctionIDs()
 
 	c.emitGlobalInit()
 	for _, sig := range c.funcOrder {
@@ -183,6 +185,7 @@ type compiler struct {
 	globalBase     map[string]cScalarType
 	globalInits    []cGlobalInit
 	typedefs       map[string]cTypeInfo
+	funcIDs        map[string]int64
 
 	intrinsics map[string]cIntrinsicWrapper
 	externFns  map[string]string
@@ -207,6 +210,20 @@ func (c *compiler) nextLabel() int {
 func (c *compiler) lookupTypedef(name string) (cTypeInfo, bool) {
 	info, ok := c.typedefs[name]
 	return info, ok
+}
+
+func (c *compiler) assignFunctionIDs() {
+	var next int64 = 1
+	for _, sig := range c.funcOrder {
+		if sig == nil || sig.Name == "" {
+			continue
+		}
+		if _, exists := c.funcIDs[sig.Name]; exists {
+			continue
+		}
+		c.funcIDs[sig.Name] = next
+		next++
+	}
 }
 
 func (c *compiler) ensureIntrinsicWrapper(name string, params int, retCount int) string {
@@ -2169,6 +2186,10 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: idx})
 			return true
 		}
+		if id, ok := fc.c.funcIDs[ex.name]; ok {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: id})
+			return true
+		}
 		return false
 	case exprUnary:
 		if ex.op == "*" {
@@ -2287,6 +2308,9 @@ func (fc *funcCompiler) varTypeInfo(name string) (cTypeInfo, bool) {
 		n, _ := fc.lookupGlobalArrayLen(name)
 		return cTypeInfo{Kind: kind, PtrDepth: ptrDepth, ArrayLen: n, Base: base}, true
 	}
+	if _, ok := fc.c.funcs[name]; ok {
+		return cTypeInfo{Kind: cDeclPointer, PtrDepth: 1, Base: cScalarInt}, true
+	}
 	return cTypeInfo{}, false
 }
 
@@ -2298,6 +2322,54 @@ func (fc *funcCompiler) pointerStepForVar(name string) int64 {
 		return step
 	}
 	return int64(fc.c.target.PtrSize)
+}
+
+func (fc *funcCompiler) callDesignatorName(ex *expr) (string, bool) {
+	for ex != nil && ex.kind == exprUnary && ex.op == "*" {
+		ex = ex.left
+	}
+	if ex == nil || ex.kind != exprVar {
+		return "", false
+	}
+	return ex.name, true
+}
+
+func (fc *funcCompiler) resolveDirectCallSig(call *expr) (*cFuncSig, bool) {
+	if call == nil {
+		return nil, false
+	}
+	name, ok := fc.callDesignatorName(call.left)
+	if !ok || name == "" {
+		return nil, false
+	}
+	// Locals/globals shadow function identifiers.
+	if _, ok := fc.lookupLocal(name); ok {
+		return nil, false
+	}
+	if _, ok := fc.lookupGlobal(name); ok {
+		return nil, false
+	}
+	sig, ok := fc.c.funcs[name]
+	if !ok {
+		return nil, false
+	}
+	return sig, true
+}
+
+func (fc *funcCompiler) emitCallTargetValue(ex *expr) {
+	if ex == nil {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
+	if ex.kind == exprUnary && ex.op == "*" {
+		if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 {
+			// In call position, dereferencing a function pointer yields a
+			// function designator, which still carries the same call target value.
+			fc.emitCallTargetValue(ex.left)
+			return
+		}
+	}
+	fc.emitExpr(ex)
 }
 
 func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
@@ -2396,11 +2468,14 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		}
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprCall:
-		if sig, ok := fc.c.funcs[ex.name]; ok {
+		if sig, ok := fc.resolveDirectCallSig(ex); ok {
 			if sig.RetCount == 0 {
 				return cTypeInfo{Kind: cDeclScalar, IsVoid: true}, true
 			}
 			return cTypeInfo{Kind: sig.RetKind, PtrDepth: sig.RetPtrDepth, Base: sig.RetBase}, true
+		}
+		if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 {
+			return cTypeInfo{Kind: cDeclScalar, Base: t.Base, IsVoid: t.IsVoid}, true
 		}
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprCast:
@@ -2459,7 +2534,7 @@ func (fc *funcCompiler) exprPointerStep(ex *expr) int64 {
 			return fc.scalarSize(ex.typeInfo.Base)
 		}
 	case exprCall:
-		if sig, ok := fc.c.funcs[ex.name]; ok && sig.RetKind == cDeclPointer {
+		if sig, ok := fc.resolveDirectCallSig(ex); ok && sig.RetKind == cDeclPointer {
 			if sig.RetPtrDepth > 1 {
 				return int64(fc.c.target.PtrSize)
 			}
@@ -2610,6 +2685,10 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		}
 		if idx, ok := fc.lookupGlobal(ex.name); ok {
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: idx})
+			return
+		}
+		if id, ok := fc.c.funcIDs[ex.name]; ok {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: id})
 			return
 		}
 		fc.errorf(fc.sig.File, 0, 0, "unknown identifier %q", ex.name)
@@ -2823,38 +2902,111 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		fc.emitIndexAddr(ex.left, ex.right)
 		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprDerefWidth(ex.left)})
 	case exprCall:
-		sig, ok := fc.c.funcs[ex.name]
-		if !ok {
-			fc.errorf(fc.sig.File, 0, 0, "call to unknown function %q", ex.name)
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			return
-		}
-		if !fc.checkCallArgs(sig, ex) {
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			return
-		}
-		for _, a := range ex.args {
-			fc.emitExpr(a)
-		}
-		if !sig.Defined {
-			if fc.c.target.Backend == "c" {
-				wrap := fc.c.ensureExternWrapper(sig.Name, sig.ParamCount, sig.RetCount)
-				fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: sig.ParamCount})
-				if sig.RetCount == 0 {
-					// Preserve expression stack shape for continued lowering.
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-				}
+		if sig, ok := fc.resolveDirectCallSig(ex); ok {
+			if !fc.checkCallArgs(sig, ex) {
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 				return
 			}
-			fc.errorf(fc.sig.File, 0, 0, "calls to external function %q are only supported with -T c/* targets", ex.name)
+			for _, a := range ex.args {
+				fc.emitExpr(a)
+			}
+			if !sig.Defined {
+				if fc.c.target.Backend == "c" {
+					wrap := fc.c.ensureExternWrapper(sig.Name, sig.ParamCount, sig.RetCount)
+					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: sig.ParamCount})
+					if sig.RetCount == 0 {
+						// Preserve expression stack shape for continued lowering.
+						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+					}
+					return
+				}
+				fc.errorf(fc.sig.File, 0, 0, "calls to external function %q are only supported with -T c/* targets", sig.Name)
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount})
+			if sig.RetCount == 0 {
+				// Preserve expression stack shape for continued lowering.
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			}
+			return
+		}
+
+		// Indirect call through function pointer representation.
+		calleeTmp := fc.addLocal(fmt.Sprintf("$call_target$%d", fc.c.nextLabel()), fc.sig.File, 0, 0)
+		fc.emitCallTargetValue(ex.left)
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: calleeTmp})
+
+		argLocals := make([]int, 0, len(ex.args))
+		for i, a := range ex.args {
+			fc.emitExpr(a)
+			argTmp := fc.addLocal(fmt.Sprintf("$call_arg$%d$%d", fc.c.nextLabel(), i), fc.sig.File, 0, 0)
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: argTmp})
+			argLocals = append(argLocals, argTmp)
+		}
+
+		var candidates []*cFuncSig
+		for _, sig := range fc.c.funcOrder {
+			if sig == nil {
+				continue
+			}
+			if sig.ParamCount != len(ex.args) {
+				continue
+			}
+			candidates = append(candidates, sig)
+		}
+		if len(candidates) == 0 {
+			fc.errorf(fc.sig.File, 0, 0, "indirect call has no matching function candidates with %d parameters", len(ex.args))
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}
-		fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount})
-		if sig.RetCount == 0 {
-			// Preserve expression stack shape for continued lowering.
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+
+		endLabel := fc.c.nextLabel()
+		fallbackLabel := fc.c.nextLabel()
+		matchLabels := make([]int, len(candidates))
+		for i := range candidates {
+			matchLabels[i] = fc.c.nextLabel()
 		}
+
+		for i, sig := range candidates {
+			id := fc.c.funcIDs[sig.Name]
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: calleeTmp})
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: id})
+			fc.emit(ir.Inst{Op: ir.OP_EQ})
+			fc.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: matchLabels[i]})
+		}
+		fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: fallbackLabel})
+
+		for i, sig := range candidates {
+			fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: matchLabels[i]})
+			for _, idx := range argLocals {
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+			}
+			if !sig.Defined {
+				if fc.c.target.Backend == "c" {
+					wrap := fc.c.ensureExternWrapper(sig.Name, sig.ParamCount, sig.RetCount)
+					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: sig.ParamCount})
+					if sig.RetCount == 0 {
+						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+					}
+					fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
+					continue
+				}
+				fc.errorf(fc.sig.File, 0, 0, "calls to external function %q are only supported with -T c/* targets", sig.Name)
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
+				continue
+			}
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount})
+			if sig.RetCount == 0 {
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			}
+			fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
+		}
+
+		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: fallbackLabel})
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: endLabel})
 	case exprCast:
 		fc.emitExpr(ex.left)
 		fc.emitCastToType(ex.typeInfo)
@@ -3266,10 +3418,6 @@ func (p *cExprParser) parsePostfix() *expr {
 	}
 	for {
 		if p.matchPunct("(") {
-			if n.kind != exprVar {
-				p.errorf("only direct function calls are supported")
-				n = &expr{kind: exprIntLit, intVal: 0}
-			}
 			var args []*expr
 			if !p.matchPunct(")") {
 				for {
@@ -3287,7 +3435,11 @@ func (p *cExprParser) parsePostfix() *expr {
 					}
 				}
 			}
-			n = &expr{kind: exprCall, name: n.name, args: args}
+			callName := ""
+			if n != nil && n.kind == exprVar {
+				callName = n.name
+			}
+			n = &expr{kind: exprCall, left: n, name: callName, args: args}
 			continue
 		}
 		if p.matchPunct("[") {
