@@ -281,6 +281,14 @@ jobs:
                 echo "SKIP_UNSUPPORTED_OS: $test_path"
                 continue
                 ;;
+              *54_stdlib_cli_core.go)
+                echo "SKIP_UNSUPPORTED_OS: $test_path"
+                continue
+                ;;
+              *55_stdlib_additions_extended.go)
+                echo "SKIP_UNSUPPORTED_OS: $test_path"
+                continue
+                ;;
               *_amd64.go|*_386.go|*_arm64.go)
                 echo "SKIP_ARCH: $test_path"
                 continue
