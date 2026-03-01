@@ -21,12 +21,18 @@ type cFuncSig struct {
 	RetKind       cDeclKind
 	RetBase       cScalarType
 	RetPtrDepth   int
+	RetOpaque     bool
+	RetAggKeyword string
+	RetAggTag     string
 	ParamCount    int
 	Variadic      bool
 	ParamNames    []string
 	ParamKinds    []cDeclKind
 	ParamBases    []cScalarType
 	ParamPtrDepth []int
+	ParamOpaque   []bool
+	ParamAggKey   []string
+	ParamAggTag   []string
 	ParamFuncSigs []*cFuncTypeSig
 	Defined       bool
 	Body          *Node
@@ -40,11 +46,17 @@ type cFuncTypeSig struct {
 	RetBase       cScalarType
 	RetPtrDepth   int
 	RetIsVoid     bool
+	RetOpaque     bool
+	RetAggKeyword string
+	RetAggTag     string
 	ParamCount    int
 	Variadic      bool
 	ParamKinds    []cDeclKind
 	ParamBases    []cScalarType
 	ParamPtrDepth []int
+	ParamOpaque   []bool
+	ParamAggKey   []string
+	ParamAggTag   []string
 	ParamFuncSigs []*cFuncTypeSig
 }
 
@@ -110,8 +122,31 @@ type cTypeInfo struct {
 	AggregateTag     string
 }
 
+type cAggregateField struct {
+	Name string
+	Type cTypeInfo
+
+	Offset int64
+	Size   int64
+	Align  int64
+}
+
+type cAggregateInfo struct {
+	Keyword string
+	Tag     string
+	IsUnion bool
+
+	Size  int64
+	Align int64
+
+	Fields []cAggregateField
+}
+
 var cTypedefLookupCompiler *compiler
 var cTypedefLookupFunc *funcCompiler
+var cAggregateLookupCompiler *compiler
+var cAggregateLookupFunc *funcCompiler
+var cAnonAggregateSeq int64
 
 func lookupTypedefAlias(name string) (cTypeInfo, bool) {
 	if cTypedefLookupFunc != nil {
@@ -123,6 +158,74 @@ func lookupTypedefAlias(name string) (cTypeInfo, bool) {
 		return cTypedefLookupCompiler.lookupTypedef(name)
 	}
 	return cTypeInfo{}, false
+}
+
+func lookupAggregateAlias(keyword string, tag string) (*cAggregateInfo, bool) {
+	if cAggregateLookupFunc != nil {
+		if info, ok := cAggregateLookupFunc.lookupAggregate(keyword, tag); ok {
+			return info, true
+		}
+	}
+	if cAggregateLookupCompiler != nil {
+		return cAggregateLookupCompiler.lookupAggregate(keyword, tag)
+	}
+	return nil, false
+}
+
+func registerAggregateAlias(info *cAggregateInfo) error {
+	if cAggregateLookupFunc != nil {
+		return cAggregateLookupFunc.registerAggregate(info)
+	}
+	if cAggregateLookupCompiler != nil {
+		return cAggregateLookupCompiler.registerAggregate(info)
+	}
+	return nil
+}
+
+func nextAnonAggregateTag(keyword string) string {
+	cAnonAggregateSeq++
+	return fmt.Sprintf("$anon_%s_%d", keyword, cAnonAggregateSeq)
+}
+
+func aggregateTypeKey(keyword string, tag string) string {
+	return keyword + ":" + tag
+}
+
+func currentCTargetPtrSize() int64 {
+	if cAggregateLookupFunc != nil && cAggregateLookupFunc.c != nil && cAggregateLookupFunc.c.target != nil {
+		return int64(cAggregateLookupFunc.c.target.PtrSize)
+	}
+	if cAggregateLookupCompiler != nil && cAggregateLookupCompiler.target != nil {
+		return int64(cAggregateLookupCompiler.target.PtrSize)
+	}
+	return 8
+}
+
+func currentCTargetLongSize() int64 {
+	if cAggregateLookupFunc != nil && cAggregateLookupFunc.c != nil && cAggregateLookupFunc.c.target != nil {
+		if cAggregateLookupFunc.c.target.GOOS == "windows" {
+			return 4
+		}
+		return int64(cAggregateLookupFunc.c.target.PtrSize)
+	}
+	if cAggregateLookupCompiler != nil && cAggregateLookupCompiler.target != nil {
+		if cAggregateLookupCompiler.target.GOOS == "windows" {
+			return 4
+		}
+		return int64(cAggregateLookupCompiler.target.PtrSize)
+	}
+	return 8
+}
+
+func alignTo(n int64, align int64) int64 {
+	if align <= 1 {
+		return n
+	}
+	rem := n % align
+	if rem == 0 {
+		return n
+	}
+	return n + (align - rem)
 }
 
 type cIntrinsicWrapper struct {
@@ -171,6 +274,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		globalOpaque:   make(map[string]bool),
 		globalAggKey:   make(map[string]string),
 		globalAggTag:   make(map[string]string),
+		aggregateTags:  make(map[string]*cAggregateInfo),
 		enumConsts:     make(map[string]int64),
 		typedefs:       make(map[string]cTypeInfo),
 		funcIDs:        make(map[string]int64),
@@ -180,13 +284,19 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 	}
 	prevTypedefLookupCompiler := cTypedefLookupCompiler
 	prevTypedefLookupFunc := cTypedefLookupFunc
+	prevAggregateLookupCompiler := cAggregateLookupCompiler
+	prevAggregateLookupFunc := cAggregateLookupFunc
 	cTypedefLookupCompiler = c
 	cTypedefLookupFunc = nil
+	cAggregateLookupCompiler = c
+	cAggregateLookupFunc = nil
 
 	c.collectTopLevel()
 	if len(c.errors) > 0 {
 		cTypedefLookupCompiler = prevTypedefLookupCompiler
 		cTypedefLookupFunc = prevTypedefLookupFunc
+		cAggregateLookupCompiler = prevAggregateLookupCompiler
+		cAggregateLookupFunc = prevAggregateLookupFunc
 		return nil, c.errors
 	}
 	c.assignFunctionIDs()
@@ -203,10 +313,14 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 	if len(c.errors) > 0 {
 		cTypedefLookupCompiler = prevTypedefLookupCompiler
 		cTypedefLookupFunc = prevTypedefLookupFunc
+		cAggregateLookupCompiler = prevAggregateLookupCompiler
+		cAggregateLookupFunc = prevAggregateLookupFunc
 		return nil, c.errors
 	}
 	cTypedefLookupCompiler = prevTypedefLookupCompiler
 	cTypedefLookupFunc = prevTypedefLookupFunc
+	cAggregateLookupCompiler = prevAggregateLookupCompiler
+	cAggregateLookupFunc = prevAggregateLookupFunc
 	return c.irmod, nil
 }
 
@@ -230,6 +344,7 @@ type compiler struct {
 	globalOpaque   map[string]bool
 	globalAggKey   map[string]string
 	globalAggTag   map[string]string
+	aggregateTags  map[string]*cAggregateInfo
 	enumConsts     map[string]int64
 	globalInits    []cGlobalInit
 	typedefs       map[string]cTypeInfo
@@ -258,6 +373,134 @@ func (c *compiler) nextLabel() int {
 func (c *compiler) lookupTypedef(name string) (cTypeInfo, bool) {
 	info, ok := c.typedefs[name]
 	return info, ok
+}
+
+func cloneAggregateInfo(in *cAggregateInfo) *cAggregateInfo {
+	if in == nil {
+		return nil
+	}
+	out := &cAggregateInfo{
+		Keyword: in.Keyword,
+		Tag:     in.Tag,
+		IsUnion: in.IsUnion,
+		Size:    in.Size,
+		Align:   in.Align,
+	}
+	if len(in.Fields) > 0 {
+		out.Fields = make([]cAggregateField, len(in.Fields))
+		i := 0
+		for i < len(in.Fields) {
+			f := in.Fields[i]
+			out.Fields[i] = cAggregateField{
+				Name:   f.Name,
+				Type:   f.Type,
+				Offset: f.Offset,
+				Size:   f.Size,
+				Align:  f.Align,
+			}
+			out.Fields[i].Type.FuncSig = cloneFuncTypeSig(f.Type.FuncSig)
+			i++
+		}
+	}
+	return out
+}
+
+func (c *compiler) lookupAggregate(keyword string, tag string) (*cAggregateInfo, bool) {
+	if keyword == "" || tag == "" {
+		return nil, false
+	}
+	key := aggregateTypeKey(keyword, tag)
+	v, ok := c.aggregateTags[key]
+	if !ok {
+		return nil, false
+	}
+	return cloneAggregateInfo(v), true
+}
+
+func aggregateInfosCompatible(a *cAggregateInfo, b *cAggregateInfo) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Keyword != b.Keyword || a.Tag != b.Tag || a.IsUnion != b.IsUnion {
+		return false
+	}
+	if len(a.Fields) != len(b.Fields) {
+		return false
+	}
+	if a.Size != b.Size || a.Align != b.Align {
+		return false
+	}
+	i := 0
+	for i < len(a.Fields) {
+		af := a.Fields[i]
+		bf := b.Fields[i]
+		if af.Name != bf.Name || af.Offset != bf.Offset || af.Size != bf.Size || af.Align != bf.Align {
+			return false
+		}
+		if af.Type.Kind != bf.Type.Kind ||
+			af.Type.PtrDepth != bf.Type.PtrDepth ||
+			af.Type.ArrayLen != bf.Type.ArrayLen ||
+			af.Type.IsVoid != bf.Type.IsVoid ||
+			af.Type.Base != bf.Type.Base ||
+			af.Type.OpaqueAggregate != bf.Type.OpaqueAggregate ||
+			af.Type.AggregateKeyword != bf.Type.AggregateKeyword ||
+			af.Type.AggregateTag != bf.Type.AggregateTag {
+			return false
+		}
+		if !funcTypeSigEqual(af.Type.FuncSig, bf.Type.FuncSig) {
+			return false
+		}
+		i++
+	}
+	return true
+}
+
+func (c *compiler) registerAggregate(info *cAggregateInfo) error {
+	if info == nil || info.Keyword == "" || info.Tag == "" {
+		return nil
+	}
+	key := aggregateTypeKey(info.Keyword, info.Tag)
+	newInfo := cloneAggregateInfo(info)
+	if prev, ok := c.aggregateTags[key]; ok {
+		prevHasFields := len(prev.Fields) > 0
+		newHasFields := len(newInfo.Fields) > 0
+		if prevHasFields && newHasFields {
+			if !aggregateInfosCompatible(prev, newInfo) {
+				return fmt.Errorf("conflicting %s definition for %q", info.Keyword, info.Tag)
+			}
+			return nil
+		}
+		if prevHasFields {
+			return nil
+		}
+		if !newHasFields {
+			return nil
+		}
+	}
+	c.aggregateTags[key] = newInfo
+	return nil
+}
+
+func (c *compiler) pointerElemStep(kind cDeclKind, ptrDepth int, base cScalarType, isVoid bool, opaqueAggregate bool, aggregateKeyword string, aggregateTag string) int64 {
+	if kind != cDeclPointer {
+		return int64(c.target.PtrSize)
+	}
+	if ptrDepth > 1 {
+		return int64(c.target.PtrSize)
+	}
+	if isVoid {
+		return 1
+	}
+	if aggregateKeyword != "" && aggregateTag != "" {
+		if !opaqueAggregate {
+			if agg, ok := c.lookupAggregate(aggregateKeyword, aggregateTag); ok && len(agg.Fields) > 0 {
+				return agg.Size
+			}
+		}
+		return int64(c.target.PtrSize)
+	}
+	_ = base
+	return int64(c.target.PtrSize)
 }
 
 func (c *compiler) lookupEnumConst(name string) (int64, bool) {
@@ -298,16 +541,22 @@ func cloneFuncTypeSig(in *cFuncTypeSig) *cFuncTypeSig {
 		return nil
 	}
 	out := &cFuncTypeSig{
-		RetKind:     in.RetKind,
-		RetBase:     in.RetBase,
-		RetPtrDepth: in.RetPtrDepth,
-		RetIsVoid:   in.RetIsVoid,
-		ParamCount:  in.ParamCount,
-		Variadic:    in.Variadic,
+		RetKind:       in.RetKind,
+		RetBase:       in.RetBase,
+		RetPtrDepth:   in.RetPtrDepth,
+		RetIsVoid:     in.RetIsVoid,
+		RetOpaque:     in.RetOpaque,
+		RetAggKeyword: in.RetAggKeyword,
+		RetAggTag:     in.RetAggTag,
+		ParamCount:    in.ParamCount,
+		Variadic:      in.Variadic,
 	}
 	out.ParamKinds = append([]cDeclKind{}, in.ParamKinds...)
 	out.ParamBases = append([]cScalarType{}, in.ParamBases...)
 	out.ParamPtrDepth = append([]int{}, in.ParamPtrDepth...)
+	out.ParamOpaque = append([]bool{}, in.ParamOpaque...)
+	out.ParamAggKey = append([]string{}, in.ParamAggKey...)
+	out.ParamAggTag = append([]string{}, in.ParamAggTag...)
 	if len(in.ParamFuncSigs) > 0 {
 		out.ParamFuncSigs = make([]*cFuncTypeSig, len(in.ParamFuncSigs))
 		for i, p := range in.ParamFuncSigs {
@@ -322,16 +571,22 @@ func funcSigToTypeSig(sig *cFuncSig) *cFuncTypeSig {
 		return nil
 	}
 	out := &cFuncTypeSig{
-		RetKind:     sig.RetKind,
-		RetBase:     sig.RetBase,
-		RetPtrDepth: sig.RetPtrDepth,
-		RetIsVoid:   sig.RetCount == 0,
-		ParamCount:  sig.ParamCount,
-		Variadic:    sig.Variadic,
+		RetKind:       sig.RetKind,
+		RetBase:       sig.RetBase,
+		RetPtrDepth:   sig.RetPtrDepth,
+		RetIsVoid:     sig.RetCount == 0,
+		RetOpaque:     sig.RetOpaque,
+		RetAggKeyword: sig.RetAggKeyword,
+		RetAggTag:     sig.RetAggTag,
+		ParamCount:    sig.ParamCount,
+		Variadic:      sig.Variadic,
 	}
 	out.ParamKinds = append([]cDeclKind{}, sig.ParamKinds...)
 	out.ParamBases = append([]cScalarType{}, sig.ParamBases...)
 	out.ParamPtrDepth = append([]int{}, sig.ParamPtrDepth...)
+	out.ParamOpaque = append([]bool{}, sig.ParamOpaque...)
+	out.ParamAggKey = append([]string{}, sig.ParamAggKey...)
+	out.ParamAggTag = append([]string{}, sig.ParamAggTag...)
 	if len(sig.ParamFuncSigs) > 0 {
 		out.ParamFuncSigs = make([]*cFuncTypeSig, len(sig.ParamFuncSigs))
 		for i, p := range sig.ParamFuncSigs {
@@ -448,12 +703,18 @@ func (c *compiler) collectFunctionDef(file string, n *Node) {
 		prev.RetKind = sig.RetKind
 		prev.RetBase = sig.RetBase
 		prev.RetPtrDepth = sig.RetPtrDepth
+		prev.RetOpaque = sig.RetOpaque
+		prev.RetAggKeyword = sig.RetAggKeyword
+		prev.RetAggTag = sig.RetAggTag
 		prev.ParamCount = sig.ParamCount
 		prev.Variadic = sig.Variadic
 		prev.ParamNames = append([]string{}, sig.ParamNames...)
 		prev.ParamKinds = append([]cDeclKind{}, sig.ParamKinds...)
 		prev.ParamBases = append([]cScalarType{}, sig.ParamBases...)
 		prev.ParamPtrDepth = append([]int{}, sig.ParamPtrDepth...)
+		prev.ParamOpaque = append([]bool{}, sig.ParamOpaque...)
+		prev.ParamAggKey = append([]string{}, sig.ParamAggKey...)
+		prev.ParamAggTag = append([]string{}, sig.ParamAggTag...)
 		prev.ParamFuncSigs = make([]*cFuncTypeSig, len(sig.ParamFuncSigs))
 		for i, p := range sig.ParamFuncSigs {
 			prev.ParamFuncSigs[i] = cloneFuncTypeSig(p)
@@ -557,7 +818,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		c.globalOpaque[it.Name] = it.OpaqueAggregate
 		c.globalAggKey[it.Name] = it.AggregateKeyword
 		c.globalAggTag[it.Name] = it.AggregateTag
-		elemStep := int64(c.target.PtrSize)
+		elemStep := c.pointerElemStep(it.Kind, it.PtrDepth, it.Base, it.IsVoid, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag)
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
 		}
@@ -616,6 +877,7 @@ func (c *compiler) emitGlobalInit() {
 		scopes:        []map[string]cLocalBinding{{}},
 		typedefScopes: []map[string]cTypeInfo{{}},
 		enumScopes:    []map[string]int64{{}},
+		aggregateTags: []map[string]*cAggregateInfo{{}},
 		variadicCount: -1,
 		variadicData:  -1,
 	}
@@ -670,6 +932,7 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		scopes:        []map[string]cLocalBinding{{}},
 		typedefScopes: []map[string]cTypeInfo{{}},
 		enumScopes:    []map[string]int64{{}},
+		aggregateTags: []map[string]*cAggregateInfo{{}},
 		variadicCount: -1,
 		variadicData:  -1,
 	}
@@ -681,6 +944,9 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		kind := cDeclScalar
 		base := cScalarInt
 		ptrDepth := 0
+		opaqueAggregate := false
+		aggregateKeyword := ""
+		aggregateTag := ""
 		elemStep := int64(fc.c.target.PtrSize)
 		if i < len(sig.ParamKinds) {
 			kind = sig.ParamKinds[i]
@@ -691,17 +957,27 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		if i < len(sig.ParamPtrDepth) {
 			ptrDepth = sig.ParamPtrDepth[i]
 		}
+		if i < len(sig.ParamOpaque) {
+			opaqueAggregate = sig.ParamOpaque[i]
+		}
+		if i < len(sig.ParamAggKey) {
+			aggregateKeyword = sig.ParamAggKey[i]
+		}
+		if i < len(sig.ParamAggTag) {
+			aggregateTag = sig.ParamAggTag[i]
+		}
 		if kind == cDeclArray {
 			kind = cDeclPointer
 			if ptrDepth == 0 {
 				ptrDepth = 1
 			}
 		}
+		elemStep = fc.pointerElemStep(kind, ptrDepth, base, false, opaqueAggregate, aggregateKeyword, aggregateTag)
 		var pfunc *cFuncTypeSig
 		if i < len(sig.ParamFuncSigs) {
 			pfunc = sig.ParamFuncSigs[i]
 		}
-		fc.addLocalTyped(name, kind, base, ptrDepth, elemStep, pfunc, sig.File, sig.Line, sig.Col)
+		fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, pfunc, opaqueAggregate, aggregateKeyword, aggregateTag, sig.File, sig.Line, sig.Col)
 	}
 	if sig.Variadic {
 		fc.variadicCount = fc.addLocalTyped("$va_count", cDeclScalar, cScalarInt, 0, int64(fc.c.target.PtrSize), nil, sig.File, sig.Line, sig.Col)
@@ -709,9 +985,12 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 	}
 
 	prevTypedefLookupFunc := cTypedefLookupFunc
+	prevAggregateLookupFunc := cAggregateLookupFunc
 	cTypedefLookupFunc = fc
+	cAggregateLookupFunc = fc
 	fc.compileCompound(sig.Body, true)
 	cTypedefLookupFunc = prevTypedefLookupFunc
+	cAggregateLookupFunc = prevAggregateLookupFunc
 	if len(f.Code) == 0 || f.Code[len(f.Code)-1].Op != ir.OP_RETURN {
 		if sig.RetCount > 0 {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -940,6 +1219,9 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	var paramKinds []cDeclKind
 	var paramBases []cScalarType
 	var paramPtrDepth []int
+	var paramOpaque []bool
+	var paramAggKey []string
+	var paramAggTag []string
 	var paramFuncSigs []*cFuncTypeSig
 	var variadic bool
 	paramCount := 0
@@ -997,6 +1279,9 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				fnSig.RetBase = pbaseInfo.Base
 				fnSig.RetPtrDepth = pbaseInfo.PtrDepth
 				fnSig.RetIsVoid = pbaseInfo.IsVoid
+				fnSig.RetOpaque = pbaseInfo.OpaqueAggregate
+				fnSig.RetAggKeyword = pbaseInfo.AggregateKeyword
+				fnSig.RetAggTag = pbaseInfo.AggregateTag
 				pinfo.FuncSig = fnSig
 			}
 			if pname == "" {
@@ -1016,6 +1301,9 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			paramKinds = append(paramKinds, pinfo.Kind)
 			paramBases = append(paramBases, pinfo.Base)
 			paramPtrDepth = append(paramPtrDepth, pinfo.PtrDepth)
+			paramOpaque = append(paramOpaque, pinfo.OpaqueAggregate)
+			paramAggKey = append(paramAggKey, pinfo.AggregateKeyword)
+			paramAggTag = append(paramAggTag, pinfo.AggregateTag)
 			paramFuncSigs = append(paramFuncSigs, cloneFuncTypeSig(pinfo.FuncSig))
 			paramCount++
 		}
@@ -1028,12 +1316,18 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 		RetKind:       retInfo.Kind,
 		RetBase:       retInfo.Base,
 		RetPtrDepth:   retInfo.PtrDepth,
+		RetOpaque:     retInfo.OpaqueAggregate,
+		RetAggKeyword: retInfo.AggregateKeyword,
+		RetAggTag:     retInfo.AggregateTag,
 		ParamCount:    paramCount,
 		Variadic:      variadic,
 		ParamNames:    paramNames,
 		ParamKinds:    paramKinds,
 		ParamBases:    paramBases,
 		ParamPtrDepth: paramPtrDepth,
+		ParamOpaque:   paramOpaque,
+		ParamAggKey:   paramAggKey,
+		ParamAggTag:   paramAggTag,
 		ParamFuncSigs: paramFuncSigs,
 		Defined:       false,
 		File:          file,
@@ -1166,12 +1460,253 @@ func splitDeclSpecPrefix(tokens []Token, context string) ([]Token, []Token, erro
 	return trimTokens(tokens[:end]), trimTokens(tokens[end:]), nil
 }
 
+func cScalarSizeForType(base cScalarType) int64 {
+	switch base {
+	case cScalarChar, cScalarUChar:
+		return 1
+	case cScalarShort, cScalarUShort:
+		return 2
+	case cScalarInt, cScalarUInt:
+		return 4
+	case cScalarLong, cScalarULong:
+		return currentCTargetLongSize()
+	default:
+		return 4
+	}
+}
+
+func cTypeLayout(info cTypeInfo) (int64, int64, error) {
+	switch info.Kind {
+	case cDeclPointer:
+		ps := currentCTargetPtrSize()
+		return ps, ps, nil
+	case cDeclArray:
+		elem := info
+		elem.Kind = cDeclScalar
+		elem.ArrayLen = 0
+		elemSize, elemAlign, err := cTypeLayout(elem)
+		if err != nil {
+			return 0, 0, err
+		}
+		return elemSize * info.ArrayLen, elemAlign, nil
+	case cDeclScalar:
+		if info.IsVoid {
+			return 1, 1, nil
+		}
+		if info.AggregateKeyword != "" && info.AggregateTag != "" {
+			if info.OpaqueAggregate {
+				return 0, 0, fmt.Errorf("incomplete %s %q type", info.AggregateKeyword, info.AggregateTag)
+			}
+			agg, ok := lookupAggregateAlias(info.AggregateKeyword, info.AggregateTag)
+			if !ok || len(agg.Fields) == 0 {
+				return 0, 0, fmt.Errorf("unknown/incomplete %s %q type", info.AggregateKeyword, info.AggregateTag)
+			}
+			align := agg.Align
+			if align <= 0 {
+				align = 1
+			}
+			size := agg.Size
+			if size <= 0 {
+				size = 1
+			}
+			return size, align, nil
+		}
+		sz := cScalarSizeForType(info.Base)
+		return sz, sz, nil
+	default:
+		return 0, 0, fmt.Errorf("unsupported declaration kind")
+	}
+}
+
+func parseAggregateFields(tokens []Token, keyword string, tag string, context string) ([]cAggregateField, int64, int64, error) {
+	decls := splitTopLevel(trimTokens(tokens), ";")
+	fields := make([]cAggregateField, 0, len(decls))
+	used := make(map[string]bool)
+	maxAlign := int64(1)
+	maxSize := int64(0)
+	nextOffset := int64(0)
+	for i, rawDecl := range decls {
+		decl := trimTokens(rawDecl)
+		if len(decl) == 0 {
+			continue
+		}
+		dctx := fmt.Sprintf("%s member declaration %d", context, i+1)
+		spec, rest, err := splitDeclSpecPrefix(decl, dctx)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		baseInfo, hasExtern, hasTypedef, err := parseScalarTypeSpec(spec, dctx, true)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		if hasExtern {
+			return nil, 0, 0, fmt.Errorf("%s does not allow extern members", dctx)
+		}
+		if hasTypedef {
+			return nil, 0, 0, fmt.Errorf("%s does not allow typedef members", dctx)
+		}
+		if len(rest) == 0 {
+			return nil, 0, 0, fmt.Errorf("%s requires at least one declarator", dctx)
+		}
+		items, err := parseDeclItemsWithBase(baseInfo, false, rest)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		for _, it := range items {
+			if len(it.Init) > 0 {
+				return nil, 0, 0, fmt.Errorf("%s member %q cannot have initializer", dctx, it.Name)
+			}
+			if it.FuncSig != nil {
+				return nil, 0, 0, fmt.Errorf("%s member %q cannot be a function type", dctx, it.Name)
+			}
+			if it.Name == "" {
+				return nil, 0, 0, fmt.Errorf("%s has unnamed member", dctx)
+			}
+			if used[it.Name] {
+				return nil, 0, 0, fmt.Errorf("%s has duplicate member name %q", dctx, it.Name)
+			}
+			memberType := cTypeInfo{
+				Kind:             it.Kind,
+				PtrDepth:         it.PtrDepth,
+				ArrayLen:         it.ArrayLen,
+				IsVoid:           it.IsVoid,
+				Base:             it.Base,
+				FuncSig:          cloneFuncTypeSig(it.FuncSig),
+				OpaqueAggregate:  it.OpaqueAggregate,
+				AggregateKeyword: it.AggregateKeyword,
+				AggregateTag:     it.AggregateTag,
+			}
+			size, align, err := cTypeLayout(memberType)
+			if err != nil {
+				return nil, 0, 0, fmt.Errorf("%s member %q has unsupported type: %v", dctx, it.Name, err)
+			}
+			if align <= 0 {
+				align = 1
+			}
+			field := cAggregateField{
+				Name:  it.Name,
+				Type:  memberType,
+				Size:  size,
+				Align: align,
+			}
+			if keyword == "union" {
+				field.Offset = 0
+				if size > maxSize {
+					maxSize = size
+				}
+			} else {
+				nextOffset = alignTo(nextOffset, align)
+				field.Offset = nextOffset
+				nextOffset += size
+				if nextOffset > maxSize {
+					maxSize = nextOffset
+				}
+			}
+			if align > maxAlign {
+				maxAlign = align
+			}
+			used[it.Name] = true
+			fields = append(fields, field)
+		}
+	}
+	if len(fields) == 0 {
+		return nil, 0, 0, fmt.Errorf("%s %q requires at least one member declaration", keyword, tag)
+	}
+	maxSize = alignTo(maxSize, maxAlign)
+	return fields, maxSize, maxAlign, nil
+}
+
+func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context string) (int, cTypeInfo, error) {
+	if start >= len(tokens) || tokens[start].Kind != TokIdent || tokens[start].Text != keyword {
+		return start, cTypeInfo{}, fmt.Errorf("%s expected %s specifier", context, keyword)
+	}
+	i := start + 1
+	tag := ""
+	if i < len(tokens) && tokens[i].Kind == TokIdent {
+		tag = tokens[i].Text
+		i++
+	}
+	hasBody := false
+	bodyOpen := -1
+	bodyClose := -1
+	if i < len(tokens) && tokens[i].Kind == TokPunct && tokens[i].Text == "{" {
+		hasBody = true
+		bodyOpen = i
+		depth := 1
+		i++
+		for i < len(tokens) && depth > 0 {
+			t := tokens[i]
+			if t.Kind == TokPunct {
+				if t.Text == "{" {
+					depth++
+				} else if t.Text == "}" {
+					depth--
+					if depth == 0 {
+						bodyClose = i
+					}
+				}
+			}
+			i++
+		}
+		if depth != 0 || bodyClose < 0 {
+			return start, cTypeInfo{}, fmt.Errorf("%s has unterminated %s definition", context, keyword)
+		}
+	}
+	if tag == "" && !hasBody {
+		return start, cTypeInfo{}, fmt.Errorf("%s %s specifier requires tag or body", context, keyword)
+	}
+	if hasBody {
+		if tag == "" {
+			tag = nextAnonAggregateTag(keyword)
+		}
+		placeholder := &cAggregateInfo{Keyword: keyword, Tag: tag, IsUnion: keyword == "union"}
+		if err := registerAggregateAlias(placeholder); err != nil {
+			return start, cTypeInfo{}, err
+		}
+		body := trimTokens(tokens[bodyOpen+1 : bodyClose])
+		fields, size, align, err := parseAggregateFields(body, keyword, tag, context)
+		if err != nil {
+			return start, cTypeInfo{}, err
+		}
+		info := &cAggregateInfo{
+			Keyword: keyword,
+			Tag:     tag,
+			IsUnion: keyword == "union",
+			Size:    size,
+			Align:   align,
+			Fields:  fields,
+		}
+		if err := registerAggregateAlias(info); err != nil {
+			return start, cTypeInfo{}, err
+		}
+		return i, cTypeInfo{
+			Kind:             cDeclScalar,
+			Base:             cScalarInt,
+			OpaqueAggregate:  false,
+			AggregateKeyword: keyword,
+			AggregateTag:     tag,
+		}, nil
+	}
+	opaque := true
+	if agg, ok := lookupAggregateAlias(keyword, tag); ok && len(agg.Fields) > 0 {
+		opaque = false
+	}
+	return i, cTypeInfo{
+		Kind:             cDeclScalar,
+		Base:             cScalarInt,
+		OpaqueAggregate:  opaque,
+		AggregateKeyword: keyword,
+		AggregateTag:     tag,
+	}, nil
+}
+
 func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInfo, bool, bool, error) {
 	var hasExtern bool
 	var hasTypedef bool
 	var sawType bool
 	var sawEnum bool
 	var sawAggregate bool
+	var aggregateOpaque bool
 	var aggregateKeyword string
 	var aggregateTag string
 	var sawVoid bool
@@ -1190,14 +1725,15 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			if aliasSet || sawEnum || sawAggregate || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
 				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine %s with additional type specifiers", context, t.Text)
 			}
-			next, tag, _, err := consumeTaggedSpecifierTokens(spec, i, t.Text, context)
+			next, aggInfo, err := parseAggregateTypeSpec(spec, i, t.Text, context)
 			if err != nil {
 				return cTypeInfo{}, false, false, err
 			}
 			sawType = true
 			sawAggregate = true
-			aggregateKeyword = t.Text
-			aggregateTag = tag
+			aggregateOpaque = aggInfo.OpaqueAggregate
+			aggregateKeyword = aggInfo.AggregateKeyword
+			aggregateTag = aggInfo.AggregateTag
 			i = next
 			continue
 		}
@@ -1322,7 +1858,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 		return cTypeInfo{
 			Kind:             cDeclScalar,
 			Base:             cScalarInt,
-			OpaqueAggregate:  true,
+			OpaqueAggregate:  aggregateOpaque,
 			AggregateKeyword: aggregateKeyword,
 			AggregateTag:     aggregateTag,
 		}, hasExtern, hasTypedef, nil
@@ -1372,15 +1908,19 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 
 func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth int, declArrayLen int64, allowOpaqueObject bool, context string) (cTypeInfo, error) {
 	out := base
-	if base.OpaqueAggregate && base.Kind != cDeclPointer && declKind != cDeclPointer && !allowOpaqueObject {
+	if base.AggregateKeyword != "" && base.Kind != cDeclPointer && declKind != cDeclPointer && !allowOpaqueObject {
 		what := base.AggregateKeyword
 		if what == "" {
 			what = "aggregate"
 		}
-		if base.AggregateTag != "" {
-			return cTypeInfo{}, fmt.Errorf("%s only supports pointers to opaque %s %q types for now", context, what, base.AggregateTag)
+		flavor := ""
+		if base.OpaqueAggregate {
+			flavor = "opaque "
 		}
-		return cTypeInfo{}, fmt.Errorf("%s only supports pointers to opaque %s types for now", context, what)
+		if base.AggregateTag != "" {
+			return cTypeInfo{}, fmt.Errorf("%s only supports pointers to %s%s %q types for now", context, flavor, what, base.AggregateTag)
+		}
+		return cTypeInfo{}, fmt.Errorf("%s only supports pointers to %s%s types for now", context, flavor, what)
 	}
 	switch declKind {
 	case cDeclArray:
@@ -1535,10 +2075,10 @@ func parseSimplePointerCore(tokens []Token, allowAbstract bool) (string, int, er
 	return "", 0, fmt.Errorf("complex declarators are not yet supported")
 }
 
-func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, []cScalarType, []int, []*cFuncTypeSig, bool, error) {
+func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, []cScalarType, []int, []bool, []string, []string, []*cFuncTypeSig, bool, error) {
 	paramTokens = trimTokens(paramTokens)
 	if len(paramTokens) == 0 {
-		return nil, nil, nil, nil, false, nil
+		return nil, nil, nil, nil, nil, nil, nil, false, nil
 	}
 	parts := splitTopLevel(paramTokens, ",")
 	if len(parts) == 1 {
@@ -1564,6 +2104,9 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 	paramKinds := make([]cDeclKind, 0, len(parts))
 	paramBases := make([]cScalarType, 0, len(parts))
 	paramPtrDepth := make([]int, 0, len(parts))
+	paramOpaque := make([]bool, 0, len(parts))
+	paramAggKey := make([]string, 0, len(parts))
+	paramAggTag := make([]string, 0, len(parts))
 	paramFuncSigs := make([]*cFuncTypeSig, 0, len(parts))
 	for i, p := range parts {
 		p = trimTokens(p)
@@ -1572,7 +2115,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		}
 		if len(p) == 1 && p[0].Kind == TokPunct && p[0].Text == "..." {
 			if i != len(parts)-1 || len(paramKinds) == 0 {
-				return nil, nil, nil, nil, false, fmt.Errorf("variadic marker must appear last after at least one named parameter")
+				return nil, nil, nil, nil, nil, nil, nil, false, fmt.Errorf("variadic marker must appear last after at least one named parameter")
 			}
 			variadic = true
 			continue
@@ -1580,19 +2123,19 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		pctx := fmt.Sprintf("%s parameter %d", context, i+1)
 		spec, decl, err := splitDeclSpecPrefix(p, pctx)
 		if err != nil {
-			return nil, nil, nil, nil, false, err
+			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
 		pbaseInfo, _, _, err := parseScalarTypeSpec(spec, pctx, true)
 		if err != nil {
-			return nil, nil, nil, nil, false, err
+			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
 		pname, pdeclKind, pdeclPtrDepth, parrLen, pfnSig, err := parseDeclarator(decl, true)
 		if err != nil {
-			return nil, nil, nil, nil, false, err
+			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
 		pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, false, pctx)
 		if err != nil {
-			return nil, nil, nil, nil, false, err
+			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
 		if pinfo.Kind == cDeclArray {
 			// Arrays in parameter lists decay to pointers.
@@ -1604,9 +2147,9 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if pinfo.IsVoid && pinfo.Kind == cDeclScalar {
 			if pname == "" && i == 0 && len(parts) == 1 {
 				// handled above for `void` empty parameter list; keep defensive fallback.
-				return nil, nil, nil, nil, false, nil
+				return nil, nil, nil, nil, nil, nil, nil, false, nil
 			}
-			return nil, nil, nil, nil, false, fmt.Errorf("%s parameter %q cannot have type void", context, pname)
+			return nil, nil, nil, nil, nil, nil, nil, false, fmt.Errorf("%s parameter %q cannot have type void", context, pname)
 		}
 		if pfnSig != nil {
 			pfn := cloneFuncTypeSig(pfnSig)
@@ -1614,14 +2157,20 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 			pfn.RetBase = pbaseInfo.Base
 			pfn.RetPtrDepth = pbaseInfo.PtrDepth
 			pfn.RetIsVoid = pbaseInfo.IsVoid
+			pfn.RetOpaque = pbaseInfo.OpaqueAggregate
+			pfn.RetAggKeyword = pbaseInfo.AggregateKeyword
+			pfn.RetAggTag = pbaseInfo.AggregateTag
 			pinfo.FuncSig = pfn
 		}
 		paramKinds = append(paramKinds, pinfo.Kind)
 		paramBases = append(paramBases, pinfo.Base)
 		paramPtrDepth = append(paramPtrDepth, pinfo.PtrDepth)
+		paramOpaque = append(paramOpaque, pinfo.OpaqueAggregate)
+		paramAggKey = append(paramAggKey, pinfo.AggregateKeyword)
+		paramAggTag = append(paramAggTag, pinfo.AggregateTag)
 		paramFuncSigs = append(paramFuncSigs, cloneFuncTypeSig(pinfo.FuncSig))
 	}
-	return paramKinds, paramBases, paramPtrDepth, paramFuncSigs, variadic, nil
+	return paramKinds, paramBases, paramPtrDepth, paramOpaque, paramAggKey, paramAggTag, paramFuncSigs, variadic, nil
 }
 
 func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, *cFuncTypeSig, error) {
@@ -1646,7 +2195,7 @@ func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int
 		if ptrDepth == 0 {
 			return "", cDeclScalar, 0, 0, nil, fmt.Errorf("function declarators are only supported through pointers")
 		}
-		paramKinds, paramBases, paramPtrDepth, paramFuncSigs, variadic, err := parseFunctionParamList(tokens[fnOpen+1:len(tokens)-1], "function declarator")
+		paramKinds, paramBases, paramPtrDepth, paramOpaque, paramAggKey, paramAggTag, paramFuncSigs, variadic, err := parseFunctionParamList(tokens[fnOpen+1:len(tokens)-1], "function declarator")
 		if err != nil {
 			return "", cDeclScalar, 0, 0, nil, err
 		}
@@ -1656,6 +2205,9 @@ func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int
 			ParamKinds:    paramKinds,
 			ParamBases:    paramBases,
 			ParamPtrDepth: paramPtrDepth,
+			ParamOpaque:   paramOpaque,
+			ParamAggKey:   paramAggKey,
+			ParamAggTag:   paramAggTag,
 			ParamFuncSigs: paramFuncSigs,
 		}
 		return name, cDeclPointer, ptrDepth, 0, fnSig, nil
@@ -2191,7 +2743,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64) ([]cDeclItem, map
 		return nil, nil, false, false, err
 	}
 	if len(rest) == 0 {
-		if baseInfo.OpaqueAggregate && !hasTypedef {
+		if baseInfo.AggregateKeyword != "" && !hasTypedef {
 			return nil, nil, hasExtern, hasTypedef, nil
 		}
 		return nil, nil, false, false, fmt.Errorf("missing declarator in declaration")
@@ -2235,7 +2787,7 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if name != "" {
 		return cTypeInfo{}, fmt.Errorf("named declarators are not supported in type names (%s)", name)
 	}
-	info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, false, "type name")
+	info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, true, "type name")
 	if err != nil {
 		return cTypeInfo{}, err
 	}
@@ -2306,6 +2858,7 @@ type funcCompiler struct {
 	scopes        []map[string]cLocalBinding
 	typedefScopes []map[string]cTypeInfo
 	enumScopes    []map[string]int64
+	aggregateTags []map[string]*cAggregateInfo
 
 	breakTargets    []int
 	continueTargets []int
@@ -2326,6 +2879,7 @@ func (fc *funcCompiler) pushScope() {
 	fc.scopes = append(fc.scopes, make(map[string]cLocalBinding))
 	fc.typedefScopes = append(fc.typedefScopes, make(map[string]cTypeInfo))
 	fc.enumScopes = append(fc.enumScopes, make(map[string]int64))
+	fc.aggregateTags = append(fc.aggregateTags, make(map[string]*cAggregateInfo))
 }
 
 func (fc *funcCompiler) popScope() {
@@ -2337,6 +2891,9 @@ func (fc *funcCompiler) popScope() {
 	}
 	if len(fc.enumScopes) > 0 {
 		fc.enumScopes = fc.enumScopes[:len(fc.enumScopes)-1]
+	}
+	if len(fc.aggregateTags) > 0 {
+		fc.aggregateTags = fc.aggregateTags[:len(fc.aggregateTags)-1]
 	}
 }
 
@@ -2394,6 +2951,219 @@ func (fc *funcCompiler) enumLookupMap() map[string]int64 {
 		}
 	}
 	return out
+}
+
+func (fc *funcCompiler) aggregateLookupMap() map[string]*cAggregateInfo {
+	out := make(map[string]*cAggregateInfo)
+	for key, agg := range fc.c.aggregateTags {
+		out[key] = cloneAggregateInfo(agg)
+	}
+	i := 0
+	for i < len(fc.aggregateTags) {
+		for key, agg := range fc.aggregateTags[i] {
+			out[key] = cloneAggregateInfo(agg)
+		}
+		i++
+	}
+	return out
+}
+
+func (fc *funcCompiler) lookupAggregate(keyword string, tag string) (*cAggregateInfo, bool) {
+	if keyword == "" || tag == "" {
+		return nil, false
+	}
+	key := aggregateTypeKey(keyword, tag)
+	i := len(fc.aggregateTags) - 1
+	for i >= 0 {
+		if agg, ok := fc.aggregateTags[i][key]; ok {
+			return cloneAggregateInfo(agg), true
+		}
+		i--
+	}
+	return fc.c.lookupAggregate(keyword, tag)
+}
+
+func (fc *funcCompiler) registerAggregate(info *cAggregateInfo) error {
+	if info == nil || info.Keyword == "" || info.Tag == "" {
+		return nil
+	}
+	if len(fc.aggregateTags) == 0 {
+		fc.aggregateTags = append(fc.aggregateTags, make(map[string]*cAggregateInfo))
+	}
+	key := aggregateTypeKey(info.Keyword, info.Tag)
+	cur := fc.aggregateTags[len(fc.aggregateTags)-1]
+	newInfo := cloneAggregateInfo(info)
+	if prev, ok := cur[key]; ok {
+		prevHasFields := len(prev.Fields) > 0
+		newHasFields := len(newInfo.Fields) > 0
+		if prevHasFields && newHasFields {
+			if !aggregateInfosCompatible(prev, newInfo) {
+				return fmt.Errorf("conflicting %s definition for %q", info.Keyword, info.Tag)
+			}
+			return nil
+		}
+		if prevHasFields || !newHasFields {
+			return nil
+		}
+	}
+	cur[key] = newInfo
+	return nil
+}
+
+func (fc *funcCompiler) typeInfoSizeAlign(info cTypeInfo) (int64, int64, bool) {
+	switch info.Kind {
+	case cDeclPointer:
+		ps := int64(fc.c.target.PtrSize)
+		return ps, ps, true
+	case cDeclArray:
+		elem := info
+		elem.Kind = cDeclScalar
+		elem.ArrayLen = 0
+		elemSize, elemAlign, ok := fc.typeInfoSizeAlign(elem)
+		if !ok {
+			return 0, 0, false
+		}
+		return elemSize * info.ArrayLen, elemAlign, true
+	case cDeclScalar:
+		if info.IsVoid {
+			return 1, 1, true
+		}
+		if info.AggregateKeyword != "" && info.AggregateTag != "" {
+			if info.OpaqueAggregate {
+				return 0, 0, false
+			}
+			if agg, ok := fc.lookupAggregate(info.AggregateKeyword, info.AggregateTag); ok && len(agg.Fields) > 0 {
+				align := agg.Align
+				if align <= 0 {
+					align = 1
+				}
+				size := agg.Size
+				if size <= 0 {
+					size = 1
+				}
+				return size, align, true
+			}
+			return 0, 0, false
+		}
+		sz := fc.scalarSize(info.Base)
+		return sz, sz, true
+	}
+	return 0, 0, false
+}
+
+func (fc *funcCompiler) pointerElemStep(kind cDeclKind, ptrDepth int, base cScalarType, isVoid bool, opaqueAggregate bool, aggregateKeyword string, aggregateTag string) int64 {
+	if kind != cDeclPointer {
+		return int64(fc.c.target.PtrSize)
+	}
+	if ptrDepth > 1 {
+		return int64(fc.c.target.PtrSize)
+	}
+	if isVoid {
+		return 1
+	}
+	if aggregateKeyword != "" && aggregateTag != "" {
+		if !opaqueAggregate {
+			if agg, ok := fc.lookupAggregate(aggregateKeyword, aggregateTag); ok && len(agg.Fields) > 0 {
+				return agg.Size
+			}
+		}
+		return int64(fc.c.target.PtrSize)
+	}
+	_ = base
+	return int64(fc.c.target.PtrSize)
+}
+
+func (fc *funcCompiler) resolveMemberField(ex *expr, diag bool) (cAggregateField, bool) {
+	if ex == nil || ex.kind != exprMember {
+		return cAggregateField{}, false
+	}
+	baseType, ok := fc.exprTypeInfo(ex.left)
+	if !ok {
+		if diag {
+			fc.errorf(fc.sig.File, 0, 0, "member access requires aggregate expression")
+		}
+		return cAggregateField{}, false
+	}
+	switch ex.op {
+	case ".":
+		if baseType.Kind != cDeclScalar || baseType.AggregateKeyword == "" || baseType.AggregateTag == "" {
+			if diag {
+				fc.errorf(fc.sig.File, 0, 0, "member access via '.' requires struct/union value")
+			}
+			return cAggregateField{}, false
+		}
+		if baseType.OpaqueAggregate {
+			if diag {
+				fc.errorf(fc.sig.File, 0, 0, "member access via '.' on incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
+			}
+			return cAggregateField{}, false
+		}
+	case "->":
+		if baseType.Kind != cDeclPointer || baseType.PtrDepth != 1 || baseType.AggregateKeyword == "" || baseType.AggregateTag == "" {
+			if diag {
+				fc.errorf(fc.sig.File, 0, 0, "member access via '->' requires pointer to struct/union")
+			}
+			return cAggregateField{}, false
+		}
+		if baseType.OpaqueAggregate {
+			if diag {
+				fc.errorf(fc.sig.File, 0, 0, "member access via '->' on incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
+			}
+			return cAggregateField{}, false
+		}
+	default:
+		if diag {
+			fc.errorf(fc.sig.File, 0, 0, "unsupported member access operator %q", ex.op)
+		}
+		return cAggregateField{}, false
+	}
+	agg, ok := fc.lookupAggregate(baseType.AggregateKeyword, baseType.AggregateTag)
+	if !ok || len(agg.Fields) == 0 {
+		if diag {
+			fc.errorf(fc.sig.File, 0, 0, "member access on unknown/incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
+		}
+		return cAggregateField{}, false
+	}
+	for _, f := range agg.Fields {
+		if f.Name == ex.member {
+			if f.Size > 1 {
+				word := int64(fc.c.target.PtrSize)
+				if word > 1 && (f.Offset%word) != 0 {
+					if diag {
+						fc.errorf(fc.sig.File, 0, 0, "member %q at byte offset %d is not yet supported on this target", ex.member, f.Offset)
+					}
+					return cAggregateField{}, false
+				}
+			}
+			return f, true
+		}
+	}
+	if diag {
+		fc.errorf(fc.sig.File, 0, 0, "%s %q has no member %q", agg.Keyword, agg.Tag, ex.member)
+	}
+	return cAggregateField{}, false
+}
+
+func (fc *funcCompiler) emitMemberAddress(ex *expr, diag bool) bool {
+	field, ok := fc.resolveMemberField(ex, diag)
+	if !ok {
+		return false
+	}
+	if ex.op == "->" {
+		fc.emitExpr(ex.left)
+	} else {
+		if !fc.emitAddressOf(ex.left) {
+			if diag {
+				fc.errorf(fc.sig.File, 0, 0, "member access via '.' requires addressable base expression")
+			}
+			return false
+		}
+	}
+	if field.Offset != 0 {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: field.Offset})
+		fc.emit(ir.Inst{Op: ir.OP_ADD})
+	}
+	return true
 }
 
 func (fc *funcCompiler) lookupTypedef(name string) (cTypeInfo, bool) {
@@ -2768,7 +3538,7 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 		return
 	}
 	for _, it := range items {
-		elemStep := int64(fc.c.target.PtrSize)
+		elemStep := fc.pointerElemStep(it.Kind, it.PtrDepth, it.Base, it.IsVoid, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag)
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
 		}
@@ -2999,7 +3769,7 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 		return
 	}
 	for _, it := range items {
-		elemStep := int64(fc.c.target.PtrSize)
+		elemStep := fc.pointerElemStep(it.Kind, it.PtrDepth, it.Base, it.IsVoid, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag)
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
 		}
@@ -3136,7 +3906,7 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 		fc.emitIndexAddr(ex.left, ex.right)
 		return true
 	case exprMember:
-		return false
+		return fc.emitMemberAddress(ex, false)
 	default:
 		return false
 	}
@@ -3170,6 +3940,11 @@ func (fc *funcCompiler) typeScalarWidth(info cTypeInfo) int64 {
 	}
 	if info.Kind == cDeclPointer {
 		return int64(fc.c.target.PtrSize)
+	}
+	if info.AggregateKeyword != "" && info.AggregateTag != "" && !info.OpaqueAggregate {
+		if agg, ok := fc.lookupAggregate(info.AggregateKeyword, info.AggregateTag); ok && len(agg.Fields) > 0 {
+			return agg.Size
+		}
 	}
 	return fc.scalarSize(info.Base)
 }
@@ -3554,6 +4329,11 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		}
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprMember:
+		if field, ok := fc.resolveMemberField(ex, false); ok {
+			out := field.Type
+			out.FuncSig = cloneFuncTypeSig(out.FuncSig)
+			return out, true
+		}
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprCall:
 		if name, ok := fc.builtinVariadicCallName(ex); ok {
@@ -3568,15 +4348,25 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 			if sig.RetCount == 0 {
 				return cTypeInfo{Kind: cDeclScalar, IsVoid: true}, true
 			}
-			return cTypeInfo{Kind: sig.RetKind, PtrDepth: sig.RetPtrDepth, Base: sig.RetBase}, true
+			return cTypeInfo{
+				Kind:             sig.RetKind,
+				PtrDepth:         sig.RetPtrDepth,
+				Base:             sig.RetBase,
+				OpaqueAggregate:  sig.RetOpaque,
+				AggregateKeyword: sig.RetAggKeyword,
+				AggregateTag:     sig.RetAggTag,
+			}, true
 		}
 		if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 {
 			if t.FuncSig != nil {
 				return cTypeInfo{
-					Kind:     t.FuncSig.RetKind,
-					PtrDepth: t.FuncSig.RetPtrDepth,
-					Base:     t.FuncSig.RetBase,
-					IsVoid:   t.FuncSig.RetIsVoid,
+					Kind:             t.FuncSig.RetKind,
+					PtrDepth:         t.FuncSig.RetPtrDepth,
+					Base:             t.FuncSig.RetBase,
+					IsVoid:           t.FuncSig.RetIsVoid,
+					OpaqueAggregate:  t.FuncSig.RetOpaque,
+					AggregateKeyword: t.FuncSig.RetAggKeyword,
+					AggregateTag:     t.FuncSig.RetAggTag,
 				}, true
 			}
 			return cTypeInfo{Kind: cDeclScalar, Base: t.Base, IsVoid: t.IsVoid}, true
@@ -3635,6 +4425,11 @@ func (fc *funcCompiler) exprPointerStep(ex *expr) int64 {
 			if ex.typeInfo.IsVoid {
 				return 1
 			}
+			if ex.typeInfo.AggregateKeyword != "" && ex.typeInfo.AggregateTag != "" && !ex.typeInfo.OpaqueAggregate {
+				if agg, ok := fc.lookupAggregate(ex.typeInfo.AggregateKeyword, ex.typeInfo.AggregateTag); ok && len(agg.Fields) > 0 {
+					return agg.Size
+				}
+			}
 			return fc.scalarSize(ex.typeInfo.Base)
 		}
 	case exprCall:
@@ -3652,6 +4447,21 @@ func (fc *funcCompiler) exprPointerStep(ex *expr) int64 {
 				return 1
 			}
 			return fc.scalarSize(t.FuncSig.RetBase)
+		}
+	case exprMember:
+		if field, ok := fc.resolveMemberField(ex, false); ok && field.Type.Kind == cDeclPointer {
+			if field.Type.PtrDepth > 1 {
+				return int64(fc.c.target.PtrSize)
+			}
+			if field.Type.IsVoid {
+				return 1
+			}
+			if field.Type.AggregateKeyword != "" && field.Type.AggregateTag != "" && !field.Type.OpaqueAggregate {
+				if agg, ok := fc.lookupAggregate(field.Type.AggregateKeyword, field.Type.AggregateTag); ok && len(agg.Fields) > 0 {
+					return agg.Size
+				}
+			}
+			return fc.scalarSize(field.Type.Base)
 		}
 	}
 	return int64(fc.c.target.PtrSize)
@@ -3692,6 +4502,11 @@ func (fc *funcCompiler) exprDerefWidth(ex *expr) int {
 		}
 		return 1
 	}
+	if t.AggregateKeyword != "" && t.AggregateTag != "" {
+		if agg, ok := fc.lookupAggregate(t.AggregateKeyword, t.AggregateTag); ok && len(agg.Fields) > 0 {
+			return int(agg.Size)
+		}
+	}
 	return int(fc.scalarSize(t.Base))
 }
 
@@ -3716,6 +4531,13 @@ func (fc *funcCompiler) exprLValueWidth(ex *expr) int {
 		}
 	case exprIndex:
 		return fc.exprDerefWidth(ex.left)
+	case exprMember:
+		if field, ok := fc.resolveMemberField(ex, false); ok {
+			if size, _, ok := fc.typeInfoSizeAlign(field.Type); ok {
+				return int(size)
+			}
+		}
+		return fc.c.target.PtrSize
 	}
 	return fc.c.target.PtrSize
 }
@@ -3771,7 +4593,13 @@ func funcTypeSigEqual(a *cFuncTypeSig, b *cFuncTypeSig) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	if a.RetKind != b.RetKind || a.RetBase != b.RetBase || a.RetPtrDepth != b.RetPtrDepth || a.RetIsVoid != b.RetIsVoid {
+	if a.RetKind != b.RetKind ||
+		a.RetBase != b.RetBase ||
+		a.RetPtrDepth != b.RetPtrDepth ||
+		a.RetIsVoid != b.RetIsVoid ||
+		a.RetOpaque != b.RetOpaque ||
+		a.RetAggKeyword != b.RetAggKeyword ||
+		a.RetAggTag != b.RetAggTag {
 		return false
 	}
 	if a.ParamCount != b.ParamCount {
@@ -3788,6 +4616,15 @@ func funcTypeSigEqual(a *cFuncTypeSig, b *cFuncTypeSig) bool {
 			return false
 		}
 		if i >= len(a.ParamPtrDepth) || i >= len(b.ParamPtrDepth) || a.ParamPtrDepth[i] != b.ParamPtrDepth[i] {
+			return false
+		}
+		if i >= len(a.ParamOpaque) || i >= len(b.ParamOpaque) || a.ParamOpaque[i] != b.ParamOpaque[i] {
+			return false
+		}
+		if i >= len(a.ParamAggKey) || i >= len(b.ParamAggKey) || a.ParamAggKey[i] != b.ParamAggKey[i] {
+			return false
+		}
+		if i >= len(a.ParamAggTag) || i >= len(b.ParamAggTag) || a.ParamAggTag[i] != b.ParamAggTag[i] {
 			return false
 		}
 		var af, bf *cFuncTypeSig
@@ -3808,7 +4645,13 @@ func funcSigMatchesType(sig *cFuncSig, want *cFuncTypeSig) bool {
 	if sig == nil || want == nil {
 		return false
 	}
-	if want.RetKind != sig.RetKind || want.RetBase != sig.RetBase || want.RetPtrDepth != sig.RetPtrDepth || want.RetIsVoid != (sig.RetCount == 0) {
+	if want.RetKind != sig.RetKind ||
+		want.RetBase != sig.RetBase ||
+		want.RetPtrDepth != sig.RetPtrDepth ||
+		want.RetIsVoid != (sig.RetCount == 0) ||
+		want.RetOpaque != sig.RetOpaque ||
+		want.RetAggKeyword != sig.RetAggKeyword ||
+		want.RetAggTag != sig.RetAggTag {
 		return false
 	}
 	if want.ParamCount != sig.ParamCount {
@@ -3825,6 +4668,15 @@ func funcSigMatchesType(sig *cFuncSig, want *cFuncTypeSig) bool {
 			return false
 		}
 		if i >= len(sig.ParamPtrDepth) || want.ParamPtrDepth[i] != sig.ParamPtrDepth[i] {
+			return false
+		}
+		if i >= len(sig.ParamOpaque) || want.ParamOpaque[i] != sig.ParamOpaque[i] {
+			return false
+		}
+		if i >= len(sig.ParamAggKey) || want.ParamAggKey[i] != sig.ParamAggKey[i] {
+			return false
+		}
+		if i >= len(sig.ParamAggTag) || want.ParamAggTag[i] != sig.ParamAggTag[i] {
 			return false
 		}
 		var wf, sf *cFuncTypeSig
@@ -4144,12 +4996,17 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		fc.emitIndexAddr(ex.left, ex.right)
 		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprDerefWidth(ex.left)})
 	case exprMember:
-		if ex.op == "->" {
-			fc.errorf(fc.sig.File, 0, 0, "member access via '->' is not yet supported")
-		} else {
-			fc.errorf(fc.sig.File, 0, 0, "member access via '.' is not yet supported")
+		field, ok := fc.resolveMemberField(ex, true)
+		if !ok || !fc.emitMemberAddress(ex, true) {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			break
 		}
-		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		if field.Type.Kind == cDeclScalar && field.Type.AggregateKeyword != "" && field.Type.AggregateTag != "" && field.Type.PtrDepth == 0 {
+			fc.errorf(fc.sig.File, 0, 0, "aggregate-valued member expression is not yet supported")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			break
+		}
+		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprLValueWidth(ex)})
 	case exprCall:
 		if fc.emitBuiltinVariadicCall(ex) {
 			return
