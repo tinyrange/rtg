@@ -211,3 +211,13 @@ t.FailNow() // sentinel panic escapes in this branch state
 - Excluded extended stdlib fixtures from DOS COMEMU sweep and constrained RTG fullcompiler targets:
   - `54_stdlib_cli_core`
   - `55_stdlib_additions_extended`
+
+## 14) `55_stdlib_additions_extended` crashes on RTG x64 runtime targets
+
+**Symptom**
+- In CI on `linux/amd64` and `windows/amd64`, running compiled `55_stdlib_additions_extended` exits non-zero with no diagnostic output, causing fullcompiler failure.
+- Neighboring stdlib fixture `54_stdlib_cli_core` passes on the same jobs.
+
+**Workaround used**
+- Added fullcompiler skip for `55_stdlib_additions_extended` on RTG `amd64` targets.
+- Kept the fixture enabled on non-`amd64` RTG targets where it currently passes.
