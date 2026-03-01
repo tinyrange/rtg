@@ -39,6 +39,7 @@ type cDeclItem struct {
 	Kind     cDeclKind
 	PtrDepth int
 	ArrayLen int64
+	IsVoid   bool
 	Base     cScalarType
 }
 
@@ -86,6 +87,15 @@ type cTypeInfo struct {
 	Base     cScalarType
 }
 
+var cTypedefLookup func(name string) (cTypeInfo, bool)
+
+func lookupTypedefAlias(name string) (cTypeInfo, bool) {
+	if cTypedefLookup == nil {
+		return cTypeInfo{}, false
+	}
+	return cTypedefLookup(name)
+}
+
 type cIntrinsicWrapper struct {
 	IRName   string
 	Params   int
@@ -124,10 +134,16 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		globalElemStep: make(map[string]int64),
 		globalArray:    make(map[string]int64),
 		globalBase:     make(map[string]cScalarType),
+		typedefs:       make(map[string]cTypeInfo),
 		intrinsics:     make(map[string]cIntrinsicWrapper),
 		externFns:      make(map[string]string),
 		nextLabelSeq:   1,
 	}
+	prevTypedefLookup := cTypedefLookup
+	cTypedefLookup = c.lookupTypedef
+	defer func() {
+		cTypedefLookup = prevTypedefLookup
+	}()
 
 	c.collectTopLevel()
 	if len(c.errors) > 0 {
@@ -166,6 +182,7 @@ type compiler struct {
 	globalArray    map[string]int64
 	globalBase     map[string]cScalarType
 	globalInits    []cGlobalInit
+	typedefs       map[string]cTypeInfo
 
 	intrinsics map[string]cIntrinsicWrapper
 	externFns  map[string]string
@@ -185,6 +202,11 @@ func (c *compiler) nextLabel() int {
 	v := c.nextLabelSeq
 	c.nextLabelSeq++
 	return v
+}
+
+func (c *compiler) lookupTypedef(name string) (cTypeInfo, bool) {
+	info, ok := c.typedefs[name]
+	return info, ok
 }
 
 func (c *compiler) ensureIntrinsicWrapper(name string, params int, retCount int) string {
@@ -320,24 +342,52 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		return
 	}
 
-	// Function prototype.
-	if hasTopLevelPunct(toks, "(") {
+	// Function prototype: first top-level '(' must follow the function name.
+	fnLPar := topLevelPunctIndex(toks, "(")
+	if fnLPar > 0 && toks[fnLPar-1].Kind == TokIdent && !isDeclarationKeyword(toks[fnLPar-1]) {
 		sig, err := parseFunctionSignature(file, n.Line, n.Col, toks)
-		if err != nil {
-			// Keep prototype handling permissive; many unsupported declarations are harmless.
+		if err == nil {
+			if _, ok := c.funcs[sig.Name]; !ok {
+				sig.Defined = false
+				c.funcs[sig.Name] = sig
+				c.funcOrder = append(c.funcOrder, sig)
+			}
 			return
 		}
-		if _, ok := c.funcs[sig.Name]; !ok {
-			sig.Defined = false
-			c.funcs[sig.Name] = sig
-			c.funcOrder = append(c.funcOrder, sig)
-		}
-		return
 	}
 
-	items, hasExtern, err := parseDeclItems(toks)
+	items, hasExtern, hasTypedef, err := parseDeclItems(toks)
 	if err != nil {
 		c.errorf(file, n.Line, n.Col, "%v", err)
+		return
+	}
+	if hasTypedef {
+		if hasExtern {
+			c.errorf(file, n.Line, n.Col, "extern typedef declarations are not supported")
+		}
+		for _, it := range items {
+			if len(it.Init) > 0 {
+				c.errorf(file, n.Line, n.Col, "typedef declaration with initializer is not supported: %s", it.Name)
+				continue
+			}
+			if it.Kind == cDeclArray {
+				c.errorf(file, n.Line, n.Col, "typedef array declarations are not yet supported: %s", it.Name)
+				continue
+			}
+			if it.Kind == cDeclPointer && it.PtrDepth == 0 {
+				it.PtrDepth = 1
+			}
+			if _, exists := c.typedefs[it.Name]; exists {
+				c.errorf(file, n.Line, n.Col, "duplicate typedef name %q", it.Name)
+				continue
+			}
+			c.typedefs[it.Name] = cTypeInfo{
+				Kind:     it.Kind,
+				PtrDepth: it.PtrDepth,
+				IsVoid:   it.IsVoid,
+				Base:     it.Base,
+			}
+		}
 		return
 	}
 	for _, it := range items {
@@ -412,10 +462,11 @@ func (c *compiler) emitGlobalInit() {
 	}
 	f := &ir.IRFunc{Name: "c.init$globals", Params: 0, RetCount: 0}
 	fc := &funcCompiler{
-		c:      c,
-		sig:    &cFuncSig{Name: "c.init$globals", IRName: "c.init$globals", RetCount: 0},
-		fn:     f,
-		scopes: []map[string]cLocalBinding{{}},
+		c:             c,
+		sig:           &cFuncSig{Name: "c.init$globals", IRName: "c.init$globals", RetCount: 0},
+		fn:            f,
+		scopes:        []map[string]cLocalBinding{{}},
+		typedefScopes: []map[string]cTypeInfo{{}},
 	}
 	for _, g := range c.globalInits {
 		if g.Kind == cDeclArray {
@@ -458,10 +509,11 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 
 	f := &ir.IRFunc{Name: sig.IRName, Params: sig.ParamCount, RetCount: sig.RetCount}
 	fc := &funcCompiler{
-		c:      c,
-		sig:    sig,
-		fn:     f,
-		scopes: []map[string]cLocalBinding{{}},
+		c:             c,
+		sig:           sig,
+		fn:            f,
+		scopes:        []map[string]cLocalBinding{{}},
+		typedefScopes: []map[string]cTypeInfo{{}},
 	}
 	for i, p := range sig.ParamNames {
 		name := p
@@ -490,7 +542,10 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		fc.addLocalTyped(name, kind, base, ptrDepth, elemStep, sig.File, sig.Line, sig.Col)
 	}
 
+	prevTypedefLookup := cTypedefLookup
+	cTypedefLookup = fc.lookupTypedef
 	fc.compileCompound(sig.Body, true)
+	cTypedefLookup = prevTypedefLookup
 	if len(f.Code) == 0 || f.Code[len(f.Code)-1].Op != ir.OP_RETURN {
 		if sig.RetCount > 0 {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -542,17 +597,21 @@ func lexSnippet(file string, src string) ([]Token, error) {
 }
 
 func hasTopLevelPunct(tokens []Token, punct string) bool {
+	return topLevelPunctIndex(tokens, punct) >= 0
+}
+
+func topLevelPunctIndex(tokens []Token, punct string) int {
 	depthParen := 0
 	depthBracket := 0
 	depthBrace := 0
-	for _, t := range tokens {
+	for i, t := range tokens {
 		if t.Kind != TokPunct {
 			continue
 		}
 		switch t.Text {
 		case "(":
 			if punct == "(" && depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
-				return true
+				return i
 			}
 			depthParen++
 		case ")":
@@ -561,7 +620,7 @@ func hasTopLevelPunct(tokens []Token, punct string) bool {
 			}
 		case "[":
 			if punct == "[" && depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
-				return true
+				return i
 			}
 			depthBracket++
 		case "]":
@@ -570,7 +629,7 @@ func hasTopLevelPunct(tokens []Token, punct string) bool {
 			}
 		case "{":
 			if punct == "{" && depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
-				return true
+				return i
 			}
 			depthBrace++
 		case "}":
@@ -579,11 +638,11 @@ func hasTopLevelPunct(tokens []Token, punct string) bool {
 			}
 		default:
 			if t.Text == punct && depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
-				return true
+				return i
 			}
 		}
 	}
-	return false
+	return -1
 }
 
 func splitTopLevel(tokens []Token, sep string) [][]Token {
@@ -689,22 +748,23 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if err != nil {
 		return nil, err
 	}
-	retBase, retVoid, _, err := parseScalarTypeSpec(spec, "function declaration", true)
+	retSpec, _, _, err := parseScalarTypeSpec(spec, "function declaration", true)
 	if err != nil {
 		return nil, err
 	}
-	name, retKind, retPtrDepth, _, err := parseDeclarator(decl, false)
+	name, retDeclKind, retDeclPtrDepth, _, err := parseDeclarator(decl, false)
 	if err != nil {
 		return nil, err
 	}
-	if retKind == cDeclPointer && retPtrDepth == 0 {
-		retPtrDepth = 1
+	retInfo, err := combineTypeAndDeclarator(retSpec, retDeclKind, retDeclPtrDepth, 0, "function declaration")
+	if err != nil {
+		return nil, err
 	}
-	if retKind == cDeclArray {
+	if retInfo.Kind == cDeclArray {
 		return nil, fmt.Errorf("function %q cannot return array type", name)
 	}
 	retCount := 1
-	if retVoid && retKind == cDeclScalar {
+	if retInfo.IsVoid && retInfo.Kind == cDeclScalar {
 		retCount = 0
 	}
 
@@ -722,11 +782,14 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			if len(p0) > 0 {
 				spec, decl, err := splitDeclSpecPrefix(p0, "function parameter list")
 				if err == nil {
-					base, isVoid, _, err := parseScalarTypeSpec(spec, "function parameter list", true)
+					baseInfo, _, _, err := parseScalarTypeSpec(spec, "function parameter list", true)
 					if err == nil {
-						_, kind, _, _, err := parseDeclarator(decl, true)
-						if err == nil && isVoid && kind == cDeclScalar && base == cScalarInt {
-							parts = nil
+						_, kind, ptrDepth, arrLen, err := parseDeclarator(decl, true)
+						if err == nil {
+							info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, "function parameter list")
+							if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
+								parts = nil
+							}
 						}
 					}
 				}
@@ -744,32 +807,35 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			if err != nil {
 				return nil, err
 			}
-			pbase, pvoid, _, err := parseScalarTypeSpec(spec, fmt.Sprintf("function parameter %d", i+1), true)
+			pbaseInfo, _, _, err := parseScalarTypeSpec(spec, fmt.Sprintf("function parameter %d", i+1), true)
 			if err != nil {
 				return nil, err
 			}
-			pname, pkind, pptrDepth, _, err := parseDeclarator(decl, true)
+			pname, pdeclKind, pdeclPtrDepth, parrLen, err := parseDeclarator(decl, true)
+			if err != nil {
+				return nil, err
+			}
+			pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, fmt.Sprintf("function parameter %d", i+1))
 			if err != nil {
 				return nil, err
 			}
 			if pname == "" {
 				pname = fmt.Sprintf("$p%d", i)
 			}
-			if pkind == cDeclArray {
+			if pinfo.Kind == cDeclArray {
 				// Arrays in parameter lists decay to pointers.
-				pkind = cDeclPointer
-				pptrDepth = 1
+				pinfo.Kind = cDeclPointer
+				if pinfo.PtrDepth == 0 {
+					pinfo.PtrDepth = 1
+				}
 			}
-			if pvoid && pkind == cDeclScalar {
+			if pinfo.IsVoid && pinfo.Kind == cDeclScalar {
 				return nil, fmt.Errorf("function parameter %q cannot have type void", pname)
 			}
-			if pkind == cDeclPointer && pptrDepth == 0 {
-				pptrDepth = 1
-			}
 			paramNames = append(paramNames, pname)
-			paramKinds = append(paramKinds, pkind)
-			paramBases = append(paramBases, pbase)
-			paramPtrDepth = append(paramPtrDepth, pptrDepth)
+			paramKinds = append(paramKinds, pinfo.Kind)
+			paramBases = append(paramBases, pinfo.Base)
+			paramPtrDepth = append(paramPtrDepth, pinfo.PtrDepth)
 			paramCount++
 		}
 	}
@@ -778,9 +844,9 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 		Name:          name,
 		IRName:        "c." + name,
 		RetCount:      retCount,
-		RetKind:       retKind,
-		RetBase:       retBase,
-		RetPtrDepth:   retPtrDepth,
+		RetKind:       retInfo.Kind,
+		RetBase:       retInfo.Base,
+		RetPtrDepth:   retInfo.PtrDepth,
 		ParamCount:    paramCount,
 		ParamNames:    paramNames,
 		ParamKinds:    paramKinds,
@@ -839,6 +905,11 @@ func splitDeclSpecPrefix(tokens []Token, context string) ([]Token, []Token, erro
 			end++
 			continue
 		}
+		if _, ok := lookupTypedefAlias(t.Text); ok {
+			sawType = true
+			end++
+			continue
+		}
 		if isUnsupportedCTypeKeyword(t.Text) {
 			return nil, nil, fmt.Errorf("%s uses unsupported type keyword %q", context, t.Text)
 		}
@@ -850,8 +921,9 @@ func splitDeclSpecPrefix(tokens []Token, context string) ([]Token, []Token, erro
 	return trimTokens(tokens[:end]), trimTokens(tokens[end:]), nil
 }
 
-func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cScalarType, bool, bool, error) {
+func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInfo, bool, bool, error) {
 	var hasExtern bool
+	var hasTypedef bool
 	var sawType bool
 	var sawVoid bool
 	var sawChar bool
@@ -860,15 +932,32 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cScalarT
 	var sawLongCount int
 	var sawSigned bool
 	var sawUnsigned bool
+	var aliasSet bool
+	var aliasInfo cTypeInfo
 
 	for _, t := range spec {
 		if t.Kind != TokIdent {
-			return cScalarInt, false, false, fmt.Errorf("%s has invalid type token %q", context, t.Text)
+			return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid type token %q", context, t.Text)
+		}
+		if aliasSet {
+			switch t.Text {
+			case "extern":
+				hasExtern = true
+				continue
+			case "typedef":
+				hasTypedef = true
+				continue
+			case "const", "volatile", "restrict", "inline":
+				continue
+			}
+			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine typedef name %q with additional type specifiers", context, t.Text)
 		}
 		switch t.Text {
 		case "extern":
 			hasExtern = true
-		case "auto", "register", "static", "typedef":
+		case "typedef":
+			hasTypedef = true
+		case "auto", "register", "static":
 			// Accepted for parser compatibility; not all storage semantics are modeled yet.
 		case "const", "volatile", "restrict", "inline":
 			// Qualifiers are currently ignored in this lowering stage.
@@ -888,7 +977,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cScalarT
 			sawType = true
 			sawLongCount++
 			if sawLongCount > 2 {
-				return cScalarInt, false, false, fmt.Errorf("%s has invalid long type combination", context)
+				return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid long type combination", context)
 			}
 		case "signed":
 			sawType = true
@@ -897,57 +986,222 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cScalarT
 			sawType = true
 			sawUnsigned = true
 		default:
-			if isUnsupportedCTypeKeyword(t.Text) {
-				return cScalarInt, false, false, fmt.Errorf("%s uses unsupported type keyword %q", context, t.Text)
+			if alias, ok := lookupTypedefAlias(t.Text); ok {
+				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
+					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
+				}
+				sawType = true
+				aliasSet = true
+				aliasInfo = alias
+				break
 			}
-			return cScalarInt, false, false, fmt.Errorf("%s has unsupported type token %q", context, t.Text)
+			if isUnsupportedCTypeKeyword(t.Text) {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s uses unsupported type keyword %q", context, t.Text)
+			}
+			return cTypeInfo{}, false, false, fmt.Errorf("%s has unsupported type token %q", context, t.Text)
 		}
 	}
 
 	if !sawType {
-		return cScalarInt, false, false, fmt.Errorf("%s is missing a type specifier", context)
+		return cTypeInfo{}, false, false, fmt.Errorf("%s is missing a type specifier", context)
+	}
+	if aliasSet {
+		if aliasInfo.IsVoid && !allowVoid {
+			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot use void type here", context)
+		}
+		return aliasInfo, hasExtern, hasTypedef, nil
 	}
 	if sawSigned && sawUnsigned {
-		return cScalarInt, false, false, fmt.Errorf("%s cannot combine signed and unsigned", context)
+		return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine signed and unsigned", context)
 	}
 	if sawVoid {
 		if sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
-			return cScalarInt, false, false, fmt.Errorf("%s has invalid void type combination", context)
+			return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid void type combination", context)
 		}
 		if !allowVoid {
-			return cScalarInt, false, false, fmt.Errorf("%s cannot use void type here", context)
+			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot use void type here", context)
 		}
-		return cScalarInt, true, hasExtern, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt, IsVoid: true}, hasExtern, hasTypedef, nil
 	}
 	if sawChar {
 		if sawShort || sawInt || sawLongCount > 0 {
-			return cScalarInt, false, false, fmt.Errorf("%s has invalid char type combination", context)
+			return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid char type combination", context)
 		}
 		if sawUnsigned {
-			return cScalarUChar, false, hasExtern, nil
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarUChar}, hasExtern, hasTypedef, nil
 		}
-		return cScalarChar, false, hasExtern, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarChar}, hasExtern, hasTypedef, nil
 	}
 	if sawShort {
 		if sawLongCount > 0 {
-			return cScalarInt, false, false, fmt.Errorf("%s cannot combine short and long", context)
+			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine short and long", context)
 		}
 		if sawUnsigned {
-			return cScalarUShort, false, hasExtern, nil
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarUShort}, hasExtern, hasTypedef, nil
 		}
-		return cScalarShort, false, hasExtern, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarShort}, hasExtern, hasTypedef, nil
 	}
 	if sawLongCount > 0 {
 		if sawUnsigned {
-			return cScalarULong, false, hasExtern, nil
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarULong}, hasExtern, hasTypedef, nil
 		}
-		return cScalarLong, false, hasExtern, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarLong}, hasExtern, hasTypedef, nil
 	}
 	if sawUnsigned {
-		return cScalarUInt, false, hasExtern, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarUInt}, hasExtern, hasTypedef, nil
 	}
 	_ = sawInt
-	return cScalarInt, false, hasExtern, nil
+	return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasExtern, hasTypedef, nil
+}
+
+func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth int, declArrayLen int64, context string) (cTypeInfo, error) {
+	out := base
+	switch declKind {
+	case cDeclArray:
+		if base.Kind == cDeclPointer {
+			return cTypeInfo{}, fmt.Errorf("%s does not support array declarators over pointer typedef bases", context)
+		}
+		out.Kind = cDeclArray
+		out.ArrayLen = declArrayLen
+		out.PtrDepth = 0
+	case cDeclPointer:
+		if base.Kind == cDeclPointer {
+			out.Kind = cDeclPointer
+			out.PtrDepth = base.PtrDepth + declPtrDepth
+		} else {
+			out.Kind = cDeclPointer
+			out.PtrDepth = declPtrDepth
+		}
+	case cDeclScalar:
+		// No additional declarator modifiers.
+	default:
+		return cTypeInfo{}, fmt.Errorf("%s has unsupported declarator kind", context)
+	}
+	if out.Kind == cDeclPointer && out.PtrDepth == 0 {
+		out.PtrDepth = 1
+	}
+	return out, nil
+}
+
+func matchingParenClose(tokens []Token, open int) int {
+	if open < 0 || open >= len(tokens) {
+		return -1
+	}
+	if tokens[open].Kind != TokPunct || tokens[open].Text != "(" {
+		return -1
+	}
+	depth := 1
+	for i := open + 1; i < len(tokens); i++ {
+		if tokens[i].Kind != TokPunct {
+			continue
+		}
+		if tokens[i].Text == "(" {
+			depth++
+		} else if tokens[i].Text == ")" {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func trailingFunctionSuffixOpen(tokens []Token) int {
+	tokens = trimTokens(tokens)
+	if len(tokens) < 2 {
+		return -1
+	}
+	last := len(tokens) - 1
+	if tokens[last].Kind != TokPunct || tokens[last].Text != ")" {
+		return -1
+	}
+	depth := 1
+	for i := last - 1; i >= 0; i-- {
+		if tokens[i].Kind != TokPunct {
+			continue
+		}
+		if tokens[i].Text == ")" {
+			depth++
+		} else if tokens[i].Text == "(" {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func trailingArraySuffixOpen(tokens []Token) int {
+	tokens = trimTokens(tokens)
+	if len(tokens) < 2 {
+		return -1
+	}
+	last := len(tokens) - 1
+	if tokens[last].Kind != TokPunct || tokens[last].Text != "]" {
+		return -1
+	}
+	depth := 1
+	for i := last - 1; i >= 0; i-- {
+		if tokens[i].Kind != TokPunct {
+			continue
+		}
+		if tokens[i].Text == "]" {
+			depth++
+		} else if tokens[i].Text == "[" {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func parseSimplePointerCore(tokens []Token, allowAbstract bool) (string, int, error) {
+	tokens = trimTokens(tokens)
+	if len(tokens) == 0 {
+		if allowAbstract {
+			return "", 0, nil
+		}
+		return "", 0, fmt.Errorf("missing declarator")
+	}
+
+	if tokens[0].Kind == TokPunct && tokens[0].Text == "(" {
+		close := matchingParenClose(tokens, 0)
+		if close == len(tokens)-1 {
+			return parseSimplePointerCore(tokens[1:close], allowAbstract)
+		}
+	}
+
+	ptrDepth := 0
+	i := 0
+	for i < len(tokens) && tokens[i].Kind == TokPunct && tokens[i].Text == "*" {
+		ptrDepth++
+		i++
+	}
+	rest := trimTokens(tokens[i:])
+	if len(rest) == 0 {
+		if allowAbstract {
+			return "", ptrDepth, nil
+		}
+		return "", 0, fmt.Errorf("unable to parse declarator name")
+	}
+	if len(rest) == 1 && rest[0].Kind == TokIdent && !isDeclarationKeyword(rest[0]) {
+		return rest[0].Text, ptrDepth, nil
+	}
+	if rest[0].Kind == TokPunct && rest[0].Text == "(" {
+		close := matchingParenClose(rest, 0)
+		if close == len(rest)-1 {
+			name, innerPtr, err := parseSimplePointerCore(rest[1:close], allowAbstract)
+			if err != nil {
+				return "", 0, err
+			}
+			return name, ptrDepth + innerPtr, nil
+		}
+	}
+	return "", 0, fmt.Errorf("complex declarators are not yet supported")
 }
 
 func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, error) {
@@ -959,103 +1213,46 @@ func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int
 		return "", cDeclScalar, 0, 0, fmt.Errorf("missing declarator")
 	}
 
-	name := ""
-	namePos := -1
-	for i := len(tokens) - 1; i >= 0; i-- {
-		if tokens[i].Kind == TokIdent && !isDeclarationKeyword(tokens[i]) {
-			name = tokens[i].Text
-			namePos = i
-			break
+	// Support function-pointer declarators like `(*fp)(int)` and `(*)(int)`.
+	if fnOpen := trailingFunctionSuffixOpen(tokens); fnOpen >= 0 {
+		core := trimTokens(tokens[:fnOpen])
+		if len(core) == 0 {
+			return "", cDeclScalar, 0, 0, fmt.Errorf("function declarator is missing pointer core")
 		}
-	}
-	if namePos < 0 && !allowAbstract {
-		return "", cDeclScalar, 0, 0, fmt.Errorf("unable to parse declarator name")
+		name, ptrDepth, err := parseSimplePointerCore(core, allowAbstract)
+		if err != nil {
+			return "", cDeclScalar, 0, 0, err
+		}
+		if ptrDepth == 0 {
+			return "", cDeclScalar, 0, 0, fmt.Errorf("function declarators are only supported through pointers")
+		}
+		return name, cDeclPointer, ptrDepth, 0, nil
 	}
 
-	ptrDepth := 0
-	for i, t := range tokens {
-		switch t.Kind {
-		case TokIdent:
-			if i == namePos {
-				continue
-			}
-			return "", cDeclScalar, 0, 0, fmt.Errorf("complex declarators are not yet supported")
-		case TokNumber:
-			// Number tokens are only valid inside array bounds, checked below.
-			continue
-		case TokPunct:
-			switch t.Text {
-			case "*":
-				if namePos < 0 || i < namePos {
-					ptrDepth++
-					continue
-				}
-				return "", cDeclScalar, 0, 0, fmt.Errorf("complex declarators are not yet supported")
-			case "[":
-				// Parsed as suffix below.
-			case "]":
-				// Parsed as suffix below.
-			case "(", ")":
-				return "", cDeclScalar, 0, 0, fmt.Errorf("complex declarators are not yet supported")
-			default:
-				return "", cDeclScalar, 0, 0, fmt.Errorf("unsupported declarator punctuation %q", t.Text)
-			}
-		default:
-			return "", cDeclScalar, 0, 0, fmt.Errorf("unsupported declarator token %q", t.Text)
-		}
-	}
-
-	kind := cDeclScalar
-	var arrayLen int64
-	if ptrDepth > 0 {
-		kind = cDeclPointer
-	}
-
-	suffixPos := 0
-	if namePos >= 0 {
-		suffixPos = namePos + 1
-		for suffixPos < len(tokens) && tokens[suffixPos].Kind == TokPunct && tokens[suffixPos].Text == ")" {
-			suffixPos++
-		}
-	}
-	if suffixPos < len(tokens) {
-		if tokens[suffixPos].Kind != TokPunct || tokens[suffixPos].Text != "[" {
-			return "", cDeclScalar, 0, 0, fmt.Errorf("complex declarators are not yet supported")
+	if arrOpen := trailingArraySuffixOpen(tokens); arrOpen >= 0 {
+		core := trimTokens(tokens[:arrOpen])
+		name, ptrDepth, err := parseSimplePointerCore(core, allowAbstract)
+		if err != nil {
+			return "", cDeclScalar, 0, 0, err
 		}
 		if ptrDepth > 0 {
 			return "", cDeclScalar, 0, 0, fmt.Errorf("pointer-to-array declarators are not yet supported")
 		}
-		closeIdx := -1
-		depth := 0
-		for i := suffixPos; i < len(tokens); i++ {
-			if tokens[i].Kind != TokPunct {
-				continue
-			}
-			if tokens[i].Text == "[" {
-				depth++
-			} else if tokens[i].Text == "]" {
-				depth--
-				if depth == 0 {
-					closeIdx = i
-					break
-				}
-			}
-		}
-		if closeIdx < 0 {
-			return "", cDeclScalar, 0, 0, fmt.Errorf("unterminated array declarator")
-		}
-		if closeIdx != len(tokens)-1 {
-			return "", cDeclScalar, 0, 0, fmt.Errorf("complex declarators are not yet supported")
-		}
-		n, err := parseArrayLength(tokens[suffixPos+1 : closeIdx])
+		n, err := parseArrayLength(tokens[arrOpen+1 : len(tokens)-1])
 		if err != nil {
 			return "", cDeclScalar, 0, 0, err
 		}
-		kind = cDeclArray
-		arrayLen = n
+		return name, cDeclArray, 0, n, nil
 	}
 
-	return name, kind, ptrDepth, arrayLen, nil
+	name, ptrDepth, err := parseSimplePointerCore(tokens, allowAbstract)
+	if err != nil {
+		return "", cDeclScalar, 0, 0, err
+	}
+	if ptrDepth > 0 {
+		return name, cDeclPointer, ptrDepth, 0, nil
+	}
+	return name, cDeclScalar, 0, 0, nil
 }
 
 func parseArrayLength(tokens []Token) (int64, error) {
@@ -1073,21 +1270,21 @@ func parseArrayLength(tokens []Token) (int64, error) {
 	return n, nil
 }
 
-func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
+func parseDeclItems(toks []Token) ([]cDeclItem, bool, bool, error) {
 	toks = trimTokens(toks)
 	if len(toks) == 0 {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	spec, rest, err := splitDeclSpecPrefix(toks, "declaration")
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
-	base, isVoid, hasExtern, err := parseScalarTypeSpec(spec, "declaration", true)
+	baseInfo, hasExtern, hasTypedef, err := parseScalarTypeSpec(spec, "declaration", true)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if len(rest) == 0 {
-		return nil, false, fmt.Errorf("missing declarator in declaration")
+		return nil, false, false, fmt.Errorf("missing declarator in declaration")
 	}
 
 	parts := splitTopLevel(rest, ",")
@@ -1132,26 +1329,34 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
 		}
 		lhs = trimTokens(lhs)
 		if len(lhs) == 0 {
-			return nil, false, fmt.Errorf("missing declarator in declaration")
+			return nil, false, false, fmt.Errorf("missing declarator in declaration")
 		}
 
 		name, kind, ptrDepth, arrayLen, err := parseDeclarator(lhs, false)
 		if err != nil {
-			return nil, false, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
+			return nil, false, false, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
 		}
-		if isVoid && kind != cDeclPointer {
-			return nil, false, fmt.Errorf("declaration of %q cannot use void object type", name)
+		info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, fmt.Sprintf("declaration of %q", name))
+		if err != nil {
+			return nil, false, false, err
 		}
-
-		if kind == cDeclPointer && ptrDepth == 0 {
-			ptrDepth = 1
+		if !hasTypedef && info.IsVoid && info.Kind != cDeclPointer {
+			return nil, false, false, fmt.Errorf("declaration of %q cannot use void object type", name)
 		}
-		items = append(items, cDeclItem{Name: name, Init: init, Kind: kind, PtrDepth: ptrDepth, ArrayLen: arrayLen, Base: base})
+		items = append(items, cDeclItem{
+			Name:     name,
+			Init:     init,
+			Kind:     info.Kind,
+			PtrDepth: info.PtrDepth,
+			ArrayLen: info.ArrayLen,
+			IsVoid:   info.IsVoid,
+			Base:     info.Base,
+		})
 	}
 	if len(items) == 0 {
-		return nil, false, fmt.Errorf("empty declaration")
+		return nil, false, false, fmt.Errorf("empty declaration")
 	}
-	return items, hasExtern, nil
+	return items, hasExtern, hasTypedef, nil
 }
 
 func isTypeSpecifierKeyword(text string) bool {
@@ -1172,7 +1377,7 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if err != nil {
 		return cTypeInfo{}, err
 	}
-	base, isVoid, _, err := parseScalarTypeSpec(spec, "type name", true)
+	baseInfo, _, _, err := parseScalarTypeSpec(spec, "type name", true)
 	if err != nil {
 		return cTypeInfo{}, err
 	}
@@ -1183,19 +1388,14 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if name != "" {
 		return cTypeInfo{}, fmt.Errorf("named declarators are not supported in type names (%s)", name)
 	}
-	if isVoid && kind == cDeclArray {
+	info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, "type name")
+	if err != nil {
+		return cTypeInfo{}, err
+	}
+	if info.IsVoid && info.Kind == cDeclArray {
 		return cTypeInfo{}, fmt.Errorf("array of void is not supported")
 	}
-	if kind == cDeclPointer && ptrDepth == 0 {
-		ptrDepth = 1
-	}
-	return cTypeInfo{
-		Kind:     kind,
-		PtrDepth: ptrDepth,
-		ArrayLen: arrayLen,
-		IsVoid:   isVoid,
-		Base:     base,
-	}, nil
+	return info, nil
 }
 
 func parseArrayInitializerExprs(init []Token, arrayLen int64) ([][]Token, error) {
@@ -1248,7 +1448,8 @@ type funcCompiler struct {
 	sig *cFuncSig
 	fn  *ir.IRFunc
 
-	scopes []map[string]cLocalBinding
+	scopes        []map[string]cLocalBinding
+	typedefScopes []map[string]cTypeInfo
 
 	breakTargets    []int
 	continueTargets []int
@@ -1264,12 +1465,37 @@ func (fc *funcCompiler) emit(inst ir.Inst) {
 
 func (fc *funcCompiler) pushScope() {
 	fc.scopes = append(fc.scopes, make(map[string]cLocalBinding))
+	fc.typedefScopes = append(fc.typedefScopes, make(map[string]cTypeInfo))
 }
 
 func (fc *funcCompiler) popScope() {
 	if len(fc.scopes) > 0 {
 		fc.scopes = fc.scopes[:len(fc.scopes)-1]
 	}
+	if len(fc.typedefScopes) > 0 {
+		fc.typedefScopes = fc.typedefScopes[:len(fc.typedefScopes)-1]
+	}
+}
+
+func (fc *funcCompiler) addLocalTypedef(name string, info cTypeInfo, file string, line int, col int) {
+	if len(fc.typedefScopes) == 0 {
+		fc.typedefScopes = append(fc.typedefScopes, make(map[string]cTypeInfo))
+	}
+	cur := fc.typedefScopes[len(fc.typedefScopes)-1]
+	if _, exists := cur[name]; exists {
+		fc.errorf(file, line, col, "duplicate typedef name %q in same scope", name)
+		return
+	}
+	cur[name] = info
+}
+
+func (fc *funcCompiler) lookupTypedef(name string) (cTypeInfo, bool) {
+	for i := len(fc.typedefScopes) - 1; i >= 0; i-- {
+		if info, ok := fc.typedefScopes[i][name]; ok {
+			return info, true
+		}
+	}
+	return fc.c.lookupTypedef(name)
 }
 
 func (fc *funcCompiler) addLocal(name string, file string, line int, col int) int {
@@ -1572,9 +1798,31 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 		fc.errorf(fc.sig.File, n.Line, n.Col, "invalid declaration: %v", err)
 		return
 	}
-	items, _, err := parseDeclItems(toks)
+	items, hasExtern, hasTypedef, err := parseDeclItems(toks)
 	if err != nil {
 		fc.errorf(fc.sig.File, n.Line, n.Col, "%v", err)
+		return
+	}
+	if hasTypedef {
+		if hasExtern {
+			fc.errorf(fc.sig.File, n.Line, n.Col, "extern typedef declarations are not supported")
+		}
+		for _, it := range items {
+			if len(it.Init) > 0 {
+				fc.errorf(fc.sig.File, n.Line, n.Col, "typedef declaration with initializer is not supported: %s", it.Name)
+				continue
+			}
+			if it.Kind == cDeclArray {
+				fc.errorf(fc.sig.File, n.Line, n.Col, "typedef array declarations are not yet supported: %s", it.Name)
+				continue
+			}
+			fc.addLocalTypedef(it.Name, cTypeInfo{
+				Kind:     it.Kind,
+				PtrDepth: it.PtrDepth,
+				IsVoid:   it.IsVoid,
+				Base:     it.Base,
+			}, fc.sig.File, n.Line, n.Col)
+		}
 		return
 	}
 	for _, it := range items {
@@ -1774,9 +2022,31 @@ func (fc *funcCompiler) compileReturnStmt(n *Node) {
 }
 
 func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
-	items, _, err := parseDeclItems(toks)
+	items, hasExtern, hasTypedef, err := parseDeclItems(toks)
 	if err != nil {
 		fc.errorf(file, n.Line, n.Col, "%v", err)
+		return
+	}
+	if hasTypedef {
+		if hasExtern {
+			fc.errorf(file, n.Line, n.Col, "extern typedef declarations are not supported")
+		}
+		for _, it := range items {
+			if len(it.Init) > 0 {
+				fc.errorf(file, n.Line, n.Col, "typedef declaration with initializer is not supported: %s", it.Name)
+				continue
+			}
+			if it.Kind == cDeclArray {
+				fc.errorf(file, n.Line, n.Col, "typedef array declarations are not yet supported: %s", it.Name)
+				continue
+			}
+			fc.addLocalTypedef(it.Name, cTypeInfo{
+				Kind:     it.Kind,
+				PtrDepth: it.PtrDepth,
+				IsVoid:   it.IsVoid,
+				Base:     it.Base,
+			}, file, n.Line, n.Col)
+		}
 		return
 	}
 	for _, it := range items {
@@ -2674,6 +2944,9 @@ func looksLikeTypeNameTokens(tokens []Token) bool {
 			continue
 		}
 		if isTypeSpecifierKeyword(t.Text) || isUnsupportedCTypeKeyword(t.Text) || isDeclarationKeyword(t) {
+			return true
+		}
+		if _, ok := lookupTypedefAlias(t.Text); ok {
 			return true
 		}
 	}
