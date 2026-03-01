@@ -57,18 +57,17 @@ func (f *FlagSet) addFlag(fl *Flag) {
 func (f *FlagSet) Bool(name string, value bool, usage string) *bool {
 	p := new(bool)
 	*p = value
+	defValue := "false"
+	if value {
+		defValue = "true"
+	}
 	f.addFlag(&Flag{
 		Name:     name,
 		Usage:    usage,
-		DefValue: strconv.FormatInt(int64(0), 10),
+		DefValue: defValue,
 		kind:     kindBool,
 		bptr:     p,
 	})
-	if value {
-		f.flags[len(f.flags)-1].DefValue = "true"
-	} else {
-		f.flags[len(f.flags)-1].DefValue = "false"
-	}
 	return p
 }
 
