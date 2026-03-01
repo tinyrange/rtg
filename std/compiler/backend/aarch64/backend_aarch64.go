@@ -37,8 +37,14 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	if f.Params > g.curFrameSize {
 		g.curFrameSize = f.Params
 	}
-	g.labelOffsets = make(map[int]int)
-	g.jumpFixups = nil
+	if g.labelOffsets == nil {
+		g.labelOffsets = make(map[int]int)
+	} else {
+		for key := range g.labelOffsets {
+			delete(g.labelOffsets, key)
+		}
+	}
+	g.jumpFixups = g.jumpFixups[:0]
 
 	// Prologue: STP X29, X30, [SP, #-16]!; MOV X29, SP; SUB SP, SP, #frameBytes
 	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
