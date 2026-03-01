@@ -11,6 +11,7 @@ var linuxNowStartSec386 int
 var linuxNowStartNSec386 int
 var linuxNowLast386 int
 var linuxNowReady386 bool
+var linuxNowTS386 uintptr
 
 func Now() int {
 	sec, nsec := linuxMonotonicNowSplit386()
@@ -39,8 +40,11 @@ func Now() int {
 }
 
 func linuxMonotonicNowSplit386() (int, int) {
-	ts := Alloc(8)
-	Memzero(ts, 8)
+	ts := linuxNowTS386
+	if ts == 0 {
+		ts = Alloc(8)
+		linuxNowTS386 = ts
+	}
 	_, _, err := Syscall(linuxSysClockGettime386, linuxClockMonotonic386, ts, 0, 0, 0, 0)
 	if err != 0 {
 		return 0, 0

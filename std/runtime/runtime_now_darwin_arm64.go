@@ -7,6 +7,7 @@ const darwinClockMonotonic = 6
 var darwinNowStart int
 var darwinNowLast int
 var darwinNowReady bool
+var darwinNowTS uintptr
 
 func Now() int {
 	now := darwinMonotonicNow()
@@ -28,8 +29,11 @@ func Now() int {
 }
 
 func darwinMonotonicNow() int {
-	ts := Alloc(16)
-	Memzero(ts, 16)
+	ts := darwinNowTS
+	if ts == 0 {
+		ts = Alloc(16)
+		darwinNowTS = ts
+	}
 	rv, _, err := darwinClockGettime(darwinClockMonotonic, ts)
 	if err != 0 || rv != 0 {
 		return 0
