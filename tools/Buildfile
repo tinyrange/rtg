@@ -235,8 +235,5 @@ playground: build
 bench-alloc-micro:
   sh sh tools/run_alloc_microbench.sh
 
-bench-map-string-opts:
-  sh bash tools/run_map_string_opt_experiments.sh
-
 clean:
   sh rm -f build/stage* build/stage*_c.c build/stage*_c build/stage2.size*.json build/sizecheck_* build/rtg build/rtg-build build/rtg_from_i386 build/rtg.stage2.* build/tagcheck_* build/*_386 build/build build/cross_stage* build/*.wasm build/*.exe build/fullcompiler_* build/fullcompiler_c_*

@@ -65,12 +65,12 @@ done < "$CASES_FILE"
   echo
   echo "## Top By Requested Bytes"
   echo
-  awk 'BEGIN{FS="\t"; OFS="\t"} NR==1{next} {print $1,$7,$9,$10,$5}' "$RESULTS_TSV" | sort -t "$(printf '\t')" -k2,2nr | \
+  awk 'BEGIN{FS="\t"; OFS="\t"} NR==1{next} {print $1,$6,$8,$9,$4}' "$RESULTS_TSV" | sort -t "$(printf '\t')" -k2,2nr | \
     awk 'BEGIN{print "case\treq_bytes\tmmap_calls\tmmap_bytes\tns_per_op"} {print}'
   echo
   echo "## Top By Mmap Calls"
   echo
-  awk 'BEGIN{FS="\t"; OFS="\t"} NR==1{next} {print $1,$9,$10,$7,$5}' "$RESULTS_TSV" | sort -t "$(printf '\t')" -k2,2nr | \
+  awk 'BEGIN{FS="\t"; OFS="\t"} NR==1{next} {print $1,$8,$9,$6,$4}' "$RESULTS_TSV" | sort -t "$(printf '\t')" -k2,2nr | \
     awk 'BEGIN{print "case\tmmap_calls\tmmap_bytes\treq_bytes\tns_per_op"} {print}'
 } > "$RESULTS_MD"
 
