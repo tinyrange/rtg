@@ -1284,7 +1284,9 @@ func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) 
 func (g *WasmGen) compileInst(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
-		if inst.Width == 8 {
+		// Some IR paths leave Width unset for 64-bit immediates. Promote
+		// out-of-i32-range values to i64 even when Width metadata is absent.
+		if inst.Width == 8 || inst.Val > 2147483647 || inst.Val < -2147483648 {
 			g.w.i64Const(inst.Val)
 			g.pushType(WASM_TYPE_I64)
 		} else {
