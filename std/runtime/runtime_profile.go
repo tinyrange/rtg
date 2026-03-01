@@ -95,6 +95,7 @@ func ProfileFlush() {
 		return
 	}
 	profileFlushBuffer()
+	allocDebugMaybePrintSummary()
 	profileDisable()
 }
 
