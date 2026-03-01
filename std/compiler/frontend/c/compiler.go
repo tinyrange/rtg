@@ -26,11 +26,24 @@ type cFuncSig struct {
 	ParamKinds    []cDeclKind
 	ParamBases    []cScalarType
 	ParamPtrDepth []int
+	ParamFuncSigs []*cFuncTypeSig
 	Defined       bool
 	Body          *Node
 	File          string
 	Line          int
 	Col           int
+}
+
+type cFuncTypeSig struct {
+	RetKind       cDeclKind
+	RetBase       cScalarType
+	RetPtrDepth   int
+	RetIsVoid     bool
+	ParamCount    int
+	ParamKinds    []cDeclKind
+	ParamBases    []cScalarType
+	ParamPtrDepth []int
+	ParamFuncSigs []*cFuncTypeSig
 }
 
 type cDeclItem struct {
@@ -41,6 +54,7 @@ type cDeclItem struct {
 	ArrayLen int64
 	IsVoid   bool
 	Base     cScalarType
+	FuncSig  *cFuncTypeSig
 }
 
 type cGlobalInit struct {
@@ -85,6 +99,7 @@ type cTypeInfo struct {
 	ArrayLen int64
 	IsVoid   bool
 	Base     cScalarType
+	FuncSig  *cFuncTypeSig
 }
 
 var cTypedefLookup func(name string) (cTypeInfo, bool)
@@ -109,6 +124,7 @@ type cLocalBinding struct {
 	ElemStep int64
 	ArrayLen int64
 	Base     cScalarType
+	FuncSig  *cFuncTypeSig
 }
 
 // CompileUnits lowers parsed C units to RTG IR.
@@ -134,6 +150,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		globalElemStep: make(map[string]int64),
 		globalArray:    make(map[string]int64),
 		globalBase:     make(map[string]cScalarType),
+		globalFunc:     make(map[string]*cFuncTypeSig),
 		typedefs:       make(map[string]cTypeInfo),
 		funcIDs:        make(map[string]int64),
 		intrinsics:     make(map[string]cIntrinsicWrapper),
@@ -183,6 +200,7 @@ type compiler struct {
 	globalElemStep map[string]int64
 	globalArray    map[string]int64
 	globalBase     map[string]cScalarType
+	globalFunc     map[string]*cFuncTypeSig
 	globalInits    []cGlobalInit
 	typedefs       map[string]cTypeInfo
 	funcIDs        map[string]int64
@@ -209,6 +227,7 @@ func (c *compiler) nextLabel() int {
 
 func (c *compiler) lookupTypedef(name string) (cTypeInfo, bool) {
 	info, ok := c.typedefs[name]
+	info.FuncSig = cloneFuncTypeSig(info.FuncSig)
 	return info, ok
 }
 
@@ -224,6 +243,52 @@ func (c *compiler) assignFunctionIDs() {
 		c.funcIDs[sig.Name] = next
 		next++
 	}
+}
+
+func cloneFuncTypeSig(in *cFuncTypeSig) *cFuncTypeSig {
+	if in == nil {
+		return nil
+	}
+	out := &cFuncTypeSig{
+		RetKind:     in.RetKind,
+		RetBase:     in.RetBase,
+		RetPtrDepth: in.RetPtrDepth,
+		RetIsVoid:   in.RetIsVoid,
+		ParamCount:  in.ParamCount,
+	}
+	out.ParamKinds = append([]cDeclKind{}, in.ParamKinds...)
+	out.ParamBases = append([]cScalarType{}, in.ParamBases...)
+	out.ParamPtrDepth = append([]int{}, in.ParamPtrDepth...)
+	if len(in.ParamFuncSigs) > 0 {
+		out.ParamFuncSigs = make([]*cFuncTypeSig, len(in.ParamFuncSigs))
+		for i, p := range in.ParamFuncSigs {
+			out.ParamFuncSigs[i] = cloneFuncTypeSig(p)
+		}
+	}
+	return out
+}
+
+func funcSigToTypeSig(sig *cFuncSig) *cFuncTypeSig {
+	if sig == nil {
+		return nil
+	}
+	out := &cFuncTypeSig{
+		RetKind:     sig.RetKind,
+		RetBase:     sig.RetBase,
+		RetPtrDepth: sig.RetPtrDepth,
+		RetIsVoid:   sig.RetCount == 0,
+		ParamCount:  sig.ParamCount,
+	}
+	out.ParamKinds = append([]cDeclKind{}, sig.ParamKinds...)
+	out.ParamBases = append([]cScalarType{}, sig.ParamBases...)
+	out.ParamPtrDepth = append([]int{}, sig.ParamPtrDepth...)
+	if len(sig.ParamFuncSigs) > 0 {
+		out.ParamFuncSigs = make([]*cFuncTypeSig, len(sig.ParamFuncSigs))
+		for i, p := range sig.ParamFuncSigs {
+			out.ParamFuncSigs[i] = cloneFuncTypeSig(p)
+		}
+	}
+	return out
 }
 
 func (c *compiler) ensureIntrinsicWrapper(name string, params int, retCount int) string {
@@ -338,6 +403,10 @@ func (c *compiler) collectFunctionDef(file string, n *Node) {
 		prev.ParamKinds = append([]cDeclKind{}, sig.ParamKinds...)
 		prev.ParamBases = append([]cScalarType{}, sig.ParamBases...)
 		prev.ParamPtrDepth = append([]int{}, sig.ParamPtrDepth...)
+		prev.ParamFuncSigs = make([]*cFuncTypeSig, len(sig.ParamFuncSigs))
+		for i, p := range sig.ParamFuncSigs {
+			prev.ParamFuncSigs[i] = cloneFuncTypeSig(p)
+		}
 		prev.Body = sig.Body
 		prev.File = file
 		prev.Line = n.Line
@@ -403,6 +472,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 				PtrDepth: it.PtrDepth,
 				IsVoid:   it.IsVoid,
 				Base:     it.Base,
+				FuncSig:  cloneFuncTypeSig(it.FuncSig),
 			}
 		}
 		return
@@ -426,6 +496,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		c.globalKind[it.Name] = it.Kind
 		c.globalPtrDepth[it.Name] = it.PtrDepth
 		c.globalBase[it.Name] = it.Base
+		c.globalFunc[it.Name] = cloneFuncTypeSig(it.FuncSig)
 		elemStep := int64(c.target.PtrSize)
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
@@ -556,7 +627,11 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 				ptrDepth = 1
 			}
 		}
-		fc.addLocalTyped(name, kind, base, ptrDepth, elemStep, sig.File, sig.Line, sig.Col)
+		var pfunc *cFuncTypeSig
+		if i < len(sig.ParamFuncSigs) {
+			pfunc = sig.ParamFuncSigs[i]
+		}
+		fc.addLocalTyped(name, kind, base, ptrDepth, elemStep, pfunc, sig.File, sig.Line, sig.Col)
 	}
 
 	prevTypedefLookup := cTypedefLookup
@@ -769,7 +844,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if err != nil {
 		return nil, err
 	}
-	name, retDeclKind, retDeclPtrDepth, _, err := parseDeclarator(decl, false)
+	name, retDeclKind, retDeclPtrDepth, _, _, err := parseDeclarator(decl, false)
 	if err != nil {
 		return nil, err
 	}
@@ -791,6 +866,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	var paramKinds []cDeclKind
 	var paramBases []cScalarType
 	var paramPtrDepth []int
+	var paramFuncSigs []*cFuncTypeSig
 	paramCount := 0
 	if len(paramTokens) > 0 {
 		parts := splitTopLevel(paramTokens, ",")
@@ -801,7 +877,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				if err == nil {
 					baseInfo, _, _, err := parseScalarTypeSpec(spec, "function parameter list", true)
 					if err == nil {
-						_, kind, ptrDepth, arrLen, err := parseDeclarator(decl, true)
+						_, kind, ptrDepth, arrLen, _, err := parseDeclarator(decl, true)
 						if err == nil {
 							info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, "function parameter list")
 							if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
@@ -828,13 +904,21 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			if err != nil {
 				return nil, err
 			}
-			pname, pdeclKind, pdeclPtrDepth, parrLen, err := parseDeclarator(decl, true)
+			pname, pdeclKind, pdeclPtrDepth, parrLen, pfnSig, err := parseDeclarator(decl, true)
 			if err != nil {
 				return nil, err
 			}
 			pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, fmt.Sprintf("function parameter %d", i+1))
 			if err != nil {
 				return nil, err
+			}
+			if pfnSig != nil {
+				fnSig := cloneFuncTypeSig(pfnSig)
+				fnSig.RetKind = pbaseInfo.Kind
+				fnSig.RetBase = pbaseInfo.Base
+				fnSig.RetPtrDepth = pbaseInfo.PtrDepth
+				fnSig.RetIsVoid = pbaseInfo.IsVoid
+				pinfo.FuncSig = fnSig
 			}
 			if pname == "" {
 				pname = fmt.Sprintf("$p%d", i)
@@ -853,6 +937,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			paramKinds = append(paramKinds, pinfo.Kind)
 			paramBases = append(paramBases, pinfo.Base)
 			paramPtrDepth = append(paramPtrDepth, pinfo.PtrDepth)
+			paramFuncSigs = append(paramFuncSigs, cloneFuncTypeSig(pinfo.FuncSig))
 			paramCount++
 		}
 	}
@@ -869,6 +954,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 		ParamKinds:    paramKinds,
 		ParamBases:    paramBases,
 		ParamPtrDepth: paramPtrDepth,
+		ParamFuncSigs: paramFuncSigs,
 		Defined:       false,
 		File:          file,
 		Line:          line,
@@ -1026,6 +1112,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 		if aliasInfo.IsVoid && !allowVoid {
 			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot use void type here", context)
 		}
+		aliasInfo.FuncSig = cloneFuncTypeSig(aliasInfo.FuncSig)
 		return aliasInfo, hasExtern, hasTypedef, nil
 	}
 	if sawSigned && sawUnsigned {
@@ -1221,55 +1308,150 @@ func parseSimplePointerCore(tokens []Token, allowAbstract bool) (string, int, er
 	return "", 0, fmt.Errorf("complex declarators are not yet supported")
 }
 
-func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, error) {
+func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, []cScalarType, []int, []*cFuncTypeSig, error) {
+	paramTokens = trimTokens(paramTokens)
+	if len(paramTokens) == 0 {
+		return nil, nil, nil, nil, nil
+	}
+	parts := splitTopLevel(paramTokens, ",")
+	if len(parts) == 1 {
+		p0 := trimTokens(parts[0])
+		if len(p0) > 0 {
+			spec, decl, err := splitDeclSpecPrefix(p0, context)
+			if err == nil {
+				baseInfo, _, _, err := parseScalarTypeSpec(spec, context, true)
+				if err == nil {
+					_, kind, ptrDepth, arrLen, _, err := parseDeclarator(decl, true)
+					if err == nil {
+						info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, context)
+						if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
+							parts = nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	paramKinds := make([]cDeclKind, 0, len(parts))
+	paramBases := make([]cScalarType, 0, len(parts))
+	paramPtrDepth := make([]int, 0, len(parts))
+	paramFuncSigs := make([]*cFuncTypeSig, 0, len(parts))
+	for i, p := range parts {
+		p = trimTokens(p)
+		if len(p) == 0 {
+			continue
+		}
+		if len(p) == 1 && p[0].Kind == TokPunct && p[0].Text == "..." {
+			return nil, nil, nil, nil, fmt.Errorf("variadic functions are not supported")
+		}
+		pctx := fmt.Sprintf("%s parameter %d", context, i+1)
+		spec, decl, err := splitDeclSpecPrefix(p, pctx)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		pbaseInfo, _, _, err := parseScalarTypeSpec(spec, pctx, true)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		pname, pdeclKind, pdeclPtrDepth, parrLen, pfnSig, err := parseDeclarator(decl, true)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, pctx)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if pinfo.Kind == cDeclArray {
+			// Arrays in parameter lists decay to pointers.
+			pinfo.Kind = cDeclPointer
+			if pinfo.PtrDepth == 0 {
+				pinfo.PtrDepth = 1
+			}
+		}
+		if pinfo.IsVoid && pinfo.Kind == cDeclScalar {
+			if pname == "" && i == 0 && len(parts) == 1 {
+				// handled above for `void` empty parameter list; keep defensive fallback.
+				return nil, nil, nil, nil, nil
+			}
+			return nil, nil, nil, nil, fmt.Errorf("%s parameter %q cannot have type void", context, pname)
+		}
+		if pfnSig != nil {
+			pfn := cloneFuncTypeSig(pfnSig)
+			pfn.RetKind = pbaseInfo.Kind
+			pfn.RetBase = pbaseInfo.Base
+			pfn.RetPtrDepth = pbaseInfo.PtrDepth
+			pfn.RetIsVoid = pbaseInfo.IsVoid
+			pinfo.FuncSig = pfn
+		}
+		paramKinds = append(paramKinds, pinfo.Kind)
+		paramBases = append(paramBases, pinfo.Base)
+		paramPtrDepth = append(paramPtrDepth, pinfo.PtrDepth)
+		paramFuncSigs = append(paramFuncSigs, cloneFuncTypeSig(pinfo.FuncSig))
+	}
+	return paramKinds, paramBases, paramPtrDepth, paramFuncSigs, nil
+}
+
+func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, *cFuncTypeSig, error) {
 	tokens = trimTokens(tokens)
 	if len(tokens) == 0 {
 		if allowAbstract {
-			return "", cDeclScalar, 0, 0, nil
+			return "", cDeclScalar, 0, 0, nil, nil
 		}
-		return "", cDeclScalar, 0, 0, fmt.Errorf("missing declarator")
+		return "", cDeclScalar, 0, 0, nil, fmt.Errorf("missing declarator")
 	}
 
 	// Support function-pointer declarators like `(*fp)(int)` and `(*)(int)`.
 	if fnOpen := trailingFunctionSuffixOpen(tokens); fnOpen >= 0 {
 		core := trimTokens(tokens[:fnOpen])
 		if len(core) == 0 {
-			return "", cDeclScalar, 0, 0, fmt.Errorf("function declarator is missing pointer core")
+			return "", cDeclScalar, 0, 0, nil, fmt.Errorf("function declarator is missing pointer core")
 		}
 		name, ptrDepth, err := parseSimplePointerCore(core, allowAbstract)
 		if err != nil {
-			return "", cDeclScalar, 0, 0, err
+			return "", cDeclScalar, 0, 0, nil, err
 		}
 		if ptrDepth == 0 {
-			return "", cDeclScalar, 0, 0, fmt.Errorf("function declarators are only supported through pointers")
+			return "", cDeclScalar, 0, 0, nil, fmt.Errorf("function declarators are only supported through pointers")
 		}
-		return name, cDeclPointer, ptrDepth, 0, nil
+		paramKinds, paramBases, paramPtrDepth, paramFuncSigs, err := parseFunctionParamList(tokens[fnOpen+1:len(tokens)-1], "function declarator")
+		if err != nil {
+			return "", cDeclScalar, 0, 0, nil, err
+		}
+		fnSig := &cFuncTypeSig{
+			ParamCount:    len(paramKinds),
+			ParamKinds:    paramKinds,
+			ParamBases:    paramBases,
+			ParamPtrDepth: paramPtrDepth,
+			ParamFuncSigs: paramFuncSigs,
+		}
+		return name, cDeclPointer, ptrDepth, 0, fnSig, nil
 	}
 
 	if arrOpen := trailingArraySuffixOpen(tokens); arrOpen >= 0 {
 		core := trimTokens(tokens[:arrOpen])
 		name, ptrDepth, err := parseSimplePointerCore(core, allowAbstract)
 		if err != nil {
-			return "", cDeclScalar, 0, 0, err
+			return "", cDeclScalar, 0, 0, nil, err
 		}
 		if ptrDepth > 0 {
-			return "", cDeclScalar, 0, 0, fmt.Errorf("pointer-to-array declarators are not yet supported")
+			return "", cDeclScalar, 0, 0, nil, fmt.Errorf("pointer-to-array declarators are not yet supported")
 		}
 		n, err := parseArrayLength(tokens[arrOpen+1 : len(tokens)-1])
 		if err != nil {
-			return "", cDeclScalar, 0, 0, err
+			return "", cDeclScalar, 0, 0, nil, err
 		}
-		return name, cDeclArray, 0, n, nil
+		return name, cDeclArray, 0, n, nil, nil
 	}
 
 	name, ptrDepth, err := parseSimplePointerCore(tokens, allowAbstract)
 	if err != nil {
-		return "", cDeclScalar, 0, 0, err
+		return "", cDeclScalar, 0, 0, nil, err
 	}
 	if ptrDepth > 0 {
-		return name, cDeclPointer, ptrDepth, 0, nil
+		return name, cDeclPointer, ptrDepth, 0, nil, nil
 	}
-	return name, cDeclScalar, 0, 0, nil
+	return name, cDeclScalar, 0, 0, nil, nil
 }
 
 func parseArrayLength(tokens []Token) (int64, error) {
@@ -1349,13 +1531,21 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, bool, error) {
 			return nil, false, false, fmt.Errorf("missing declarator in declaration")
 		}
 
-		name, kind, ptrDepth, arrayLen, err := parseDeclarator(lhs, false)
+		name, kind, ptrDepth, arrayLen, fnSig, err := parseDeclarator(lhs, false)
 		if err != nil {
 			return nil, false, false, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
 		}
 		info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, fmt.Sprintf("declaration of %q", name))
 		if err != nil {
 			return nil, false, false, err
+		}
+		if fnSig != nil {
+			sig := cloneFuncTypeSig(fnSig)
+			sig.RetKind = baseInfo.Kind
+			sig.RetBase = baseInfo.Base
+			sig.RetPtrDepth = baseInfo.PtrDepth
+			sig.RetIsVoid = baseInfo.IsVoid
+			info.FuncSig = sig
 		}
 		if !hasTypedef && info.IsVoid && info.Kind != cDeclPointer {
 			return nil, false, false, fmt.Errorf("declaration of %q cannot use void object type", name)
@@ -1368,6 +1558,7 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, bool, error) {
 			ArrayLen: info.ArrayLen,
 			IsVoid:   info.IsVoid,
 			Base:     info.Base,
+			FuncSig:  cloneFuncTypeSig(info.FuncSig),
 		})
 	}
 	if len(items) == 0 {
@@ -1398,7 +1589,7 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if err != nil {
 		return cTypeInfo{}, err
 	}
-	name, kind, ptrDepth, arrayLen, err := parseDeclarator(decl, true)
+	name, kind, ptrDepth, arrayLen, fnSig, err := parseDeclarator(decl, true)
 	if err != nil {
 		return cTypeInfo{}, err
 	}
@@ -1408,6 +1599,14 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, "type name")
 	if err != nil {
 		return cTypeInfo{}, err
+	}
+	if fnSig != nil {
+		sig := cloneFuncTypeSig(fnSig)
+		sig.RetKind = baseInfo.Kind
+		sig.RetBase = baseInfo.Base
+		sig.RetPtrDepth = baseInfo.PtrDepth
+		sig.RetIsVoid = baseInfo.IsVoid
+		info.FuncSig = sig
 	}
 	if info.IsVoid && info.Kind == cDeclArray {
 		return cTypeInfo{}, fmt.Errorf("array of void is not supported")
@@ -1503,12 +1702,14 @@ func (fc *funcCompiler) addLocalTypedef(name string, info cTypeInfo, file string
 		fc.errorf(file, line, col, "duplicate typedef name %q in same scope", name)
 		return
 	}
+	info.FuncSig = cloneFuncTypeSig(info.FuncSig)
 	cur[name] = info
 }
 
 func (fc *funcCompiler) lookupTypedef(name string) (cTypeInfo, bool) {
 	for i := len(fc.typedefScopes) - 1; i >= 0; i-- {
 		if info, ok := fc.typedefScopes[i][name]; ok {
+			info.FuncSig = cloneFuncTypeSig(info.FuncSig)
 			return info, true
 		}
 	}
@@ -1516,7 +1717,7 @@ func (fc *funcCompiler) lookupTypedef(name string) (cTypeInfo, bool) {
 }
 
 func (fc *funcCompiler) addLocal(name string, file string, line int, col int) int {
-	return fc.addLocalDecl(name, cDeclScalar, cScalarInt, 0, int64(fc.c.target.PtrSize), 0, file, line, col)
+	return fc.addLocalDecl(name, cDeclScalar, cScalarInt, 0, int64(fc.c.target.PtrSize), 0, nil, file, line, col)
 }
 
 func (fc *funcCompiler) addLocalKind(name string, kind cDeclKind, file string, line int, col int) int {
@@ -1524,14 +1725,14 @@ func (fc *funcCompiler) addLocalKind(name string, kind cDeclKind, file string, l
 	if kind == cDeclPointer {
 		ptrDepth = 1
 	}
-	return fc.addLocalDecl(name, kind, cScalarInt, ptrDepth, int64(fc.c.target.PtrSize), 0, file, line, col)
+	return fc.addLocalDecl(name, kind, cScalarInt, ptrDepth, int64(fc.c.target.PtrSize), 0, nil, file, line, col)
 }
 
-func (fc *funcCompiler) addLocalTyped(name string, kind cDeclKind, base cScalarType, ptrDepth int, elemStep int64, file string, line int, col int) int {
-	return fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, file, line, col)
+func (fc *funcCompiler) addLocalTyped(name string, kind cDeclKind, base cScalarType, ptrDepth int, elemStep int64, funcSig *cFuncTypeSig, file string, line int, col int) int {
+	return fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, funcSig, file, line, col)
 }
 
-func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarType, ptrDepth int, elemStep int64, arrayLen int64, file string, line int, col int) int {
+func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarType, ptrDepth int, elemStep int64, arrayLen int64, funcSig *cFuncTypeSig, file string, line int, col int) int {
 	if len(fc.scopes) == 0 {
 		fc.pushScope()
 	}
@@ -1547,7 +1748,7 @@ func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarTy
 	if elemStep <= 0 {
 		elemStep = int64(fc.c.target.PtrSize)
 	}
-	cur[name] = cLocalBinding{Index: idx, Kind: kind, PtrDepth: ptrDepth, ElemStep: elemStep, ArrayLen: arrayLen, Base: base}
+	cur[name] = cLocalBinding{Index: idx, Kind: kind, PtrDepth: ptrDepth, ElemStep: elemStep, ArrayLen: arrayLen, Base: base, FuncSig: cloneFuncTypeSig(funcSig)}
 	return idx
 }
 
@@ -1648,6 +1849,14 @@ func (fc *funcCompiler) lookupGlobalElemStep(name string) (int64, bool) {
 		return 0, false
 	}
 	return step, true
+}
+
+func (fc *funcCompiler) lookupGlobalFuncSig(name string) (*cFuncTypeSig, bool) {
+	sig, ok := fc.c.globalFunc[name]
+	if !ok {
+		return nil, false
+	}
+	return cloneFuncTypeSig(sig), true
 }
 
 func (fc *funcCompiler) compileCompound(n *Node, pushScope bool) {
@@ -1838,6 +2047,7 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 				PtrDepth: it.PtrDepth,
 				IsVoid:   it.IsVoid,
 				Base:     it.Base,
+				FuncSig:  cloneFuncTypeSig(it.FuncSig),
 			}, fc.sig.File, n.Line, n.Col)
 		}
 		return
@@ -1847,7 +2057,7 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
 		}
-		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, fc.sig.File, n.Line, n.Col)
+		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.FuncSig, fc.sig.File, n.Line, n.Col)
 		if it.Kind == cDeclArray {
 			firstElem := -1
 			for i := int64(0); i < it.ArrayLen; i++ {
@@ -2062,6 +2272,7 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 				PtrDepth: it.PtrDepth,
 				IsVoid:   it.IsVoid,
 				Base:     it.Base,
+				FuncSig:  cloneFuncTypeSig(it.FuncSig),
 			}, file, n.Line, n.Col)
 		}
 		return
@@ -2071,7 +2282,7 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
 		}
-		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, file, n.Line, n.Col)
+		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.FuncSig, file, n.Line, n.Col)
 		if it.Kind == cDeclArray {
 			firstElem := -1
 			for i := int64(0); i < it.ArrayLen; i++ {
@@ -2300,16 +2511,23 @@ func (fc *funcCompiler) emitCastToType(info cTypeInfo) {
 
 func (fc *funcCompiler) varTypeInfo(name string) (cTypeInfo, bool) {
 	if b, ok := fc.lookupLocalBinding(name); ok {
-		return cTypeInfo{Kind: b.Kind, PtrDepth: b.PtrDepth, ArrayLen: b.ArrayLen, Base: b.Base}, true
+		return cTypeInfo{Kind: b.Kind, PtrDepth: b.PtrDepth, ArrayLen: b.ArrayLen, Base: b.Base, FuncSig: cloneFuncTypeSig(b.FuncSig)}, true
 	}
 	if kind, ok := fc.lookupGlobalKind(name); ok {
 		base, _ := fc.lookupGlobalBase(name)
 		ptrDepth, _ := fc.lookupGlobalPtrDepth(name)
 		n, _ := fc.lookupGlobalArrayLen(name)
-		return cTypeInfo{Kind: kind, PtrDepth: ptrDepth, ArrayLen: n, Base: base}, true
+		fsig, _ := fc.lookupGlobalFuncSig(name)
+		return cTypeInfo{Kind: kind, PtrDepth: ptrDepth, ArrayLen: n, Base: base, FuncSig: fsig}, true
 	}
-	if _, ok := fc.c.funcs[name]; ok {
-		return cTypeInfo{Kind: cDeclPointer, PtrDepth: 1, Base: cScalarInt}, true
+	if fs, ok := fc.c.funcs[name]; ok {
+		return cTypeInfo{
+			Kind:     cDeclPointer,
+			PtrDepth: 1,
+			Base:     fs.RetBase,
+			IsVoid:   fs.RetCount == 0,
+			FuncSig:  funcSigToTypeSig(fs),
+		}, true
 	}
 	return cTypeInfo{}, false
 }
@@ -2408,6 +2626,7 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 					t.Kind = cDeclScalar
 					t.PtrDepth = 0
 					t.ArrayLen = 0
+					t.FuncSig = nil
 					return t, true
 				}
 				if t.Kind == cDeclPointer && t.PtrDepth > 1 {
@@ -2415,9 +2634,14 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 					return t, true
 				}
 				if t.Kind == cDeclPointer {
+					if t.FuncSig != nil {
+						// Function pointer dereference yields a function designator.
+						return t, true
+					}
 					t.Kind = cDeclScalar
 					t.PtrDepth = 0
 					t.ArrayLen = 0
+					t.FuncSig = nil
 					return t, true
 				}
 			}
@@ -2475,6 +2699,14 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 			return cTypeInfo{Kind: sig.RetKind, PtrDepth: sig.RetPtrDepth, Base: sig.RetBase}, true
 		}
 		if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 {
+			if t.FuncSig != nil {
+				return cTypeInfo{
+					Kind:     t.FuncSig.RetKind,
+					PtrDepth: t.FuncSig.RetPtrDepth,
+					Base:     t.FuncSig.RetBase,
+					IsVoid:   t.FuncSig.RetIsVoid,
+				}, true
+			}
 			return cTypeInfo{Kind: cDeclScalar, Base: t.Base, IsVoid: t.IsVoid}, true
 		}
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
@@ -2539,6 +2771,15 @@ func (fc *funcCompiler) exprPointerStep(ex *expr) int64 {
 				return int64(fc.c.target.PtrSize)
 			}
 			return fc.scalarSize(sig.RetBase)
+		}
+		if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 && t.FuncSig != nil && t.FuncSig.RetKind == cDeclPointer {
+			if t.FuncSig.RetPtrDepth > 1 {
+				return int64(fc.c.target.PtrSize)
+			}
+			if t.FuncSig.RetIsVoid {
+				return 1
+			}
+			return fc.scalarSize(t.FuncSig.RetBase)
 		}
 	}
 	return int64(fc.c.target.PtrSize)
@@ -2634,35 +2875,122 @@ func (fc *funcCompiler) isNullPointerLiteral(ex *expr) bool {
 	return ex != nil && ex.kind == exprIntLit && ex.intVal == 0
 }
 
-func (fc *funcCompiler) checkCallArgs(sig *cFuncSig, call *expr) bool {
-	if sig == nil || call == nil {
+func funcTypeSigEqual(a *cFuncTypeSig, b *cFuncTypeSig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.RetKind != b.RetKind || a.RetBase != b.RetBase || a.RetPtrDepth != b.RetPtrDepth || a.RetIsVoid != b.RetIsVoid {
 		return false
 	}
-	if len(call.args) != sig.ParamCount {
-		fc.errorf(fc.sig.File, 0, 0, "call to %q has %d arguments; expected %d", sig.Name, len(call.args), sig.ParamCount)
+	if a.ParamCount != b.ParamCount {
+		return false
+	}
+	for i := 0; i < a.ParamCount; i++ {
+		if i >= len(a.ParamKinds) || i >= len(b.ParamKinds) || a.ParamKinds[i] != b.ParamKinds[i] {
+			return false
+		}
+		if i >= len(a.ParamBases) || i >= len(b.ParamBases) || a.ParamBases[i] != b.ParamBases[i] {
+			return false
+		}
+		if i >= len(a.ParamPtrDepth) || i >= len(b.ParamPtrDepth) || a.ParamPtrDepth[i] != b.ParamPtrDepth[i] {
+			return false
+		}
+		var af, bf *cFuncTypeSig
+		if i < len(a.ParamFuncSigs) {
+			af = a.ParamFuncSigs[i]
+		}
+		if i < len(b.ParamFuncSigs) {
+			bf = b.ParamFuncSigs[i]
+		}
+		if !funcTypeSigEqual(af, bf) {
+			return false
+		}
+	}
+	return true
+}
+
+func funcSigMatchesType(sig *cFuncSig, want *cFuncTypeSig) bool {
+	if sig == nil || want == nil {
+		return false
+	}
+	if want.RetKind != sig.RetKind || want.RetBase != sig.RetBase || want.RetPtrDepth != sig.RetPtrDepth || want.RetIsVoid != (sig.RetCount == 0) {
+		return false
+	}
+	if want.ParamCount != sig.ParamCount {
+		return false
+	}
+	for i := 0; i < want.ParamCount; i++ {
+		if i >= len(sig.ParamKinds) || want.ParamKinds[i] != sig.ParamKinds[i] {
+			return false
+		}
+		if i >= len(sig.ParamBases) || want.ParamBases[i] != sig.ParamBases[i] {
+			return false
+		}
+		if i >= len(sig.ParamPtrDepth) || want.ParamPtrDepth[i] != sig.ParamPtrDepth[i] {
+			return false
+		}
+		var wf, sf *cFuncTypeSig
+		if i < len(want.ParamFuncSigs) {
+			wf = want.ParamFuncSigs[i]
+		}
+		if i < len(sig.ParamFuncSigs) {
+			sf = sig.ParamFuncSigs[i]
+		}
+		if !funcTypeSigEqual(wf, sf) {
+			return false
+		}
+	}
+	return true
+}
+
+func (fc *funcCompiler) checkCallArgsByType(calleeName string, paramCount int, paramKinds []cDeclKind, paramFuncSigs []*cFuncTypeSig, call *expr) bool {
+	if call == nil {
+		return false
+	}
+	if len(call.args) != paramCount {
+		fc.errorf(fc.sig.File, 0, 0, "call to %q has %d arguments; expected %d", calleeName, len(call.args), paramCount)
 		return false
 	}
 	ok := true
 	for i, arg := range call.args {
 		want := cDeclScalar
-		if i < len(sig.ParamKinds) {
-			want = sig.ParamKinds[i]
+		if i < len(paramKinds) {
+			want = paramKinds[i]
+		}
+		var wantFn *cFuncTypeSig
+		if i < len(paramFuncSigs) {
+			wantFn = paramFuncSigs[i]
 		}
 		gotPtr := fc.exprIsPointer(arg)
 		if want == cDeclPointer {
 			if gotPtr || fc.isNullPointerLiteral(arg) {
+				if wantFn == nil || fc.isNullPointerLiteral(arg) {
+					continue
+				}
+				at, aok := fc.exprTypeInfo(arg)
+				if !aok || at.Kind != cDeclPointer || at.FuncSig == nil || !funcTypeSigEqual(at.FuncSig, wantFn) {
+					fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects compatible function pointer", i+1, calleeName)
+					ok = false
+				}
 				continue
 			}
-			fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects pointer value", i+1, sig.Name)
+			fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects pointer value", i+1, calleeName)
 			ok = false
 			continue
 		}
 		if gotPtr {
-			fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects scalar value", i+1, sig.Name)
+			fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects scalar value", i+1, calleeName)
 			ok = false
 		}
 	}
 	return ok
+}
+
+func (fc *funcCompiler) checkCallArgs(sig *cFuncSig, call *expr) bool {
+	if sig == nil || call == nil {
+		return false
+	}
+	return fc.checkCallArgsByType(sig.Name, sig.ParamCount, sig.ParamKinds, sig.ParamFuncSigs, call)
 }
 
 func (fc *funcCompiler) emitExpr(ex *expr) {
@@ -2770,6 +3098,10 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		case "-":
 			fc.emit(ir.Inst{Op: ir.OP_NEG})
 		case "*":
+			if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 && t.FuncSig != nil {
+				// Function pointer dereference in value context remains a function designator.
+				break
+			}
 			fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprDerefWidth(ex.left)})
 		case "!":
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -2933,6 +3265,16 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		}
 
 		// Indirect call through function pointer representation.
+		var indirectSig *cFuncTypeSig
+		if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 {
+			indirectSig = cloneFuncTypeSig(t.FuncSig)
+		}
+		if indirectSig != nil {
+			if !fc.checkCallArgsByType("<indirect>", indirectSig.ParamCount, indirectSig.ParamKinds, indirectSig.ParamFuncSigs, ex) {
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
+		}
 		calleeTmp := fc.addLocal(fmt.Sprintf("$call_target$%d", fc.c.nextLabel()), fc.sig.File, 0, 0)
 		fc.emitCallTargetValue(ex.left)
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: calleeTmp})
@@ -2950,13 +3292,24 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			if sig == nil {
 				continue
 			}
+			if indirectSig != nil {
+				if !funcSigMatchesType(sig, indirectSig) {
+					continue
+				}
+				candidates = append(candidates, sig)
+				continue
+			}
 			if sig.ParamCount != len(ex.args) {
 				continue
 			}
 			candidates = append(candidates, sig)
 		}
 		if len(candidates) == 0 {
-			fc.errorf(fc.sig.File, 0, 0, "indirect call has no matching function candidates with %d parameters", len(ex.args))
+			if indirectSig != nil {
+				fc.errorf(fc.sig.File, 0, 0, "indirect call has no matching function candidates for resolved signature")
+			} else {
+				fc.errorf(fc.sig.File, 0, 0, "indirect call has no matching function candidates with %d parameters", len(ex.args))
+			}
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}

@@ -4,6 +4,10 @@ typedef myint (*binop_t)(myint, myint);
 
 extern myint add2(myint a, myint b);
 
+myint apply(binop_t fn, myint lhs, myint rhs) {
+  return fn(lhs, rhs);
+}
+
 int main(void) {
   myint lhs = 2;
   myint rhs = 5;
@@ -17,6 +21,12 @@ int main(void) {
   }
   if ((*op)(lhs, rhs) != 7) {
     return 5;
+  }
+  if (apply(op, lhs, rhs) != 7) {
+    return 6;
+  }
+  if (apply(add2, lhs, rhs) != 7) {
+    return 7;
   }
   op = 0;
   if (clipped != 2) {
