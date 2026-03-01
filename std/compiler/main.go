@@ -179,6 +179,7 @@ func main() {
 	var profileReportPath string
 	var extractStdlibDest string
 	var runMode bool
+	var testMode bool
 	var stdinInput bool
 	var showVersion bool
 	var programArgs []string
@@ -195,6 +196,11 @@ func main() {
 			continue
 		case "-run":
 			runMode = true
+			i = i + 1
+			continue
+		case "-test":
+			testMode = true
+			compileTarget.TestMode = true
 			i = i + 1
 			continue
 		case "-o":
@@ -477,6 +483,11 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
+	if fromIRBinaryPath != "" && testMode {
+		fmt.Fprintf(os.Stderr, "-test is not valid with -from-ir-binary\n")
+		runCleanup()
+		os.Exit(1)
+	}
 	if extractStdlibDest == "" && profileReportPath == "" && fromIRBinaryPath == "" && len(entryFiles) == 0 {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
@@ -529,7 +540,7 @@ func main() {
 	}
 
 	if extractStdlibDest != "" {
-		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || stdinInput || parseOnly || emitIRPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
+		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || testMode || stdinInput || parseOnly || emitIRPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
 			fmt.Fprintf(os.Stderr, "-extract-stdlib cannot be combined with compilation inputs/options\n")
 			runCleanup()
 			os.Exit(1)
@@ -781,6 +792,7 @@ func printHelp(program string, out *os.File) {
 	}
 	fmt.Fprintf(out, "  -list-build-tags <p>   Write discovered build tags (one per line)\n")
 	fmt.Fprintf(out, "  -run                   Compile and run the output binary\n")
+	fmt.Fprintf(out, "  -test                  Build test binary with synthetic test runner main\n")
 	fmt.Fprintf(out, "  -size-analysis <path>  Write per-function size analysis JSON\n")
 	fmt.Fprintf(out, "  -version, --version    Print compiler stamp\n")
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
