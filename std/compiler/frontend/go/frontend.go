@@ -1238,38 +1238,55 @@ func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors 
 	if node == nil {
 		return
 	}
+	stack := make([]*Node, 0, 64)
+	stack = append(stack, node)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n == nil {
+			continue
+		}
 
-	// Check selector expressions: pkg.Name references
-	if node.Kind == NSelectorExpr && node.X != nil && node.X.Kind == NIdent {
-		target, isImport := imports[node.X.Name]
-		if isImport {
-			_, hasSym := target.Symbols[node.Name]
-			allowRuntimeMemBuiltin := target.Path == "runtime" && isRuntimeMemBuiltinName(node.Name)
-			if !hasSym && !allowRuntimeMemBuiltin {
-				*errors = append(*errors, fmt.Sprintf("%s: %s.%s undefined (package %s has no symbol %s)", pkg.Path, node.X.Name, node.Name, target.Path, node.Name))
+		// Check selector expressions: pkg.Name references
+		if n.Kind == NSelectorExpr && n.X != nil && n.X.Kind == NIdent {
+			target, isImport := imports[n.X.Name]
+			if isImport {
+				_, hasSym := target.Symbols[n.Name]
+				allowRuntimeMemBuiltin := target.Path == "runtime" && isRuntimeMemBuiltinName(n.Name)
+				if !hasSym && !allowRuntimeMemBuiltin {
+					*errors = append(*errors, fmt.Sprintf("%s: %s.%s undefined (package %s has no symbol %s)", pkg.Path, n.X.Name, n.Name, target.Path, n.Name))
+				}
 			}
 		}
-	}
 
-	// Check that imported package names used as bare identifiers are valid
-	if node.Kind == NCallExpr && node.X != nil {
-		if node.X.Kind == NIdent {
-			name := node.X.Name
+		// Check that imported package names used as bare identifiers are valid
+		if n.Kind == NCallExpr && n.X != nil && n.X.Kind == NIdent {
+			name := n.X.Name
 			// If calling an identifier that matches an import name, that's wrong
 			_, isImport := imports[name]
 			if isImport {
 				*errors = append(*errors, fmt.Sprintf("%s: %s used as function (is a package name)", pkg.Path, name))
 			}
 		}
-	}
 
-	// Recurse
-	validateNode(pkg, imports, node.X, errors)
-	validateNode(pkg, imports, node.Y, errors)
-	validateNode(pkg, imports, node.Body, errors)
-	validateNode(pkg, imports, node.Type, errors)
-	for _, child := range node.Nodes {
-		validateNode(pkg, imports, child, errors)
+		if n.X != nil {
+			stack = append(stack, n.X)
+		}
+		if n.Y != nil {
+			stack = append(stack, n.Y)
+		}
+		if n.Body != nil {
+			stack = append(stack, n.Body)
+		}
+		if n.Type != nil {
+			stack = append(stack, n.Type)
+		}
+		for i := len(n.Nodes) - 1; i >= 0; i-- {
+			child := n.Nodes[i]
+			if child != nil {
+				stack = append(stack, child)
+			}
+		}
 	}
 }
 
