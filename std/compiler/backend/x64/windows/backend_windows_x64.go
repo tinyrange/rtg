@@ -44,6 +44,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			continue
 		}
 		if len(targetName) > 10 && targetName[0:10] == "$funcaddr$" {
+			refName := targetName[10:]
+			if _, ok := g.MaybeGetFuncOffsets(refName); !ok {
+				unresolved = append(unresolved, targetName)
+			}
 			continue
 		}
 		target, ok := g.MaybeGetFuncOffsets(targetName)
@@ -276,22 +280,36 @@ func emitCallbackThunk(g *core.CodeGen, funcName string, irmod *ir.IRModule) {
 	g.EmitBytes(0x48, 0x89, 0xe5)       // mov rbp, rsp
 	g.EmitBytes(0x48, 0x83, 0xec, 0x40) // sub rsp, 64
 
-	// Save Win64 params to local frame
-	g.EmitBytes(0x48, 0x89, 0x4d, 0xf8) // mov [rbp-8], rcx   (arg0)
-	g.EmitBytes(0x48, 0x89, 0x55, 0xf0) // mov [rbp-16], rdx  (arg1)
-	g.EmitBytes(0x4c, 0x89, 0x45, 0xe8) // mov [rbp-24], r8   (arg2)
-	g.EmitBytes(0x4c, 0x89, 0x4d, 0xe0) // mov [rbp-32], r9   (arg3)
+	// Preserve incoming (caller-owned) non-volatile R15 to satisfy Win64 ABI.
+	g.EmitBytes(0x4c, 0x89, 0x7d, 0xf8) // mov [rbp-8], r15
+
+	// Save Win64 register params to local frame.
+	g.EmitBytes(0x48, 0x89, 0x4d, 0xf0) // mov [rbp-16], rcx (arg0)
+	g.EmitBytes(0x48, 0x89, 0x55, 0xe8) // mov [rbp-24], rdx (arg1)
+	g.EmitBytes(0x4c, 0x89, 0x45, 0xe0) // mov [rbp-32], r8  (arg2)
+	g.EmitBytes(0x4c, 0x89, 0x4d, 0xd8) // mov [rbp-40], r9  (arg3)
 
 	// Load R15 (RTG operand stack pointer) from the global save slot.
 	emitLoadR15(g)
 
 	// Push params onto RTG operand stack (R15) in left-to-right order.
 	// RTG expects: first param pushed first (deepest), last param on top.
-	offsets := []byte{0xf8, 0xf0, 0xe8, 0xe0} // -8, -16, -24, -32
-	for i := 0; i < paramCount && i < 4; i++ {
-		g.EmitBytes(0x48, 0x8b, 0x45, offsets[i]) // mov rax, [rbp+offset]
-		g.EmitBytes(0x4d, 0x8d, 0x7f, 0xf8)       // lea r15, [r15-8]
-		g.EmitBytes(0x49, 0x89, 0x07)              // mov [r15], rax
+	regArgOffsets := []byte{0xf0, 0xe8, 0xe0, 0xd8} // -16, -24, -32, -40
+	for i := 0; i < paramCount; i++ {
+		if i < len(regArgOffsets) {
+			g.EmitBytes(0x48, 0x8b, 0x45, regArgOffsets[i]) // mov rax, [rbp+offset]
+		} else {
+			// Stack args start at [rbp+48] (5th arg), then +8 each.
+			disp := 48 + (i-4)*8
+			if disp <= 127 {
+				g.EmitBytes(0x48, 0x8b, 0x45, byte(disp)) // mov rax, [rbp+disp8]
+			} else {
+				g.EmitBytes(0x48, 0x8b, 0x85) // mov rax, [rbp+disp32]
+				g.EmitU32(uint32(disp))
+			}
+		}
+		g.EmitBytes(0x4d, 0x8d, 0x7f, 0xf8) // lea r15, [r15-8]
+		g.EmitBytes(0x49, 0x89, 0x07)       // mov [r15], rax
 	}
 
 	// Call the RTG function body
@@ -301,10 +319,14 @@ func emitCallbackThunk(g *core.CodeGen, funcName string, irmod *ir.IRModule) {
 	g.EmitBytes(0x49, 0x8b, 0x07)       // mov rax, [r15]
 	g.EmitBytes(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8]
 
-	// Save R15 back to global (RTG code in the callback may have moved it)
-	// Actually, push/pop is balanced so R15 is back where it was. But save
-	// it anyway for safety with nested callbacks.
+	// Save R15 back to global (RTG code in the callback may have moved it).
+	// Preserve return value across emitSaveR15's RAX scratch use.
+	g.EmitBytes(0x48, 0x89, 0xc1) // mov rcx, rax
 	emitSaveR15(g)
+	g.EmitBytes(0x48, 0x89, 0xc8) // mov rax, rcx
+
+	// Restore caller-visible non-volatile R15.
+	g.EmitBytes(0x4c, 0x8b, 0x7d, 0xf8) // mov r15, [rbp-8]
 
 	// Epilogue: leave + ret
 	g.EmitBytes(0xc9) // leave (mov rsp, rbp; pop rbp)

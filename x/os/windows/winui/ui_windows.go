@@ -64,7 +64,6 @@ const (
 	IDC_ARROW uintptr = 32512
 
 	cwUseDefault int32 = -2147483648
-
 )
 
 type HWND = uintptr
@@ -78,25 +77,51 @@ type Control struct {
 	ID     uint16
 }
 
+type EventKind uint8
+
+const (
+	EventCommand EventKind = 1
+	EventQuit    EventKind = 2
+)
+
+type Event struct {
+	Kind     EventKind
+	HWND     HWND
+	ID       uint16
+	Notify   uint16
+	WParam   uintptr
+	LParam   uintptr
+	ExitCode int32
+}
+
 var (
 	classRegistered bool
 	classNameBuf    = toCString("RTG_BASIC_WINDOW")
 	hInstance       uintptr
 
-	// Simple command routing for single-window apps.
-	cmdBtnID       uint16
-	cmdEditHandle  HWND
-	cmdLabelHandle HWND
-	cmdPrefix      string
-	cmdActive      bool
+	pendingEvent    Event
+	hasPendingEvent bool
 )
 
-func SetEchoCommand(btnID uint16, edit Control, label Control, prefix string) {
-	cmdBtnID = btnID
-	cmdEditHandle = edit.Handle
-	cmdLabelHandle = label.Handle
-	cmdPrefix = prefix
-	cmdActive = true
+func pushCommandEvent(hwnd HWND, id uint16, notify uint16, wParam uintptr, lParam uintptr) {
+	pendingEvent = Event{
+		Kind:   EventCommand,
+		HWND:   hwnd,
+		ID:     id,
+		Notify: notify,
+		WParam: wParam,
+		LParam: lParam,
+	}
+	hasPendingEvent = true
+}
+
+func popPendingEvent() (Event, bool) {
+	if !hasPendingEvent {
+		return Event{}, false
+	}
+	ev := pendingEvent
+	hasPendingEvent = false
+	return ev, true
 }
 
 // rtg:zerocall
@@ -353,21 +378,38 @@ func (c Control) Text(maxChars int) (string, Errno) {
 	return runtime.Makestring(buf, int(n)), 0
 }
 
-func Run() (int32, Errno) {
+func NextEvent() (Event, Errno) {
+	if ev, ok := popPendingEvent(); ok {
+		return ev, 0
+	}
 	msg := allocMsg()
-
 	for {
 		r, _, _ := winGetMessageA(msg, 0, 0, 0)
 		if int32(r) == -1 {
-			return 0, lastError()
+			return Event{}, lastError()
 		}
 		if r == 0 {
 			// WM_QUIT; MSG.wParam is the exit code
 			code := int32(readPtr(msg + offMSG_wParam))
-			return code, 0
+			return Event{Kind: EventQuit, ExitCode: code}, 0
 		}
 		_, _, _ = winTranslateMessage(msg)
 		_, _, _ = winDispatchMessageA(msg)
+		if ev, ok := popPendingEvent(); ok {
+			return ev, 0
+		}
+	}
+}
+
+func Run() (int32, Errno) {
+	for {
+		ev, err := NextEvent()
+		if err != 0 {
+			return 0, err
+		}
+		if ev.Kind == EventQuit {
+			return ev.ExitCode, 0
+		}
 	}
 }
 
@@ -379,18 +421,8 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	case WM_COMMAND:
 		id := lowWord(wParam)
 		notify := highWord(wParam)
-		if cmdActive && id == cmdBtnID && notify == BN_CLICKED {
-			buf := runtime.Alloc(1025)
-			runtime.Memzero(buf, 1025)
-			n, _, _ := winGetWindowTextA(cmdEditHandle, buf, 1025)
-			txt := cmdPrefix
-			if n > 0 {
-				txt = cmdPrefix + runtime.Makestring(buf, int(n))
-			}
-			tb := toCString(txt)
-			_, _, _ = winSetWindowTextA(cmdLabelHandle, runtime.Sliceptr(tb))
-			return 0
-		}
+		pushCommandEvent(hwnd, id, notify, wParam, lParam)
+		return 0
 	case WM_CLOSE:
 		_, _, _ = winDestroyWindow(hwnd)
 		return 0
