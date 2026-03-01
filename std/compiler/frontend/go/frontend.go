@@ -166,6 +166,9 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 		fmt.Fprintf(os.Stderr, "error: no Go files found in %s\n", entryDir)
 		os.Exit(1)
 	}
+	if target.TestMode {
+		injectSyntheticTestRunner(mainPkg)
+	}
 	mainPkg.Path = "main"
 	mod.Packages["main"] = mainPkg
 	mod.Entry = mainPkg
@@ -640,6 +643,9 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 		if !isGoFile(entry.Name()) {
 			continue
 		}
+		if !c.target.TestMode && isGoTestFile(entry.Name()) {
+			continue
+		}
 		// Check build tags before including
 		if !c.shouldIncludeFile(dir+"/"+entry.Name(), entry.Name()) {
 			continue
@@ -710,6 +716,233 @@ func isGoFile(name string) bool {
 		return false
 	}
 	return name[len(name)-3:len(name)] == ".go"
+}
+
+func isGoTestFile(name string) bool {
+	return len(name) > 8 && strings.HasSuffix(name, "_test.go")
+}
+
+func isUpperASCII(ch byte) bool {
+	return ch >= 'A' && ch <= 'Z'
+}
+
+func isTopLevelTestFuncName(name string, prefix string) bool {
+	if len(name) <= len(prefix) {
+		return false
+	}
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	return isUpperASCII(name[len(prefix)])
+}
+
+func collectTopLevelFuncsWithPrefix(pkg *Package, prefix string) []string {
+	var names []string
+	seen := make(map[string]bool)
+	for _, file := range pkg.Files {
+		if file == nil || file.Kind != NFile {
+			continue
+		}
+		for _, node := range file.Nodes {
+			if node == nil || node.Kind != NFunc || node.X != nil {
+				continue
+			}
+			if !isTopLevelTestFuncName(node.Name, prefix) {
+				continue
+			}
+			if !seen[node.Name] {
+				seen[node.Name] = true
+				names = append(names, node.Name)
+			}
+		}
+	}
+	sortStrings(names)
+	return names
+}
+
+func astIdent(name string) *Node {
+	return &Node{Kind: NIdent, Name: name}
+}
+
+func astString(value string) *Node {
+	return &Node{Kind: NStringLit, Name: value}
+}
+
+func astInt(value int) *Node {
+	return &Node{Kind: NIntLit, Name: fmt.Sprintf("%d", value)}
+}
+
+func astSelector(base string, field string) *Node {
+	return &Node{Kind: NSelectorExpr, X: astIdent(base), Name: field}
+}
+
+func astSelect(base *Node, field string) *Node {
+	return &Node{Kind: NSelectorExpr, X: base, Name: field}
+}
+
+func astCall(callee *Node, args ...*Node) *Node {
+	return &Node{Kind: NCallExpr, X: callee, Nodes: args}
+}
+
+func astExprStmt(expr *Node) *Node {
+	return &Node{Kind: NExprStmt, X: expr}
+}
+
+func astAssign(op string, lhs *Node, rhs *Node) *Node {
+	return &Node{Kind: NAssign, Name: op, X: lhs, Y: rhs}
+}
+
+func astMultiAssign(op string, lhs []*Node, rhs *Node) *Node {
+	return &Node{Kind: NAssign, Name: op, Nodes: lhs, Y: rhs}
+}
+
+func astBinary(op string, left *Node, right *Node) *Node {
+	return &Node{Kind: NBinaryExpr, Name: op, X: left, Y: right}
+}
+
+func astUnary(op string, expr *Node) *Node {
+	return &Node{Kind: NUnaryExpr, Name: op, X: expr}
+}
+
+func astBlock(stmts ...*Node) *Node {
+	var out []*Node
+	for _, stmt := range stmts {
+		if stmt != nil {
+			out = append(out, stmt)
+		}
+	}
+	return &Node{Kind: NBlock, Nodes: out}
+}
+
+func astIf(cond *Node, thenBlock *Node) *Node {
+	return &Node{Kind: NIf, X: cond, Body: thenBlock}
+}
+
+func injectSyntheticTestRunner(pkg *Package) {
+	if pkg == nil {
+		return
+	}
+	testNames := collectTopLevelFuncsWithPrefix(pkg, "Test")
+	benchNames := collectTopLevelFuncsWithPrefix(pkg, "Benchmark")
+	packageName := pkg.Name
+	if packageName == "" {
+		packageName = "main"
+	}
+	var decls []*Node
+	decls = append(decls, &Node{Kind: NImport, Name: "testing"})
+
+	for _, testName := range testNames {
+		fn := &Node{
+			Kind: NFunc,
+			Name: "__rtg_run_" + testName,
+			Nodes: []*Node{
+				{Kind: NField, Name: "verbose", Type: astIdent("bool")},
+			},
+			Type: astIdent("bool"),
+			Body: astBlock(
+				astAssign(":=", astIdent("t"), astCall(astSelector("testing", "BeginTest"), astString(testName), astIdent("verbose"))),
+				&Node{
+					Kind: NDeferStmt,
+					X: astCall(
+						astSelector("testing", "FinishTest"),
+						astIdent("t"),
+						astString(testName),
+						astIdent("verbose"),
+					),
+				},
+				astExprStmt(astCall(astIdent(testName), astIdent("t"))),
+				&Node{
+					Kind: NReturn,
+					X:    astUnary("!", astCall(astSelect(astIdent("t"), "Failed"))),
+				},
+			),
+		}
+		decls = append(decls, fn)
+	}
+
+	for _, benchName := range benchNames {
+		fn := &Node{
+			Kind: NFunc,
+			Name: "__rtg_bench_" + benchName,
+			Nodes: []*Node{
+				{Kind: NField, Name: "verbose", Type: astIdent("bool")},
+			},
+			Type: astIdent("bool"),
+			Body: astBlock(
+				astAssign(":=", astIdent("b"), astCall(astSelector("testing", "BeginBenchmark"), astString(benchName), astIdent("verbose"))),
+				&Node{
+					Kind: NDeferStmt,
+					X: astCall(
+						astSelector("testing", "FinishBenchmark"),
+						astIdent("b"),
+						astString(benchName),
+						astIdent("verbose"),
+					),
+				},
+				astExprStmt(astCall(astSelect(astIdent("b"), "ResetTimer"))),
+				astExprStmt(astCall(astIdent(benchName), astIdent("b"))),
+				astExprStmt(astCall(astSelect(astIdent("b"), "StopTimer"))),
+				astIf(
+					astBinary("<=", astSelect(astIdent("b"), "N"), astInt(0)),
+					astBlock(astAssign("=", astSelect(astIdent("b"), "N"), astInt(1))),
+				),
+				astAssign(":=", astIdent("nsPerOp"), astBinary("/", astCall(astSelect(astIdent("b"), "Elapsed")), astSelect(astIdent("b"), "N"))),
+				astExprStmt(astCall(astSelector("testing", "PrintBenchmarkResult"), astString(benchName), astSelect(astIdent("b"), "N"), astIdent("nsPerOp"))),
+				&Node{
+					Kind: NReturn,
+					X:    astUnary("!", astCall(astSelect(astIdent("b"), "Failed"))),
+				},
+			),
+		}
+		decls = append(decls, fn)
+	}
+
+	var stmts []*Node
+	stmts = append(stmts, astMultiAssign(":=", []*Node{astIdent("runPattern"), astIdent("benchPattern"), astIdent("verbose")}, astCall(astSelector("testing", "ParseTestArgs"))))
+	stmts = append(stmts, astAssign(":=", astIdent("failures"), astInt(0)))
+	stmts = append(stmts, astAssign(":=", astIdent("testsRun"), astInt(0)))
+	stmts = append(stmts, astAssign(":=", astIdent("benchesRun"), astInt(0)))
+
+	for _, testName := range testNames {
+		stmts = append(stmts, astIf(
+			astCall(astSelector("testing", "Match"), astString(testName), astIdent("runPattern")),
+			astBlock(
+				astAssign("=", astIdent("testsRun"), astBinary("+", astIdent("testsRun"), astInt(1))),
+				astIf(
+					astUnary("!", astCall(astIdent("__rtg_run_"+testName), astIdent("verbose"))),
+					astBlock(astAssign("=", astIdent("failures"), astBinary("+", astIdent("failures"), astInt(1)))),
+				),
+			),
+		))
+	}
+
+	for _, benchName := range benchNames {
+		stmts = append(stmts, astIf(
+			astBinary("&&",
+				astBinary("!=", astIdent("benchPattern"), astString("")),
+				astCall(astSelector("testing", "Match"), astString(benchName), astIdent("benchPattern")),
+			),
+			astBlock(
+				astAssign("=", astIdent("benchesRun"), astBinary("+", astIdent("benchesRun"), astInt(1))),
+				astIf(
+					astUnary("!", astCall(astIdent("__rtg_bench_"+benchName), astIdent("verbose"))),
+					astBlock(astAssign("=", astIdent("failures"), astBinary("+", astIdent("failures"), astInt(1)))),
+				),
+			),
+		))
+	}
+
+	stmts = append(stmts, astIf(
+		astBinary("!=", astIdent("failures"), astInt(0)),
+		astBlock(astExprStmt(astCall(astSelector("testing", "FailAndExit"), astIdent("failures")))),
+	))
+	stmts = append(stmts, astExprStmt(astCall(astSelector("testing", "PassAndExit"), astIdent("verbose"), astIdent("testsRun"), astIdent("benchesRun"))))
+	decls = append(decls, &Node{Kind: NFunc, Name: "init", Body: astBlock(stmts...)})
+
+	file := &Node{Kind: NFile, Name: packageName, Nodes: decls}
+
+	pkg.Files = append(pkg.Files, file)
+	pkg.Imports = collectImports(pkg)
 }
 
 // parseFile reads, lexes, and parses a single Go source file.

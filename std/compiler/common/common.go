@@ -19,6 +19,7 @@ type Target struct {
 	StdlibIncludePaths    []string
 	StdlibIncludeExplicit bool
 	StdlibIncludeEmbedded bool
+	TestMode              bool
 }
 
 func HexDigit(v byte) byte {
