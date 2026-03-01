@@ -135,3 +135,55 @@ ok := testing.RunTest("TestAdd", verbose, TestAdd) // synthetic init path failed
   - `__rtg_run_<TestName>(verbose bool) bool`
   - `__rtg_bench_<BenchmarkName>(verbose bool) bool`
 - Synthetic `init` now calls wrappers directly, avoiding function-value passing in generated wiring.
+
+## 9) Function-typed callback invocation can become unresolved call target (`fn`/`unknown`)
+
+**Symptom**
+- Codegen failure:
+  - `error: unresolved calls: fn, unknown`
+  - `codegen error: ... unresolved calls`
+- Triggered while compiling a normal program that called `testing.RunTest` / `testing.RunBenchmark`.
+
+**Repro pattern**
+```go
+ok := testing.RunTest("ok", false, func(t *testing.T) { t.Fail() }) // unresolved `fn`
+```
+
+**Workaround used**
+- In fullcompiler fixtures, avoided direct calls to `RunTest`/`RunBenchmark`.
+- Tested `testing` behavior via `BeginTest`/`FinishTest` and `BeginBenchmark`/`FinishBenchmark` helpers instead.
+
+## 10) `log.Logger` output redirection + write can crash at runtime
+
+**Symptom**
+- Program exits with signal (`exit 133`) with no Go panic text.
+- Triggered after changing a logger output destination and then writing through that logger.
+
+**Repro pattern**
+```go
+var a bytes.Buffer
+var b bytes.Buffer
+l := log.New(&a, "p:", 0)
+l.SetOutput(&b)
+l.Print("x") // crash observed
+```
+
+**Workaround used**
+- Avoided `SetOutput` + immediate write path in fullcompiler fixtures.
+- Kept logger method coverage on a single stable output destination.
+
+## 11) `testing.FinishTest` / `testing.FinishBenchmark` do not catch panic sentinels in deferred use
+
+**Symptom**
+- `FailNow` sentinel panic escapes and terminates program (`rtg.testing.failnow` printed, non-zero exit), even when `FinishTest`/`FinishBenchmark` are deferred.
+
+**Repro pattern**
+```go
+t := testing.BeginTest("x", false)
+defer testing.FinishTest(t, "x", false)
+t.FailNow() // sentinel panic escapes in this branch state
+```
+
+**Workaround used**
+- Avoided `FailNow`/panic-path assertions through `FinishTest` and `FinishBenchmark` in fullcompiler fixtures.
+- Limited fixture coverage to stable non-panic paths (`Fail`, timers, parse/match helpers, begin/finish calls).
