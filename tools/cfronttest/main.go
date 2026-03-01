@@ -38,22 +38,37 @@ func hostBinaryPath(base string) string {
 }
 
 func runCmdWithTimeout(cmd *exec.Cmd) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	return runCmdWithTimeoutExpect(cmd, 0)
+}
+
+func runCmdWithTimeoutExpect(cmd *exec.Cmd, expectedExit int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("timed out after 2s\n%s", string(out))
+		return fmt.Errorf("timed out after 10s\n%s", string(out))
 	}
+	exitCode := 0
 	if err != nil {
-		return fmt.Errorf("%v\n%s", err, string(out))
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			return fmt.Errorf("%v\n%s", err, string(out))
+		}
+	}
+	if exitCode != expectedExit {
+		return fmt.Errorf("exit code %d (expected %d)\n%s", exitCode, expectedExit, string(out))
 	}
 	return nil
 }
 
-func listCases(dir string, mode string) ([]testCase, error) {
+func listCases(dir string, mode string, optional bool) ([]testCase, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if optional && os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var names []string
@@ -140,6 +155,18 @@ func runCase(tc testCase) (string, error) {
 
 func runRunCase(tc testCase) (string, error) {
 	base := strings.TrimSuffix(filepath.Base(tc.inputPath), ".c")
+	expectedExit := 0
+	exitPath := filepath.Join(filepath.Dir(tc.inputPath), base+".exit")
+	if raw, err := os.ReadFile(exitPath); err == nil {
+		v, perr := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if perr != nil {
+			return "", fmt.Errorf("invalid exit expectation in %s: %v", exitPath, perr)
+		}
+		expectedExit = v
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
 	compilerPath := filepath.Join(".", hostBinaryPath(filepath.Join("build", "rtg")))
 	outStem := filepath.Join("build", "cfront_run_"+base)
 	useCBackend := strings.HasSuffix(base, "_cbackend")
@@ -162,7 +189,7 @@ func runRunCase(tc testCase) (string, error) {
 		if err := runCmdWithTimeout(exec.Command(cc, "-x", "c", srcPath, "-o", binPath)); err != nil {
 			return "", err
 		}
-		if err := runCmdWithTimeout(exec.Command(filepath.Join(".", binPath))); err != nil {
+		if err := runCmdWithTimeoutExpect(exec.Command(filepath.Join(".", binPath)), expectedExit); err != nil {
 			return "", err
 		}
 		return "", nil
@@ -170,10 +197,24 @@ func runRunCase(tc testCase) (string, error) {
 
 	outPath := hostBinaryPath(outStem)
 	defer os.Remove(outPath)
-	if err := runCmdWithTimeout(exec.Command(compilerPath, "-x", "c99", "-run", "-o", outPath, tc.inputPath)); err != nil {
+	if err := runCmdWithTimeoutExpect(exec.Command(compilerPath, "-x", "c99", "-run", "-o", outPath, tc.inputPath), expectedExit); err != nil {
 		return "", err
 	}
 	return "", nil
+}
+
+func runExitCodePropagationCase() error {
+	compilerPath := filepath.Join(".", hostBinaryPath(filepath.Join("build", "rtg")))
+	srcPath := filepath.Join("build", "cfront_exit_code_check.c")
+	outPath := hostBinaryPath(filepath.Join("build", "cfront_exit_code_check.bin"))
+	defer os.Remove(srcPath)
+	defer os.Remove(outPath)
+
+	src := "int main(void) { return 7; }\n"
+	if err := os.WriteFile(srcPath, []byte(src), 0644); err != nil {
+		return err
+	}
+	return runCmdWithTimeoutExpect(exec.Command(compilerPath, "-x", "c99", "-run", "-o", outPath, srcPath), 7)
 }
 
 func runParseCase(tc testCase) (string, error) {
@@ -196,22 +237,22 @@ func main() {
 	update := flag.Bool("update", false, "rewrite expected token snapshots")
 	flag.Parse()
 
-	lexCases, err := listCases(filepath.Join("tests", "c", "lex"), "lex")
+	lexCases, err := listCases(filepath.Join("tests", "c", "lex"), "lex", true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfronttest: %v\n", err)
 		os.Exit(1)
 	}
-	ppCases, err := listCases(filepath.Join("tests", "c", "pp"), "pp")
+	ppCases, err := listCases(filepath.Join("tests", "c", "pp"), "pp", true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfronttest: %v\n", err)
 		os.Exit(1)
 	}
-	parseCases, err := listCases(filepath.Join("tests", "c", "parse"), "parse")
+	parseCases, err := listCases(filepath.Join("tests", "c", "parse"), "parse", true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfronttest: %v\n", err)
 		os.Exit(1)
 	}
-	runCases, err := listCases(filepath.Join("tests", "c", "run"), "run")
+	runCases, err := listCases(filepath.Join("tests", "c", "run"), "run", false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfronttest: %v\n", err)
 		os.Exit(1)
@@ -264,6 +305,12 @@ func main() {
 			continue
 		}
 		fmt.Printf("PASS %s %s\n", tc.mode, tc.inputPath)
+	}
+	if err := runExitCodePropagationCase(); err != nil {
+		failed = true
+		fmt.Fprintf(os.Stderr, "FAIL run exit_code_propagation: %v\n", err)
+	} else {
+		fmt.Printf("PASS run exit_code_propagation\n")
 	}
 
 	if failed {

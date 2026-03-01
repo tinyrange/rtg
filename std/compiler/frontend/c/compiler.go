@@ -439,15 +439,19 @@ func (c *compiler) emitEntryWrapper() {
 		c.errorf("", 0, 0, "no C entrypoint found: expected function \"main\"")
 		return
 	}
-	f := &ir.IRFunc{Name: "main.main", Params: 0, RetCount: 0}
+	f := &ir.IRFunc{Name: "main.main", Params: 0, RetCount: 1}
 	for i := 0; i < mainSig.ParamCount; i++ {
 		f.Code = append(f.Code, ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 	}
 	f.Code = append(f.Code, ir.Inst{Op: ir.OP_CALL, Name: mainSig.IRName, Arg: mainSig.ParamCount})
-	for i := 0; i < mainSig.RetCount; i++ {
-		f.Code = append(f.Code, ir.Inst{Op: ir.OP_DROP})
+	if mainSig.RetCount <= 0 {
+		f.Code = append(f.Code, ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	} else {
+		for i := 1; i < mainSig.RetCount; i++ {
+			f.Code = append(f.Code, ir.Inst{Op: ir.OP_DROP})
+		}
 	}
-	f.Code = append(f.Code, ir.Inst{Op: ir.OP_RETURN, Arg: 0})
+	f.Code = append(f.Code, ir.Inst{Op: ir.OP_RETURN, Arg: 1})
 	c.irmod.Funcs = append(c.irmod.Funcs, f)
 }
 
@@ -569,6 +573,9 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	toks = trimTokens(toks)
 	if len(toks) == 0 {
 		return nil, fmt.Errorf("empty function declaration")
+	}
+	if err := validateIntOnlyTypeSubset(toks, "function declaration"); err != nil {
+		return nil, err
 	}
 
 	lpar := -1
@@ -707,6 +714,27 @@ func containsPunct(tokens []Token, punct string) bool {
 	return false
 }
 
+func isUnsupportedCTypeKeyword(text string) bool {
+	switch text {
+	case "short", "float", "double", "_Bool", "_Complex", "_Imaginary", "struct", "union", "enum", "typedef":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateIntOnlyTypeSubset(tokens []Token, context string) error {
+	for _, t := range tokens {
+		if t.Kind != TokIdent {
+			continue
+		}
+		if isUnsupportedCTypeKeyword(t.Text) {
+			return fmt.Errorf("%s uses unsupported type keyword %q (current C lowering is int/void subset)", context, t.Text)
+		}
+	}
+	return nil
+}
+
 func parseArrayLength(tokens []Token) (int64, error) {
 	tokens = trimTokens(tokens)
 	if len(tokens) != 1 || tokens[0].Kind != TokNumber {
@@ -726,6 +754,9 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
 	toks = trimTokens(toks)
 	if len(toks) == 0 {
 		return nil, false, nil
+	}
+	if err := validateIntOnlyTypeSubset(toks, "declaration"); err != nil {
+		return nil, false, err
 	}
 	hasExtern := false
 	for _, t := range toks {
@@ -870,13 +901,9 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, error) {
 
 func isTypeSpecifierKeyword(text string) bool {
 	switch text {
-	case "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool", "_Complex", "_Imaginary":
+	case "void", "int":
 		return true
 	case "const", "volatile", "restrict", "inline":
-		return true
-	case "auto", "register", "static", "extern", "typedef":
-		return true
-	case "struct", "union", "enum":
 		return true
 	default:
 		return false
@@ -1887,6 +1914,14 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		if ex.op == "+" || ex.op == "-" {
 			leftPtr := fc.exprIsPointer(ex.left)
 			rightPtr := fc.exprIsPointer(ex.right)
+			if ex.op == "-" && leftPtr && rightPtr {
+				fc.emitExpr(ex.left)
+				fc.emitExpr(ex.right)
+				fc.emit(ir.Inst{Op: ir.OP_SUB})
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(fc.c.target.PtrSize)})
+				fc.emit(ir.Inst{Op: ir.OP_DIV})
+				return
+			}
 			if leftPtr && !rightPtr {
 				fc.emitExpr(ex.left)
 				fc.emitExpr(ex.right)
@@ -2064,6 +2099,18 @@ type cExprParser struct {
 	pos  int
 }
 
+func looksLikeTypeNameTokens(tokens []Token) bool {
+	for _, t := range tokens {
+		if t.Kind != TokIdent {
+			continue
+		}
+		if isTypeSpecifierKeyword(t.Text) || isUnsupportedCTypeKeyword(t.Text) || isDeclarationKeyword(t) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *cExprParser) errorf(format string, args ...interface{}) {
 	p.fc.errorf(p.file, p.line, p.col, format, args...)
 }
@@ -2142,6 +2189,10 @@ func (p *cExprParser) tryParseParenType(allowArray bool) (cTypeInfo, int, bool) 
 	inner := trimTokens(p.toks[start+1 : end])
 	info, err := parseCTypeInfo(inner)
 	if err != nil {
+		if looksLikeTypeNameTokens(inner) {
+			p.errorf("%v", err)
+			return cTypeInfo{Kind: cDeclScalar}, end - start + 1, true
+		}
 		return cTypeInfo{}, 0, false
 	}
 	if !allowArray && info.Kind == cDeclArray {

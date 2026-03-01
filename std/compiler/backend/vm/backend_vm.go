@@ -306,6 +306,17 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		return fmt.Errorf("entrypoint %q not found", entryName)
 	}
 	vm.execFunc(mainFunc)
+	if !vm.exited {
+		if mainFunc.RetCount > 0 {
+			code := int(vm.signExtend(vm.pop()))
+			for i := 1; i < mainFunc.RetCount; i++ {
+				vm.pop()
+			}
+			ExitCode = code
+		} else {
+			ExitCode = 0
+		}
+	}
 
 	// Always print VM summary on exit
 	fmt.Fprintf(os.Stderr, "vm: %s steps, %s calls, %s memory, %s frame hwm, %s stack hwm\n",

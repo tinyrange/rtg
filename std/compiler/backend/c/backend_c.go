@@ -1860,7 +1860,15 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		}
 	}
 	cEmitSymbolCall(bp, funcSyms[mainIdx])
-	bp.WriteString("  return 0;\n")
+	entryRet := irmod.Funcs[mainIdx].RetCount
+	if entryRet > 0 {
+		for i := 1; i < entryRet; i++ {
+			bp.WriteString("  rtg_pop();\n")
+		}
+		bp.WriteString("  return (int)(rtg_sword)rtg_pop();\n")
+	} else {
+		bp.WriteString("  return 0;\n")
+	}
 	bp.WriteString("}\n")
 
 	if target.CompilerDebug {

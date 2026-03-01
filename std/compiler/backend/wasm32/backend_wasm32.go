@@ -733,8 +733,15 @@ func (g *WasmGen) compileStart() []byte {
 		g.w.call(uint32(idx))
 	}
 
-	// proc_exit(0)
-	g.w.i32Const(0)
+	// proc_exit(entryRet0OrZero)
+	entryRet := ir.EntryFuncRetCount(g.irmod)
+	if entryRet > 0 {
+		for i := 1; i < entryRet; i++ {
+			g.w.drop()
+		}
+	} else {
+		g.w.i32Const(0)
+	}
 	g.w.call(uint32(g.wasiProcExit))
 
 	// _start needs locals for args population bookkeeping.

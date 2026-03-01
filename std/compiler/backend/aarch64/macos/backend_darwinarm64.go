@@ -112,7 +112,15 @@ func emitStartArm64(g *aarch64.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	}
 	g.EmitCallPlaceholderArm64(ir.EntryFuncName(irmod))
 
-	g.EmitMovZ(aarch64.REG_X0, 0, 0)
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.OpPop(aarch64.REG_X0)
+		for i := 1; i < entryRet; i++ {
+			g.OpPop(aarch64.REG_X1)
+		}
+	} else {
+		g.EmitMovZ(aarch64.REG_X0, 0, 0)
+	}
 	g.EmitCallGOT("_exit")
 
 	g.EmitMovRRArm64(aarch64.REG_SP, aarch64.REG_FP)

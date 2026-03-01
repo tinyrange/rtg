@@ -50,14 +50,23 @@ func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 		}
 	}
 
-	// Call entrypoint
+	// Call entrypoint.
 	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 
-	// exit(0)
-	g.XorRR(core.REG_RDI, core.REG_RDI) // exit code 0
-	g.EmitByte(0xb8)                    // mov eax, 231
-	g.EmitU32(231)                      // SYS_EXIT_GROUP
-	g.EmitBytes(0x0f, 0x05)             // syscall
+	// If the entrypoint returns a value, use it as process exit status.
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.OpPop(core.REG_RDI)
+		for i := 1; i < entryRet; i++ {
+			g.OpPop(core.REG_RAX)
+		}
+	} else {
+		g.XorRR(core.REG_RDI, core.REG_RDI) // exit code 0
+	}
+
+	g.EmitByte(0xb8)        // mov eax, 231
+	g.EmitU32(231)          // SYS_EXIT_GROUP
+	g.EmitBytes(0x0f, 0x05) // syscall
 }
 
 func compileSyscallIntrinsic(g *core.CodeGen, paramCount int) {

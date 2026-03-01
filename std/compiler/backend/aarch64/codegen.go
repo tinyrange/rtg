@@ -1056,6 +1056,11 @@ func (g *CodeGen) EmitCallPlaceholderArm64(target string) {
 	g.EmitArm64(0x94000000) // BL #0 (placeholder)
 }
 
+// OpPop pops one operand-stack word into the selected register.
+func (g *CodeGen) OpPop(reg int) {
+	g.opPop(reg)
+}
+
 // emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.
 func (g *CodeGen) emitCallIAT(funcName string) {
 	g.Flush()

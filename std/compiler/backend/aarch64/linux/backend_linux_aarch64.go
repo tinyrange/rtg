@@ -89,8 +89,16 @@ func emitStartArm64Linux(g *aarch64.CodeGen, irmod *ir.IRModule, entryFunc strin
 	// Call entrypoint
 	g.EmitCallPlaceholderArm64(ir.EntryFuncName(irmod))
 
-	// exit_group(0): X8=94, X0=0
-	g.EmitMovZ(aarch64.REG_X0, 0, 0)
+	// exit_group(entryRet0OrZero): X8=94, X0=status
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.OpPop(aarch64.REG_X0)
+		for i := 1; i < entryRet; i++ {
+			g.OpPop(aarch64.REG_X1)
+		}
+	} else {
+		g.EmitMovZ(aarch64.REG_X0, 0, 0)
+	}
 	g.EmitLoadImm64Compact(aarch64.REG_X8, 94)
 	g.EmitSvc()
 }

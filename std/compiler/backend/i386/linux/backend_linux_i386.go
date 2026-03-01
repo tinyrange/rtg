@@ -49,8 +49,16 @@ func EmitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// Call entrypoint
 	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 
-	// exit(0): mov eax, 252 (SYS_EXIT_GROUP); xor ebx, ebx; int 0x80
-	g.XorRR32(core.REG32_EBX, core.REG32_EBX)
+	// exit(entryRet0OrZero): mov eax, 252 (SYS_EXIT_GROUP); int 0x80
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.OpPop(core.REG32_EBX)
+		for i := 1; i < entryRet; i++ {
+			g.OpPop(core.REG32_EAX)
+		}
+	} else {
+		g.XorRR32(core.REG32_EBX, core.REG32_EBX)
+	}
 	g.EmitMovRegImm32(core.REG32_EAX, 252)
 	g.EmitInt80()
 }

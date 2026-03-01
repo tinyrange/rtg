@@ -17,8 +17,8 @@ Current lowering scope is intentionally small: integer-centric functions, local/
 
 Additional supported pieces in this subset:
 
-- C-style casts for simple scalar/pointer type names (e.g. `(int)x`, `(int*)p`).
-- `sizeof` on both expression operands and simple type names.
+- C-style casts for simple int/pointer type names (e.g. `(int)x`, `(int*)p`).
+- `sizeof` on expressions and int/pointer type names.
 - Brace initializers for fixed-size arrays (global and local), with zero-fill for omitted elements.
 - Call-site argument checks for arity and scalar-vs-pointer expectations.
 

@@ -118,8 +118,16 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule, entryFunc string) {
 
 	emitDebugMarkerArm64(g, 'D')
 
-	// ExitProcess(0)
-	g.EmitMovZ(REG_X0, 0, 0)
+	// ExitProcess(entryRet0OrZero)
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.opPop(REG_X0)
+		for i := 1; i < entryRet; i++ {
+			g.opPop(REG_X1)
+		}
+	} else {
+		g.EmitMovZ(REG_X0, 0, 0)
+	}
 	g.emitCallIATArm64("ExitProcess")
 
 	// Epilogue (won't reach here)
