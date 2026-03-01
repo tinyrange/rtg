@@ -260,16 +260,19 @@ func (g *CodeGen) compileConstStrArm64(s string) {
 	if !ok {
 		// String bytes go into rodata (read-only __TEXT,__const)
 		rodataOff = len(g.rodata)
-		g.rodata = append(g.rodata, []byte(decoded)...)
+		i := 0
+		for i < len(decoded) {
+			g.rodata = append(g.rodata, decoded[i])
+			i++
+		}
 
 		// String header goes into data (writable __DATA)
 		headerOff = len(g.data)
 		// data_ptr: leave as 0 (will be computed at runtime via ADRP+ADD)
 		g.data = append(g.data, 0, 0, 0, 0, 0, 0, 0, 0)
 		// length
-		lenBytes := make([]byte, 8)
-		putU64(lenBytes, uint64(len(decoded)))
-		g.data = append(g.data, lenBytes...)
+		g.data = append(g.data, 0, 0, 0, 0, 0, 0, 0, 0)
+		putU64(g.data[headerOff+8:headerOff+16], uint64(len(decoded)))
 
 		g.stringMap[decoded] = headerOff
 		g.stringHeaderOff = append(g.stringHeaderOff, headerOff)
