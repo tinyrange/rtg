@@ -158,16 +158,28 @@ func appendSLEB128(buf []byte, v int32) []byte {
 }
 
 func appendSLEB128_64(buf []byte, v int64) []byte {
-	more := true
-	for more {
-		b := byte(v & 0x7f)
-		v = v >> 7
-		if (v == 0 && (b&0x40) == 0) || (v == -1 && (b&0x40) != 0) {
-			more = false
-		} else {
+	// Avoid relying on signed right-shift semantics in generated compilers.
+	// We keep the value in two's-complement form and perform an explicit
+	// arithmetic right shift in uint64 space.
+	u := uint64(v)
+	for {
+		b := byte(u & 0x7f)
+		signBitSet := (b & 0x40) != 0
+
+		next := u >> 7
+		if (u & (uint64(1) << 63)) != 0 {
+			next = next | uint64(0xFE00000000000000)
+		}
+
+		done := (next == 0 && !signBitSet) || (next == ^uint64(0) && signBitSet)
+		if !done {
 			b = b | 0x80
 		}
 		buf = append(buf, b)
+		if done {
+			break
+		}
+		u = next
 	}
 	return buf
 }
@@ -330,8 +342,21 @@ func (w *wasmCodeWriter) unreachable() {
 // === i64 helpers ===
 
 func (w *wasmCodeWriter) i64Const(v int64) {
-	w.op(OP_WASM_I64_CONST)
-	w.buf = appendSLEB128_64(w.buf, v)
+	// Build i64 constants from two i32 halves so stage compilers don't depend
+	// on signed var_i64 encoding behavior for negative values.
+	u := uint64(v)
+	lo := int32(u & 0xffffffff)
+	hi := int32((u >> 32) & 0xffffffff)
+
+	// (uint64(hi) << 32) | uint64(lo)
+	w.i32Const(lo)
+	w.i64ExtendI32U()
+	w.i32Const(hi)
+	w.i64ExtendI32U()
+	w.i32Const(32)
+	w.i64ExtendI32U()
+	w.op(OP_WASM_I64_SHL)
+	w.op(OP_WASM_I64_OR)
 }
 
 func (w *wasmCodeWriter) i64ExtendI32U() {
