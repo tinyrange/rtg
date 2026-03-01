@@ -168,7 +168,7 @@ crosscompile-wasm-native: build
   sh ./build/cross_stage3 -o build/cross_stage4 ./std/compiler/
   sh ./build/cross_stage3 -h >/dev/null
   sh ./build/cross_stage4 -h >/dev/null
-  sh cmp -s build/cross_stage3 build/cross_stage4 || (echo "crosscompile mismatch diagnostics:" && cmp -l build/cross_stage3 build/cross_stage4 | head -20 && od -An -tx1 -N64 build/cross_stage3 && od -An -tx1 -N64 build/cross_stage4 && readelf -h build/cross_stage3 && readelf -h build/cross_stage4 && readelf -S build/cross_stage3 && readelf -S build/cross_stage4 && exit 1)
+  sh cmp -s build/cross_stage3 build/cross_stage4 || (echo "crosscompile mismatch diagnostics:" && cmp -l build/cross_stage3 build/cross_stage4 | head -20 && od -An -tx1 -N64 build/cross_stage3 && od -An -tx1 -N64 build/cross_stage4 && readelf -h build/cross_stage3 && readelf -h build/cross_stage4 && readelf -S build/cross_stage3 && readelf -S build/cross_stage4 && readelf -s --wide build/cross_stage3 | awk '$4=="FUNC"{print $2,$3,$8}' > build/cross_stage3.syms && readelf -s --wide build/cross_stage4 | awk '$4=="FUNC"{print $2,$3,$8}' > build/cross_stage4.syms && diff -u build/cross_stage3.syms build/cross_stage4.syms | head -120 && exit 1)
   sh echo "PASS: wasm->native cross-compile OK"
 
 test-fullcompiler-rtg: build
