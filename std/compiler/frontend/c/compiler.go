@@ -397,10 +397,6 @@ func (c *compiler) collectFunctionDef(file string, n *Node) {
 		c.errorf(file, n.Line, n.Col, "%v", err)
 		return
 	}
-	if sig.Variadic {
-		c.errorf(file, n.Line, n.Col, "variadic function definitions are not yet supported")
-		return
-	}
 	sig.Defined = true
 	if len(n.Children) > 0 {
 		sig.Body = n.Children[0]
@@ -574,6 +570,8 @@ func (c *compiler) emitGlobalInit() {
 		fn:            f,
 		scopes:        []map[string]cLocalBinding{{}},
 		typedefScopes: []map[string]cTypeInfo{{}},
+		variadicCount: -1,
+		variadicData:  -1,
 	}
 	for _, g := range c.globalInits {
 		if g.Kind == cDeclArray {
@@ -614,13 +612,19 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		return
 	}
 
-	f := &ir.IRFunc{Name: sig.IRName, Params: sig.ParamCount, RetCount: sig.RetCount}
+	paramSlots := sig.ParamCount
+	if sig.Variadic {
+		paramSlots += 2
+	}
+	f := &ir.IRFunc{Name: sig.IRName, Params: paramSlots, RetCount: sig.RetCount}
 	fc := &funcCompiler{
 		c:             c,
 		sig:           sig,
 		fn:            f,
 		scopes:        []map[string]cLocalBinding{{}},
 		typedefScopes: []map[string]cTypeInfo{{}},
+		variadicCount: -1,
+		variadicData:  -1,
 	}
 	for i, p := range sig.ParamNames {
 		name := p
@@ -651,6 +655,10 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 			pfunc = sig.ParamFuncSigs[i]
 		}
 		fc.addLocalTyped(name, kind, base, ptrDepth, elemStep, pfunc, sig.File, sig.Line, sig.Col)
+	}
+	if sig.Variadic {
+		fc.variadicCount = fc.addLocalTyped("$va_count", cDeclScalar, cScalarInt, 0, int64(fc.c.target.PtrSize), nil, sig.File, sig.Line, sig.Col)
+		fc.variadicData = fc.addLocalTyped("$va_data", cDeclPointer, cScalarInt, 1, int64(fc.c.target.PtrSize), nil, sig.File, sig.Line, sig.Col)
 	}
 
 	prevTypedefLookupFunc := cTypedefLookupFunc
@@ -1700,6 +1708,9 @@ type funcCompiler struct {
 
 	breakTargets    []int
 	continueTargets []int
+
+	variadicCount int
+	variadicData  int
 }
 
 func (fc *funcCompiler) errorf(file string, line int, col int, format string, args ...interface{}) {
@@ -2582,6 +2593,103 @@ func (fc *funcCompiler) callDesignatorName(ex *expr) (string, bool) {
 	return ex.name, true
 }
 
+func (fc *funcCompiler) builtinVariadicCallName(call *expr) (string, bool) {
+	if call == nil {
+		return "", false
+	}
+	name, ok := fc.callDesignatorName(call.left)
+	if !ok {
+		return "", false
+	}
+	if name == "__builtin_va_count" || name == "__builtin_va_arg" {
+		return name, true
+	}
+	return "", false
+}
+
+func (fc *funcCompiler) emitVariadicPackFromLocals(extraLocals []int) {
+	fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(len(extraLocals))})
+	if len(extraLocals) == 0 {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
+	firstElem := -1
+	i := 0
+	for i < len(extraLocals) {
+		elemName := fmt.Sprintf("$va_pack_elem$%d$%d", fc.c.nextLabel(), i)
+		elemIdx := fc.addLocal(elemName, fc.sig.File, 0, 0)
+		// Locals are laid out at decreasing stack addresses; keep base at
+		// the last-created slot so +index addressing stays in-bounds.
+		firstElem = elemIdx
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: extraLocals[i]})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: elemIdx})
+		i++
+	}
+	if firstElem < 0 {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
+}
+
+func (fc *funcCompiler) emitBuiltinVariadicCall(call *expr) bool {
+	name, ok := fc.builtinVariadicCallName(call)
+	if !ok {
+		return false
+	}
+	switch name {
+	case "__builtin_va_count":
+		if len(call.args) != 0 {
+			fc.errorf(fc.sig.File, 0, 0, "__builtin_va_count expects 0 arguments")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return true
+		}
+		if fc.variadicCount < 0 {
+			fc.errorf(fc.sig.File, 0, 0, "__builtin_va_count can only be used inside variadic function definitions")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return true
+		}
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: fc.variadicCount})
+		return true
+	case "__builtin_va_arg":
+		if len(call.args) != 1 {
+			fc.errorf(fc.sig.File, 0, 0, "__builtin_va_arg expects 1 argument")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return true
+		}
+		if fc.variadicCount < 0 || fc.variadicData < 0 {
+			fc.errorf(fc.sig.File, 0, 0, "__builtin_va_arg can only be used inside variadic function definitions")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return true
+		}
+		idxLocal := fc.addLocal(fmt.Sprintf("$va_idx$%d", fc.c.nextLabel()), fc.sig.File, 0, 0)
+		fc.emitExpr(call.args[0])
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idxLocal})
+		zeroLabel := fc.c.nextLabel()
+		endLabel := fc.c.nextLabel()
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxLocal})
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		fc.emit(ir.Inst{Op: ir.OP_LT})
+		fc.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: zeroLabel})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxLocal})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: fc.variadicCount})
+		fc.emit(ir.Inst{Op: ir.OP_GEQ})
+		fc.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: zeroLabel})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: fc.variadicData})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idxLocal})
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(fc.c.target.PtrSize)})
+		fc.emit(ir.Inst{Op: ir.OP_MUL})
+		fc.emit(ir.Inst{Op: ir.OP_ADD})
+		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.c.target.PtrSize})
+		fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
+		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: zeroLabel})
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: endLabel})
+		return true
+	}
+	return false
+}
+
 func (fc *funcCompiler) resolveDirectCallSig(call *expr) (*cFuncSig, bool) {
 	if call == nil {
 		return nil, false
@@ -2722,6 +2830,11 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		}
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprCall:
+		if name, ok := fc.builtinVariadicCallName(ex); ok {
+			if name == "__builtin_va_count" || name == "__builtin_va_arg" {
+				return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
+			}
+		}
 		if sig, ok := fc.resolveDirectCallSig(ex); ok {
 			if sig.RetCount == 0 {
 				return cTypeInfo{Kind: cDeclScalar, IsVoid: true}, true
@@ -3278,22 +3391,47 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		fc.emitIndexAddr(ex.left, ex.right)
 		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprDerefWidth(ex.left)})
 	case exprCall:
+		if fc.emitBuiltinVariadicCall(ex) {
+			return
+		}
 		if sig, ok := fc.resolveDirectCallSig(ex); ok {
 			if !fc.checkCallArgs(sig, ex) {
 				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 				return
+			}
+			if sig.Variadic && sig.Defined {
+				argLocals := make([]int, 0, len(ex.args))
+				i := 0
+				for i < len(ex.args) {
+					fc.emitExpr(ex.args[i])
+					argTmp := fc.addLocal(fmt.Sprintf("$call_arg$%d$%d", fc.c.nextLabel(), i), fc.sig.File, 0, 0)
+					fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: argTmp})
+					argLocals = append(argLocals, argTmp)
+					i++
+				}
+				i = 0
+				for i < sig.ParamCount && i < len(argLocals) {
+					fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argLocals[i]})
+					i++
+				}
+				fc.emitVariadicPackFromLocals(argLocals[sig.ParamCount:])
+				fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount + 2})
+				if sig.RetCount == 0 {
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				}
+				return
+			}
+			callArgCount := sig.ParamCount
+			if sig.Variadic && !sig.Defined {
+				callArgCount = len(ex.args)
 			}
 			for _, a := range ex.args {
 				fc.emitExpr(a)
 			}
 			if !sig.Defined {
 				if fc.c.target.Backend == "c" {
-					callArgs := sig.ParamCount
-					if sig.Variadic {
-						callArgs = len(ex.args)
-					}
-					wrap := fc.c.ensureExternWrapper(sig.Name, callArgs, sig.RetCount)
-					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgs})
+					wrap := fc.c.ensureExternWrapper(sig.Name, callArgCount, sig.RetCount)
+					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgCount})
 					if sig.RetCount == 0 {
 						// Preserve expression stack shape for continued lowering.
 						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -3304,7 +3442,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 				return
 			}
-			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount})
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: callArgCount})
 			if sig.RetCount == 0 {
 				// Preserve expression stack shape for continued lowering.
 				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -3387,15 +3525,27 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 
 		for i, sig := range candidates {
 			fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: matchLabels[i]})
-			for _, idx := range argLocals {
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+			callArgs := sig.ParamCount
+			if sig.Variadic && !sig.Defined {
+				callArgs = len(argLocals)
+			}
+			if sig.Variadic && sig.Defined {
+				j := 0
+				for j < sig.ParamCount && j < len(argLocals) {
+					fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argLocals[j]})
+					j++
+				}
+				fc.emitVariadicPackFromLocals(argLocals[sig.ParamCount:])
+				callArgs = sig.ParamCount + 2
+			} else {
+				j := 0
+				for j < callArgs && j < len(argLocals) {
+					fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: argLocals[j]})
+					j++
+				}
 			}
 			if !sig.Defined {
 				if fc.c.target.Backend == "c" {
-					callArgs := sig.ParamCount
-					if sig.Variadic {
-						callArgs = len(ex.args)
-					}
 					wrap := fc.c.ensureExternWrapper(sig.Name, callArgs, sig.RetCount)
 					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgs})
 					if sig.RetCount == 0 {
@@ -3409,7 +3559,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 				continue
 			}
-			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount})
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: callArgs})
 			if sig.RetCount == 0 {
 				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			}
