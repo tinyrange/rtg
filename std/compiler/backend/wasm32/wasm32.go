@@ -342,13 +342,18 @@ func (w *wasmCodeWriter) unreachable() {
 // === i64 helpers ===
 
 func (w *wasmCodeWriter) i64Const(v int64) {
-	// Build i64 constants from two i32 halves so stage compilers don't depend
-	// on signed var_i64 encoding behavior for negative values.
+	if v >= 0 {
+		w.op(OP_WASM_I64_CONST)
+		w.buf = appendSLEB128_64(w.buf, v)
+		return
+	}
+
+	// Negative immediates are synthesized from i32 halves to avoid fragile
+	// var_i64 encoding in self-hosted compiler stages.
 	u := uint64(v)
 	lo := int32(u & 0xffffffff)
 	hi := int32((u >> 32) & 0xffffffff)
 
-	// (uint64(hi) << 32) | uint64(lo)
 	w.i32Const(lo)
 	w.i64ExtendI32U()
 	w.i32Const(hi)
