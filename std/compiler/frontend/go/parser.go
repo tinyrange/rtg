@@ -329,27 +329,39 @@ func (l *Lexer) scanNumber() Token {
 	}
 	if pos+1 < n && src[pos] == '0' && (src[pos+1] == 'x' || src[pos+1] == 'X') {
 		pos += 2
-		for pos < n && (isDigit(src[pos]) || isLetterByte(src[pos]) || src[pos] == '_') {
+		for pos < n {
+			ch := src[pos]
+			if !((ch >= '0' && ch <= '9') || isLetterByte(ch) || ch == '_') {
+				break
+			}
 			pos++
 		}
 	} else if pos+1 < n && src[pos] == '0' && (src[pos+1] == 'b' || src[pos+1] == 'B') {
 		pos += 2
-		for pos < n && (isDigit(src[pos]) || isLetterByte(src[pos]) || src[pos] == '_') {
+		for pos < n {
+			ch := src[pos]
+			if !((ch >= '0' && ch <= '9') || isLetterByte(ch) || ch == '_') {
+				break
+			}
 			pos++
 		}
 	} else if pos+1 < n && src[pos] == '0' && (src[pos+1] == 'o' || src[pos+1] == 'O') {
 		pos += 2
-		for pos < n && (isDigit(src[pos]) || isLetterByte(src[pos]) || src[pos] == '_') {
+		for pos < n {
+			ch := src[pos]
+			if !((ch >= '0' && ch <= '9') || isLetterByte(ch) || ch == '_') {
+				break
+			}
 			pos++
 		}
 	} else {
-		for pos < n && (isDigit(src[pos]) || src[pos] == '_') {
+		for pos < n && ((src[pos] >= '0' && src[pos] <= '9') || src[pos] == '_') {
 			pos++
 		}
-		if pos+1 < n && src[pos] == '.' && isDigit(src[pos+1]) {
+		if pos+1 < n && src[pos] == '.' && (src[pos+1] >= '0' && src[pos+1] <= '9') {
 			isFloat = true
 			pos++
-			for pos < n && (isDigit(src[pos]) || src[pos] == '_') {
+			for pos < n && ((src[pos] >= '0' && src[pos] <= '9') || src[pos] == '_') {
 				pos++
 			}
 		}
@@ -362,13 +374,13 @@ func (l *Lexer) scanNumber() Token {
 			if pos+2 < n {
 				next2 = src[pos+2]
 			}
-			if isExpDigitStart(next, next2) {
+			if (next >= '0' && next <= '9') || ((next == '+' || next == '-') && (next2 >= '0' && next2 <= '9')) {
 				isFloat = true
 				pos++
 				if pos < n && (src[pos] == '+' || src[pos] == '-') {
 					pos++
 				}
-				for pos < n && (isDigit(src[pos]) || src[pos] == '_') {
+				for pos < n && ((src[pos] >= '0' && src[pos] <= '9') || src[pos] == '_') {
 					pos++
 				}
 			}
@@ -467,9 +479,9 @@ func (l *Lexer) Tokenize() []Token {
 		}
 		ch := l.peek()
 		var tok Token
-		if isLetter(ch) {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' {
 			tok = l.scanIdent()
-		} else if isDigit(ch) {
+		} else if ch >= '0' && ch <= '9' {
 			tok = l.scanNumber()
 		} else if ch == '"' {
 			tok = l.scanString()
