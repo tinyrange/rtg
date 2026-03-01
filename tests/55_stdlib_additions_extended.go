@@ -287,8 +287,6 @@ func testLog() {
 	if !bytes.Contains(b1.Bytes(), []byte("p2:ab")) {
 		fail("log.Logger.Println")
 	}
-	var b2 bytes.Buffer
-	l.SetOutput(&b2)
 
 	log.SetPrefix("glob:")
 	if log.Prefix() != "glob:" {

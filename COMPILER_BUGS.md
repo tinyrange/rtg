@@ -187,3 +187,27 @@ t.FailNow() // sentinel panic escapes in this branch state
 **Workaround used**
 - Avoided `FailNow`/panic-path assertions through `FinishTest` and `FinishBenchmark` in fullcompiler fixtures.
 - Limited fixture coverage to stable non-panic paths (`Fail`, timers, parse/match helpers, begin/finish calls).
+
+## 12) WASM fullcompiler can reject extended stdlib fixtures with validator stack mismatch
+
+**Symptom**
+- `wasmtime` rejects generated module with error like:
+  - `Invalid input WebAssembly code ... type mismatch: values remaining on stack at end of block`
+- Observed when running `test-fullcompiler-wasm` on `54_stdlib_cli_core`.
+
+**Workaround used**
+- Added wasm fullcompiler skip for extended stdlib fixtures:
+  - `54_stdlib_cli_core`
+  - `55_stdlib_additions_extended`
+
+## 13) DOS/8086 COMEMU sweep runs out of memory on extended stdlib fixture
+
+**Symptom**
+- Running `54_stdlib_cli_core` under COMEMU exits with:
+  - `out of memory`
+  - `comemu: exit=2 ...`
+
+**Workaround used**
+- Excluded extended stdlib fixtures from DOS COMEMU sweep and constrained RTG fullcompiler targets:
+  - `54_stdlib_cli_core`
+  - `55_stdlib_additions_extended`
