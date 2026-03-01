@@ -22,6 +22,7 @@ type cFuncSig struct {
 	RetBase       cScalarType
 	RetPtrDepth   int
 	ParamCount    int
+	Variadic      bool
 	ParamNames    []string
 	ParamKinds    []cDeclKind
 	ParamBases    []cScalarType
@@ -40,6 +41,7 @@ type cFuncTypeSig struct {
 	RetPtrDepth   int
 	RetIsVoid     bool
 	ParamCount    int
+	Variadic      bool
 	ParamKinds    []cDeclKind
 	ParamBases    []cScalarType
 	ParamPtrDepth []int
@@ -102,13 +104,19 @@ type cTypeInfo struct {
 	FuncSig  *cFuncTypeSig
 }
 
-var cTypedefLookup func(name string) (cTypeInfo, bool)
+var cTypedefLookupCompiler *compiler
+var cTypedefLookupFunc *funcCompiler
 
 func lookupTypedefAlias(name string) (cTypeInfo, bool) {
-	if cTypedefLookup == nil {
-		return cTypeInfo{}, false
+	if cTypedefLookupFunc != nil {
+		if info, ok := cTypedefLookupFunc.lookupTypedef(name); ok {
+			return info, true
+		}
 	}
-	return cTypedefLookup(name)
+	if cTypedefLookupCompiler != nil {
+		return cTypedefLookupCompiler.lookupTypedef(name)
+	}
+	return cTypeInfo{}, false
 }
 
 type cIntrinsicWrapper struct {
@@ -157,14 +165,15 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		externFns:      make(map[string]string),
 		nextLabelSeq:   1,
 	}
-	prevTypedefLookup := cTypedefLookup
-	cTypedefLookup = c.lookupTypedef
-	defer func() {
-		cTypedefLookup = prevTypedefLookup
-	}()
+	prevTypedefLookupCompiler := cTypedefLookupCompiler
+	prevTypedefLookupFunc := cTypedefLookupFunc
+	cTypedefLookupCompiler = c
+	cTypedefLookupFunc = nil
 
 	c.collectTopLevel()
 	if len(c.errors) > 0 {
+		cTypedefLookupCompiler = prevTypedefLookupCompiler
+		cTypedefLookupFunc = prevTypedefLookupFunc
 		return nil, c.errors
 	}
 	c.assignFunctionIDs()
@@ -179,8 +188,12 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 	c.emitEntryWrapper()
 
 	if len(c.errors) > 0 {
+		cTypedefLookupCompiler = prevTypedefLookupCompiler
+		cTypedefLookupFunc = prevTypedefLookupFunc
 		return nil, c.errors
 	}
+	cTypedefLookupCompiler = prevTypedefLookupCompiler
+	cTypedefLookupFunc = prevTypedefLookupFunc
 	return c.irmod, nil
 }
 
@@ -227,7 +240,6 @@ func (c *compiler) nextLabel() int {
 
 func (c *compiler) lookupTypedef(name string) (cTypeInfo, bool) {
 	info, ok := c.typedefs[name]
-	info.FuncSig = cloneFuncTypeSig(info.FuncSig)
 	return info, ok
 }
 
@@ -255,6 +267,7 @@ func cloneFuncTypeSig(in *cFuncTypeSig) *cFuncTypeSig {
 		RetPtrDepth: in.RetPtrDepth,
 		RetIsVoid:   in.RetIsVoid,
 		ParamCount:  in.ParamCount,
+		Variadic:    in.Variadic,
 	}
 	out.ParamKinds = append([]cDeclKind{}, in.ParamKinds...)
 	out.ParamBases = append([]cScalarType{}, in.ParamBases...)
@@ -278,6 +291,7 @@ func funcSigToTypeSig(sig *cFuncSig) *cFuncTypeSig {
 		RetPtrDepth: sig.RetPtrDepth,
 		RetIsVoid:   sig.RetCount == 0,
 		ParamCount:  sig.ParamCount,
+		Variadic:    sig.Variadic,
 	}
 	out.ParamKinds = append([]cDeclKind{}, sig.ParamKinds...)
 	out.ParamBases = append([]cScalarType{}, sig.ParamBases...)
@@ -383,6 +397,10 @@ func (c *compiler) collectFunctionDef(file string, n *Node) {
 		c.errorf(file, n.Line, n.Col, "%v", err)
 		return
 	}
+	if sig.Variadic {
+		c.errorf(file, n.Line, n.Col, "variadic function definitions are not yet supported")
+		return
+	}
 	sig.Defined = true
 	if len(n.Children) > 0 {
 		sig.Body = n.Children[0]
@@ -399,6 +417,7 @@ func (c *compiler) collectFunctionDef(file string, n *Node) {
 		prev.RetBase = sig.RetBase
 		prev.RetPtrDepth = sig.RetPtrDepth
 		prev.ParamCount = sig.ParamCount
+		prev.Variadic = sig.Variadic
 		prev.ParamNames = append([]string{}, sig.ParamNames...)
 		prev.ParamKinds = append([]cDeclKind{}, sig.ParamKinds...)
 		prev.ParamBases = append([]cScalarType{}, sig.ParamBases...)
@@ -634,10 +653,10 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		fc.addLocalTyped(name, kind, base, ptrDepth, elemStep, pfunc, sig.File, sig.Line, sig.Col)
 	}
 
-	prevTypedefLookup := cTypedefLookup
-	cTypedefLookup = fc.lookupTypedef
+	prevTypedefLookupFunc := cTypedefLookupFunc
+	cTypedefLookupFunc = fc
 	fc.compileCompound(sig.Body, true)
-	cTypedefLookup = prevTypedefLookup
+	cTypedefLookupFunc = prevTypedefLookupFunc
 	if len(f.Code) == 0 || f.Code[len(f.Code)-1].Op != ir.OP_RETURN {
 		if sig.RetCount > 0 {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -867,6 +886,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	var paramBases []cScalarType
 	var paramPtrDepth []int
 	var paramFuncSigs []*cFuncTypeSig
+	var variadic bool
 	paramCount := 0
 	if len(paramTokens) > 0 {
 		parts := splitTopLevel(paramTokens, ",")
@@ -894,7 +914,11 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				continue
 			}
 			if len(p) == 1 && p[0].Kind == TokPunct && p[0].Text == "..." {
-				return nil, fmt.Errorf("variadic functions are not supported")
+				if i != len(parts)-1 || paramCount == 0 {
+					return nil, fmt.Errorf("variadic marker must appear last after at least one named parameter")
+				}
+				variadic = true
+				continue
 			}
 			spec, decl, err := splitDeclSpecPrefix(p, fmt.Sprintf("function parameter %d", i+1))
 			if err != nil {
@@ -950,6 +974,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 		RetBase:       retInfo.Base,
 		RetPtrDepth:   retInfo.PtrDepth,
 		ParamCount:    paramCount,
+		Variadic:      variadic,
 		ParamNames:    paramNames,
 		ParamKinds:    paramKinds,
 		ParamBases:    paramBases,
@@ -1308,10 +1333,10 @@ func parseSimplePointerCore(tokens []Token, allowAbstract bool) (string, int, er
 	return "", 0, fmt.Errorf("complex declarators are not yet supported")
 }
 
-func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, []cScalarType, []int, []*cFuncTypeSig, error) {
+func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, []cScalarType, []int, []*cFuncTypeSig, bool, error) {
 	paramTokens = trimTokens(paramTokens)
 	if len(paramTokens) == 0 {
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, false, nil
 	}
 	parts := splitTopLevel(paramTokens, ",")
 	if len(parts) == 1 {
@@ -1333,6 +1358,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		}
 	}
 
+	variadic := false
 	paramKinds := make([]cDeclKind, 0, len(parts))
 	paramBases := make([]cScalarType, 0, len(parts))
 	paramPtrDepth := make([]int, 0, len(parts))
@@ -1343,24 +1369,28 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 			continue
 		}
 		if len(p) == 1 && p[0].Kind == TokPunct && p[0].Text == "..." {
-			return nil, nil, nil, nil, fmt.Errorf("variadic functions are not supported")
+			if i != len(parts)-1 || len(paramKinds) == 0 {
+				return nil, nil, nil, nil, false, fmt.Errorf("variadic marker must appear last after at least one named parameter")
+			}
+			variadic = true
+			continue
 		}
 		pctx := fmt.Sprintf("%s parameter %d", context, i+1)
 		spec, decl, err := splitDeclSpecPrefix(p, pctx)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, false, err
 		}
 		pbaseInfo, _, _, err := parseScalarTypeSpec(spec, pctx, true)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, false, err
 		}
 		pname, pdeclKind, pdeclPtrDepth, parrLen, pfnSig, err := parseDeclarator(decl, true)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, false, err
 		}
 		pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, pctx)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, false, err
 		}
 		if pinfo.Kind == cDeclArray {
 			// Arrays in parameter lists decay to pointers.
@@ -1372,9 +1402,9 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if pinfo.IsVoid && pinfo.Kind == cDeclScalar {
 			if pname == "" && i == 0 && len(parts) == 1 {
 				// handled above for `void` empty parameter list; keep defensive fallback.
-				return nil, nil, nil, nil, nil
+				return nil, nil, nil, nil, false, nil
 			}
-			return nil, nil, nil, nil, fmt.Errorf("%s parameter %q cannot have type void", context, pname)
+			return nil, nil, nil, nil, false, fmt.Errorf("%s parameter %q cannot have type void", context, pname)
 		}
 		if pfnSig != nil {
 			pfn := cloneFuncTypeSig(pfnSig)
@@ -1389,7 +1419,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		paramPtrDepth = append(paramPtrDepth, pinfo.PtrDepth)
 		paramFuncSigs = append(paramFuncSigs, cloneFuncTypeSig(pinfo.FuncSig))
 	}
-	return paramKinds, paramBases, paramPtrDepth, paramFuncSigs, nil
+	return paramKinds, paramBases, paramPtrDepth, paramFuncSigs, variadic, nil
 }
 
 func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, *cFuncTypeSig, error) {
@@ -1414,12 +1444,13 @@ func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int
 		if ptrDepth == 0 {
 			return "", cDeclScalar, 0, 0, nil, fmt.Errorf("function declarators are only supported through pointers")
 		}
-		paramKinds, paramBases, paramPtrDepth, paramFuncSigs, err := parseFunctionParamList(tokens[fnOpen+1:len(tokens)-1], "function declarator")
+		paramKinds, paramBases, paramPtrDepth, paramFuncSigs, variadic, err := parseFunctionParamList(tokens[fnOpen+1:len(tokens)-1], "function declarator")
 		if err != nil {
 			return "", cDeclScalar, 0, 0, nil, err
 		}
 		fnSig := &cFuncTypeSig{
 			ParamCount:    len(paramKinds),
+			Variadic:      variadic,
 			ParamKinds:    paramKinds,
 			ParamBases:    paramBases,
 			ParamPtrDepth: paramPtrDepth,
@@ -1709,7 +1740,6 @@ func (fc *funcCompiler) addLocalTypedef(name string, info cTypeInfo, file string
 func (fc *funcCompiler) lookupTypedef(name string) (cTypeInfo, bool) {
 	for i := len(fc.typedefScopes) - 1; i >= 0; i-- {
 		if info, ok := fc.typedefScopes[i][name]; ok {
-			info.FuncSig = cloneFuncTypeSig(info.FuncSig)
 			return info, true
 		}
 	}
@@ -2885,6 +2915,9 @@ func funcTypeSigEqual(a *cFuncTypeSig, b *cFuncTypeSig) bool {
 	if a.ParamCount != b.ParamCount {
 		return false
 	}
+	if a.Variadic != b.Variadic {
+		return false
+	}
 	for i := 0; i < a.ParamCount; i++ {
 		if i >= len(a.ParamKinds) || i >= len(b.ParamKinds) || a.ParamKinds[i] != b.ParamKinds[i] {
 			return false
@@ -2919,6 +2952,9 @@ func funcSigMatchesType(sig *cFuncSig, want *cFuncTypeSig) bool {
 	if want.ParamCount != sig.ParamCount {
 		return false
 	}
+	if want.Variadic != sig.Variadic {
+		return false
+	}
 	for i := 0; i < want.ParamCount; i++ {
 		if i >= len(sig.ParamKinds) || want.ParamKinds[i] != sig.ParamKinds[i] {
 			return false
@@ -2943,16 +2979,24 @@ func funcSigMatchesType(sig *cFuncSig, want *cFuncTypeSig) bool {
 	return true
 }
 
-func (fc *funcCompiler) checkCallArgsByType(calleeName string, paramCount int, paramKinds []cDeclKind, paramFuncSigs []*cFuncTypeSig, call *expr) bool {
+func (fc *funcCompiler) checkCallArgsByType(calleeName string, paramCount int, variadic bool, paramKinds []cDeclKind, paramFuncSigs []*cFuncTypeSig, call *expr) bool {
 	if call == nil {
 		return false
 	}
-	if len(call.args) != paramCount {
+	if !variadic && len(call.args) != paramCount {
 		fc.errorf(fc.sig.File, 0, 0, "call to %q has %d arguments; expected %d", calleeName, len(call.args), paramCount)
+		return false
+	}
+	if variadic && len(call.args) < paramCount {
+		fc.errorf(fc.sig.File, 0, 0, "call to %q has %d arguments; expected at least %d", calleeName, len(call.args), paramCount)
 		return false
 	}
 	ok := true
 	for i, arg := range call.args {
+		if i >= paramCount {
+			// Variadic tail: accept scalar/pointer values as-is.
+			continue
+		}
 		want := cDeclScalar
 		if i < len(paramKinds) {
 			want = paramKinds[i]
@@ -2990,7 +3034,7 @@ func (fc *funcCompiler) checkCallArgs(sig *cFuncSig, call *expr) bool {
 	if sig == nil || call == nil {
 		return false
 	}
-	return fc.checkCallArgsByType(sig.Name, sig.ParamCount, sig.ParamKinds, sig.ParamFuncSigs, call)
+	return fc.checkCallArgsByType(sig.Name, sig.ParamCount, sig.Variadic, sig.ParamKinds, sig.ParamFuncSigs, call)
 }
 
 func (fc *funcCompiler) emitExpr(ex *expr) {
@@ -3244,8 +3288,12 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			}
 			if !sig.Defined {
 				if fc.c.target.Backend == "c" {
-					wrap := fc.c.ensureExternWrapper(sig.Name, sig.ParamCount, sig.RetCount)
-					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: sig.ParamCount})
+					callArgs := sig.ParamCount
+					if sig.Variadic {
+						callArgs = len(ex.args)
+					}
+					wrap := fc.c.ensureExternWrapper(sig.Name, callArgs, sig.RetCount)
+					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgs})
 					if sig.RetCount == 0 {
 						// Preserve expression stack shape for continued lowering.
 						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -3270,7 +3318,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			indirectSig = cloneFuncTypeSig(t.FuncSig)
 		}
 		if indirectSig != nil {
-			if !fc.checkCallArgsByType("<indirect>", indirectSig.ParamCount, indirectSig.ParamKinds, indirectSig.ParamFuncSigs, ex) {
+			if !fc.checkCallArgsByType("<indirect>", indirectSig.ParamCount, indirectSig.Variadic, indirectSig.ParamKinds, indirectSig.ParamFuncSigs, ex) {
 				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 				return
 			}
@@ -3294,6 +3342,13 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			}
 			if indirectSig != nil {
 				if !funcSigMatchesType(sig, indirectSig) {
+					continue
+				}
+				candidates = append(candidates, sig)
+				continue
+			}
+			if sig.Variadic {
+				if len(ex.args) < sig.ParamCount {
 					continue
 				}
 				candidates = append(candidates, sig)
@@ -3337,8 +3392,12 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			}
 			if !sig.Defined {
 				if fc.c.target.Backend == "c" {
-					wrap := fc.c.ensureExternWrapper(sig.Name, sig.ParamCount, sig.RetCount)
-					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: sig.ParamCount})
+					callArgs := sig.ParamCount
+					if sig.Variadic {
+						callArgs = len(ex.args)
+					}
+					wrap := fc.c.ensureExternWrapper(sig.Name, callArgs, sig.RetCount)
+					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgs})
 					if sig.RetCount == 0 {
 						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 					}
