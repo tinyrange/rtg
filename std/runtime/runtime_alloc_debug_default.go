@@ -8,6 +8,22 @@ const allocDebugEnabled = false
 func allocDebugRecord(_ int, _ int) {
 }
 
+//rtg:noprofile
+func allocDebugRecordMapHashMeta(_ int) {
+}
+
+//rtg:noprofile
+func allocDebugRecordMapHashMetaAlloc(_ int) {
+}
+
+//rtg:noprofile
+func allocDebugRecordMapHashRebuild() {
+}
+
+//rtg:noprofile
+func allocDebugRecordMapHashFallback() {
+}
+
 // AllocDebugReset clears allocator debug counters.
 // In default builds this is a no-op.
 //
@@ -25,4 +41,8 @@ func AllocDebugSnapshot() (allocCalls int, reqBytes int, mmapCalls int, mmapByte
 		avail = int(heapEnd - heapPtr)
 	}
 	return 0, 0, 0, 0, heapChunk, heapChunkMax, avail
+}
+
+//rtg:noprofile
+func allocDebugMaybePrintSummary() {
 }

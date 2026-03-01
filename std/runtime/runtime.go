@@ -729,14 +729,35 @@ func mapStrEqual(a uintptr, b uintptr) bool {
 	}
 	aptr := ReadPtr(a)
 	bptr := ReadPtr(b)
+	// Fast path for aligned string data: compare by machine words, then tail bytes.
+	if ((aptr | bptr) & uintptr(PtrSize-1)) == 0 {
+		nwords := alen / PtrSize
+		w := 0
+		for w < nwords {
+			off := uintptr(w * PtrSize)
+			if ReadPtr(aptr+off) != ReadPtr(bptr+off) {
+				return false
+			}
+			w = w + 1
+		}
+		i := nwords * PtrSize
+		for i < alen {
+			if readByte(aptr+uintptr(i)) != readByte(bptr+uintptr(i)) {
+				return false
+			}
+			i = i + 1
+		}
+		return true
+	}
+	// Conservative fallback for unaligned data.
 	ab := Makeslice(aptr, alen, alen)
 	bb := Makeslice(bptr, blen, blen)
-	j := 0
-	for j < alen {
-		if ab[j] != bb[j] {
+	i := 0
+	for i < alen {
+		if ab[i] != bb[i] {
 			return false
 		}
-		j = j + 1
+		i = i + 1
 	}
 	return true
 }
@@ -760,15 +781,170 @@ func mapFindKey(data uintptr, mlen int, keyKind int, key uintptr) int {
 	return -1
 }
 
+const (
+	mapHdrOffHashSlots  = (SliceHdrSize + PtrSize - 1) &^ (PtrSize - 1)
+	mapHdrOffHashCap    = mapHdrOffHashSlots + PtrSize
+	mapHdrOffHashes     = mapHdrOffHashCap + PtrSize
+	mapHdrSize          = mapHdrOffHashes + PtrSize
+	mapStringHashMinLen = 16
+)
+
+func mapStringHashCapForEntries(entryCap int) int {
+	need := entryCap * 2
+	if need < 64 {
+		need = 64
+	}
+	cap := 1
+	for cap < need {
+		cap = cap * 2
+	}
+	return cap
+}
+
+func mapStringHashKey(key uintptr) uintptr {
+	if key == 0 {
+		return 0
+	}
+	sptr := ReadPtr(key)
+	slen := int(ReadPtr(key + uintptr(PtrSize)))
+	h := uintptr(2166136261)
+	i := 0
+	for i < slen {
+		h = h ^ uintptr(readByte(sptr+uintptr(i)))
+		h = h * uintptr(16777619)
+		i = i + 1
+	}
+	h = h ^ (h >> 16)
+	if PtrSize > 4 {
+		h = h ^ (h >> 32)
+	}
+	return h
+}
+
+func mapStringRebuildHashSlots(hdr uintptr, data uintptr, mlen int) {
+	slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+	hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
+	hashes := ReadPtr(hdr + uintptr(mapHdrOffHashes))
+	if slots == 0 || hashes == 0 || hashCap <= 0 {
+		return
+	}
+	if allocDebugEnabled {
+		allocDebugRecordMapHashRebuild()
+	}
+	Memzero(slots, hashCap*PtrSize)
+	mask := hashCap - 1
+	i := 0
+	for i < mlen {
+		h := ReadPtr(hashes + uintptr(i*PtrSize))
+		if h == 0 {
+			key := ReadPtr(data + uintptr(i*MapEntrySize))
+			h = mapStringHashKey(key)
+			WritePtr(hashes+uintptr(i*PtrSize), h)
+		}
+		slot := int(h & uintptr(mask))
+		probes := 0
+		for probes < hashCap {
+			slotAddr := slots + uintptr(slot*PtrSize)
+			if ReadPtr(slotAddr) == 0 {
+				WritePtr(slotAddr, uintptr(i+1))
+				break
+			}
+			slot = (slot + 1) & mask
+			probes = probes + 1
+		}
+		i = i + 1
+	}
+}
+
+func mapStringFindIndex(data uintptr, mlen int, slots uintptr, hashes uintptr, hashCap int, key uintptr, keyHash uintptr) (int, int, bool) {
+	if slots == 0 || hashes == 0 || hashCap <= 0 {
+		return -1, -1, false
+	}
+	mask := hashCap - 1
+	slot := int(keyHash & uintptr(mask))
+	probes := 0
+	for probes < hashCap {
+		slotAddr := slots + uintptr(slot*PtrSize)
+		entry := ReadPtr(slotAddr)
+		if entry == 0 {
+			return -1, slot, false
+		}
+		idx := int(entry) - 1
+		if idx >= 0 && idx < mlen {
+			if ReadPtr(hashes+uintptr(idx*PtrSize)) == keyHash {
+				entryAddr := data + uintptr(idx*MapEntrySize)
+				if mapStrEqual(ReadPtr(entryAddr), key) {
+					return idx, slot, true
+				}
+			}
+		}
+		slot = (slot + 1) & mask
+		probes = probes + 1
+	}
+	return -1, -1, false
+}
+
+func mapStringInsertIndex(slots uintptr, hashCap int, idx int, keyHash uintptr) {
+	mask := hashCap - 1
+	slot := int(keyHash & uintptr(mask))
+	probes := 0
+	for probes < hashCap {
+		slotAddr := slots + uintptr(slot*PtrSize)
+		if ReadPtr(slotAddr) == 0 {
+			WritePtr(slotAddr, uintptr(idx+1))
+			return
+		}
+		slot = (slot + 1) & mask
+		probes = probes + 1
+	}
+	runtimePanic("map hash table full")
+}
+
+func mapStringAllocDataHashes(mcap int) (data uintptr, hashes uintptr) {
+	dataBytes := mcap * MapEntrySize
+	hashBytes := mcap * PtrSize
+	block := Alloc(dataBytes + hashBytes)
+	if allocDebugEnabled {
+		allocDebugRecordMapHashMeta(hashBytes)
+	}
+	return block, block + uintptr(dataBytes)
+}
+
+func mapStringInitHashState(hdr uintptr, mcap int, hashes uintptr) {
+	hashCap := mapStringHashCapForEntries(mcap)
+	slots := Alloc(hashCap * PtrSize)
+	if allocDebugEnabled {
+		allocDebugRecordMapHashMetaAlloc(hashCap * PtrSize)
+	}
+	Memzero(slots, hashCap*PtrSize)
+	if hashes == 0 {
+		hashes = Alloc(mcap * PtrSize)
+		if allocDebugEnabled {
+			allocDebugRecordMapHashMetaAlloc(mcap * PtrSize)
+		}
+	} else {
+		if allocDebugEnabled {
+			allocDebugRecordMapHashMeta(mcap * PtrSize)
+		}
+	}
+	Memzero(hashes, mcap*PtrSize)
+	WritePtr(hdr+uintptr(mapHdrOffHashSlots), slots)
+	WritePtr(hdr+uintptr(mapHdrOffHashCap), uintptr(hashCap))
+	WritePtr(hdr+uintptr(mapHdrOffHashes), hashes)
+}
+
 // MapMake allocates an empty map header. keyKind: 0=int, 1=string.
 func MapMake(keyKind int) uintptr {
 	capHint := 32
-	hdr := Alloc(SliceHdrSize)
+	hdr := Alloc(mapHdrSize)
 	data := Alloc(capHint * MapEntrySize)
 	WritePtr(hdr, data)
 	WritePtr(hdr+uintptr(SliceOffLen), 0)
 	WritePtr(hdr+uintptr(SliceOffCap), uintptr(capHint))
 	WritePtr(hdr+uintptr(SliceOffEsz), uintptr(keyKind))
+	WritePtr(hdr+uintptr(mapHdrOffHashSlots), 0)
+	WritePtr(hdr+uintptr(mapHdrOffHashCap), 0)
+	WritePtr(hdr+uintptr(mapHdrOffHashes), 0)
 	return hdr
 }
 
@@ -780,6 +956,34 @@ func MapGet(hdr uintptr, key uintptr) (uintptr, bool) {
 	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
 	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
 	data := ReadPtr(hdr)
+	if keyKind == 1 {
+		slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+		hashes := ReadPtr(hdr + uintptr(mapHdrOffHashes))
+		hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
+		if slots != 0 && hashes != 0 && hashCap > 0 {
+			keyHash := mapStringHashKey(key)
+			idx, _, found := mapStringFindIndex(data, mlen, slots, hashes, hashCap, key, keyHash)
+			if found {
+				entryAddr := data + uintptr(idx*MapEntrySize)
+				return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
+			}
+			// Conservative fallback to preserve correctness if key headers drift
+			// and stored hash metadata becomes stale.
+			idx = mapFindKey(data, mlen, keyKind, key)
+			if idx >= 0 {
+				if ReadPtr(hashes+uintptr(idx*PtrSize)) != keyHash {
+					if allocDebugEnabled {
+						allocDebugRecordMapHashFallback()
+					}
+					WritePtr(hashes+uintptr(idx*PtrSize), keyHash)
+					mapStringRebuildHashSlots(hdr, data, mlen)
+				}
+				entryAddr := data + uintptr(idx*MapEntrySize)
+				return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
+			}
+			return 0, false
+		}
+	}
 	idx := mapFindKey(data, mlen, keyKind, key)
 	if idx >= 0 {
 		entryAddr := data + uintptr(idx*MapEntrySize)
@@ -797,6 +1001,107 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
 	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
 	data := ReadPtr(hdr)
+	mcap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
+	if keyKind == 1 {
+		slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+		hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
+		hashes := ReadPtr(hdr + uintptr(mapHdrOffHashes))
+		if slots != 0 && hashes != 0 && hashCap > 0 {
+			keyHash := mapStringHashKey(key)
+			idx, _, found := mapStringFindIndex(data, mlen, slots, hashes, hashCap, key, keyHash)
+			if found {
+				entryAddr := data + uintptr(idx*MapEntrySize)
+				WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+				return hdr
+			}
+			// Conservative fallback to avoid duplicate entries when stored hashes are stale.
+			idx = mapFindKey(data, mlen, keyKind, key)
+			if idx >= 0 {
+				entryAddr := data + uintptr(idx*MapEntrySize)
+				WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+				if ReadPtr(hashes+uintptr(idx*PtrSize)) != keyHash {
+					if allocDebugEnabled {
+						allocDebugRecordMapHashFallback()
+					}
+					WritePtr(hashes+uintptr(idx*PtrSize), keyHash)
+					mapStringRebuildHashSlots(hdr, data, mlen)
+				}
+				return hdr
+			}
+			if mlen >= mcap {
+				newCap := mcap * 2
+				if newCap < 8 {
+					newCap = 8
+				}
+				newData, newHashes := mapStringAllocDataHashes(newCap)
+				if mlen > 0 {
+					Memcopy(newData, data, mlen*MapEntrySize)
+					Memcopy(newHashes, hashes, mlen*PtrSize)
+				}
+				if mlen < newCap {
+					Memzero(newHashes+uintptr(mlen*PtrSize), (newCap-mlen)*PtrSize)
+				}
+				data = newData
+				hashes = newHashes
+				mcap = newCap
+				WritePtr(hdr, data)
+				WritePtr(hdr+uintptr(SliceOffCap), uintptr(mcap))
+				WritePtr(hdr+uintptr(mapHdrOffHashes), hashes)
+
+				needHashCap := mapStringHashCapForEntries(mcap)
+				if hashCap != needHashCap {
+					hashCap = needHashCap
+					slots = Alloc(hashCap * PtrSize)
+					if allocDebugEnabled {
+						allocDebugRecordMapHashMetaAlloc(hashCap * PtrSize)
+					}
+					WritePtr(hdr+uintptr(mapHdrOffHashSlots), slots)
+					WritePtr(hdr+uintptr(mapHdrOffHashCap), uintptr(hashCap))
+				}
+				mapStringRebuildHashSlots(hdr, data, mlen)
+				slots = ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+				hashCap = int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
+			}
+			entryAddr := data + uintptr(mlen*MapEntrySize)
+			WritePtr(entryAddr, key)
+			WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+			WritePtr(hashes+uintptr(mlen*PtrSize), keyHash)
+			WritePtr(hdr+uintptr(SliceOffLen), uintptr(mlen+1))
+			mapStringInsertIndex(slots, hashCap, mlen, keyHash)
+			return hdr
+		}
+		// Small string maps stay on linear scan until a minimum size.
+		idx := mapFindKey(data, mlen, keyKind, key)
+		if idx >= 0 {
+			entryAddr := data + uintptr(idx*MapEntrySize)
+			WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+			return hdr
+		}
+		if mlen >= mcap {
+			newCap := mcap * 2
+			if newCap < 8 {
+				newCap = 8
+			}
+			newData := Alloc(newCap * MapEntrySize)
+			if mlen > 0 {
+				Memcopy(newData, data, mlen*MapEntrySize)
+			}
+			data = newData
+			mcap = newCap
+			WritePtr(hdr, data)
+			WritePtr(hdr+uintptr(SliceOffCap), uintptr(mcap))
+		}
+		entryAddr := data + uintptr(mlen*MapEntrySize)
+		WritePtr(entryAddr, key)
+		WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+		newLen := mlen + 1
+		WritePtr(hdr+uintptr(SliceOffLen), uintptr(newLen))
+		if newLen >= mapStringHashMinLen {
+			mapStringInitHashState(hdr, mcap, 0)
+			mapStringRebuildHashSlots(hdr, data, newLen)
+		}
+		return hdr
+	}
 	// Search for existing key
 	idx := mapFindKey(data, mlen, keyKind, key)
 	if idx >= 0 {
@@ -805,7 +1110,6 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 		return hdr
 	}
 	// Not found — append
-	mcap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
 	if mlen >= mcap {
 		newCap := mcap * 2
 		if newCap < 8 {
@@ -834,6 +1138,38 @@ func MapDelete(hdr uintptr, key uintptr) {
 	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
 	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
 	data := ReadPtr(hdr)
+	if keyKind == 1 {
+		slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+		hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
+		hashes := ReadPtr(hdr + uintptr(mapHdrOffHashes))
+		if slots != 0 && hashes != 0 && hashCap > 0 {
+			keyHash := mapStringHashKey(key)
+			idx, _, found := mapStringFindIndex(data, mlen, slots, hashes, hashCap, key, keyHash)
+			if !found {
+				// Conservative fallback for stale hash metadata.
+				idx = mapFindKey(data, mlen, keyKind, key)
+				if idx < 0 {
+					return
+				}
+				if allocDebugEnabled {
+					allocDebugRecordMapHashFallback()
+				}
+				WritePtr(hashes+uintptr(idx*PtrSize), keyHash)
+			}
+			lastIdx := mlen - 1
+			if idx < lastIdx {
+				entryAddr := data + uintptr(idx*MapEntrySize)
+				lastAddr := data + uintptr(lastIdx*MapEntrySize)
+				WritePtr(entryAddr, ReadPtr(lastAddr))
+				WritePtr(entryAddr+uintptr(MapEntryOffVal), ReadPtr(lastAddr+uintptr(MapEntryOffVal)))
+				WritePtr(hashes+uintptr(idx*PtrSize), ReadPtr(hashes+uintptr(lastIdx*PtrSize)))
+			}
+			WritePtr(hashes+uintptr(lastIdx*PtrSize), 0)
+			WritePtr(hdr+uintptr(SliceOffLen), uintptr(lastIdx))
+			mapStringRebuildHashSlots(hdr, data, lastIdx)
+			return
+		}
+	}
 	i := 0
 	for i < mlen {
 		entryAddr := data + uintptr(i*MapEntrySize)
