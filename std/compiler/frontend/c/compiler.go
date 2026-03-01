@@ -159,6 +159,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		globalArray:    make(map[string]int64),
 		globalBase:     make(map[string]cScalarType),
 		globalFunc:     make(map[string]*cFuncTypeSig),
+		enumConsts:     make(map[string]int64),
 		typedefs:       make(map[string]cTypeInfo),
 		funcIDs:        make(map[string]int64),
 		intrinsics:     make(map[string]cIntrinsicWrapper),
@@ -214,6 +215,7 @@ type compiler struct {
 	globalArray    map[string]int64
 	globalBase     map[string]cScalarType
 	globalFunc     map[string]*cFuncTypeSig
+	enumConsts     map[string]int64
 	globalInits    []cGlobalInit
 	typedefs       map[string]cTypeInfo
 	funcIDs        map[string]int64
@@ -241,6 +243,25 @@ func (c *compiler) nextLabel() int {
 func (c *compiler) lookupTypedef(name string) (cTypeInfo, bool) {
 	info, ok := c.typedefs[name]
 	return info, ok
+}
+
+func (c *compiler) lookupEnumConst(name string) (int64, bool) {
+	v, ok := c.enumConsts[name]
+	return v, ok
+}
+
+func (c *compiler) addGlobalEnumConst(name string, val int64, file string, line int, col int) {
+	if _, exists := c.enumConsts[name]; exists {
+		c.errorf(file, line, col, "duplicate enum constant %q", name)
+		return
+	}
+	c.enumConsts[name] = val
+}
+
+func (c *compiler) addGlobalEnumConsts(vals map[string]int64, file string, line int, col int) {
+	for name, val := range vals {
+		c.addGlobalEnumConst(name, val, file, line, col)
+	}
 }
 
 func (c *compiler) assignFunctionIDs() {
@@ -457,10 +478,13 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		}
 	}
 
-	items, hasExtern, hasTypedef, err := parseDeclItems(toks)
+	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, c.enumConsts)
 	if err != nil {
 		c.errorf(file, n.Line, n.Col, "%v", err)
 		return
+	}
+	if len(enumConsts) > 0 {
+		c.addGlobalEnumConsts(enumConsts, file, n.Line, n.Col)
 	}
 	if hasTypedef {
 		if hasExtern {
@@ -570,6 +594,7 @@ func (c *compiler) emitGlobalInit() {
 		fn:            f,
 		scopes:        []map[string]cLocalBinding{{}},
 		typedefScopes: []map[string]cTypeInfo{{}},
+		enumScopes:    []map[string]int64{{}},
 		variadicCount: -1,
 		variadicData:  -1,
 	}
@@ -623,6 +648,7 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		fn:            f,
 		scopes:        []map[string]cLocalBinding{{}},
 		typedefScopes: []map[string]cTypeInfo{{}},
+		enumScopes:    []map[string]int64{{}},
 		variadicCount: -1,
 		variadicData:  -1,
 	}
@@ -1508,23 +1534,352 @@ func parseArrayLength(tokens []Token) (int64, error) {
 	return n, nil
 }
 
-func parseDeclItems(toks []Token) ([]cDeclItem, bool, bool, error) {
-	toks = trimTokens(toks)
-	if len(toks) == 0 {
-		return nil, false, false, nil
-	}
-	spec, rest, err := splitDeclSpecPrefix(toks, "declaration")
-	if err != nil {
-		return nil, false, false, err
-	}
-	baseInfo, hasExtern, hasTypedef, err := parseScalarTypeSpec(spec, "declaration", true)
-	if err != nil {
-		return nil, false, false, err
-	}
-	if len(rest) == 0 {
-		return nil, false, false, fmt.Errorf("missing declarator in declaration")
-	}
+type enumConstParser struct {
+	toks   []Token
+	pos    int
+	lookup map[string]int64
+}
 
+func (p *enumConstParser) atEnd() bool {
+	return p.pos >= len(p.toks)
+}
+
+func (p *enumConstParser) peek() Token {
+	if p.atEnd() {
+		return Token{Kind: TokEOF}
+	}
+	return p.toks[p.pos]
+}
+
+func (p *enumConstParser) advance() Token {
+	t := p.peek()
+	if !p.atEnd() {
+		p.pos++
+	}
+	return t
+}
+
+func (p *enumConstParser) matchPunct(op string) bool {
+	if p.atEnd() {
+		return false
+	}
+	t := p.peek()
+	if t.Kind == TokPunct && t.Text == op {
+		p.pos++
+		return true
+	}
+	return false
+}
+
+func (p *enumConstParser) parsePrimary() (int64, error) {
+	if p.atEnd() {
+		return 0, fmt.Errorf("unexpected end of enum constant expression")
+	}
+	t := p.advance()
+	switch t.Kind {
+	case TokNumber:
+		v, err := parseCIntLiteral(t.Text)
+		if err != nil {
+			return 0, err
+		}
+		return v, nil
+	case TokChar:
+		v, err := parseCCharLiteral(t.Text)
+		if err != nil {
+			return 0, err
+		}
+		return v, nil
+	case TokIdent:
+		if v, ok := p.lookup[t.Text]; ok {
+			return v, nil
+		}
+		return 0, fmt.Errorf("unknown enum constant %q", t.Text)
+	case TokPunct:
+		if t.Text == "(" {
+			v, err := p.parseExpr()
+			if err != nil {
+				return 0, err
+			}
+			if !p.matchPunct(")") {
+				return 0, fmt.Errorf("expected ')' in enum constant expression")
+			}
+			return v, nil
+		}
+	}
+	return 0, fmt.Errorf("invalid token %q in enum constant expression", t.Text)
+}
+
+func (p *enumConstParser) parseUnary() (int64, error) {
+	if p.matchPunct("+") {
+		return p.parseUnary()
+	}
+	if p.matchPunct("-") {
+		v, err := p.parseUnary()
+		return -v, err
+	}
+	if p.matchPunct("~") {
+		v, err := p.parseUnary()
+		return ^v, err
+	}
+	return p.parsePrimary()
+}
+
+func (p *enumConstParser) parseMul() (int64, error) {
+	v, err := p.parseUnary()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if p.matchPunct("*") {
+			r, err := p.parseUnary()
+			if err != nil {
+				return 0, err
+			}
+			v = v * r
+			continue
+		}
+		if p.matchPunct("/") {
+			r, err := p.parseUnary()
+			if err != nil {
+				return 0, err
+			}
+			if r == 0 {
+				return 0, fmt.Errorf("division by zero in enum constant expression")
+			}
+			v = v / r
+			continue
+		}
+		if p.matchPunct("%") {
+			r, err := p.parseUnary()
+			if err != nil {
+				return 0, err
+			}
+			if r == 0 {
+				return 0, fmt.Errorf("modulo by zero in enum constant expression")
+			}
+			v = v % r
+			continue
+		}
+		break
+	}
+	return v, nil
+}
+
+func (p *enumConstParser) parseAdd() (int64, error) {
+	v, err := p.parseMul()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if p.matchPunct("+") {
+			r, err := p.parseMul()
+			if err != nil {
+				return 0, err
+			}
+			v = v + r
+			continue
+		}
+		if p.matchPunct("-") {
+			r, err := p.parseMul()
+			if err != nil {
+				return 0, err
+			}
+			v = v - r
+			continue
+		}
+		break
+	}
+	return v, nil
+}
+
+func (p *enumConstParser) parseShift() (int64, error) {
+	v, err := p.parseAdd()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if p.matchPunct("<<") {
+			r, err := p.parseAdd()
+			if err != nil {
+				return 0, err
+			}
+			v = v << uint64(r)
+			continue
+		}
+		if p.matchPunct(">>") {
+			r, err := p.parseAdd()
+			if err != nil {
+				return 0, err
+			}
+			v = v >> uint64(r)
+			continue
+		}
+		break
+	}
+	return v, nil
+}
+
+func (p *enumConstParser) parseAnd() (int64, error) {
+	v, err := p.parseShift()
+	if err != nil {
+		return 0, err
+	}
+	for p.matchPunct("&") {
+		r, err := p.parseShift()
+		if err != nil {
+			return 0, err
+		}
+		v = v & r
+	}
+	return v, nil
+}
+
+func (p *enumConstParser) parseXor() (int64, error) {
+	v, err := p.parseAnd()
+	if err != nil {
+		return 0, err
+	}
+	for p.matchPunct("^") {
+		r, err := p.parseAnd()
+		if err != nil {
+			return 0, err
+		}
+		v = v ^ r
+	}
+	return v, nil
+}
+
+func (p *enumConstParser) parseOr() (int64, error) {
+	v, err := p.parseXor()
+	if err != nil {
+		return 0, err
+	}
+	for p.matchPunct("|") {
+		r, err := p.parseXor()
+		if err != nil {
+			return 0, err
+		}
+		v = v | r
+	}
+	return v, nil
+}
+
+func (p *enumConstParser) parseExpr() (int64, error) {
+	return p.parseOr()
+}
+
+func parseEnumConstExprTokens(toks []Token, lookup map[string]int64) (int64, error) {
+	p := &enumConstParser{toks: trimTokens(toks), lookup: lookup}
+	v, err := p.parseExpr()
+	if err != nil {
+		return 0, err
+	}
+	if !p.atEnd() {
+		return 0, fmt.Errorf("unexpected token %q in enum constant expression", p.peek().Text)
+	}
+	return v, nil
+}
+
+func copyEnumLookupMap(src map[string]int64) map[string]int64 {
+	if len(src) == 0 {
+		return make(map[string]int64)
+	}
+	out := make(map[string]int64, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func parseEnumSpecifierAndConstants(toks []Token, enumLookup map[string]int64) (int, map[string]int64, error) {
+	toks = trimTokens(toks)
+	if len(toks) == 0 || toks[0].Kind != TokIdent || toks[0].Text != "enum" {
+		return 0, nil, fmt.Errorf("expected enum specifier")
+	}
+	i := 1
+	if i < len(toks) && toks[i].Kind == TokIdent && toks[i].Text != "{" {
+		i++
+	}
+	if i >= len(toks) || toks[i].Kind != TokPunct || toks[i].Text != "{" {
+		if i <= 1 {
+			return 0, nil, fmt.Errorf("enum specifier requires tag or enumerator list")
+		}
+		return i, nil, nil
+	}
+	depth := 1
+	j := i + 1
+	for j < len(toks) {
+		t := toks[j]
+		if t.Kind == TokPunct {
+			if t.Text == "{" {
+				depth++
+			} else if t.Text == "}" {
+				depth--
+				if depth == 0 {
+					break
+				}
+			}
+		}
+		j++
+	}
+	if j >= len(toks) || depth != 0 {
+		return 0, nil, fmt.Errorf("unterminated enum enumerator list")
+	}
+	body := trimTokens(toks[i+1 : j])
+	parts := splitTopLevel(body, ",")
+	vals := make(map[string]int64)
+	next := int64(0)
+	for _, p := range parts {
+		p = trimTokens(p)
+		if len(p) == 0 {
+			continue
+		}
+		eqIdx := -1
+		dParen := 0
+		for k, t := range p {
+			if t.Kind != TokPunct {
+				continue
+			}
+			if t.Text == "(" {
+				dParen++
+			} else if t.Text == ")" {
+				if dParen > 0 {
+					dParen--
+				}
+			} else if t.Text == "=" && dParen == 0 {
+				eqIdx = k
+				break
+			}
+		}
+		lhs := p
+		var rhs []Token
+		if eqIdx >= 0 {
+			lhs = trimTokens(p[:eqIdx])
+			rhs = trimTokens(p[eqIdx+1:])
+		}
+		if len(lhs) != 1 || lhs[0].Kind != TokIdent {
+			return 0, nil, fmt.Errorf("invalid enum enumerator declaration (%s)", tokenSliceText(p))
+		}
+		name := lhs[0].Text
+		v := next
+		if eqIdx >= 0 {
+			resolver := copyEnumLookupMap(enumLookup)
+			for name, val := range vals {
+				resolver[name] = val
+			}
+			ev, err := parseEnumConstExprTokens(rhs, resolver)
+			if err != nil {
+				return 0, nil, fmt.Errorf("invalid value for enum constant %q: %v", name, err)
+			}
+			v = ev
+		}
+		vals[name] = v
+		next = v + 1
+	}
+	return j + 1, vals, nil
+}
+
+func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, rest []Token) ([]cDeclItem, error) {
 	parts := splitTopLevel(rest, ",")
 	items := make([]cDeclItem, 0, len(parts))
 	for _, part := range parts {
@@ -1567,16 +1922,16 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, bool, error) {
 		}
 		lhs = trimTokens(lhs)
 		if len(lhs) == 0 {
-			return nil, false, false, fmt.Errorf("missing declarator in declaration")
+			return nil, fmt.Errorf("missing declarator in declaration")
 		}
 
 		name, kind, ptrDepth, arrayLen, fnSig, err := parseDeclarator(lhs, false)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
+			return nil, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
 		}
 		info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, fmt.Sprintf("declaration of %q", name))
 		if err != nil {
-			return nil, false, false, err
+			return nil, err
 		}
 		if fnSig != nil {
 			sig := cloneFuncTypeSig(fnSig)
@@ -1587,7 +1942,7 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, bool, error) {
 			info.FuncSig = sig
 		}
 		if !hasTypedef && info.IsVoid && info.Kind != cDeclPointer {
-			return nil, false, false, fmt.Errorf("declaration of %q cannot use void object type", name)
+			return nil, fmt.Errorf("declaration of %q cannot use void object type", name)
 		}
 		items = append(items, cDeclItem{
 			Name:     name,
@@ -1600,10 +1955,81 @@ func parseDeclItems(toks []Token) ([]cDeclItem, bool, bool, error) {
 			FuncSig:  cloneFuncTypeSig(info.FuncSig),
 		})
 	}
-	if len(items) == 0 {
-		return nil, false, false, fmt.Errorf("empty declaration")
+	return items, nil
+}
+
+func parseDeclItems(toks []Token, enumLookup map[string]int64) ([]cDeclItem, map[string]int64, bool, bool, error) {
+	toks = trimTokens(toks)
+	if len(toks) == 0 {
+		return nil, nil, false, false, nil
 	}
-	return items, hasExtern, hasTypedef, nil
+
+	// Enum declaration path (optionally with storage/qualifiers before `enum`).
+	prefix := 0
+	hasExtern := false
+	hasTypedef := false
+	for prefix < len(toks) {
+		t := toks[prefix]
+		if t.Kind != TokIdent {
+			break
+		}
+		if t.Text == "enum" {
+			break
+		}
+		if isStorageClassKeyword(t.Text) {
+			if t.Text == "extern" {
+				hasExtern = true
+			}
+			if t.Text == "typedef" {
+				hasTypedef = true
+			}
+			prefix++
+			continue
+		}
+		if isTypeQualifierKeyword(t.Text) {
+			prefix++
+			continue
+		}
+		break
+	}
+	if prefix < len(toks) && toks[prefix].Kind == TokIdent && toks[prefix].Text == "enum" {
+		consumed, enumConsts, err := parseEnumSpecifierAndConstants(toks[prefix:], enumLookup)
+		if err != nil {
+			return nil, nil, false, false, err
+		}
+		rest := trimTokens(toks[prefix+consumed:])
+		if len(rest) == 0 {
+			return nil, enumConsts, hasExtern, hasTypedef, nil
+		}
+		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasTypedef, rest)
+		if err != nil {
+			return nil, nil, false, false, err
+		}
+		if len(items) == 0 {
+			return nil, enumConsts, hasExtern, hasTypedef, nil
+		}
+		return items, enumConsts, hasExtern, hasTypedef, nil
+	}
+
+	spec, rest, err := splitDeclSpecPrefix(toks, "declaration")
+	if err != nil {
+		return nil, nil, false, false, err
+	}
+	baseInfo, hasExtern, hasTypedef, err := parseScalarTypeSpec(spec, "declaration", true)
+	if err != nil {
+		return nil, nil, false, false, err
+	}
+	if len(rest) == 0 {
+		return nil, nil, false, false, fmt.Errorf("missing declarator in declaration")
+	}
+	items, err := parseDeclItemsWithBase(baseInfo, hasTypedef, rest)
+	if err != nil {
+		return nil, nil, false, false, err
+	}
+	if len(items) == 0 {
+		return nil, nil, false, false, fmt.Errorf("empty declaration")
+	}
+	return items, nil, hasExtern, hasTypedef, nil
 }
 
 func isTypeSpecifierKeyword(text string) bool {
@@ -1705,6 +2131,7 @@ type funcCompiler struct {
 
 	scopes        []map[string]cLocalBinding
 	typedefScopes []map[string]cTypeInfo
+	enumScopes    []map[string]int64
 
 	breakTargets    []int
 	continueTargets []int
@@ -1724,6 +2151,7 @@ func (fc *funcCompiler) emit(inst ir.Inst) {
 func (fc *funcCompiler) pushScope() {
 	fc.scopes = append(fc.scopes, make(map[string]cLocalBinding))
 	fc.typedefScopes = append(fc.typedefScopes, make(map[string]cTypeInfo))
+	fc.enumScopes = append(fc.enumScopes, make(map[string]int64))
 }
 
 func (fc *funcCompiler) popScope() {
@@ -1732,6 +2160,9 @@ func (fc *funcCompiler) popScope() {
 	}
 	if len(fc.typedefScopes) > 0 {
 		fc.typedefScopes = fc.typedefScopes[:len(fc.typedefScopes)-1]
+	}
+	if len(fc.enumScopes) > 0 {
+		fc.enumScopes = fc.enumScopes[:len(fc.enumScopes)-1]
 	}
 }
 
@@ -1746,6 +2177,49 @@ func (fc *funcCompiler) addLocalTypedef(name string, info cTypeInfo, file string
 	}
 	info.FuncSig = cloneFuncTypeSig(info.FuncSig)
 	cur[name] = info
+}
+
+func (fc *funcCompiler) addLocalEnumConst(name string, val int64, file string, line int, col int) {
+	if len(fc.enumScopes) == 0 {
+		fc.enumScopes = append(fc.enumScopes, make(map[string]int64))
+	}
+	curEnums := fc.enumScopes[len(fc.enumScopes)-1]
+	if _, exists := curEnums[name]; exists {
+		fc.errorf(file, line, col, "duplicate enum constant %q in same scope", name)
+		return
+	}
+	if len(fc.scopes) > 0 {
+		if _, exists := fc.scopes[len(fc.scopes)-1][name]; exists {
+			fc.errorf(file, line, col, "enum constant %q conflicts with local declaration in same scope", name)
+			return
+		}
+	}
+	curEnums[name] = val
+}
+
+func (fc *funcCompiler) addLocalEnumConsts(vals map[string]int64, file string, line int, col int) {
+	for name, val := range vals {
+		fc.addLocalEnumConst(name, val, file, line, col)
+	}
+}
+
+func (fc *funcCompiler) lookupEnumConst(name string) (int64, bool) {
+	for i := len(fc.enumScopes) - 1; i >= 0; i-- {
+		if v, ok := fc.enumScopes[i][name]; ok {
+			return v, true
+		}
+	}
+	return fc.c.lookupEnumConst(name)
+}
+
+func (fc *funcCompiler) enumLookupMap() map[string]int64 {
+	out := copyEnumLookupMap(fc.c.enumConsts)
+	for i := 0; i < len(fc.enumScopes); i++ {
+		for name, val := range fc.enumScopes[i] {
+			out[name] = val
+		}
+	}
+	return out
 }
 
 func (fc *funcCompiler) lookupTypedef(name string) (cTypeInfo, bool) {
@@ -1780,6 +2254,11 @@ func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarTy
 	cur := fc.scopes[len(fc.scopes)-1]
 	if _, exists := cur[name]; exists {
 		fc.errorf(file, line, col, "redefinition of local %q", name)
+	}
+	if len(fc.enumScopes) > 0 {
+		if _, exists := fc.enumScopes[len(fc.enumScopes)-1][name]; exists {
+			fc.errorf(file, line, col, "local declaration %q conflicts with enum constant in same scope", name)
+		}
 	}
 	idx := len(fc.fn.Locals)
 	fc.fn.Locals = append(fc.fn.Locals, ir.IRLocal{Name: name, Index: idx})
@@ -2065,10 +2544,13 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 		fc.errorf(fc.sig.File, n.Line, n.Col, "invalid declaration: %v", err)
 		return
 	}
-	items, hasExtern, hasTypedef, err := parseDeclItems(toks)
+	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, fc.enumLookupMap())
 	if err != nil {
 		fc.errorf(fc.sig.File, n.Line, n.Col, "%v", err)
 		return
+	}
+	if len(enumConsts) > 0 {
+		fc.addLocalEnumConsts(enumConsts, fc.sig.File, n.Line, n.Col)
 	}
 	if hasTypedef {
 		if hasExtern {
@@ -2290,10 +2772,13 @@ func (fc *funcCompiler) compileReturnStmt(n *Node) {
 }
 
 func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
-	items, hasExtern, hasTypedef, err := parseDeclItems(toks)
+	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, fc.enumLookupMap())
 	if err != nil {
 		fc.errorf(file, n.Line, n.Col, "%v", err)
 		return
+	}
+	if len(enumConsts) > 0 {
+		fc.addLocalEnumConsts(enumConsts, file, n.Line, n.Col)
 	}
 	if hasTypedef {
 		if hasExtern {
@@ -2438,6 +2923,9 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: idx})
 			return true
 		}
+		if _, ok := fc.lookupEnumConst(ex.name); ok {
+			return false
+		}
 		if id, ok := fc.c.funcIDs[ex.name]; ok {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: id})
 			return true
@@ -2560,6 +3048,9 @@ func (fc *funcCompiler) varTypeInfo(name string) (cTypeInfo, bool) {
 		n, _ := fc.lookupGlobalArrayLen(name)
 		fsig, _ := fc.lookupGlobalFuncSig(name)
 		return cTypeInfo{Kind: kind, PtrDepth: ptrDepth, ArrayLen: n, Base: base, FuncSig: fsig}, true
+	}
+	if _, ok := fc.lookupEnumConst(name); ok {
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	}
 	if fs, ok := fc.c.funcs[name]; ok {
 		return cTypeInfo{
@@ -2717,6 +3208,9 @@ func (fc *funcCompiler) resolveDirectCallSig(call *expr) (*cFuncSig, bool) {
 		return nil, false
 	}
 	if _, ok := fc.lookupGlobal(name); ok {
+		return nil, false
+	}
+	if _, ok := fc.lookupEnumConst(name); ok {
 		return nil, false
 	}
 	sig, ok := fc.c.funcs[name]
@@ -3187,6 +3681,10 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		}
 		if idx, ok := fc.lookupGlobal(ex.name); ok {
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: idx})
+			return
+		}
+		if v, ok := fc.lookupEnumConst(ex.name); ok {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
 			return
 		}
 		if id, ok := fc.c.funcIDs[ex.name]; ok {
