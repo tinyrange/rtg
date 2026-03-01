@@ -922,7 +922,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if err != nil {
 		return nil, err
 	}
-	retInfo, err := combineTypeAndDeclarator(retSpec, retDeclKind, retDeclPtrDepth, 0, "function declaration")
+	retInfo, err := combineTypeAndDeclarator(retSpec, retDeclKind, retDeclPtrDepth, 0, false, "function declaration")
 	if err != nil {
 		return nil, err
 	}
@@ -954,7 +954,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 					if err == nil {
 						_, kind, ptrDepth, arrLen, _, err := parseDeclarator(decl, true)
 						if err == nil {
-							info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, "function parameter list")
+							info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, false, "function parameter list")
 							if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
 								parts = nil
 							}
@@ -987,7 +987,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			if err != nil {
 				return nil, err
 			}
-			pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, fmt.Sprintf("function parameter %d", i+1))
+			pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, false, fmt.Sprintf("function parameter %d", i+1))
 			if err != nil {
 				return nil, err
 			}
@@ -1370,9 +1370,9 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 	return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasExtern, hasTypedef, nil
 }
 
-func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth int, declArrayLen int64, context string) (cTypeInfo, error) {
+func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth int, declArrayLen int64, allowOpaqueObject bool, context string) (cTypeInfo, error) {
 	out := base
-	if base.OpaqueAggregate && base.Kind != cDeclPointer && declKind != cDeclPointer {
+	if base.OpaqueAggregate && base.Kind != cDeclPointer && declKind != cDeclPointer && !allowOpaqueObject {
 		what := base.AggregateKeyword
 		if what == "" {
 			what = "aggregate"
@@ -1550,7 +1550,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 				if err == nil {
 					_, kind, ptrDepth, arrLen, _, err := parseDeclarator(decl, true)
 					if err == nil {
-						info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, context)
+						info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, false, context)
 						if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
 							parts = nil
 						}
@@ -1590,7 +1590,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if err != nil {
 			return nil, nil, nil, nil, false, err
 		}
-		pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, pctx)
+		pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, false, pctx)
 		if err != nil {
 			return nil, nil, nil, nil, false, err
 		}
@@ -2097,7 +2097,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, rest []Token) (
 		if err != nil {
 			return nil, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
 		}
-		info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, fmt.Sprintf("declaration of %q", name))
+		info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, hasTypedef, fmt.Sprintf("declaration of %q", name))
 		if err != nil {
 			return nil, err
 		}
@@ -2235,7 +2235,7 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if name != "" {
 		return cTypeInfo{}, fmt.Errorf("named declarators are not supported in type names (%s)", name)
 	}
-	info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, "type name")
+	info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, false, "type name")
 	if err != nil {
 		return cTypeInfo{}, err
 	}
