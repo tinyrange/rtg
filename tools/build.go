@@ -699,9 +699,6 @@ func fullCompilerSkipReason(backend string, targetOS string, targetArch string, 
 	if backend == "wasm" && name == "iface_typeassert" {
 		return "known wasm32 type-assertion issue"
 	}
-	if backend == "wasm" && (name == "54_stdlib_cli_core" || name == "55_stdlib_additions_extended") {
-		return "known wasm32 validator issue in extended stdlib fixture"
-	}
 	if name == "comptime_method" && targetArch == "386" {
 		return "known 32-bit comptime VM allocation issue"
 	}
@@ -711,8 +708,8 @@ func fullCompilerSkipReason(backend string, targetOS string, targetArch string, 
 	if backend == "rtg" && name == "53_runtime_now" && (targetOS == "dos" || targetArch == "armv8m") {
 		return "runtime.Now is only implemented on linux/windows/darwin/wasi/c/vm targets"
 	}
-	if backend == "rtg" && name == "54_stdlib_cli_core" && (targetOS == "dos" || targetArch == "armv8m") {
-		return "extended stdlib fixture is not currently viable on dos/armv8m constrained targets"
+	if backend == "rtg" && name == "54_stdlib_cli_core" && targetArch == "armv8m" {
+		return "extended stdlib fixture is not currently viable on armv8m constrained targets"
 	}
 	if backend == "rtg" && name == "55_stdlib_additions_extended" && (targetOS == "dos" || targetArch == "armv8m") {
 		return "extended stdlib test imports testing package timers unsupported on this target"

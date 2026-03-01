@@ -91,7 +91,7 @@ const (
 )
 
 // Generate is the entry point for the WASM backend.
-func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+func Generate(_ *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &WasmGen{
 		mod:       &wasmModule{memMin: 2}, // start with 2 pages (128KB)
 		irmod:     irmod,
@@ -440,7 +440,7 @@ func (g *WasmGen) compileFunc(f *ir.IRFunc) []byte {
 			g.w.globalGet(uint32(g.globalSP))
 			g.w.localGet(uint32(i))
 			if g.localI64[i] {
-				g.w.i64ExtendI32U() // extend i32 param to i64
+				g.w.i64ExtendI32S() // extend i32 param to i64
 				g.w.i64Store(3, uint32(g.localOffsets[i]))
 			} else {
 				g.w.i32Store(2, uint32(g.localOffsets[i]))
@@ -1284,8 +1284,13 @@ func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) 
 func (g *WasmGen) compileInst(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
-		g.w.i32Const(int32(inst.Val))
-		g.pushType(WASM_TYPE_I32)
+		if inst.Width == 8 {
+			g.w.i64Const(inst.Val)
+			g.pushType(WASM_TYPE_I64)
+		} else {
+			g.w.i32Const(int32(inst.Val))
+			g.pushType(WASM_TYPE_I32)
+		}
 	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.w.i32Const(1)
@@ -2307,16 +2312,33 @@ func (g *WasmGen) compileTostringDispatch(typeIDLocal uint32) {
 	// Generate if/else chain for Error/String methods
 	// concrete value is in g.tempLocal
 	var entries []becommon.DispatchEntry
+	findFunc := func(name string) *ir.IRFunc {
+		if g.irmod == nil {
+			return nil
+		}
+		for _, f := range g.irmod.Funcs {
+			if f.Name == name {
+				return f
+			}
+		}
+		return nil
+	}
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + ".Error"
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, becommon.DispatchEntry{tid, candidate})
+			if fnName, ok := g.irmod.MethodTable[candidate]; ok {
+				fn := findFunc(fnName)
+				if fn != nil && fn.Params == 1 && fn.RetCount == 1 {
+					entries = append(entries, becommon.DispatchEntry{tid, fnName})
+				}
 				continue
 			}
 			candidate = typeName + ".String"
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, becommon.DispatchEntry{tid, candidate})
+			if fnName, ok := g.irmod.MethodTable[candidate]; ok {
+				fn := findFunc(fnName)
+				if fn != nil && fn.Params == 1 && fn.RetCount == 1 {
+					entries = append(entries, becommon.DispatchEntry{tid, fnName})
+				}
 			}
 		}
 	}
@@ -2333,9 +2355,13 @@ func (g *WasmGen) compileTostringDispatch(typeIDLocal uint32) {
 		g.w.i32Const(int32(entry.TypeID))
 		g.w.op(OP_WASM_I32_EQ)
 		g.w.ifOp(WASM_TYPE_I32)
-		g.w.localGet(uint32(g.tempLocal)) // push concrete value as arg
 		if idx, ok := g.funcMap[entry.FuncName]; ok {
+			g.w.localGet(uint32(g.tempLocal)) // push concrete value as arg
 			g.w.call(uint32(idx))
+		} else {
+			// Keep if/else block type-consistent even if method body was
+			// removed from the lowered module.
+			g.w.i32Const(0)
 		}
 		g.w.elseOp()
 	}
@@ -3027,13 +3053,7 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 		g.w.unreachable()
 	} else {
 		// Stack has: [concrete_value, arg0, ...argN]
-		// We need to save them all, dispatch, and have them available for each branch.
-		// Actually, the values are already on the WASM stack. Each call will consume them.
-		// But only one branch executes. With if/else, only one path runs.
-		// However, WASM requires type-consistent stack at block boundaries.
-		//
-		// Strategy: save all values to shadow memory, then in each dispatch branch,
-		// load them and call.
+		// Save all call inputs to shadow memory, then reload per dispatch arm.
 		totalVals := 1 + argCount // receiver + args
 		g.w.globalGet(uint32(g.globalSP))
 		g.w.i32Const(int32(totalVals * 4))
@@ -3054,6 +3074,15 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 		if expectedRetCount > 0 {
 			retCount = expectedRetCount
 		}
+		retScratchWords := 0
+		if retCount > 1 {
+			retScratchWords = retCount
+			// Reserve scratch for multi-value dispatch results.
+			g.w.globalGet(uint32(g.globalSP))
+			g.w.i32Const(int32(retScratchWords * 4))
+			g.w.op(OP_WASM_I32_SUB)
+			g.w.globalSet(uint32(g.globalSP))
+		}
 
 		// Build result type for if blocks
 		var blockType byte
@@ -3062,7 +3091,7 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 		} else if retCount == 1 {
 			blockType = WASM_TYPE_I32
 		} else {
-			// Multi-value blocks need a type index. For now, use void and handle via shadow stack.
+			// Multi-value blocks use shadow scratch and a void block.
 			blockType = WASM_TYPE_VOID
 		}
 
@@ -3082,11 +3111,24 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 			j := 0
 			for j < totalVals {
 				g.w.globalGet(uint32(g.globalSP))
-				g.w.i32Load(2, uint32(j*4))
+				g.w.i32Load(2, uint32((retScratchWords+j)*4))
 				j++
 			}
 			if idx, ok := g.funcMap[entry.FuncName]; ok {
 				g.w.call(uint32(idx))
+			}
+			if retCount > 1 {
+				// Store all returned values into ret scratch so void if/else
+				// blocks remain type-consistent.
+				ri := retCount - 1
+				for ri >= 0 {
+					scratch := uint32(g.tempLocal)
+					g.w.localSet(scratch)
+					g.w.globalGet(uint32(g.globalSP))
+					g.w.localGet(scratch)
+					g.w.i32Store(2, uint32(ri*4))
+					ri = ri - 1
+				}
 			}
 
 			if ei < len(entries)-1 {
@@ -3111,9 +3153,19 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 			ei++
 		}
 
+		// Rehydrate multi-return values from ret scratch.
+		if retCount > 1 {
+			ri := 0
+			for ri < retCount {
+				g.w.globalGet(uint32(g.globalSP))
+				g.w.i32Load(2, uint32(ri*4))
+				ri++
+			}
+		}
+
 		// Restore shadow stack
 		g.w.globalGet(uint32(g.globalSP))
-		g.w.i32Const(int32(totalVals * 4))
+		g.w.i32Const(int32((totalVals + retScratchWords) * 4))
 		g.w.op(OP_WASM_I32_ADD)
 		g.w.globalSet(uint32(g.globalSP))
 
