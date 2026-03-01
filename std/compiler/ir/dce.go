@@ -1,7 +1,5 @@
 package ir
 
-import "strings"
-
 // IsInitFunc checks if a function name is a package init function.
 func IsInitFunc(name string) bool {
 	n := len(name)
@@ -38,11 +36,19 @@ func dceAddRoot(name string, funcIndex map[string]int, reachable map[string]bool
 }
 
 func dceMethodName(name string) string {
-	parts := strings.Split(name, ".")
-	if len(parts) == 0 {
+	lastDot := -1
+	for i := 0; i < len(name); i++ {
+		if name[i] == '.' {
+			lastDot = i
+		}
+	}
+	if lastDot < 0 {
+		return name
+	}
+	if lastDot+1 >= len(name) {
 		return ""
 	}
-	return parts[len(parts)-1]
+	return name[lastDot+1:]
 }
 
 // eliminateDeadFunctions removes unreachable functions from the IR module

@@ -2543,20 +2543,39 @@ func containsDeferStmt(node *Node) bool {
 	if node == nil {
 		return false
 	}
-	// Defer statements inside nested function literals belong to the nested
-	// function, not the current one.
-	if node.Kind == NFuncType && node.Body != nil {
-		return false
-	}
-	if node.Kind == NDeferStmt {
-		return true
-	}
-	if containsDeferStmt(node.X) || containsDeferStmt(node.Y) || containsDeferStmt(node.Body) || containsDeferStmt(node.Type) {
-		return true
-	}
-	for _, child := range node.Nodes {
-		if containsDeferStmt(child) {
+	stack := make([]*Node, 0, 64)
+	stack = append(stack, node)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n == nil {
+			continue
+		}
+		// Defer statements inside nested function literals belong to the nested
+		// function, not the current one.
+		if n.Kind == NFuncType && n.Body != nil {
+			continue
+		}
+		if n.Kind == NDeferStmt {
 			return true
+		}
+		if n.X != nil {
+			stack = append(stack, n.X)
+		}
+		if n.Y != nil {
+			stack = append(stack, n.Y)
+		}
+		if n.Body != nil {
+			stack = append(stack, n.Body)
+		}
+		if n.Type != nil {
+			stack = append(stack, n.Type)
+		}
+		for i := len(n.Nodes) - 1; i >= 0; i-- {
+			child := n.Nodes[i]
+			if child != nil {
+				stack = append(stack, child)
+			}
 		}
 	}
 	return false

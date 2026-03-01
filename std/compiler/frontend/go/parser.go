@@ -296,9 +296,18 @@ func (l *Lexer) scanIdent() Token {
 	line := l.line
 	col := l.col
 	start := l.pos
-	for !l.atEnd() && (isLetter(l.peek()) || isDigit(l.peek())) {
-		l.advance()
+	pos := start
+	src := l.src
+	for pos < len(src) {
+		ch := src[pos]
+		isIdentChar := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || (ch >= '0' && ch <= '9')
+		if !isIdentChar {
+			break
+		}
+		pos++
 	}
+	l.pos = pos
+	l.col += pos - start
 	val := l.src[start:l.pos]
 	kind, isKeyword := keywords[val]
 	if !isKeyword {
@@ -311,51 +320,68 @@ func (l *Lexer) scanNumber() Token {
 	line := l.line
 	col := l.col
 	start := l.pos
+	pos := start
+	src := l.src
+	n := len(src)
 	isFloat := false
-	if l.peek() == '0' && (l.peekAt(1) == 'x' || l.peekAt(1) == 'X') {
-		l.advance()
-		l.advance()
-		for !l.atEnd() && (isDigit(l.peek()) || isLetter(l.peek()) || l.peek() == '_') {
-			l.advance()
+	isLetterByte := func(ch byte) bool {
+		return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+	}
+	if pos+1 < n && src[pos] == '0' && (src[pos+1] == 'x' || src[pos+1] == 'X') {
+		pos += 2
+		for pos < n && (isDigit(src[pos]) || isLetterByte(src[pos]) || src[pos] == '_') {
+			pos++
 		}
-	} else if l.peek() == '0' && (l.peekAt(1) == 'b' || l.peekAt(1) == 'B') {
-		l.advance()
-		l.advance()
-		for !l.atEnd() && (isDigit(l.peek()) || isLetter(l.peek()) || l.peek() == '_') {
-			l.advance()
+	} else if pos+1 < n && src[pos] == '0' && (src[pos+1] == 'b' || src[pos+1] == 'B') {
+		pos += 2
+		for pos < n && (isDigit(src[pos]) || isLetterByte(src[pos]) || src[pos] == '_') {
+			pos++
 		}
-	} else if l.peek() == '0' && (l.peekAt(1) == 'o' || l.peekAt(1) == 'O') {
-		l.advance()
-		l.advance()
-		for !l.atEnd() && (isDigit(l.peek()) || isLetter(l.peek()) || l.peek() == '_') {
-			l.advance()
+	} else if pos+1 < n && src[pos] == '0' && (src[pos+1] == 'o' || src[pos+1] == 'O') {
+		pos += 2
+		for pos < n && (isDigit(src[pos]) || isLetterByte(src[pos]) || src[pos] == '_') {
+			pos++
 		}
 	} else {
-		for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
-			l.advance()
+		for pos < n && (isDigit(src[pos]) || src[pos] == '_') {
+			pos++
 		}
-		if l.peek() == '.' && isDigit(l.peekAt(1)) {
+		if pos+1 < n && src[pos] == '.' && isDigit(src[pos+1]) {
 			isFloat = true
-			l.advance()
-			for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
-				l.advance()
+			pos++
+			for pos < n && (isDigit(src[pos]) || src[pos] == '_') {
+				pos++
 			}
 		}
-		if (l.peek() == 'e' || l.peek() == 'E') && isExpDigitStart(l.peekAt(1), l.peekAt(2)) {
-			isFloat = true
-			l.advance()
-			if l.peek() == '+' || l.peek() == '-' {
-				l.advance()
+		if pos < n && (src[pos] == 'e' || src[pos] == 'E') {
+			next := byte(0)
+			next2 := byte(0)
+			if pos+1 < n {
+				next = src[pos+1]
 			}
-			for !l.atEnd() && (isDigit(l.peek()) || l.peek() == '_') {
-				l.advance()
+			if pos+2 < n {
+				next2 = src[pos+2]
+			}
+			if isExpDigitStart(next, next2) {
+				isFloat = true
+				pos++
+				if pos < n && (src[pos] == '+' || src[pos] == '-') {
+					pos++
+				}
+				for pos < n && (isDigit(src[pos]) || src[pos] == '_') {
+					pos++
+				}
 			}
 		}
-		if l.peek() == 'i' {
-			l.advance()
+		if pos < n && src[pos] == 'i' {
+			pos++
+			l.pos = pos
+			l.col += pos - start
 			return Token{Kind: TOKEN_IMAG, Val: l.src[start:l.pos], Line: line, Col: col}
 		}
 	}
+	l.pos = pos
+	l.col += pos - start
 	if isFloat {
 		return Token{Kind: TOKEN_FLOAT, Val: l.src[start:l.pos], Line: line, Col: col}
 	}
@@ -681,10 +707,11 @@ func (p *Parser) peek() Token {
 }
 
 func (p *Parser) advance() Token {
-	tok := p.peek()
-	if p.pos < len(p.tokens) {
-		p.pos++
+	if p.pos >= len(p.tokens) {
+		return Token{Kind: TOKEN_EOF}
 	}
+	tok := p.tokens[p.pos]
+	p.pos++
 	return tok
 }
 
