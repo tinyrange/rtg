@@ -1041,11 +1041,47 @@ func isTypeQualifierKeyword(text string) bool {
 
 func isUnsupportedCTypeKeyword(text string) bool {
 	switch text {
-	case "float", "double", "_Bool", "_Complex", "_Imaginary", "struct", "union", "enum":
+	case "float", "double", "_Bool", "_Complex", "_Imaginary", "struct", "union":
 		return true
 	default:
 		return false
 	}
+}
+
+func consumeEnumSpecifierTokens(tokens []Token, start int, context string) (int, error) {
+	if start >= len(tokens) || tokens[start].Kind != TokIdent || tokens[start].Text != "enum" {
+		return start, fmt.Errorf("%s expected enum specifier", context)
+	}
+	i := start + 1
+	hasTag := false
+	hasBody := false
+	if i < len(tokens) && tokens[i].Kind == TokIdent {
+		hasTag = true
+		i++
+	}
+	if i < len(tokens) && tokens[i].Kind == TokPunct && tokens[i].Text == "{" {
+		hasBody = true
+		depth := 1
+		i++
+		for i < len(tokens) && depth > 0 {
+			t := tokens[i]
+			if t.Kind == TokPunct {
+				if t.Text == "{" {
+					depth++
+				} else if t.Text == "}" {
+					depth--
+				}
+			}
+			i++
+		}
+		if depth != 0 {
+			return start, fmt.Errorf("%s has unterminated enum specifier", context)
+		}
+	}
+	if !hasTag && !hasBody {
+		return start, fmt.Errorf("%s enum specifier requires tag or enumerator list", context)
+	}
+	return i, nil
 }
 
 func splitDeclSpecPrefix(tokens []Token, context string) ([]Token, []Token, error) {
@@ -1057,6 +1093,15 @@ func splitDeclSpecPrefix(tokens []Token, context string) ([]Token, []Token, erro
 	sawType := false
 	for end < len(tokens) {
 		t := tokens[end]
+		if t.Kind == TokIdent && t.Text == "enum" {
+			next, err := consumeEnumSpecifierTokens(tokens, end, context)
+			if err != nil {
+				return nil, nil, err
+			}
+			sawType = true
+			end = next
+			continue
+		}
 		if t.Kind != TokIdent {
 			break
 		}
@@ -1087,6 +1132,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 	var hasExtern bool
 	var hasTypedef bool
 	var sawType bool
+	var sawEnum bool
 	var sawVoid bool
 	var sawChar bool
 	var sawShort bool
@@ -1097,7 +1143,21 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 	var aliasSet bool
 	var aliasInfo cTypeInfo
 
-	for _, t := range spec {
+	for i := 0; i < len(spec); {
+		t := spec[i]
+		if t.Kind == TokIdent && t.Text == "enum" {
+			if aliasSet || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned || sawEnum {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with additional type specifiers", context)
+			}
+			next, err := consumeEnumSpecifierTokens(spec, i, context)
+			if err != nil {
+				return cTypeInfo{}, false, false, err
+			}
+			sawType = true
+			sawEnum = true
+			i = next
+			continue
+		}
 		if t.Kind != TokIdent {
 			return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid type token %q", context, t.Text)
 		}
@@ -1124,31 +1184,55 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 		case "const", "volatile", "restrict", "inline":
 			// Qualifiers are currently ignored in this lowering stage.
 		case "void":
+			if sawEnum {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with void", context)
+			}
 			sawType = true
 			sawVoid = true
 		case "char":
+			if sawEnum {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with char", context)
+			}
 			sawType = true
 			sawChar = true
 		case "short":
+			if sawEnum {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with short", context)
+			}
 			sawType = true
 			sawShort = true
 		case "int":
+			if sawEnum {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with int", context)
+			}
 			sawType = true
 			sawInt = true
 		case "long":
+			if sawEnum {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with long", context)
+			}
 			sawType = true
 			sawLongCount++
 			if sawLongCount > 2 {
 				return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid long type combination", context)
 			}
 		case "signed":
+			if sawEnum {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with signed", context)
+			}
 			sawType = true
 			sawSigned = true
 		case "unsigned":
+			if sawEnum {
+				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with unsigned", context)
+			}
 			sawType = true
 			sawUnsigned = true
 		default:
 			if alias, ok := lookupTypedefAlias(t.Text); ok {
+				if sawEnum {
+					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with typedef name %q", context, t.Text)
+				}
 				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
 					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
 				}
@@ -1162,6 +1246,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			}
 			return cTypeInfo{}, false, false, fmt.Errorf("%s has unsupported type token %q", context, t.Text)
 		}
+		i++
 	}
 
 	if !sawType {
@@ -1176,6 +1261,9 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 	}
 	if sawSigned && sawUnsigned {
 		return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine signed and unsigned", context)
+	}
+	if sawEnum {
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasExtern, hasTypedef, nil
 	}
 	if sawVoid {
 		if sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
