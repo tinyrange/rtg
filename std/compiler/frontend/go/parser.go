@@ -272,10 +272,14 @@ func (l *Lexer) skipWhitespaceAndComments() (bool, *Token) {
 				l.advance()
 			}
 			val := l.src[start:l.pos]
-			if len(val) >= 4 && val[0:4] == "rtg:" {
-				directive = &Token{Kind: TOKEN_DIRECTIVE, Val: val[4:len(val)], Line: cLine, Col: cCol}
-			} else if len(val) >= 9 && val[0:9] == "go:embed " {
-				directive = &Token{Kind: TOKEN_DIRECTIVE, Val: "embed " + val[9:len(val)], Line: cLine, Col: cCol}
+			trimmed := val
+			for len(trimmed) > 0 && (trimmed[0] == ' ' || trimmed[0] == '\t') {
+				trimmed = trimmed[1:]
+			}
+			if len(trimmed) >= 4 && trimmed[0:4] == "rtg:" {
+				directive = &Token{Kind: TOKEN_DIRECTIVE, Val: trimmed[4:len(trimmed)], Line: cLine, Col: cCol}
+			} else if len(trimmed) >= 9 && trimmed[0:9] == "go:embed " {
+				directive = &Token{Kind: TOKEN_DIRECTIVE, Val: "embed " + trimmed[9:len(trimmed)], Line: cLine, Col: cCol}
 			}
 			sawNewline = true
 		} else {

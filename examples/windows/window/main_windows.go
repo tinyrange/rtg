@@ -14,6 +14,15 @@ const (
 	idBtn   uint16 = 1003
 )
 
+func echoUpdate(edit winui.Control, label winui.Control) {
+	txt, terr := edit.Text(1024)
+	if terr != 0 {
+		_ = label.SetText("Echo failed")
+		return
+	}
+	_ = label.SetText("Echo: " + txt)
+}
+
 func main() {
 	w, err := winui.NewWindow("RTG winui demo", 520, 180)
 	if err != 0 {
@@ -42,13 +51,23 @@ func main() {
 		panic("CreateButton failed")
 	}
 
-	winui.SetEchoCommand(idBtn, edit, label, "Echo: ")
-
 	w.Show(winui.SW_SHOW)
 
-	code, rerr := winui.Run()
-	if rerr != 0 {
-		fmt.Printf("Message loop failed: %v\n", rerr)
+	onEcho := func() {
+		echoUpdate(edit, label)
 	}
-	_ = code
+
+	for {
+		ev, rerr := winui.NextEvent()
+		if rerr != 0 {
+			fmt.Printf("Message loop failed: %v\n", rerr)
+			break
+		}
+		if ev.Kind == winui.EventQuit {
+			break
+		}
+		if ev.Kind == winui.EventCommand && ev.ID == idBtn && ev.Notify == winui.BN_CLICKED {
+			onEcho()
+		}
+	}
 }

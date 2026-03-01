@@ -42,6 +42,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			continue
 		}
 		if len(fix.Target) > 10 && fix.Target[0:10] == "$funcaddr$" {
+			refName := fix.Target[10:]
+			if _, ok := g.FuncOffsets[refName]; !ok {
+				unresolved = append(unresolved, fix.Target)
+			}
 			continue
 		}
 		targetOff, ok := g.FuncOffsets[fix.Target]
@@ -197,13 +201,13 @@ func emitCallbackThunk(g *core.CodeGen, funcName string, irmod *ir.IRModule) {
 	//   ...
 
 	// Prologue
-	g.EmitBytes(0x55)             // push ebp
-	g.EmitBytes(0x89, 0xe5)       // mov ebp, esp
+	g.EmitBytes(0x55)       // push ebp
+	g.EmitBytes(0x89, 0xe5) // mov ebp, esp
 
 	// Save callee-saved registers that RTG code will clobber
-	g.EmitBytes(0x53)             // push ebx  (RTG operand cache)
-	g.EmitBytes(0x56)             // push esi  (RTG operand cache)
-	g.EmitBytes(0x57)             // push edi  (we'll overwrite with RTG opstack)
+	g.EmitBytes(0x53) // push ebx  (RTG operand cache)
+	g.EmitBytes(0x56) // push esi  (RTG operand cache)
+	g.EmitBytes(0x57) // push edi  (we'll overwrite with RTG opstack)
 
 	// Load EDI (RTG operand stack pointer) from the global save slot
 	emitLoadEDI(g)
@@ -211,10 +215,10 @@ func emitCallbackThunk(g *core.CodeGen, funcName string, irmod *ir.IRModule) {
 	// Push params onto RTG operand stack (EDI) in left-to-right order
 	// RTG expects: first param pushed first (deepest), last param on top
 	for i := 0; i < paramCount; i++ {
-		off := 8 + i*4 // [ebp+8], [ebp+12], ...
+		off := 8 + i*4                     // [ebp+8], [ebp+12], ...
 		g.EmitBytes(0x8b, 0x45, byte(off)) // mov eax, [ebp+off]
 		g.EmitBytes(0x8d, 0x7f, 0xfc)      // lea edi, [edi-4]
-		g.EmitBytes(0x89, 0x07)             // mov [edi], eax
+		g.EmitBytes(0x89, 0x07)            // mov [edi], eax
 	}
 
 	// Call the RTG function body
@@ -226,19 +230,19 @@ func emitCallbackThunk(g *core.CodeGen, funcName string, irmod *ir.IRModule) {
 
 	// Save EDI back to global (for nested callbacks)
 	// Use ECX as scratch to preserve return value in EAX
-	g.EmitBytes(0x89, 0xc1)       // mov ecx, eax  (save return value)
+	g.EmitBytes(0x89, 0xc1) // mov ecx, eax  (save return value)
 	emitSaveEDI(g)
-	g.EmitBytes(0x89, 0xc8)       // mov eax, ecx  (restore return value)
+	g.EmitBytes(0x89, 0xc8) // mov eax, ecx  (restore return value)
 
 	// Restore callee-saved registers
-	g.EmitBytes(0x5f)             // pop edi
-	g.EmitBytes(0x5e)             // pop esi
-	g.EmitBytes(0x5b)             // pop ebx
-	g.EmitBytes(0x5d)             // pop ebp
+	g.EmitBytes(0x5f) // pop edi
+	g.EmitBytes(0x5e) // pop esi
+	g.EmitBytes(0x5b) // pop ebx
+	g.EmitBytes(0x5d) // pop ebp
 
 	// stdcall: callee cleans up parameters
 	if paramCount > 0 {
-		g.EmitBytes(0xc2)                          // ret imm16
+		g.EmitBytes(0xc2) // ret imm16
 		g.EmitBytes(byte(paramCount*4), byte((paramCount*4)>>8))
 	} else {
 		g.EmitBytes(0xc3) // ret

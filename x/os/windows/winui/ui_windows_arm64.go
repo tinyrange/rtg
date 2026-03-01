@@ -7,7 +7,7 @@ const (
 	sizeWNDCLASSEX = 80
 	sizeMSG        = 48
 
-	// WNDCLASSEXA field offsets (x64)
+	// WNDCLASSEXA field offsets (arm64, Win64 ABI)
 	offWCE_cbSize      = 0
 	offWCE_style       = 4
 	offWCE_lpfnWndProc = 8
@@ -21,7 +21,7 @@ const (
 	offWCE_lpszClass   = 64
 	offWCE_hIconSm     = 72
 
-	// MSG.wParam offset (x64)
+	// MSG.wParam offset (arm64, Win64 ABI)
 	offMSG_wParam = 16
 )
 

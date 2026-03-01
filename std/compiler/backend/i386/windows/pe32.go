@@ -155,10 +155,11 @@ func BuildPE32(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		} else if len(fix.Target) > 10 && fix.Target[0:10] == "$funcaddr$" {
 			refName := fix.Target[10:]
 			funcOff, ok := g.FuncOffsets[refName]
-			if ok {
-				funcVA := uint32(imageBase+textRVA) + uint32(funcOff)
-				putU32(g.Code[fix.CodeOffset:fix.CodeOffset+4], funcVA)
+			if !ok {
+				panic("ICE: unresolved function address fixup: " + refName)
 			}
+			funcVA := uint32(imageBase+textRVA) + uint32(funcOff)
+			putU32(g.Code[fix.CodeOffset:fix.CodeOffset+4], funcVA)
 		} else if libName, funcName, ok := decodeIATFixupTarget(fix.Target); ok {
 			iatOff, ok := iatOffsets[winImportKey(libName, funcName)]
 			if !ok {

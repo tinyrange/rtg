@@ -25,8 +25,10 @@ const (
 var featureDeferEnabled = true
 
 type closureCaptureSpec struct {
-	Name  string
-	Width int
+	Name          string
+	Width         int
+	ConcreteType  string
+	InterfaceType string
 }
 
 type closureCaptureBinding struct {
@@ -121,6 +123,8 @@ type Compiler struct {
 	funcLiteralCaptures  map[string][]closureCaptureSpec
 	localFuncCaptures    map[string][]closureCaptureBinding
 	activeCaptures       map[string]closureCaptureBinding
+	captureConcreteTypes map[string]string
+	captureIfaceTypes    map[string]string
 	dotJoinCache         map[string]map[string]string // a → b → "a.b"
 	qualifyTypeCache     map[string]string            // "typeName\x00pkgPath" → qualified result
 	comptimeSeq          int
@@ -2429,6 +2433,12 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.currentMethodHash = 0
 	c.inIfInit = false
 	c.ifInitLeakedNames = make(map[string]bool)
+	for name, concreteType := range c.captureConcreteTypes {
+		c.localConcreteTypes[name] = concreteType
+	}
+	for name, ifaceType := range c.captureIfaceTypes {
+		c.localTypes[name] = ifaceType
+	}
 	c.pushScope()
 
 	profileParentABI := c.target != nil && c.target.Profile && c.funcProfileParentABI[qname]
@@ -3898,7 +3908,14 @@ func (c *Compiler) collectFuncLiteralCaptures(lit *Node) []closureCaptureSpec {
 			if !ok {
 				continue
 			}
-			captures = append(captures, closureCaptureSpec{Name: name, Width: localWidth(c.curFunc.Locals, idx)})
+			spec := closureCaptureSpec{Name: name, Width: localWidth(c.curFunc.Locals, idx)}
+			if concreteType, ok := c.localConcreteTypes[name]; ok {
+				spec.ConcreteType = concreteType
+			}
+			if ifaceType, ok := c.localTypes[name]; ok {
+				spec.InterfaceType = ifaceType
+			}
+			captures = append(captures, spec)
 			seen[name] = true
 		}
 	}
@@ -3906,16 +3923,32 @@ func (c *Compiler) collectFuncLiteralCaptures(lit *Node) []closureCaptureSpec {
 }
 
 func (c *Compiler) compileFuncLiteral(lit *Node) string {
+	captures := c.collectFuncLiteralCaptures(lit)
+	return c.compileFuncLiteralWithCaptures(lit, captures)
+}
+
+func (c *Compiler) compileFuncLiteralNoCapture(lit *Node) string {
+	return c.compileFuncLiteralWithCaptures(lit, nil)
+}
+
+func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureCaptureSpec) string {
 	name := fmt.Sprintf("$lit_%d", c.funcLitSeq)
 	c.funcLitSeq++
 
-	captures := c.collectFuncLiteralCaptures(lit)
 	params := make([]*Node, 0, len(captures)+len(lit.Nodes))
 	activeCaptures := make(map[string]closureCaptureBinding)
+	captureConcreteTypes := make(map[string]string)
+	captureIfaceTypes := make(map[string]string)
 	for i, capture := range captures {
 		pname := "$cap_" + capture.Name
 		params = append(params, &Node{Kind: NVarDecl, Name: pname})
 		activeCaptures[capture.Name] = closureCaptureBinding{LocalIdx: i, Width: capture.Width, IsPtr: true}
+		if capture.ConcreteType != "" {
+			captureConcreteTypes[capture.Name] = capture.ConcreteType
+		}
+		if capture.InterfaceType != "" {
+			captureIfaceTypes[capture.Name] = capture.InterfaceType
+		}
 	}
 	params = append(params, lit.Nodes...)
 
@@ -3948,6 +3981,8 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	savedMethodRecv := c.localMethodRecv
 	savedLocalFuncCaptures := c.localFuncCaptures
 	savedActiveCaptures := c.activeCaptures
+	savedCaptureConcreteTypes := c.captureConcreteTypes
+	savedCaptureIfaceTypes := c.captureIfaceTypes
 	savedProfileStartLocal := c.profileStartLocal
 	savedProfileParentLocal := c.profileParentLocal
 	savedProfileMethodHash := c.profileMethodHash
@@ -3957,6 +3992,8 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	savedIfInitLeakedNames := c.ifInitLeakedNames
 
 	c.activeCaptures = activeCaptures
+	c.captureConcreteTypes = captureConcreteTypes
+	c.captureIfaceTypes = captureIfaceTypes
 	c.compileFunc(fn)
 
 	// Restore caller function state.
@@ -3984,6 +4021,8 @@ func (c *Compiler) compileFuncLiteral(lit *Node) string {
 	c.localMethodRecv = savedMethodRecv
 	c.localFuncCaptures = savedLocalFuncCaptures
 	c.activeCaptures = savedActiveCaptures
+	c.captureConcreteTypes = savedCaptureConcreteTypes
+	c.captureIfaceTypes = savedCaptureIfaceTypes
 	c.profileStartLocal = savedProfileStartLocal
 	c.profileParentLocal = savedProfileParentLocal
 	c.profileMethodHash = savedProfileMethodHash
@@ -6700,6 +6739,51 @@ func runtimeMemBuiltinReturnCount(name string) (int, bool) {
 	return 0, false
 }
 
+func (c *Compiler) resolveFuncptrTarget(node *Node) (string, bool) {
+	if node == nil {
+		c.errorf("%s: runtime.Funcptr expects exactly one function argument", c.curFunc.Name)
+		return "", false
+	}
+	switch node.Kind {
+	case NIdent:
+		if target, ok := c.localFuncTargets[node.Name]; ok {
+			if len(c.localFuncCaptures[node.Name]) > 0 {
+				c.errorf("%s: runtime.Funcptr does not support closures with captures (%s)", c.curFunc.Name, node.Name)
+				return "", false
+			}
+			return target, true
+		}
+		if _, ok := c.localMethodTargets[node.Name]; ok {
+			c.errorf("%s: runtime.Funcptr does not support bound method values (%s)", c.curFunc.Name, node.Name)
+			return "", false
+		}
+		if c.curPkg != nil {
+			if sym, ok := c.curPkg.Symbols[node.Name]; ok && sym.Kind == SymFunc {
+				return c.curPkg.QualName(node.Name), true
+			}
+		}
+	case NSelectorExpr:
+		if node.X != nil && node.X.Kind == NIdent {
+			if pkg := c.resolvePackage(node.X.Name); pkg != nil {
+				if sym, ok := pkg.Symbols[node.Name]; ok && sym.Kind == SymFunc {
+					return pkg.QualName(node.Name), true
+				}
+			}
+		}
+	case NFuncType:
+		if node.Body != nil {
+			if len(c.collectFuncLiteralCaptures(node)) > 0 {
+				c.errorf("%s: runtime.Funcptr anonymous callbacks cannot capture local variables", c.curFunc.Name)
+				return "", false
+			}
+			target := c.compileFuncLiteralNoCapture(node)
+			return target, true
+		}
+	}
+	c.errorf("%s: runtime.Funcptr expects a function symbol (or non-capturing function literal)", c.curFunc.Name)
+	return "", false
+}
+
 func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool {
 	if callName == "runtime.ReadPtr" && len(args) == 1 {
 		c.compileExpr(args[0])
@@ -6719,10 +6803,12 @@ func (c *Compiler) emitRuntimeMemBuiltinCall(callName string, args []*Node) bool
 		return true
 	}
 	if callName == "runtime.Funcptr" && len(args) == 1 {
-		if args[0].Kind == NIdent {
-			funcName := c.curPkg.QualName(args[0].Name)
-			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0, Name: "$funcaddr$" + funcName})
+		target, ok := c.resolveFuncptrTarget(args[0])
+		if !ok {
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return true
 		}
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0, Name: "$funcaddr$" + target})
 		return true
 	}
 	return false
@@ -7179,6 +7265,18 @@ func (c *Compiler) compileCallExpr(node *Node) {
 
 	// Determine the function to call
 	callName := c.resolveCallName(node.X)
+	if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
+		if c.methodFuncNames[callName] {
+			if !c.isComptimeCallAllowed(callName) {
+				return
+			}
+			if c.tryCompileComptimeCall(node, callName) {
+				return
+			}
+			c.emitResolvedMethodCall(node, node.X.X, callName)
+			return
+		}
+	}
 	if !c.isComptimeCallAllowed(callName) {
 		return
 	}

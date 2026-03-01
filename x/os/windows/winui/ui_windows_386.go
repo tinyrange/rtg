@@ -36,7 +36,6 @@ func writePtr(addr uintptr, v uintptr) {
 }
 
 // allocMsg allocates and zeroes a MSG struct.
-// rtg:zerocall
 func allocMsg() uintptr {
 	msg := runtime.Alloc(sizeMSG)
 	runtime.Memzero(msg, sizeMSG)

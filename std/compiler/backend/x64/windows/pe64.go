@@ -193,10 +193,11 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 			// Patch 8-byte movabs immediate with function virtual address
 			refName := targetName[10:]
 			funcOff, ok := g.MaybeGetFuncOffsets(refName)
-			if ok {
-				funcVA := uint64(imageBase+textRVA) + uint64(funcOff)
-				common.PutU64(g.Code[codeOffset:codeOffset+8], funcVA)
+			if !ok {
+				panic("ICE: unresolved function address fixup: " + refName)
 			}
+			funcVA := uint64(imageBase+textRVA) + uint64(funcOff)
+			common.PutU64(g.Code[codeOffset:codeOffset+8], funcVA)
 		} else if libName, funcName, ok := decodeIATFixupTarget(targetName); ok {
 			iatOff, ok := iatOffsets[winImportKey(libName, funcName)]
 			if !ok {
