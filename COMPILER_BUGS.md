@@ -1,223 +1,187 @@
 # COMPILER_BUGS.md
 
-Bugs/limitations encountered while implementing stdlib extensions (`errors`, `strconv`, `bytes`, `bufio`, `flag`, `log`) on 2026-02-27.
+Compiler bugs/limitations discovered while implementing stdlib extensions (`errors`, `strconv`, `bytes`, `bufio`, `flag`, `log`) on 2026-02-27, plus session-log/shadow-tree audit findings on 2026-03-01.
 
-## 1) ICE in `compileGlobalInits` for some package-scope initializers
+## Status Snapshot (2026-03-01)
 
-**Symptom**
-- Compiler panic: `ICE: stack not balanced at end of function`
-- Panic site: `std/compiler/frontend/go/compiler.go:2016` in `compileGlobalInits`.
+### Open
+- `#14` `55_stdlib_additions_extended` crashes on RTG x64 runtime targets (`linux/amd64`, `windows/amd64`).
+- `#15` WASM `iface_typeassert` still fails validation (`expected i32 but nothing on stack`).
+- `#16` Parser rejects unnamed method receivers (`func (T) M()`).
+- `#17` Function-valued callback/local calls still lower as unresolved `fn`.
+- `#18` Function values stored in maps can fail symbol resolution (`undefined: genA`).
+- `#19` Unsigned arithmetic/comparison lowering still behaves as signed (`31`/`32`/`33` corpus cases).
+- `#20` Integer overflow semantics for fixed-width integers are still incorrect (`34`/`35`/`36` corpus cases).
 
-**Pattern that triggered it**
-- Package-level initialized sentinels in new stdlib packages (for example EOF-like vars) caused this during import/compile.
+### Watch (not currently reproducible)
+- `#1` ICE in `compileGlobalInits` for package-scope initializers.
+- `#7` package-level `log` state runtime crash paths.
 
-**Workaround used**
-- Removed those package-level initialized sentinels and constructed the error value inline where needed.
-- For globals that had to exist, switched to zero-value globals plus lazy initialization in helper functions.
+### Resolved / Not Reproduced
+- `#2` interface method calls on chained struct fields.
+- `#3` chained receiver-field interface call in custom wrapper types.
+- `#4` type-asserted interface method dispatch.
+- `#5` chained temporary method call degrading to unresolved `unknown`.
+- `#6` bool-pointer deref typing in conditions/comparisons.
+- `#8` top-level function values unresolved in synthetic init wiring.
+- `#9` prior stdlib fixture callback-unresolved path.
+- `#10` `log.Logger.SetOutput` + write runtime crash.
+- `#11` deferred `testing.FinishTest`/`FinishBenchmark` panic-sentinel recovery.
+- `#12` WASM validator/semantic failures in extended stdlib fixtures (`54`/`55`).
+- `#13` DOS/8086 COMEMU OOM for `54_stdlib_cli_core`.
+- Historical DOS map/slice COMEMU failures from logs (`map_literal`, `slice_ops`, `map_comma_ok`, `map_range`, `map_types`, `slice_append`, `slice_nested`, `slice_range`) now PASS.
 
-## 2) Interface method calls on chained struct fields fail to compile
+## Work Order
 
-**Symptom**
-- Errors like:
-  - `cannot resolve selector call Read on chained receiver field rd`
-  - `cannot resolve selector call Write on chained receiver field wr`
-  - `cannot resolve selector call Write on chained receiver field out`
-  - `assignment count mismatch: 2 variables but 1 values` (cascade).
+1. `#17` Fix indirect/function-value call lowering (`fn` unresolved family).
+2. `#18` Fix map-held function symbol resolution (`genA`/function values).
+3. `#16` Fix parser support for unnamed method receivers.
+4. `#15` Fix WASM `iface_typeassert` validator failure and remove skip.
+5. `#19` and `#20` fix unsigned ops and fixed-width overflow semantics.
+6. `#14` Diagnose RTG x64 runtime crash in `55_stdlib_additions_extended`.
+7. Re-audit watch items `#1` and `#7`; close or replace with narrow repros.
 
-**Repro pattern**
-```go
-type R interface{ Read([]byte) (int, error) }
-type S struct{ r R }
-func f(s *S, p []byte) { _, _ = s.r.Read(p) } // fails
-```
+## Active / Watch Details
 
-**Workaround used**
-```go
-r := s.r
-_, _ = r.Read(p) // works
-```
-
-## 3) Interface method call on chained receiver field in custom types fails
-
-**Symptom**
-- Error like: `cannot resolve selector call Error on chained receiver field err`.
-
-**Repro pattern**
-```go
-type W struct{ err error }
-func (w W) Error() string { return w.err.Error() } // fails
-```
-
-**Workaround used**
-- Avoided this pattern in fixture code; removed the wrapper implementation that called `w.err.Error()` through a field chain.
-
-## 4) Type-asserted interface method dispatch fails
+### 14) `55_stdlib_additions_extended` crashes on RTG x64 runtime targets
 
 **Symptom**
-- Error like: `errors.Unwrap: cannot resolve selector call u.Unwrap (unknown receiver type)`.
+- In CI on `linux/amd64` and `windows/amd64`, compiled `55_stdlib_additions_extended` exits non-zero without diagnostic output.
+- Neighboring fixture `54_stdlib_cli_core` passes on the same jobs.
 
-**Repro pattern**
-```go
-u, ok := err.(interface{ Unwrap() error })
-if ok {
-	return u.Unwrap() // fails
-}
-```
+**Current mitigation**
+- Fullcompiler skip remains for `55_stdlib_additions_extended` on RTG `amd64` targets.
 
-**Workaround used**
-- Stubbed `errors.Unwrap` behavior for now instead of dynamic interface unwrapping dispatch.
+**Local status**
+- Cannot be directly executed/reproduced in this host environment; still open.
 
-## 5) Chained method call on temporary result can become unresolved call `unknown`
+### 15) WASM `iface_typeassert` validator failure
 
 **Symptom**
-- Codegen error:
-  - `error: 1 unresolved calls: unknown`
-  - `codegen error: 1 unresolved calls`
-- IR contained `call "unknown"`.
+- `./build/rtg -T wasi/wasm32 tests/iface_typeassert.go` output fails in `wasmtime` with:
+  - `Invalid input WebAssembly code ... type mismatch: expected i32 but nothing on stack`.
 
-**Repro pattern**
-```go
-if bytes.NewBufferString("abc").String() != "abc" { ... } // fails
-```
+**Current mitigation**
+- Fullcompiler skip remains in `tools/build.go`:
+  - `backend == "wasm" && name == "iface_typeassert"`.
 
-**Workaround used**
-```go
-b := bytes.NewBufferString("abc")
-if b.String() != "abc" { ... } // works
-```
+### 16) Unnamed receiver parser rejection (`func (T) M()`)
 
-## 6) Bool-pointer deref conditions are mis-typed
+**Repro**
+- Minimal:
+  - `type T struct{}`
+  - `func (T) M() {}`
+- Current compiler emits parse errors starting with:
+  - `expected type, got )`.
 
-**Symptom**
-- Errors:
-  - `condition must be bool`
-  - `invalid comparison between bool and non-bool`
+### 17) Function-valued callbacks unresolved (`fn`)
 
-**Repro patterns**
-```go
-if !*verbose { ... }           // fails
-if *verbose == false { ... }   // fails
-```
+**Repros**
+- `tests/compiler_bugs_repros/05_function_typed_parameter_call.go`
+- `tests/compiler_bugs_repros/06_apply_restore_wrapper_drift.go`
+- `tests/compiler_bugs_repros/12_native_backend_callback_helpers.go`
+- Minimal:
+  - `func wrap(fn func()) { fn() }`
 
-**Workaround used**
-- Avoided bool-pointer deref checks in fixture condition expressions.
+**Failure**
+- `error: ... unresolved calls: fn`.
 
-## 7) Package-level `log` state paths can crash at runtime
+### 18) Map-held function values misresolve (`undefined: genA`)
 
-**Symptom**
-- Program exits with signal (`exit 133`/`139`) and no output when using package-level logging flows that route through mutable package-level logger/output state.
+**Repro**
+- `tests/compiler_bugs_repros/15_function_value_dispatch_map.go`.
 
-**Repro pattern**
-```go
-import "log"
-func main() { log.Print("x") } // crash observed in this branch state
-```
+**Failure**
+- Compile error:
+  - `main.main: undefined: genA`.
 
-**Workaround used**
-- Kept `log.Logger` instance methods as primary supported path.
-- Reduced package-level helpers to simpler direct `fmt`-based wrappers and removed fixture coverage for package-level output redirection.
+### 19) Unsigned ops still lowered with signed behavior
 
-## 8) Top-level function values can be unresolved in synthetic init wiring
+**Repros (historical corpus)**
+- `tests/compiler_bugs/31_7_1_unsigned_comparison_uses_signed_condition_codes.go`
+- `tests/compiler_bugs/32_7_2_unsigned_right_shift_uses_arithmetic_shift.go`
+- `tests/compiler_bugs/33_7_3_unsigned_division_uses_signed_division.go`
 
-**Symptom**
-- Validation errors like:
-  - `undefined: TestAdd`
-  - `undefined: BenchmarkAdd`
-- Triggered when synthetic `init` tried to pass top-level test/benchmark funcs as first-class values.
+**Current status**
+- Reproduced in portable local run harness: expected `exit=1`, observed `exit=2`.
 
-**Repro pattern**
-```go
-ok := testing.RunTest("TestAdd", verbose, TestAdd) // synthetic init path failed
-```
+### 20) Fixed-width overflow semantics still wrong
 
-**Workaround used**
-- Switched test-runner injection to AST-generated wrapper functions per test/benchmark:
-  - `__rtg_run_<TestName>(verbose bool) bool`
-  - `__rtg_bench_<BenchmarkName>(verbose bool) bool`
-- Synthetic `init` now calls wrappers directly, avoiding function-value passing in generated wiring.
+**Repros (historical corpus)**
+- `tests/compiler_bugs/34_8_1_int8_overflow_doesn_t_wrap.go`
+- `tests/compiler_bugs/35_8_2_uint8_overflow_doesn_t_wrap.go`
+- `tests/compiler_bugs/36_8_3_int32_overflow_doesn_t_wrap.go`
 
-## 9) Function-typed callback invocation can become unresolved call target (`fn`/`unknown`)
+**Current status**
+- Reproduced in portable local run harness: expected `exit=1`, observed `exit=2`.
 
-**Symptom**
-- Codegen failure:
-  - `error: unresolved calls: fn, unknown`
-  - `codegen error: ... unresolved calls`
-- Triggered while compiling a normal program that called `testing.RunTest` / `testing.RunBenchmark`.
+### 1) ICE in `compileGlobalInits` for package-scope initializers (watch)
 
-**Repro pattern**
-```go
-ok := testing.RunTest("ok", false, func(t *testing.T) { t.Fail() }) // unresolved `fn`
-```
+**Historical symptom**
+- Compiler panic: `ICE: stack not balanced at end of function`.
 
-**Workaround used**
-- In fullcompiler fixtures, avoided direct calls to `RunTest`/`RunBenchmark`.
-- Tested `testing` behavior via `BeginTest`/`FinishTest` and `BeginBenchmark`/`FinishBenchmark` helpers instead.
+**Current status**
+- Not reproducible in the current branch state.
 
-## 10) `log.Logger` output redirection + write can crash at runtime
+### 7) Package-level `log` state runtime crash paths (watch)
 
-**Symptom**
-- Program exits with signal (`exit 133`) with no Go panic text.
-- Triggered after changing a logger output destination and then writing through that logger.
+**Historical symptom**
+- Process exited with signal (`133`/`139`) and little/no diagnostics when exercising mutable package-level logger state paths.
 
-**Repro pattern**
-```go
-var a bytes.Buffer
-var b bytes.Buffer
-l := log.New(&a, "p:", 0)
-l.SetOutput(&b)
-l.Print("x") // crash observed
-```
+**Current status**
+- Not reproducible in the current branch state.
 
-**Workaround used**
-- Avoided `SetOutput` + immediate write path in fullcompiler fixtures.
-- Kept logger method coverage on a single stable output destination.
+## Audit Notes (2026-03-01)
 
-## 11) `testing.FinishTest` / `testing.FinishBenchmark` do not catch panic sentinels in deferred use
+- `tests/compiler_bugs_repros` compile matrix:
+  - `5/19` still reproduce (`02`, `05`, `06`, `12`, `15`).
+  - `14/19` now compile in current branch state.
+- `tests/compiler_bugs` manifest compile validation:
+  - `54/55` expectations matched.
+  - `53_14_3_local_var_redeclare_allowed_in_same_scope_4.go` currently compiles/runs (`exit=5`) despite manifest expecting `compile_error` (manifest/test-metadata drift).
+- Non-compile-error corpus cases (`16` cases) were executed through a portable local harness:
+  - `10` pass, `6` fail (`31`-`36`, now tracked as `#19`/`#20`).
 
-**Symptom**
-- `FailNow` sentinel panic escapes and terminates program (`rtg.testing.failnow` printed, non-zero exit), even when `FinishTest`/`FinishBenchmark` are deferred.
+## Workarounds From Logs (2026-03-01 Audit)
 
-**Repro pattern**
-```go
-t := testing.BeginTest("x", false)
-defer testing.FinishTest(t, "x", false)
-t.FailNow() // sentinel panic escapes in this branch state
-```
+### Active in current tree
+- WASM fullcompiler skip for `iface_typeassert` remains active in `tools/build.go`:
+  - `backend == "wasm" && name == "iface_typeassert"` (`known wasm32 type-assertion issue`).
+- RTG amd64 fullcompiler skip for `55_stdlib_additions_extended` remains active:
+  - `backend == "rtg" && name == "55_stdlib_additions_extended" && targetArch == "amd64"` (`known x64 runtime instability`).
+- Bootstrap/selfhost compatibility workaround in `tools/build.go` remains active:
+  - local helpers (`listGoFilesInDir`, `fileExt`, `equalFoldASCII`) are used instead of stdlib APIs that previously caused selfhost compiler limitations in that file.
 
-**Workaround used**
-- Avoided `FailNow`/panic-path assertions through `FinishTest` and `FinishBenchmark` in fullcompiler fixtures.
-- Limited fixture coverage to stable non-panic paths (`Fail`, timers, parse/match helpers, begin/finish calls).
+### Historical (logged, now fixed or retired)
+- Stdlib fixture shape workarounds from the 2026-02-27 extension push (shadow tracker):
+  - receiver field-call hoisting via locals (`s.r.Read` -> `r := s.r; r.Read`),
+  - avoiding chained temporary method calls that lowered to `unknown`,
+  - temporary reductions in direct `testing.RunTest`/`RunBenchmark` callback patterns.
+  These are now tracked as resolved/not reproducible (`#2`-`#11`).
+- DOS map/slice COMEMU workaround phase (temporary excludes/skips) is retired for the previously failing map/slice set; those repros now pass.
+- Temporary runtime timing fallback experiments (Darwin `Now` path) were logged during root-cause isolation; the active runtime path now uses `profileNow` split supported/fallback files and no ad-hoc tracker workaround remains open for this.
 
-## 12) WASM fullcompiler can reject extended stdlib fixtures with validator stack mismatch
+## Resolution Notes (2026-03-01)
 
-**Symptom**
-- `wasmtime` rejects generated module with error like:
-  - `Invalid input WebAssembly code ... type mismatch: values remaining on stack at end of block`
-- Observed when running `test-fullcompiler-wasm` on `54_stdlib_cli_core`.
+### 12) WASM fullcompiler failures on extended stdlib fixtures
 
-**Workaround used**
-- Added wasm fullcompiler skip for extended stdlib fixtures:
-  - `54_stdlib_cli_core`
-  - `55_stdlib_additions_extended`
+**Fix summary**
+- WASM `OP_CONST_I64` now respects width-8 operands and emits `i64.const`.
+- Prior interface dispatch/type-assert stack-shape fixes in this branch were retained.
 
-## 13) DOS/8086 COMEMU sweep runs out of memory on extended stdlib fixture
+**Validation**
+- `tests/54_stdlib_cli_core.go` PASS on `wasi/wasm32`.
+- `tests/55_stdlib_additions_extended.go` PASS on `wasi/wasm32`.
+- `./build/build test-fullcompiler-wasm` PASS with both `wasm/54_stdlib_cli_core` and `wasm/55_stdlib_additions_extended` executed (not skipped).
 
-**Symptom**
-- Running `54_stdlib_cli_core` under COMEMU exits with:
-  - `out of memory`
-  - `comemu: exit=2 ...`
+### 13) DOS/8086 COMEMU OOM on extended stdlib fixture
 
-**Workaround used**
-- Excluded extended stdlib fixtures from DOS COMEMU sweep and constrained RTG fullcompiler targets:
-  - `54_stdlib_cli_core`
-  - `55_stdlib_additions_extended`
+**Fix summary**
+- DOS runtime mmap base tuned to `0xBC00` in `runtime_dos_16_mmapbase_default.go`.
 
-## 14) `55_stdlib_additions_extended` crashes on RTG x64 runtime targets
+**Validation**
+- Direct COMEMU repro for `tests/54_stdlib_cli_core.go` now exits `0` and prints `PASS`.
+- DOS skip for `54_stdlib_cli_core` removed from fullcompiler skip logic.
 
-**Symptom**
-- In CI on `linux/amd64` and `windows/amd64`, running compiled `55_stdlib_additions_extended` exits non-zero with no diagnostic output, causing fullcompiler failure.
-- Neighboring stdlib fixture `54_stdlib_cli_core` passes on the same jobs.
-
-**Workaround used**
-- Added fullcompiler skip for `55_stdlib_additions_extended` on RTG `amd64` targets.
-- Kept the fixture enabled on non-`amd64` RTG targets where it currently passes.
+**Scope note**
+- `55_stdlib_additions_extended` remains skipped on DOS for target capability reasons (`testing` timers), not allocator OOM.

@@ -3,5 +3,6 @@
 package runtime
 
 func dosInitMmapBase() uintptr {
-	return 0xD000
+	// Leave headroom for stack while reducing OOMs on larger stdlib fixtures.
+	return 0xBC00
 }

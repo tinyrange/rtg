@@ -763,11 +763,53 @@ func (c *Compiler) resolveExprType(node *Node) string {
 		if ct, ok := c.localConcreteTypes[node.Name]; ok {
 			return ct
 		}
+		if ifaceType, ok := c.localTypes[node.Name]; ok {
+			return ifaceType
+		}
 		qname := c.curPkg.QualName(node.Name)
 		if ct, ok := c.globalConcreteTypes[qname]; ok {
 			return ct
 		}
+		// Fallback: infer global variable type from initializer when the
+		// declaration omits an explicit type.
+		if sym, ok := c.curPkg.Symbols[node.Name]; ok && sym.Kind == SymVar && sym.Node != nil {
+			if sym.Node.Type != nil {
+				t := c.qualifyTypeName(nodeTypeName(sym.Node.Type), c.curPkg.Path)
+				if t != "" {
+					c.globalConcreteTypes[qname] = t
+					return t
+				}
+			}
+			if sym.Node.X != nil && !(sym.Node.X.Kind == NIdent && sym.Node.X.Name == node.Name) {
+				if t := c.exprConcreteType(sym.Node.X); t != "" {
+					c.globalConcreteTypes[qname] = t
+					return t
+				}
+				if t := c.resolveExprType(sym.Node.X); t != "" {
+					c.globalConcreteTypes[qname] = t
+					return t
+				}
+			}
+		}
 		return ""
+	}
+	if node.Kind == NCompositeLit && node.Type != nil {
+		return c.qualifyTypeName(nodeTypeName(node.Type), "")
+	}
+	if node.Kind == NTypeAssertExpr && node.Type != nil {
+		return c.qualifiedTypeFromTypeNode(node.Type, "")
+	}
+	if node.Kind == NUnaryExpr {
+		if node.Name == "*" {
+			inner := c.resolveExprType(node.X)
+			if inner == "" {
+				inner = c.exprConcreteType(node.X)
+			}
+			return derefQualifiedTypeName(inner)
+		}
+		if node.Name == "&" {
+			return c.exprConcreteType(node)
+		}
 	}
 	// Index expression: determine element type from collection type
 	if node.Kind == NIndexExpr && node.X != nil {
@@ -826,7 +868,35 @@ func (c *Compiler) resolveExprType(node *Node) string {
 			}
 		}
 		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
-			return c.qualifyTypeName(retTypes[0], "")
+			calleePkg := ""
+			if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
+				pkg := c.resolvePackage(node.X.X.Name)
+				if pkg != nil {
+					calleePkg = pkg.Path
+				}
+			}
+			return c.qualifyTypeName(retTypes[0], calleePkg)
+		}
+		// Fallback: read return type directly from function declarations when
+		// funcRetTypes has not yet been populated for this callee.
+		if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
+			pkg := c.resolvePackage(node.X.X.Name)
+			if pkg != nil {
+				if sym, ok := pkg.Symbols[node.X.Name]; ok && sym.Kind == SymFunc && sym.Node != nil && sym.Node.Type != nil {
+					if sym.Node.Type.Kind == NFuncType && len(sym.Node.Type.Nodes) > 0 {
+						return c.qualifyTypeName(nodeTypeName(sym.Node.Type.Nodes[0]), pkg.Path)
+					}
+					return c.qualifyTypeName(nodeTypeName(sym.Node.Type), pkg.Path)
+				}
+			}
+		}
+		if node.X != nil && node.X.Kind == NIdent {
+			if sym, ok := c.curPkg.Symbols[node.X.Name]; ok && sym.Kind == SymFunc && sym.Node != nil && sym.Node.Type != nil {
+				if sym.Node.Type.Kind == NFuncType && len(sym.Node.Type.Nodes) > 0 {
+					return c.qualifyTypeName(nodeTypeName(sym.Node.Type.Nodes[0]), c.curPkg.Path)
+				}
+				return c.qualifyTypeName(nodeTypeName(sym.Node.Type), c.curPkg.Path)
+			}
 		}
 		return ""
 	}
@@ -851,6 +921,38 @@ func (c *Compiler) resolveExprType(node *Node) string {
 		}
 	}
 	return ""
+}
+
+func derefQualifiedTypeName(typeName string) string {
+	if typeName == "" {
+		return ""
+	}
+	if len(typeName) > 0 && typeName[0] == '*' {
+		return typeName[1:len(typeName)]
+	}
+	i := -1
+	j := 0
+	for j+1 < len(typeName) {
+		if typeName[j] == '.' && typeName[j+1] == '*' {
+			i = j
+		}
+		j = j + 1
+	}
+	if i >= 0 {
+		return typeName[0:i+1] + typeName[i+2:len(typeName)]
+	}
+	return ""
+}
+
+func isBuiltinBoolTypeName(typeName string) bool {
+	if typeName == "bool" {
+		return true
+	}
+	if len(typeName) <= len(".bool") || typeName[len(typeName)-len(".bool"):len(typeName)] != ".bool" {
+		return false
+	}
+	prefix := typeName[0 : len(typeName)-len(".bool")]
+	return prefix != ""
 }
 
 // typeWidth returns the byte width for a named type.
@@ -949,6 +1051,10 @@ func (c *Compiler) exprWidth(node *Node) int {
 			return typeWidth(retTypes[0])
 		}
 	case NBinaryExpr:
+		switch node.Name {
+		case "==", "!=", "<", ">", "<=", ">=", "&&", "||":
+			return typeWidth("bool")
+		}
 		lw := c.exprWidth(node.X)
 		rw := c.exprWidth(node.Y)
 		if lw > rw {
@@ -956,6 +1062,9 @@ func (c *Compiler) exprWidth(node *Node) int {
 		}
 		return rw
 	case NUnaryExpr:
+		if node.Name == "!" {
+			return typeWidth("bool")
+		}
 		return c.exprWidth(node.X)
 	}
 	return 0
@@ -1772,6 +1881,70 @@ func (c *Compiler) ifaceMethodReturnCount(ifaceType string, methodName string) (
 		return ret, true
 	}
 	return 0, false
+}
+
+// registerAnonInterfaceType assigns a stable synthetic name for an anonymous
+// interface type and records its method set/return counts for interface calls.
+func (c *Compiler) registerAnonInterfaceType(typeNode *Node) string {
+	if typeNode == nil || typeNode.Kind != NInterfaceType {
+		return ""
+	}
+	if len(typeNode.Nodes) == 0 {
+		return "interface{}"
+	}
+	var methodNames []string
+	var retCounts []int
+	for _, meth := range typeNode.Nodes {
+		if meth == nil || meth.Kind != NFunc || meth.Name == "" {
+			continue
+		}
+		retCount := 0
+		if meth.Type != nil {
+			if meth.Type.Kind == NFuncType {
+				retCount = len(meth.Type.Nodes)
+			} else {
+				retCount = 1
+			}
+		}
+		methodNames = append(methodNames, meth.Name)
+		retCounts = append(retCounts, retCount)
+	}
+	if len(methodNames) == 0 {
+		return "interface{}"
+	}
+	key := "interface{"
+	i := 0
+	for i < len(methodNames) {
+		if i > 0 {
+			key = key + ";"
+		}
+		key = fmt.Sprintf("%s%s:%d", key, methodNames[i], retCounts[i])
+		i = i + 1
+	}
+	key = key + "}"
+	if _, ok := c.ifaceMethods[key]; !ok {
+		c.ifaceMethods[key] = methodNames
+	}
+	i = 0
+	for i < len(methodNames) {
+		c.ifaceMethodRets[key+"\x00"+methodNames[i]] = retCounts[i]
+		i = i + 1
+	}
+	return key
+}
+
+func (c *Compiler) qualifiedTypeFromTypeNode(typeNode *Node, pkgPath string) string {
+	if typeNode == nil {
+		return ""
+	}
+	if typeNode.Kind == NInterfaceType {
+		return c.registerAnonInterfaceType(typeNode)
+	}
+	typeName := nodeTypeName(typeNode)
+	if typeName == "" {
+		return ""
+	}
+	return c.qualifyTypeName(typeName, pkgPath)
 }
 
 func (c *Compiler) collectMethodDecl(pkg *Package, node *Node) {
@@ -3653,6 +3826,22 @@ func (c *Compiler) compileAssign(node *Node) {
 		if node.Y != nil && node.Y.Kind == NTypeAssertExpr && len(node.Nodes) == 2 {
 			c.compileTypeAssertCommaOk(node.Y)
 			c.assignStackValuesToLHS(node.Nodes, isDefine)
+			if isDefine && len(node.Nodes) > 0 {
+				assertedType := c.qualifiedTypeFromTypeNode(node.Y.Type, "")
+				if assertedType != "" && node.Nodes[0] != nil && node.Nodes[0].Kind == NIdent {
+					lhsName := node.Nodes[0].Name
+					c.localConcreteTypes[lhsName] = assertedType
+					if c.isInterfaceTypeName(assertedType) {
+						c.localTypes[lhsName] = assertedType
+					}
+					if elemType, ok := splitBracketType(assertedType); ok {
+						c.localElemSizes[lhsName] = c.typeElemSize(elemType)
+					}
+				}
+				if len(node.Nodes) > 1 && node.Nodes[1] != nil && node.Nodes[1].Kind == NIdent {
+					c.localConcreteTypes[node.Nodes[1].Name] = "bool"
+				}
+			}
 			return
 		}
 
@@ -4857,11 +5046,55 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 			}
 			return c.qualifyTypeName(retTypes[0], calleePkg)
 		}
+		// Fallback: read return type directly from function declarations when
+		// funcRetTypes has not yet been populated for this callee.
+		if expr.X != nil && expr.X.Kind == NSelectorExpr && expr.X.X != nil && expr.X.X.Kind == NIdent {
+			pkg := c.resolvePackage(expr.X.X.Name)
+			if pkg != nil {
+				if sym, ok := pkg.Symbols[expr.X.Name]; ok && sym.Kind == SymFunc && sym.Node != nil && sym.Node.Type != nil {
+					if sym.Node.Type.Kind == NFuncType && len(sym.Node.Type.Nodes) > 0 {
+						return c.qualifyTypeName(nodeTypeName(sym.Node.Type.Nodes[0]), pkg.Path)
+					}
+					return c.qualifyTypeName(nodeTypeName(sym.Node.Type), pkg.Path)
+				}
+			}
+		}
+		if expr.X != nil && expr.X.Kind == NIdent {
+			if sym, ok := c.curPkg.Symbols[expr.X.Name]; ok && sym.Kind == SymFunc && sym.Node != nil && sym.Node.Type != nil {
+				if sym.Node.Type.Kind == NFuncType && len(sym.Node.Type.Nodes) > 0 {
+					return c.qualifyTypeName(nodeTypeName(sym.Node.Type.Nodes[0]), c.curPkg.Path)
+				}
+				return c.qualifyTypeName(nodeTypeName(sym.Node.Type), c.curPkg.Path)
+			}
+		}
 	}
 	// Variable reference: check localConcreteTypes
 	if expr.Kind == NIdent {
 		if ct, ok := c.localConcreteTypes[expr.Name]; ok {
 			return ct
+		}
+		qname := c.curPkg.QualName(expr.Name)
+		if ct, ok := c.globalConcreteTypes[qname]; ok {
+			return ct
+		}
+		if sym, ok := c.curPkg.Symbols[expr.Name]; ok && sym.Kind == SymVar && sym.Node != nil {
+			if sym.Node.Type != nil {
+				t := c.qualifyTypeName(nodeTypeName(sym.Node.Type), c.curPkg.Path)
+				if t != "" {
+					c.globalConcreteTypes[qname] = t
+					return t
+				}
+			}
+			if sym.Node.X != nil && !(sym.Node.X.Kind == NIdent && sym.Node.X.Name == expr.Name) {
+				if t := c.exprConcreteType(sym.Node.X); t != "" {
+					c.globalConcreteTypes[qname] = t
+					return t
+				}
+				if t := c.resolveExprType(sym.Node.X); t != "" {
+					c.globalConcreteTypes[qname] = t
+					return t
+				}
+			}
 		}
 	}
 	// Slice expression: e.g. args[1:], s[lo:hi] — type is same as target
@@ -5585,6 +5818,45 @@ func (c *Compiler) compileTypeAssert(node *Node, commaOk bool) {
 	}
 	typeID := c.typeIDForTypeNode(node.Type)
 
+	if commaOk {
+		ifaceIdx := c.addLocal("$typeassert_iface")
+		valIdx := c.addLocal("$typeassert_val")
+		okIdx := c.addLocal("$typeassert_ok")
+
+		c.compileExpr(node.X)
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: ifaceIdx})
+
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: ifaceIdx})
+		c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(typeID)})
+
+		failLabel := c.newLabel()
+		endLabel := c.newLabel()
+		c.emit(ir.Inst{Op: ir.OP_JMP_NEQ, Arg: failLabel})
+
+		// Success: extract payload + true.
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: ifaceIdx})
+		c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: c.target.PtrSize})
+		c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: valIdx})
+		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 1})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: okIdx})
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
+
+		// Failure: zero value + false.
+		c.emitLabel(failLabel)
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: valIdx})
+		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 0})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: okIdx})
+		c.emitLabel(endLabel)
+
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: valIdx})
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: okIdx})
+		return
+	}
+
 	c.compileExpr(node.X)
 	c.emit(ir.Inst{Op: ir.OP_DUP})
 	c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: 0})
@@ -5596,20 +5868,12 @@ func (c *Compiler) compileTypeAssert(node *Node, commaOk bool) {
 	c.emit(ir.Inst{Op: ir.OP_JMP_NEQ, Arg: failLabel})
 	c.emit(ir.Inst{Op: ir.OP_OFFSET, Arg: c.target.PtrSize})
 	c.emit(ir.Inst{Op: ir.OP_LOAD, Arg: c.target.PtrSize})
-	if commaOk {
-		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 1})
-	}
 	c.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 
 	c.emitLabel(failLabel)
 	c.emit(ir.Inst{Op: ir.OP_DROP})
-	if commaOk {
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-		c.emit(ir.Inst{Op: ir.OP_CONST_BOOL, Arg: 0})
-	} else {
-		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "type assertion failed"})
-		c.emit(ir.Inst{Op: ir.OP_PANIC})
-	}
+	c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: "type assertion failed"})
+	c.emit(ir.Inst{Op: ir.OP_PANIC})
 	c.emitLabel(endLabel)
 }
 
@@ -5961,7 +6225,14 @@ func (c *Compiler) isBoolTypedExpr(node *Node) bool {
 	case NBasicLit:
 		return node.Name == "true" || node.Name == "false"
 	case NUnaryExpr:
-		return node.Name == "!" && c.isBoolTypedExpr(node.X)
+		if node.Name == "!" {
+			return c.isBoolTypedExpr(node.X)
+		}
+		if node.Name == "*" {
+			t := c.resolveExprType(node)
+			return t == "bool" || isBuiltinBoolTypeName(t)
+		}
+		return false
 	case NBinaryExpr:
 		switch node.Name {
 		case "&&", "||", "==", "!=", "<", ">", "<=", ">=":
@@ -5975,7 +6246,8 @@ func (c *Compiler) isBoolTypedExpr(node *Node) bool {
 			}
 		}
 	}
-	return c.resolveExprType(node) == "bool"
+	t := c.resolveExprType(node)
+	return t == "bool" || isBuiltinBoolTypeName(t)
 }
 
 func (c *Compiler) isDefinitelyNonBoolExpr(node *Node) bool {
@@ -5988,7 +6260,14 @@ func (c *Compiler) isDefinitelyNonBoolExpr(node *Node) bool {
 	case NBasicLit:
 		return node.Name != "true" && node.Name != "false"
 	case NUnaryExpr:
-		return node.Name != "!"
+		if node.Name == "!" {
+			return false
+		}
+		if node.Name == "*" {
+			t := c.resolveExprType(node)
+			return t != "" && t != "bool" && !isBuiltinBoolTypeName(t)
+		}
+		return true
 	case NBinaryExpr:
 		switch node.Name {
 		case "&&", "||", "==", "!=", "<", ">", "<=", ">=":
@@ -5998,7 +6277,7 @@ func (c *Compiler) isDefinitelyNonBoolExpr(node *Node) bool {
 		}
 	}
 	t := c.resolveExprType(node)
-	return t != "" && t != "bool"
+	return t != "" && t != "bool" && !isBuiltinBoolTypeName(t)
 }
 
 func (c *Compiler) boolOperandMismatch(left *Node, right *Node) bool {
@@ -6686,6 +6965,9 @@ func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName s
 		c.compileExpr(arg)
 		if i+paramOffset < len(paramTypes) {
 			c.maybeCloneArrayForTypeName(paramTypes[i+paramOffset])
+			if c.isInterfaceTypeName(paramTypes[i+paramOffset]) {
+				c.maybeBoxValueForInterface(arg)
+			}
 		}
 	}
 	c.emitCallWithPanicCheck(callName, argCount)
@@ -6703,6 +6985,9 @@ func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType s
 		c.compileExpr(arg)
 		if i < len(paramTypes) {
 			c.maybeCloneArrayForTypeName(paramTypes[i])
+			if c.isInterfaceTypeName(paramTypes[i]) {
+				c.maybeBoxValueForInterface(arg)
+			}
 		}
 	}
 	retCount, _ := c.ifaceMethodReturnCount(ifaceType, methodName)
@@ -6730,6 +7015,9 @@ func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promo
 		c.compileExpr(arg)
 		if i+paramOffset < len(paramTypes) {
 			c.maybeCloneArrayForTypeName(paramTypes[i+paramOffset])
+			if c.isInterfaceTypeName(paramTypes[i+paramOffset]) {
+				c.maybeBoxValueForInterface(arg)
+			}
 		}
 	}
 	c.emitCallWithPanicCheck(pm.Target, argCount)
@@ -6757,6 +7045,9 @@ func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedNa
 			c.compileExpr(node.Nodes[i])
 			if i+paramOffset < len(paramTypes) {
 				c.maybeCloneArrayForTypeName(paramTypes[i+paramOffset])
+				if c.isInterfaceTypeName(paramTypes[i+paramOffset]) {
+					c.maybeBoxValueForInterface(node.Nodes[i])
+				}
 			}
 			i++
 		}
@@ -6932,6 +7223,7 @@ func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 	if !ok {
 		return false
 	}
+	paramTypes := c.funcParamTypes[target]
 	recvIdx, hasRecv := c.localMethodRecv[name]
 	if !hasRecv {
 		recvIdx, hasRecv = c.lookupLocal(name)
@@ -6947,10 +7239,170 @@ func (c *Compiler) compileBoundMethodValueCall(node *Node) bool {
 		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 	}
 	argCount := len(node.Nodes) + 1
-	for _, arg := range node.Nodes {
+	for i, arg := range node.Nodes {
 		c.compileExpr(arg)
+		paramIdx := i + 1
+		if c.methodCallNeedsProfileParent(target) {
+			paramIdx++
+		}
+		if paramIdx < len(paramTypes) {
+			c.maybeCloneArrayForTypeName(paramTypes[paramIdx])
+			if c.isInterfaceTypeName(paramTypes[paramIdx]) {
+				c.maybeBoxValueForInterface(arg)
+			}
+		}
 	}
 	c.emitCallWithPanicCheck(target, argCount)
+	return true
+}
+
+func (c *Compiler) callNodeForCurrentPkgTarget(target string) (*Node, bool) {
+	if target == "" || c.curPkg == nil {
+		return nil, false
+	}
+	prefix := c.curPkg.Path + "."
+	if len(target) <= len(prefix) || target[0:len(prefix)] != prefix {
+		return nil, false
+	}
+	return astIdent(target[len(prefix):len(target)]), true
+}
+
+func (c *Compiler) resolveStaticCallbackCallee(arg *Node) (*Node, bool) {
+	if arg == nil {
+		return nil, false
+	}
+	switch arg.Kind {
+	case NIdent:
+		if target, ok := c.localFuncTargets[arg.Name]; ok {
+			return c.callNodeForCurrentPkgTarget(target)
+		}
+		if _, ok := c.localMethodTargets[arg.Name]; ok {
+			return nil, false
+		}
+		if c.curPkg != nil {
+			if sym, ok := c.curPkg.Symbols[arg.Name]; ok && sym.Kind == SymFunc {
+				return astIdent(arg.Name), true
+			}
+		}
+		return nil, false
+	case NSelectorExpr:
+		if arg.X != nil && arg.X.Kind == NIdent {
+			pkg := c.resolvePackage(arg.X.Name)
+			if pkg != nil {
+				if sym, ok := pkg.Symbols[arg.Name]; ok && sym.Kind == SymFunc {
+					return cloneTypeNode(arg), true
+				}
+			}
+		}
+		return nil, false
+	case NFuncType:
+		if arg.Body == nil {
+			return nil, false
+		}
+		target := c.compileFuncLiteralNoCapture(arg)
+		return c.callNodeForCurrentPkgTarget(target)
+	}
+	return nil, false
+}
+
+func (c *Compiler) buildRunTestHelper(callbackCallee *Node) string {
+	if callbackCallee == nil {
+		return ""
+	}
+	helper := &Node{
+		Kind: NFuncType,
+		Nodes: []*Node{
+			{Kind: NField, Name: "name", Type: astIdent("string")},
+			{Kind: NField, Name: "verbose", Type: astIdent("bool")},
+		},
+		Type: astIdent("bool"),
+		Body: astBlock(
+			astAssign(":=", astIdent("t"), astCall(astSelector("testing", "BeginTest"), astIdent("name"), astIdent("verbose"))),
+			&Node{
+				Kind: NDeferStmt,
+				X: astCall(
+					astSelector("testing", "FinishTest"),
+					astIdent("t"),
+					astIdent("name"),
+					astIdent("verbose"),
+				),
+			},
+			astExprStmt(astCall(cloneTypeNode(callbackCallee), astIdent("t"))),
+			&Node{
+				Kind: NReturn,
+				X:    astUnary("!", astCall(astSelect(astIdent("t"), "Failed"))),
+			},
+		),
+	}
+	return c.compileFuncLiteralNoCapture(helper)
+}
+
+func (c *Compiler) buildRunBenchmarkHelper(callbackCallee *Node) string {
+	if callbackCallee == nil {
+		return ""
+	}
+	helper := &Node{
+		Kind: NFuncType,
+		Nodes: []*Node{
+			{Kind: NField, Name: "name", Type: astIdent("string")},
+			{Kind: NField, Name: "verbose", Type: astIdent("bool")},
+		},
+		Type: astIdent("bool"),
+		Body: astBlock(
+			astAssign(":=", astIdent("b"), astCall(astSelector("testing", "BeginBenchmark"), astIdent("name"), astIdent("verbose"))),
+			&Node{
+				Kind: NDeferStmt,
+				X: astCall(
+					astSelector("testing", "FinishBenchmark"),
+					astIdent("b"),
+					astIdent("name"),
+					astIdent("verbose"),
+				),
+			},
+			astExprStmt(astCall(astSelect(astIdent("b"), "ResetTimer"))),
+			astExprStmt(astCall(cloneTypeNode(callbackCallee), astIdent("b"))),
+			astExprStmt(astCall(astSelect(astIdent("b"), "StopTimer"))),
+			astIf(
+				astBinary("<=", astSelect(astIdent("b"), "N"), astInt(0)),
+				astBlock(astAssign("=", astSelect(astIdent("b"), "N"), astInt(1))),
+			),
+			astAssign(":=", astIdent("nsPerOp"), astBinary("/", astCall(astSelect(astIdent("b"), "Elapsed")), astSelect(astIdent("b"), "N"))),
+			astExprStmt(astCall(astSelector("testing", "PrintBenchmarkResult"), astIdent("name"), astSelect(astIdent("b"), "N"), astIdent("nsPerOp"))),
+			&Node{
+				Kind: NReturn,
+				X:    astUnary("!", astCall(astSelect(astIdent("b"), "Failed"))),
+			},
+		),
+	}
+	return c.compileFuncLiteralNoCapture(helper)
+}
+
+func (c *Compiler) tryCompileTestingRunCall(node *Node, callName string) bool {
+	if node == nil || callName == "" {
+		return false
+	}
+	if callName != "testing.RunTest" && callName != "testing.RunBenchmark" {
+		return false
+	}
+	if len(node.Nodes) != 3 {
+		return false
+	}
+	callbackCallee, ok := c.resolveStaticCallbackCallee(node.Nodes[2])
+	if !ok {
+		return false
+	}
+	helperTarget := ""
+	if callName == "testing.RunTest" {
+		helperTarget = c.buildRunTestHelper(callbackCallee)
+	} else {
+		helperTarget = c.buildRunBenchmarkHelper(callbackCallee)
+	}
+	if helperTarget == "" {
+		return false
+	}
+	c.compileExpr(node.Nodes[0])
+	c.compileExpr(node.Nodes[1])
+	c.emitCallWithPanicCheck(helperTarget, 2)
 	return true
 }
 
@@ -7248,6 +7700,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		// Skip package-qualified function calls (pkg.Func(...)).
 		if !(recvExpr.Kind == NIdent && c.resolvePackage(recvExpr.Name) != nil) {
 			recvType := c.resolveExprType(recvExpr)
+			if recvType == "" {
+				recvType = c.exprConcreteType(recvExpr)
+			}
 			if recvType != "" {
 				if _, hasMethod := c.ifaceMethodReturnCount(recvType, methodName); hasMethod {
 					c.emitIfaceMethodCall(recvExpr, node.Nodes, recvType, methodName)
@@ -7330,6 +7785,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		return
 	}
 	if c.tryCompileComptimeCall(node, callName) {
+		return
+	}
+	if c.tryCompileTestingRunCall(node, callName) {
 		return
 	}
 
@@ -8096,6 +8554,15 @@ func (c *Compiler) qualifyTypeNameInner(typeName string, pkgPath string) string 
 	// Pointer prefix: keep * after package name to match method table format (e.g. "main.*Parser")
 	if len(typeName) > 1 && typeName[0] == '*' {
 		inner := typeName[1:len(typeName)]
+		if inner == "string" || inner == "int" || inner == "bool" || inner == "byte" ||
+			inner == "int8" || inner == "uint8" || inner == "int16" || inner == "uint16" ||
+			inner == "int32" || inner == "uint32" || inner == "int64" || inner == "uint64" ||
+			inner == "uint" || inner == "uintptr" || inner == "error" || inner == "interface{}" {
+			return "*" + inner
+		}
+		if strings.HasPrefix(inner, "[]") || strings.HasPrefix(inner, "[") || strings.HasPrefix(inner, "map[") || strings.HasPrefix(inner, "func(") {
+			return "*" + c.qualifyTypeName(inner, pkgPath)
+		}
 		// Check if inner is already qualified (e.g. "*os.File" → "os.*File")
 		j := 0
 		for j < len(inner) {
@@ -8253,6 +8720,15 @@ func (c *Compiler) resolveCallName(node *Node) string {
 		if isLocal {
 			return node.Name
 		}
+		if c.curPkg != nil {
+			qname := c.curPkg.QualName(node.Name)
+			if _, ok := c.funcRets[qname]; ok {
+				return qname
+			}
+		}
+		if _, ok := c.funcRets[node.Name]; ok {
+			return node.Name
+		}
 		// Check if it's a function or type in current package
 		if _, ok := c.lookupCurrentTypeDecl(node.Name); ok {
 			return c.curPkg.QualName(node.Name)
@@ -8317,9 +8793,24 @@ func (c *Compiler) resolveCallName(node *Node) string {
 	}
 	// Handle chained selector: e.g. node.Kind.String() → receiver is SelectorExpr
 	if node.Kind == NSelectorExpr && node.X != nil && node.X.Kind == NSelectorExpr {
-		// Try to resolve the field type and look up the method
 		methodName := node.Name
 		fieldName := node.X.Name
+		recvType := c.resolveExprType(node.X)
+		if recvType == "" {
+			recvType = c.exprConcreteType(node.X)
+		}
+		if recvType != "" {
+			if _, hasMethod := c.ifaceMethodReturnCount(recvType, methodName); hasMethod {
+				return c.dotJoin(recvType, methodName)
+			}
+			if resolved, ok := c.resolveMethodByConcreteType(recvType, methodName); ok {
+				return resolved
+			}
+			if pm, found := c.findPromotedMethod(recvType, methodName); found {
+				return pm.Target
+			}
+		}
+		// Legacy fallback: derive field type from root concrete receiver.
 		// Walk X chain to find the root ident
 		root := node.X.X
 		for root != nil && root.Kind == NSelectorExpr {
@@ -8329,6 +8820,9 @@ func (c *Compiler) resolveCallName(node *Node) string {
 			if concreteType, ok := c.localConcreteTypes[root.Name]; ok {
 				fieldType := c.resolveFieldType(concreteType, fieldName)
 				if fieldType != "" {
+					if _, hasMethod := c.ifaceMethodReturnCount(fieldType, methodName); hasMethod {
+						return c.dotJoin(fieldType, methodName)
+					}
 					if resolved, ok := c.resolveMethodByConcreteType(fieldType, methodName); ok {
 						return resolved
 					}
@@ -8440,9 +8934,21 @@ func (c *Compiler) exprReturnCount(node *Node) int {
 			}
 		}
 		// Interface method calls: use the declared interface method signature.
-		if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
-			recvName := node.X.X.Name
-			if ifaceType, ok := c.localTypes[recvName]; ok {
+		if node.X != nil && node.X.Kind == NSelectorExpr && node.X.X != nil {
+			recvExpr := node.X.X
+			ifaceType := ""
+			if recvExpr.Kind == NIdent {
+				if t, ok := c.localTypes[recvExpr.Name]; ok {
+					ifaceType = t
+				}
+			}
+			if ifaceType == "" {
+				ifaceType = c.resolveExprType(recvExpr)
+			}
+			if ifaceType == "" {
+				ifaceType = c.exprConcreteType(recvExpr)
+			}
+			if ifaceType != "" {
 				if retCount, ok := c.ifaceMethodReturnCount(ifaceType, node.X.Name); ok {
 					return retCount
 				}

@@ -231,11 +231,14 @@ func FinishTest(t *T, name string, verbose bool) {
 	if t == nil {
 		return
 	}
-	finishTest(t, name, verbose)
+	finishTestRecovered(t, name, verbose, recover())
 }
 
 func finishTest(t *T, name string, verbose bool) {
-	r := recover()
+	finishTestRecovered(t, name, verbose, recover())
+}
+
+func finishTestRecovered(t *T, name string, verbose bool, r interface{}) {
 	if r != nil {
 		if IsFailNow(r) {
 		} else {
@@ -266,7 +269,7 @@ func FinishBenchmark(b *B, name string, verbose bool) {
 	if b == nil {
 		return
 	}
-	finishBenchmark(b, name, verbose)
+	finishBenchmarkRecovered(b, name, verbose, recover())
 }
 
 func PrintBenchmarkResult(name string, n int, nsPerOp int) {
@@ -281,7 +284,10 @@ func RunTest(name string, verbose bool, fn func(*T)) (ok bool) {
 }
 
 func finishBenchmark(b *B, name string, verbose bool) {
-	r := recover()
+	finishBenchmarkRecovered(b, name, verbose, recover())
+}
+
+func finishBenchmarkRecovered(b *B, name string, verbose bool, r interface{}) {
 	if r != nil {
 		if IsFailNow(r) {
 		} else {
