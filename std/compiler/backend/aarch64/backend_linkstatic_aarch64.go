@@ -29,13 +29,41 @@ func (g *CodeGen) emitRawPtrReturnArm64() {
 }
 
 func decodeLinkStaticSpec(raw string) (string, string, string, bool) {
-	parts := strings.Split(raw, ",")
-	if len(parts) != 3 {
+	c1 := -1
+	i := 0
+	for i < len(raw) {
+		if raw[i] == ',' {
+			c1 = i
+			break
+		}
+		i++
+	}
+	if c1 < 0 {
 		return "", "", "", false
 	}
-	lib := strings.TrimSpace(parts[0])
-	sym := strings.TrimSpace(parts[1])
-	mode := strings.TrimSpace(parts[2])
+	c2 := -1
+	i = c1 + 1
+	for i < len(raw) {
+		if raw[i] == ',' {
+			c2 = i
+			break
+		}
+		i++
+	}
+	if c2 < 0 {
+		return "", "", "", false
+	}
+	// Reject unexpected extra separators to keep metadata strict.
+	i = c2 + 1
+	for i < len(raw) {
+		if raw[i] == ',' {
+			return "", "", "", false
+		}
+		i++
+	}
+	lib := strings.TrimSpace(raw[0:c1])
+	sym := strings.TrimSpace(raw[c1+1 : c2])
+	mode := strings.TrimSpace(raw[c2+1:])
 	if lib == "" || sym == "" {
 		return "", "", "", false
 	}

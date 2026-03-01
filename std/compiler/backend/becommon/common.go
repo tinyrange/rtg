@@ -4,8 +4,20 @@ package becommon
 
 // decodeStringLiteral processes escape sequences in a string literal.
 func DecodeStringLiteral(s string) string {
-	var result []byte
+	hasEscape := false
 	i := 0
+	for i < len(s) {
+		if s[i] == '\\' {
+			hasEscape = true
+			break
+		}
+		i++
+	}
+	if !hasEscape {
+		return s
+	}
+	result := make([]byte, 0, len(s))
+	i = 0
 	for i < len(s) {
 		if s[i] == '\\' && i+1 < len(s) {
 			switch s[i+1] {
