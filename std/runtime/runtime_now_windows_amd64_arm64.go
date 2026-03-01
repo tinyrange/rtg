@@ -6,6 +6,7 @@ var winNowStartCounter int
 var winNowLast int
 var winNowFreq int = 1
 var winNowReady bool
+var winNowScratch uintptr
 
 func Now() int {
 	if !winNowReady {
@@ -32,8 +33,7 @@ func Now() int {
 }
 
 func winQueryPerformanceCounterValue() int {
-	buf := Alloc(8)
-	Memzero(buf, 8)
+	buf := winNowScratchPtr()
 	ok, _, _ := winQueryPerformanceCounter(buf)
 	if ok == 0 {
 		return 0
@@ -42,13 +42,21 @@ func winQueryPerformanceCounterValue() int {
 }
 
 func winQueryPerformanceFrequencyValue() int {
-	buf := Alloc(8)
-	Memzero(buf, 8)
+	buf := winNowScratchPtr()
 	ok, _, _ := winQueryPerformanceFrequency(buf)
 	if ok == 0 {
 		return 0
 	}
 	return nowReadU64(buf)
+}
+
+func winNowScratchPtr() uintptr {
+	buf := winNowScratch
+	if buf == 0 {
+		buf = Alloc(8)
+		winNowScratch = buf
+	}
+	return buf
 }
 
 //rtg:linkstatic kernel32.dll,QueryPerformanceCounter,rawptr

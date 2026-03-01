@@ -10,6 +10,7 @@ const (
 var linuxNowStartARM64 int
 var linuxNowLastARM64 int
 var linuxNowReadyARM64 bool
+var linuxNowTSARM64 uintptr
 
 func Now() int {
 	now := linuxMonotonicNowARM64()
@@ -31,8 +32,11 @@ func Now() int {
 }
 
 func linuxMonotonicNowARM64() int {
-	ts := Alloc(16)
-	Memzero(ts, 16)
+	ts := linuxNowTSARM64
+	if ts == 0 {
+		ts = Alloc(16)
+		linuxNowTSARM64 = ts
+	}
 	_, _, err := Syscall(linuxSysClockGettimeARM64, linuxClockMonotonicARM64, ts, 0, 0, 0, 0)
 	if err != 0 {
 		return 0
