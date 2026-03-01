@@ -405,7 +405,7 @@ func runCase(name string, n int) (uint64, bool) {
 }
 
 func printUsage(program string, all []benchCase) {
-	fmt.Fprintf(os.Stderr, "usage: %s -case <name> [-n <iters>] [-opt-mask <bits>] [-list]\n", program)
+	fmt.Fprintf(os.Stderr, "usage: %s -case <name> [-n <iters>] [-list]\n", program)
 	fmt.Fprintf(os.Stderr, "\navailable cases:\n")
 	i := 0
 	for i < len(all) {
@@ -445,7 +445,6 @@ func main() {
 
 	caseName := ""
 	overrideN := -1
-	optMask := 0
 	list := false
 
 	i := 1
@@ -479,20 +478,6 @@ func main() {
 			i += 2
 			continue
 		}
-		if arg == "-opt-mask" {
-			if i+1 >= len(os.Args) {
-				printUsage(os.Args[0], all)
-				os.Exit(2)
-			}
-			n, ok := parseIntArg(os.Args[i+1])
-			if !ok || n < 0 {
-				fmt.Fprintf(os.Stderr, "invalid -opt-mask value: %q\n", os.Args[i+1])
-				os.Exit(2)
-			}
-			optMask = n
-			i += 2
-			continue
-		}
 		printUsage(os.Args[0], all)
 		os.Exit(2)
 	}
@@ -522,7 +507,6 @@ func main() {
 		n = overrideN
 	}
 
-	runtime.SetOptExperimentsMask(optMask)
 	runtime.AllocDebugReset()
 	start := runtime.Now()
 	checksum, ok := runCase(c.name, n)
@@ -544,10 +528,9 @@ func main() {
 		nsPerOp = elapsed / n
 	}
 
-	fmt.Printf("case\topt_mask\titerations\tns_total\tns_per_op\talloc_calls\treq_bytes\tavg_req_per_alloc\tmmap_calls\tmmap_bytes\tavg_mmap_per_call\tnext_chunk\tchunk_max\theap_avail\tchecksum\n")
-	fmt.Printf("%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+	fmt.Printf("case\titerations\tns_total\tns_per_op\talloc_calls\treq_bytes\tavg_req_per_alloc\tmmap_calls\tmmap_bytes\tavg_mmap_per_call\tnext_chunk\tchunk_max\theap_avail\tchecksum\n")
+	fmt.Printf("%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
 		c.name,
-		optMask,
 		n,
 		elapsed,
 		nsPerOp,
