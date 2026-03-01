@@ -3135,6 +3135,8 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 	case exprIndex:
 		fc.emitIndexAddr(ex.left, ex.right)
 		return true
+	case exprMember:
+		return false
 	default:
 		return false
 	}
@@ -3550,6 +3552,8 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 				return t, true
 			}
 		}
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
+	case exprMember:
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprCall:
 		if name, ok := fc.builtinVariadicCallName(ex); ok {
@@ -4139,6 +4143,13 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 	case exprIndex:
 		fc.emitIndexAddr(ex.left, ex.right)
 		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprDerefWidth(ex.left)})
+	case exprMember:
+		if ex.op == "->" {
+			fc.errorf(fc.sig.File, 0, 0, "member access via '->' is not yet supported")
+		} else {
+			fc.errorf(fc.sig.File, 0, 0, "member access via '.' is not yet supported")
+		}
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 	case exprCall:
 		if fc.emitBuiltinVariadicCall(ex) {
 			return
@@ -4372,6 +4383,7 @@ const (
 	exprPostfix
 	exprBinary
 	exprIndex
+	exprMember
 	exprCall
 	exprCast
 	exprSizeof
@@ -4388,6 +4400,8 @@ type expr struct {
 	left  *expr
 	right *expr
 	args  []*expr
+
+	member string
 
 	typeInfo cTypeInfo
 }
@@ -4762,6 +4776,32 @@ func (p *cExprParser) parsePostfix() *expr {
 				p.errorf("expected ']' in index expression")
 			}
 			n = &expr{kind: exprIndex, left: n, right: idx}
+			continue
+		}
+		if p.matchPunct(".") {
+			if p.atEnd() {
+				p.errorf("expected member name after '.'")
+				return &expr{kind: exprIntLit, intVal: 0}
+			}
+			memberTok := p.advance()
+			if memberTok.Kind != TokIdent {
+				p.errorf("expected member name after '.', got %q", memberTok.Text)
+				return &expr{kind: exprIntLit, intVal: 0}
+			}
+			n = &expr{kind: exprMember, op: ".", left: n, member: memberTok.Text}
+			continue
+		}
+		if p.matchPunct("->") {
+			if p.atEnd() {
+				p.errorf("expected member name after '->'")
+				return &expr{kind: exprIntLit, intVal: 0}
+			}
+			memberTok := p.advance()
+			if memberTok.Kind != TokIdent {
+				p.errorf("expected member name after '->', got %q", memberTok.Text)
+				return &expr{kind: exprIntLit, intVal: 0}
+			}
+			n = &expr{kind: exprMember, op: "->", left: n, member: memberTok.Text}
 			continue
 		}
 		if p.matchPunct("++") {
