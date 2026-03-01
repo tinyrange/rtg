@@ -2621,7 +2621,7 @@ func (fc *funcCompiler) emitVariadicPackFromLocals(extraLocals []int) {
 		// Locals are laid out at decreasing stack addresses; keep base at
 		// the last-created slot so +index addressing stays in-bounds.
 		firstElem = elemIdx
-		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: extraLocals[i]})
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: elemIdx})
 		i++
 	}
@@ -2629,7 +2629,21 @@ func (fc *funcCompiler) emitVariadicPackFromLocals(extraLocals []int) {
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		return
 	}
+	ptrLocal := fc.addLocal(fmt.Sprintf("$va_pack_ptr$%d", fc.c.nextLabel()), fc.sig.File, 0, 0)
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: ptrLocal})
+	i = 0
+	for i < len(extraLocals) {
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: extraLocals[i]})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: ptrLocal})
+		if i > 0 {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i * fc.c.target.PtrSize)})
+			fc.emit(ir.Inst{Op: ir.OP_ADD})
+		}
+		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: fc.c.target.PtrSize})
+		i++
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: ptrLocal})
 }
 
 func (fc *funcCompiler) emitBuiltinVariadicCall(call *expr) bool {
@@ -2831,8 +2845,11 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprCall:
 		if name, ok := fc.builtinVariadicCallName(ex); ok {
-			if name == "__builtin_va_count" || name == "__builtin_va_arg" {
+			if name == "__builtin_va_count" {
 				return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
+			}
+			if name == "__builtin_va_arg" {
+				return cTypeInfo{Kind: cDeclScalar, Base: cScalarULong}, true
 			}
 		}
 		if sig, ok := fc.resolveDirectCallSig(ex); ok {
