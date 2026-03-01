@@ -5,69 +5,28 @@ This file is the source of truth for agent instructions in this repository.
 RTG is a self-hosting Go compiler (`j5.nz/rtg`, Go `1.25.6`) with the main compiler in `std/compiler/`.
 Primary build/test orchestration is defined in `tools/Buildfile`.
 
-## Mandatory Rules
+## Core Rules
 
 1. Always run `go` commands outside the sandbox.
-2. Prefer Buildfile targets through the compiled runner after `test-build` creates `build/build`:
+2. Prefer Buildfile targets through the compiled runner:
+   - `go build -o build/build ./tools` (if runner is missing/stale)
    - `./build/build <target>`
+   - `./build/build --list` (discover full live target set)
 3. Do not use `go test ./...` for project validation. RTG runtime/std use `//rtg:internal` intrinsics that do not compile with the host Go toolchain.
 4. Do not create Go test files (`*_test.go`) in this repository; validate behavior via Buildfile targets instead.
+5. For `gh` markdown/text (PR title/body/comments), never use inline `--body`; use file-based flags (`--body-file`, `--title-file`) with quoted heredocs.
+6. If a command is rejected/blocked, do not retry equivalent variants. Switch strategy immediately and continue.
+7. Do not use broad rollback commands (`git checkout --`, `git restore`, `git reset --hard`) unless the user explicitly asks for rollback.
+8. Do not invoke `apply_patch` through `exec_command`; use the patch tool directly.
 
-## Verified Buildfile Targets
+## Validation Expectations
 
-- `build`
-  - `go build -o build/rtg ./std/compiler/` (no explicit build tags).
-- `selfhost`
-  - 3-stage self-hosting on default target and `cmp` stage2 vs stage3.
-- `selfhost-i386`
-  - 3-stage self-hosting with `-T linux/386`.
-- `selfhost-c`
-  - 3-stage self-hosting with `-T c/64` and `${CC:-cc}` between stages.
-- `selfhost-wasm`
-  - 3-stage self-hosting with `-T wasi/wasm32` via `wasmtime`.
-- `test-tagset-windows386-only`
-  - Builds native stage2 then verifies the `windows/386-only` backend tag set compiles native target outputs.
-- `test-size-analysis-tagsets`
-  - Builds native stage2 then validates the full size-analysis tag-set matrix across native and WASM targets.
-- `selfhost-win386`
-  - 3-stage self-hosting with `-T windows/386` via `wine`.
-- `crosscompile-wasm-native`
-  - Builds compiler to WASM, then uses it to emit native `linux/amd64`, and checks stability.
-- `test`
-  - Alias for `test-fullcompiler-rtg`.
-- `test-fullcompiler-rtg`
-  - Runs top-level fullcompiler suite with RTG backend and validates output.
-- `test-fullcompiler-rtg-i386`
-  - Runs top-level fullcompiler suite with RTG backend targeting `linux/386`.
-- `test-fullcompiler-rtg-win386`
-  - Runs top-level fullcompiler suite with RTG backend targeting `windows/386` (uses `wine` on Linux hosts).
-- `test-fullcompiler-c`
-  - Runs top-level fullcompiler suite with `-T c/64` and validates output.
-- `test-fullcompiler-wasm`
-  - Runs top-level fullcompiler suite with `-T wasi/wasm32` via `wasmtime` and validates output.
-- `test-build`
-  - Builds `build/build`, lists targets, then runs `test`.
-- `playground`
-  - Builds `web/compiler.wasm` with `-tags no_embed_std`, then runs `web/build.sh`.
-- `clean`
-  - Removes generated build, stage, size, and cross-compile artifacts.
-
-## Debugging Tip
-
-- If `selfhost*` or `test-fullcompiler*` appears to hang or behaves inconsistently, run `./build/build clean` first, then rebuild the runner (`go build -o build/build ./tools`) and retry.
-
-## Feature Workflow
-
-For each feature/change:
-
-1. Run the narrowest relevant `tools/Buildfile` target(s).
-2. If backend/codegen behavior changed, run at least one `selfhost*` target relevant to the touched backend(s).
+1. Run the narrowest relevant Buildfile target(s).
+2. If backend/codegen behavior changed, run at least one relevant `selfhost*` target.
 3. If backend build-tag constraints changed, run `test-size-analysis-tagsets`.
-4. In your change summary, include which Buildfile targets were run.
+4. In change summaries, include the targets that were run and pass/fail status.
+5. When a compiler bug or limitation is discovered during work, record it in `COMPILER_BUGS.md` in the same branch/PR.
 
-## Working Notes
+## Optional Reference
 
-- Backend selection is primarily controlled by file build constraints; special tags like `no_backend_*` and `no_embed_std` are used in targeted flows.
-- Keep `tools/Buildfile` targets and backend/tag assumptions aligned when adding/removing backends.
-- Whenever a compiler bug or limitation is encountered during work, record it in `COMPILER_BUGS.md` in the same branch/PR.
-- For `gh` commands that pass markdown/text (PR title/body/comments), avoid inline shell-quoted text when it may contain backticks, `<`, `>`, or `$`; prefer `--body-file` (or another file-based flag) with a quoted heredoc (`<<'EOF'`) to prevent shell mangling.
+Load [docs/agent-reference.md](docs/agent-reference.md) only when needed for detailed workflows (curated targets, timeout/hang protocol, debugging checklist, and working notes).
