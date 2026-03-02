@@ -265,6 +265,12 @@ type cLocalBinding struct {
 	AggregateTag     string
 }
 
+type cUserLabel struct {
+	Target int
+	Line   int
+	Col    int
+}
+
 // CompileUnits lowers parsed C units to RTG IR.
 //
 // Current scope intentionally targets a small executable subset:
@@ -1005,6 +1011,7 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		typedefScopes: []map[string]cTypeInfo{{}},
 		enumScopes:    []map[string]int64{{}},
 		aggregateTags: []map[string]*cAggregateInfo{{}},
+		userLabels:    make(map[string]cUserLabel),
 		variadicCount: -1,
 		variadicData:  -1,
 	}
@@ -1060,6 +1067,7 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 	prevAggregateLookupFunc := cAggregateLookupFunc
 	cTypedefLookupFunc = fc
 	cAggregateLookupFunc = fc
+	fc.indexUserLabels(sig.Body)
 	fc.compileCompound(sig.Body, true)
 	cTypedefLookupFunc = prevTypedefLookupFunc
 	cAggregateLookupFunc = prevAggregateLookupFunc
@@ -2958,6 +2966,8 @@ type funcCompiler struct {
 	breakTargets    []int
 	continueTargets []int
 
+	userLabels map[string]cUserLabel
+
 	variadicCount int
 	variadicData  int
 }
@@ -3437,6 +3447,38 @@ func (fc *funcCompiler) compileCompound(n *Node, pushScope bool) {
 	}
 }
 
+func (fc *funcCompiler) indexUserLabels(n *Node) {
+	if n == nil {
+		return
+	}
+	stack := []*Node{n}
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		cur := stack[last]
+		stack = stack[:last]
+		if cur == nil {
+			continue
+		}
+		if cur.Kind == NLabelStmt {
+			name := strings.TrimSpace(cur.Text)
+			if name == "" {
+				fc.errorf(fc.sig.File, cur.Line, cur.Col, "label name is missing")
+			} else if prev, ok := fc.userLabels[name]; ok {
+				fc.errorf(fc.sig.File, cur.Line, cur.Col, "duplicate label %q (previous at %d:%d)", name, prev.Line, prev.Col)
+			} else {
+				fc.userLabels[name] = cUserLabel{
+					Target: fc.c.nextLabel(),
+					Line:   cur.Line,
+					Col:    cur.Col,
+				}
+			}
+		}
+		for i := len(cur.Children) - 1; i >= 0; i-- {
+			stack = append(stack, cur.Children[i])
+		}
+	}
+}
+
 func (fc *funcCompiler) compileStmt(n *Node) {
 	if n == nil {
 		return
@@ -3477,8 +3519,34 @@ func (fc *funcCompiler) compileStmt(n *Node) {
 		fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: fc.continueTargets[len(fc.continueTargets)-1]})
 	case NCaseStmt, NDefaultStmt:
 		fc.errorf(fc.sig.File, n.Line, n.Col, "case/default label used outside switch")
-	case NGotoStmt, NLabelStmt:
-		fc.errorf(fc.sig.File, n.Line, n.Col, "goto/labels are not yet supported in C lowering")
+	case NGotoStmt:
+		name := strings.TrimSpace(n.Text)
+		if name == "" {
+			fc.errorf(fc.sig.File, n.Line, n.Col, "goto requires a label")
+			return
+		}
+		lab, ok := fc.userLabels[name]
+		if !ok {
+			fc.errorf(fc.sig.File, n.Line, n.Col, "goto to undefined label %q", name)
+			return
+		}
+		fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: lab.Target})
+	case NLabelStmt:
+		name := strings.TrimSpace(n.Text)
+		if name == "" {
+			fc.errorf(fc.sig.File, n.Line, n.Col, "label name is missing")
+		} else if lab, ok := fc.userLabels[name]; ok {
+			// Duplicate labels are diagnosed in indexUserLabels. Emit the label
+			// only for the first declaration to avoid conflicting IR labels.
+			if lab.Line == n.Line && lab.Col == n.Col {
+				fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: lab.Target})
+			}
+		} else {
+			fc.errorf(fc.sig.File, n.Line, n.Col, "unknown label %q", name)
+		}
+		for _, child := range n.Children {
+			fc.compileStmt(child)
+		}
 	default:
 		fc.errorf(fc.sig.File, n.Line, n.Col, "unsupported statement kind: %s", n.Kind.String())
 	}

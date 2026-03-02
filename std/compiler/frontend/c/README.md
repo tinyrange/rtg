@@ -13,7 +13,7 @@ This package currently provides:
 - Parse-only frontend (`Parser`) for translation units/statements.
 - A limited C99-to-IR lowering pass (`CompileUnits`) suitable for simple executable programs.
 
-Current lowering scope is intentionally small: integer-centric functions, local/global declarations (including simple `int *p` pointers and fixed-size `int a[N]` arrays), string literal pointer decay (`"abc"`), arithmetic/comparisons, direct function calls, and core control flow (`if`, `while`, `do/while`, `for`, `switch/case/default`, `break`, `continue`, `return`). Calls to declared-only extern functions are supported for `-T c/*` targets.
+Current lowering scope is intentionally small: integer-centric functions, local/global declarations (including simple `int *p` pointers and fixed-size `int a[N]` arrays), string literal pointer decay (`"abc"`), arithmetic/comparisons, direct function calls, and core control flow (`if`, `while`, `do/while`, `for`, `switch/case/default`, `break`, `continue`, `goto`/labels, `return`). Calls to declared-only extern functions are supported for `-T c/*` targets.
 
 Additional supported pieces in this subset:
 
@@ -24,7 +24,6 @@ Additional supported pieces in this subset:
 
 TODO (remaining items before broader C99 coverage):
 
-- `goto` and user labels.
 - Variadic function declarations/calls.
 - `struct` / `union` / `enum` lowering and field/member expressions.
 - `typedef`-driven type names in declarators/expressions.
