@@ -1807,20 +1807,17 @@ func (p *Parser) parseBinaryExpr(minPrec int) *Node {
 }
 
 func (p *Parser) parseUnaryExpr() *Node {
-	if p.at(TOKEN_NOT) || p.at(TOKEN_MINUS) || p.at(TOKEN_CARET) {
+	kind := p.peek().Kind
+	if kind == TOKEN_NOT || kind == TOKEN_MINUS || kind == TOKEN_CARET || kind == TOKEN_STAR || kind == TOKEN_AMPERSAND {
 		op := p.advance()
 		expr := p.parseUnaryExpr()
-		return &Node{Kind: NUnaryExpr, Name: tokenVal(op), X: expr, Pos: op.Line}
-	}
-	if p.at(TOKEN_STAR) {
-		op := p.advance()
-		expr := p.parseUnaryExpr()
-		return &Node{Kind: NUnaryExpr, Name: "*", X: expr, Pos: op.Line}
-	}
-	if p.at(TOKEN_AMPERSAND) {
-		op := p.advance()
-		expr := p.parseUnaryExpr()
-		return &Node{Kind: NUnaryExpr, Name: "&", X: expr, Pos: op.Line}
+		name := tokenVal(op)
+		if kind == TOKEN_STAR {
+			name = "*"
+		} else if kind == TOKEN_AMPERSAND {
+			name = "&"
+		}
+		return &Node{Kind: NUnaryExpr, Name: name, X: expr, Pos: op.Line}
 	}
 	return p.parsePrimaryExpr()
 }
@@ -1907,21 +1904,25 @@ func (p *Parser) isTypeLikeNode(node *Node) bool {
 }
 
 func (p *Parser) parsePostfixOps(node *Node) *Node {
-	if p.at(TOKEN_DOT) {
-		return p.parsePostfixOps(p.parsePostfixDot(node))
-	}
-	if p.at(TOKEN_LPAREN) {
-		return p.parsePostfixOps(p.parsePostfixCall(node))
-	}
-	if p.at(TOKEN_LBRACK) {
-		return p.parsePostfixOps(p.parsePostfixIndexOrSlice(node))
-	}
-	if p.at(TOKEN_LBRACE) {
-		if p.canParseCompositeLit(node) {
-			return p.parsePostfixOps(p.parseCompositeLit(node))
+	for {
+		switch p.peek().Kind {
+		case TOKEN_DOT:
+			node = p.parsePostfixDot(node)
+			continue
+		case TOKEN_LPAREN:
+			node = p.parsePostfixCall(node)
+			continue
+		case TOKEN_LBRACK:
+			node = p.parsePostfixIndexOrSlice(node)
+			continue
+		case TOKEN_LBRACE:
+			if p.canParseCompositeLit(node) {
+				node = p.parseCompositeLit(node)
+				continue
+			}
 		}
+		return node
 	}
-	return node
 }
 
 func (p *Parser) parsePostfixDot(node *Node) *Node {
