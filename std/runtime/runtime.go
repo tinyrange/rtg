@@ -542,6 +542,120 @@ func SliceAppend(hdr uintptr, elem uintptr, elemSize int) uintptr {
 	return hdr
 }
 
+// SliceAppendU32LE appends a uint32 value to a []byte-like slice as four
+// little-endian bytes in one grow/check pass.
+func SliceAppendU32LE(hdr uintptr, v uintptr) uintptr {
+	if hdr == 0 {
+		hdr = Alloc(SliceHdrSize)
+		dataPtr := Alloc(8)
+		WritePtr(hdr, dataPtr)
+		WritePtr(hdr+uintptr(SliceOffLen), 0)
+		WritePtr(hdr+uintptr(SliceOffCap), 8)
+		WritePtr(hdr+uintptr(SliceOffEsz), 1)
+	}
+
+	slen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
+	scap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
+	elemSize := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
+
+	// Defensive fallback: keep behavior correct if called for non-byte slices.
+	if elemSize != 1 {
+		hdr = SliceAppend(hdr, uintptr(byte(v)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>8)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>16)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>24)), 1)
+		return hdr
+	}
+
+	needed := slen + 4
+	if needed > scap {
+		newCap := scap * 2
+		if newCap < needed {
+			newCap = needed
+		}
+		if newCap == 0 {
+			newCap = 8
+		}
+		newData := Alloc(newCap)
+		oldData := ReadPtr(hdr)
+		if slen > 0 {
+			Memcopy(newData, oldData, slen)
+		}
+		WritePtr(hdr, newData)
+		WritePtr(hdr+uintptr(SliceOffCap), uintptr(newCap))
+	}
+
+	dataPtr := ReadPtr(hdr)
+	addr := dataPtr + uintptr(slen)
+	WriteByte(addr, byte(v))
+	WriteByte(addr+1, byte(v>>8))
+	WriteByte(addr+2, byte(v>>16))
+	WriteByte(addr+3, byte(v>>24))
+	WritePtr(hdr+uintptr(SliceOffLen), uintptr(needed))
+	return hdr
+}
+
+// SliceAppendU64LE appends a uint64 value to a []byte-like slice as eight
+// little-endian bytes in one grow/check pass.
+func SliceAppendU64LE(hdr uintptr, v uintptr) uintptr {
+	if hdr == 0 {
+		hdr = Alloc(SliceHdrSize)
+		dataPtr := Alloc(8)
+		WritePtr(hdr, dataPtr)
+		WritePtr(hdr+uintptr(SliceOffLen), 0)
+		WritePtr(hdr+uintptr(SliceOffCap), 8)
+		WritePtr(hdr+uintptr(SliceOffEsz), 1)
+	}
+
+	slen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
+	scap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
+	elemSize := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
+
+	// Defensive fallback: keep behavior correct if called for non-byte slices.
+	if elemSize != 1 {
+		hdr = SliceAppend(hdr, uintptr(byte(v)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>8)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>16)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>24)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>32)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>40)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>48)), 1)
+		hdr = SliceAppend(hdr, uintptr(byte(v>>56)), 1)
+		return hdr
+	}
+
+	needed := slen + 8
+	if needed > scap {
+		newCap := scap * 2
+		if newCap < needed {
+			newCap = needed
+		}
+		if newCap == 0 {
+			newCap = 8
+		}
+		newData := Alloc(newCap)
+		oldData := ReadPtr(hdr)
+		if slen > 0 {
+			Memcopy(newData, oldData, slen)
+		}
+		WritePtr(hdr, newData)
+		WritePtr(hdr+uintptr(SliceOffCap), uintptr(newCap))
+	}
+
+	dataPtr := ReadPtr(hdr)
+	addr := dataPtr + uintptr(slen)
+	WriteByte(addr, byte(v))
+	WriteByte(addr+1, byte(v>>8))
+	WriteByte(addr+2, byte(v>>16))
+	WriteByte(addr+3, byte(v>>24))
+	WriteByte(addr+4, byte(v>>32))
+	WriteByte(addr+5, byte(v>>40))
+	WriteByte(addr+6, byte(v>>48))
+	WriteByte(addr+7, byte(v>>56))
+	WritePtr(hdr+uintptr(SliceOffLen), uintptr(needed))
+	return hdr
+}
+
 // SliceAppendSlice appends all elements from src slice to dst slice.
 // Returns the (possibly updated) dst header pointer.
 func SliceAppendSlice(dst uintptr, src uintptr) uintptr {
