@@ -5,20 +5,22 @@ int sum_point(struct Point *p) {
 }
 
 int main(void) {
-  int mem[2];
-  struct Point *p = (struct Point *)mem;
-  p->x = 7;
-  (*p).y = 9;
-  if (p->x != 7) {
+  struct Point p;
+  if (p.x != 0 || p.y != 0) {
     return 1;
   }
-  if (p->y != 9) {
+
+  p.x = 7;
+  p.y = 9;
+
+  struct Point *q = &p;
+  if (q->x != 7) {
     return 2;
   }
-  if ((*p).x + (*p).y != 16) {
+  if ((*q).y != 9) {
     return 3;
   }
-  if (sum_point(p) != 16) {
+  if (sum_point(&p) != 16) {
     return 4;
   }
   return 0;

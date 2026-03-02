@@ -75,18 +75,22 @@ type cDeclItem struct {
 }
 
 type cGlobalInit struct {
-	Name      string
-	Index     int
-	Kind      cDeclKind
-	PtrDepth  int
-	ArrayBase int
-	ArrayLen  int64
-	Base      cScalarType
-	Init      []Token
-	File      string
-	Line      int
-	Col       int
-	IRName    string
+	Name             string
+	Index            int
+	Kind             cDeclKind
+	PtrDepth         int
+	ArrayBase        int
+	ArrayLen         int64
+	ObjectBase       int
+	ObjectWords      int64
+	AggregateKeyword string
+	AggregateTag     string
+	Base             cScalarType
+	Init             []Token
+	File             string
+	Line             int
+	Col              int
+	IRName           string
 }
 
 type cDeclKind int
@@ -140,6 +144,18 @@ type cAggregateInfo struct {
 	Align int64
 
 	Fields []cAggregateField
+}
+
+func isAggregateObjectType(info cTypeInfo) bool {
+	return isAggregateObjectDecl(info.Kind, info.PtrDepth, info.OpaqueAggregate, info.AggregateKeyword, info.AggregateTag)
+}
+
+func isAggregateObjectDecl(kind cDeclKind, ptrDepth int, opaqueAggregate bool, aggregateKeyword string, aggregateTag string) bool {
+	return kind == cDeclScalar &&
+		ptrDepth == 0 &&
+		!opaqueAggregate &&
+		aggregateKeyword != "" &&
+		aggregateTag != ""
 }
 
 var cTypedefLookupCompiler *compiler
@@ -847,6 +863,48 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			})
 			continue
 		}
+		if isAggregateObjectDecl(it.Kind, it.PtrDepth, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag) {
+			size, _, err := cTypeLayout(cTypeInfo{
+				Kind:             it.Kind,
+				PtrDepth:         it.PtrDepth,
+				Base:             it.Base,
+				OpaqueAggregate:  it.OpaqueAggregate,
+				AggregateKeyword: it.AggregateKeyword,
+				AggregateTag:     it.AggregateTag,
+			})
+			if err != nil {
+				c.errorf(file, n.Line, n.Col, "unsupported aggregate object declaration for %s: %v", it.Name, err)
+				continue
+			}
+			word := int64(c.target.PtrSize)
+			words := (size + word - 1) / word
+			if words <= 0 {
+				words = 1
+			}
+			base := len(c.irmod.Globals)
+			for i := int64(0); i < words; i++ {
+				elemIdx := len(c.irmod.Globals)
+				elemName := fmt.Sprintf("%s$obj$%d", irName, i)
+				c.irmod.Globals = append(c.irmod.Globals, ir.IRGlobal{Name: elemName, Index: elemIdx})
+			}
+			c.globalInits = append(c.globalInits, cGlobalInit{
+				Name:             it.Name,
+				Index:            idx,
+				Kind:             it.Kind,
+				PtrDepth:         it.PtrDepth,
+				ObjectBase:       base,
+				ObjectWords:      words,
+				AggregateKeyword: it.AggregateKeyword,
+				AggregateTag:     it.AggregateTag,
+				Base:             it.Base,
+				Init:             append([]Token{}, it.Init...),
+				File:             file,
+				Line:             n.Line,
+				Col:              n.Col,
+				IRName:           irName,
+			})
+			continue
+		}
 		if len(it.Init) > 0 {
 			c.globalInits = append(c.globalInits, cGlobalInit{
 				Name:     it.Name,
@@ -882,6 +940,14 @@ func (c *compiler) emitGlobalInit() {
 		variadicData:  -1,
 	}
 	for _, g := range c.globalInits {
+		if g.ObjectWords > 0 {
+			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: g.ObjectBase})
+			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: g.Index})
+			if len(g.Init) > 0 {
+				c.errorf(g.File, g.Line, g.Col, "aggregate object initializer for %s %q is not yet supported", g.AggregateKeyword, g.Name)
+			}
+			continue
+		}
 		if g.Kind == cDeclArray {
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: g.ArrayBase})
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: g.Index})
@@ -1208,6 +1274,9 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if retInfo.Kind == cDeclArray {
 		return nil, fmt.Errorf("function %q cannot return array type", name)
 	}
+	if isAggregateObjectType(retInfo) {
+		return nil, fmt.Errorf("function %q returning %s %q by value is not yet supported", name, retInfo.AggregateKeyword, retInfo.AggregateTag)
+	}
 	retCount := 1
 	if retInfo.IsVoid && retInfo.Kind == cDeclScalar {
 		retCount = 0
@@ -1296,6 +1365,9 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			}
 			if pinfo.IsVoid && pinfo.Kind == cDeclScalar {
 				return nil, fmt.Errorf("function parameter %q cannot have type void", pname)
+			}
+			if isAggregateObjectType(pinfo) {
+				return nil, fmt.Errorf("function parameter %q passing %s %q by value is not yet supported", pname, pinfo.AggregateKeyword, pinfo.AggregateTag)
 			}
 			paramNames = append(paramNames, pname)
 			paramKinds = append(paramKinds, pinfo.Kind)
@@ -1908,15 +1980,18 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 
 func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth int, declArrayLen int64, allowOpaqueObject bool, context string) (cTypeInfo, error) {
 	out := base
-	if base.AggregateKeyword != "" && base.Kind != cDeclPointer && declKind != cDeclPointer && !allowOpaqueObject {
+	if base.AggregateKeyword != "" && base.Kind != cDeclPointer && declKind == cDeclArray {
+		if base.AggregateTag != "" {
+			return cTypeInfo{}, fmt.Errorf("%s does not yet support array declarators over %s %q object types", context, base.AggregateKeyword, base.AggregateTag)
+		}
+		return cTypeInfo{}, fmt.Errorf("%s does not yet support array declarators over aggregate object types", context)
+	}
+	if base.AggregateKeyword != "" && base.OpaqueAggregate && base.Kind != cDeclPointer && declKind != cDeclPointer && !allowOpaqueObject {
 		what := base.AggregateKeyword
 		if what == "" {
 			what = "aggregate"
 		}
-		flavor := ""
-		if base.OpaqueAggregate {
-			flavor = "opaque "
-		}
+		flavor := "opaque "
 		if base.AggregateTag != "" {
 			return cTypeInfo{}, fmt.Errorf("%s only supports pointers to %s%s %q types for now", context, flavor, what, base.AggregateTag)
 		}
@@ -2150,6 +2225,9 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 				return nil, nil, nil, nil, nil, nil, nil, false, nil
 			}
 			return nil, nil, nil, nil, nil, nil, nil, false, fmt.Errorf("%s parameter %q cannot have type void", context, pname)
+		}
+		if isAggregateObjectType(pinfo) {
+			return nil, nil, nil, nil, nil, nil, nil, false, fmt.Errorf("%s does not support %s %q parameters passed by value", context, pinfo.AggregateKeyword, pinfo.AggregateTag)
 		}
 		if pfnSig != nil {
 			pfn := cloneFuncTypeSig(pfnSig)
@@ -2654,6 +2732,9 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, rest []Token) (
 			return nil, err
 		}
 		if fnSig != nil {
+			if isAggregateObjectType(baseInfo) {
+				return nil, fmt.Errorf("declaration of %q uses function type returning %s %q by value, which is not yet supported", name, baseInfo.AggregateKeyword, baseInfo.AggregateTag)
+			}
 			sig := cloneFuncTypeSig(fnSig)
 			sig.RetKind = baseInfo.Kind
 			sig.RetBase = baseInfo.Base
@@ -3488,6 +3569,42 @@ func (fc *funcCompiler) compileSwitchStmt(n *Node) {
 	fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: endLabel})
 }
 
+func (fc *funcCompiler) initLocalAggregateObject(name string, idx int, info cTypeInfo, init []Token, file string, line int, col int) {
+	size, _, ok := fc.typeInfoSizeAlign(info)
+	if !ok {
+		fc.errorf(file, line, col, "unsupported aggregate object declaration for %s", name)
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+		return
+	}
+	word := int64(fc.c.target.PtrSize)
+	words := (size + word - 1) / word
+	if words <= 0 {
+		words = 1
+	}
+	firstElem := -1
+	for i := int64(0); i < words; i++ {
+		elemName := fmt.Sprintf("$%s$obj$%d$%d", name, idx, i)
+		elemIdx := fc.addLocal(elemName, file, line, col)
+		// Locals are laid out at decreasing stack addresses.
+		// Keep base at the last-created slot so +offset addressing stays in-bounds.
+		firstElem = elemIdx
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: elemIdx})
+	}
+	if firstElem < 0 {
+		fc.errorf(file, line, col, "aggregate declaration requires non-zero size: %s", name)
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+		return
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+	if len(init) > 0 {
+		fc.errorf(file, line, col, "aggregate object initializer for %s %q is not yet supported", info.AggregateKeyword, name)
+	}
+}
+
 func (fc *funcCompiler) compileDeclStmt(n *Node) {
 	toks, err := lexSnippet(fc.sig.File, n.Text)
 	if err != nil {
@@ -3534,6 +3651,17 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 			elemStep = 1
 		}
 		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.FuncSig, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag, fc.sig.File, n.Line, n.Col)
+		if isAggregateObjectDecl(it.Kind, it.PtrDepth, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag) {
+			fc.initLocalAggregateObject(it.Name, idx, cTypeInfo{
+				Kind:             it.Kind,
+				PtrDepth:         it.PtrDepth,
+				Base:             it.Base,
+				OpaqueAggregate:  it.OpaqueAggregate,
+				AggregateKeyword: it.AggregateKeyword,
+				AggregateTag:     it.AggregateTag,
+			}, it.Init, fc.sig.File, n.Line, n.Col)
+			continue
+		}
 		if it.Kind == cDeclArray {
 			firstElem := -1
 			for i := int64(0); i < it.ArrayLen; i++ {
@@ -3765,6 +3893,17 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 			elemStep = 1
 		}
 		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.FuncSig, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag, file, n.Line, n.Col)
+		if isAggregateObjectDecl(it.Kind, it.PtrDepth, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag) {
+			fc.initLocalAggregateObject(it.Name, idx, cTypeInfo{
+				Kind:             it.Kind,
+				PtrDepth:         it.PtrDepth,
+				Base:             it.Base,
+				OpaqueAggregate:  it.OpaqueAggregate,
+				AggregateKeyword: it.AggregateKeyword,
+				AggregateTag:     it.AggregateTag,
+			}, it.Init, file, n.Line, n.Col)
+			continue
+		}
 		if it.Kind == cDeclArray {
 			firstElem := -1
 			for i := int64(0); i < it.ArrayLen; i++ {
@@ -3871,12 +4010,23 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 	}
 	switch ex.kind {
 	case exprVar:
-		if idx, ok := fc.lookupLocal(ex.name); ok {
-			fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: idx})
+		if b, ok := fc.lookupLocalBinding(ex.name); ok {
+			if isAggregateObjectDecl(b.Kind, b.PtrDepth, b.OpaqueAggregate, b.AggregateKeyword, b.AggregateTag) {
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: b.Index})
+			} else {
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: b.Index})
+			}
 			return true
 		}
 		if idx, ok := fc.lookupGlobal(ex.name); ok {
-			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: idx})
+			kind, _ := fc.lookupGlobalKind(ex.name)
+			ptrDepth, _ := fc.lookupGlobalPtrDepth(ex.name)
+			opaque, aggKey, aggTag := fc.lookupGlobalOpaqueAggregate(ex.name)
+			if isAggregateObjectDecl(kind, ptrDepth, opaque, aggKey, aggTag) {
+				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: idx})
+			} else {
+				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: idx})
+			}
 			return true
 		}
 		if _, ok := fc.lookupEnumConst(ex.name); ok {
@@ -4756,6 +4906,11 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		stringPtr := fc.c.ensureIntrinsicWrapper("Stringptr", 1, 1)
 		fc.emit(ir.Inst{Op: ir.OP_CALL, Name: stringPtr, Arg: 1})
 	case exprVar:
+		if t, ok := fc.varTypeInfo(ex.name); ok && isAggregateObjectType(t) {
+			fc.errorf(fc.sig.File, 0, 0, "aggregate-valued expression for %q is not yet supported", ex.name)
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return
+		}
 		if idx, ok := fc.lookupLocal(ex.name); ok {
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
 			return
@@ -4780,6 +4935,11 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}
+		if t, ok := fc.exprTypeInfo(ex.left); ok && isAggregateObjectType(t) {
+			fc.errorf(fc.sig.File, 0, 0, "aggregate assignment is not yet supported")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return
+		}
 		fc.emitExpr(ex.right)
 		if t, ok := fc.exprTypeInfo(ex.left); ok {
 			fc.emitCastToType(t)
@@ -4800,6 +4960,11 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				return
 			}
 			name := ex.left.name
+			if t, ok := fc.varTypeInfo(name); ok && isAggregateObjectType(t) {
+				fc.errorf(fc.sig.File, 0, 0, "%s on aggregate object %q is not yet supported", ex.op, name)
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
 			step := int64(1)
 			if fc.exprIsPointer(ex.left) {
 				step = fc.exprPointerStep(ex.left)
@@ -4872,6 +5037,11 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			return
 		}
 		name := ex.left.name
+		if t, ok := fc.varTypeInfo(name); ok && isAggregateObjectType(t) {
+			fc.errorf(fc.sig.File, 0, 0, "%s on aggregate object %q is not yet supported", ex.op, name)
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return
+		}
 		var idx int
 		var isGlobal bool
 		if v, ok := fc.lookupLocal(name); ok {
