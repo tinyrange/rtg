@@ -33,6 +33,11 @@ func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
 			changed = true
 		}
 
+		code, stepChanged = foldSliceAppendU32LE(code)
+		if stepChanged {
+			changed = true
+		}
+
 		code, stepChanged = deadLocalStoreToDrop(code, len(f.Locals))
 		if stepChanged {
 			changed = true
@@ -151,6 +156,168 @@ func foldNotConditionalJumps(code []Inst) ([]Inst, bool) {
 		out = append(out, code[i])
 	}
 	return out, changed
+}
+
+func matchesSliceAppendU64LEWindow(code []Inst, i int) bool {
+	// byte(v)
+	v0 := code[i]
+	if v0.Op != OP_LOCAL_GET {
+		return false
+	}
+	inst1 := code[i+1]
+	inst2 := code[i+2]
+	inst3 := code[i+3]
+	if inst1.Op != OP_CONVERT || inst1.Name != "byte" || inst2.Op != OP_CONST_I64 || inst2.Val != 1 || inst3.Op != OP_CALL || inst3.Name != "runtime.SliceAppend" || inst3.Arg != 3 {
+		return false
+	}
+
+	shifts := [7]int64{8, 16, 24, 32, 40, 48, 56}
+	pos := 4
+	for _, shift := range shifts {
+		lget := code[i+pos]
+		cshift := code[i+pos+1]
+		shr := code[i+pos+2]
+		cvt := code[i+pos+3]
+		cone := code[i+pos+4]
+		call := code[i+pos+5]
+		if lget.Op != OP_LOCAL_GET || lget.Arg != v0.Arg || lget.Width != v0.Width ||
+			cshift.Op != OP_CONST_I64 || cshift.Val != shift ||
+			shr.Op != OP_SHR ||
+			cvt.Op != OP_CONVERT || cvt.Name != "byte" ||
+			cone.Op != OP_CONST_I64 || cone.Val != 1 ||
+			call.Op != OP_CALL || call.Name != "runtime.SliceAppend" || call.Arg != 3 {
+			return false
+		}
+		pos += 6
+	}
+
+	return true
+}
+
+// foldSliceAppendU32LE rewrites a common append-byte pattern:
+//
+//	append(dst, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+//
+// emitted as four runtime.SliceAppend calls into a single:
+//
+//	runtime.SliceAppendU32LE(dst, v)
+//
+// The matcher is intentionally strict: it only folds when v is loaded from
+// the same local for all four byte extractions.
+func foldSliceAppendU32LE(code []Inst) ([]Inst, bool) {
+	if len(code) < 22 {
+		return code, false
+	}
+
+	changed := false
+	var out []Inst
+	i := 0
+	for i < len(code) {
+		if i+45 < len(code) && matchesSliceAppendU64LEWindow(code, i) {
+			v := code[i]
+			if !changed {
+				out = make([]Inst, 0, len(code))
+				out = append(out, code[:i]...)
+			}
+			out = append(out, v)
+			out = append(out, Inst{
+				Op:   OP_CALL,
+				Name: "runtime.SliceAppendU64LE",
+				Arg:  2,
+			})
+			changed = true
+			i += 46
+			continue
+		}
+		if i+21 < len(code) && matchesSliceAppendU32LEWindow(code, i) {
+			v := code[i]
+			if !changed {
+				out = make([]Inst, 0, len(code))
+				out = append(out, code[:i]...)
+			}
+			out = append(out, v)
+			out = append(out, Inst{
+				Op:   OP_CALL,
+				Name: "runtime.SliceAppendU32LE",
+				Arg:  2,
+			})
+			changed = true
+			i += 22
+			continue
+		}
+		if changed {
+			out = append(out, code[i])
+		}
+		i++
+	}
+	if !changed {
+		return code, false
+	}
+	return out, changed
+}
+
+func matchesSliceAppendU32LEWindow(code []Inst, i int) bool {
+	// byte(v)
+	v0 := code[i]
+	if v0.Op != OP_LOCAL_GET {
+		return false
+	}
+	inst1 := code[i+1]
+	inst2 := code[i+2]
+	inst3 := code[i+3]
+	if inst1.Op != OP_CONVERT || inst1.Name != "byte" || inst2.Op != OP_CONST_I64 || inst2.Val != 1 || inst3.Op != OP_CALL || inst3.Name != "runtime.SliceAppend" || inst3.Arg != 3 {
+		return false
+	}
+
+	// byte(v >> 8)
+	lget4 := code[i+4]
+	c8 := code[i+5]
+	shr6 := code[i+6]
+	cvt7 := code[i+7]
+	cone8 := code[i+8]
+	call9 := code[i+9]
+	if lget4.Op != OP_LOCAL_GET || lget4.Arg != v0.Arg || lget4.Width != v0.Width ||
+		c8.Op != OP_CONST_I64 || c8.Val != 8 ||
+		shr6.Op != OP_SHR ||
+		cvt7.Op != OP_CONVERT || cvt7.Name != "byte" ||
+		cone8.Op != OP_CONST_I64 || cone8.Val != 1 ||
+		call9.Op != OP_CALL || call9.Name != "runtime.SliceAppend" || call9.Arg != 3 {
+		return false
+	}
+
+	// byte(v >> 16)
+	lget10 := code[i+10]
+	c16 := code[i+11]
+	shr12 := code[i+12]
+	cvt13 := code[i+13]
+	cone14 := code[i+14]
+	call15 := code[i+15]
+	if lget10.Op != OP_LOCAL_GET || lget10.Arg != v0.Arg || lget10.Width != v0.Width ||
+		c16.Op != OP_CONST_I64 || c16.Val != 16 ||
+		shr12.Op != OP_SHR ||
+		cvt13.Op != OP_CONVERT || cvt13.Name != "byte" ||
+		cone14.Op != OP_CONST_I64 || cone14.Val != 1 ||
+		call15.Op != OP_CALL || call15.Name != "runtime.SliceAppend" || call15.Arg != 3 {
+		return false
+	}
+
+	// byte(v >> 24)
+	lget16 := code[i+16]
+	c24 := code[i+17]
+	shr18 := code[i+18]
+	cvt19 := code[i+19]
+	cone20 := code[i+20]
+	call21 := code[i+21]
+	if lget16.Op != OP_LOCAL_GET || lget16.Arg != v0.Arg || lget16.Width != v0.Width ||
+		c24.Op != OP_CONST_I64 || c24.Val != 24 ||
+		shr18.Op != OP_SHR ||
+		cvt19.Op != OP_CONVERT || cvt19.Name != "byte" ||
+		cone20.Op != OP_CONST_I64 || cone20.Val != 1 ||
+		call21.Op != OP_CALL || call21.Name != "runtime.SliceAppend" || call21.Arg != 3 {
+		return false
+	}
+
+	return true
 }
 
 // deadLocalStoreToDrop rewrites LOCAL_SET to DROP when the local is never read

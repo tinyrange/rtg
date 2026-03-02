@@ -60,3 +60,51 @@ After reverting regressive item 3 and item 4 changes, and keeping item 1 + item 
 
 - `build/memory_experiments/results.tsv`
 - Arena reports per run: `build/memory_experiments/*.arena.report`
+
+## 2026-03-01 A-G Sequential Passes (current branch)
+
+Method used: `/tmp/run_mem_stage2.sh <label>` with the same 3-stage self-host loop and stage3 arena/profile capture:
+
+- stage1: `./build/rtg -strict -o /tmp/rtg.stage1.<label> ./std/compiler/`
+- stage2: `/tmp/rtg.stage1.<label> -strict -profile -o /tmp/rtg.stage2.<label>.profiled ./std/compiler/`
+- stage3 measured: `RTG_ARENA_REPORT=/tmp/rtg.<label>.arena RTG_PROFILE=/tmp/rtg.<label>.profile /tmp/rtg.stage2.<label>.profiled -strict -profile -o /tmp/rtg.stage3.<label>.profiled ./std/compiler/`
+
+Reported columns:
+- `allocs`, `req_bytes`, `mmap_bytes`: root (`id=1`) from `/tmp/rtg.<label>.arena`
+- `stage3_real_s`: wall time (`real`) from `/tmp/rtg.<label>.t3`
+
+| Label | Change | allocs | req_bytes | mmap_bytes | stage3_real_s | req delta vs baseline | stage3 delta vs baseline |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `baseline_current` | Current branch baseline | 108,591,896 | 3,688,814,008 | 3,693,658,112 | 13.88 | `0.00%` | `0.00%` |
+| `itemA_inst_byref` | `Inst` helper args switched to index-based checks | 108,807,740 | 3,695,871,096 | 3,701,014,528 | 13.85 | `+0.19%` | `-0.22%` |
+| `itemB_fused_matcher` | Fuse/in-line append-window matcher checks | 106,666,014 | 3,627,272,704 | 3,632,840,704 | 13.98 | `-1.67%` | `+0.72%` |
+| `itemC_lazy_out` | Lazy `out` allocation in `foldSliceAppendU32LE` | 106,680,351 | 3,622,231,456 | 3,627,614,208 | 13.83 | `-1.80%` | `-0.36%` |
+| `itemD_classify_flags` | Precompute matcher class flags (`byteConv`/`sliceAppend`) | 106,770,490 | 3,636,211,320 | 3,640,180,736 | 13.99 | `-1.43%` | `+0.79%` |
+| `itemE_reuse_bool_scratch` | Reuse global bool scratch for class flags | 106,764,849 | 3,625,111,536 | 3,630,743,552 | 13.83 | `-1.73%` | `-0.36%` |
+| `itemF_parser_unary_peek` | `parseUnaryExpr` single-peek fast path | 104,049,846 | 3,538,202,464 | 3,542,663,168 | 13.69 | `-4.08%` | `-1.37%` |
+| `itemG_postfix_iterative` | `parsePostfixOps` iterative loop (no recursion) | 101,412,436 | 3,453,823,096 | 3,458,777,088 | 13.54 | `-6.37%` | `-2.45%` |
+
+Incremental observations:
+
+- Item A hurt memory slightly.
+- Item B helped memory, hurt runtime slightly.
+- Item C improved both memory and runtime vs item B.
+- Item D regressed both vs item C.
+- Item E recovered most of item D regression.
+- Item F produced a large win in both memory and runtime.
+- Item G produced another large win in both memory and runtime.
+
+Current best in this sequence: `itemG_postfix_iterative`.
+
+### Helped-only confirmation
+
+After dropping the regressive classify-flag path (`itemD`/`itemE`) and keeping only helpful changes
+(`itemB` + `itemC` + `itemF` + `itemG`), a fresh verification run produced:
+
+- Label: `helped_only_final`
+- `allocs`: `101,288,831`
+- `req_bytes`: `3,449,550,344`
+- `mmap_bytes`: `3,454,582,784`
+- `stage3_real_s`: `13.64`
+
+This is slightly better memory than `itemG_postfix_iterative` while keeping runtime improved vs baseline.
