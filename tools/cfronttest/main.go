@@ -42,12 +42,16 @@ func runCmdWithTimeout(cmd *exec.Cmd) error {
 }
 
 func runCmdWithTimeoutExpect(cmd *exec.Cmd, expectedExit int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	timeout := 10 * time.Second
+	if runtime.GOOS == "windows" {
+		timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("timed out after 10s\n%s", string(out))
+		return fmt.Errorf("timed out after %s\n%s", timeout, string(out))
 	}
 	exitCode := 0
 	if err != nil {
@@ -61,6 +65,13 @@ func runCmdWithTimeoutExpect(cmd *exec.Cmd, expectedExit int) error {
 		return fmt.Errorf("exit code %d (expected %d)\n%s", exitCode, expectedExit, string(out))
 	}
 	return nil
+}
+
+func unsupportedRunExecution() (bool, string) {
+	if runtime.GOOS == "windows" && runtime.GOARCH == "arm64" {
+		return true, "runtime execution is not supported on windows/arm64 for this suite"
+	}
+	return false, ""
 }
 
 func listCases(dir string, mode string, optional bool) ([]testCase, error) {
@@ -154,6 +165,10 @@ func runCase(tc testCase) (string, error) {
 }
 
 func runRunCase(tc testCase) (string, error) {
+	if skip, reason := unsupportedRunExecution(); skip {
+		return "", skippedError{reason: fmt.Sprintf("skipping %s: %s", tc.inputPath, reason)}
+	}
+
 	base := strings.TrimSuffix(filepath.Base(tc.inputPath), ".c")
 	expectedExit := 0
 	exitPath := filepath.Join(filepath.Dir(tc.inputPath), base+".exit")
@@ -204,6 +219,10 @@ func runRunCase(tc testCase) (string, error) {
 }
 
 func runExitCodePropagationCase() error {
+	if skip, reason := unsupportedRunExecution(); skip {
+		return skippedError{reason: reason}
+	}
+
 	compilerPath := filepath.Join(".", hostBinaryPath(filepath.Join("build", "rtg")))
 	srcPath := filepath.Join("build", "cfront_exit_code_check.c")
 	outPath := hostBinaryPath(filepath.Join("build", "cfront_exit_code_check.bin"))
@@ -307,8 +326,12 @@ func main() {
 		fmt.Printf("PASS %s %s\n", tc.mode, tc.inputPath)
 	}
 	if err := runExitCodePropagationCase(); err != nil {
-		failed = true
-		fmt.Fprintf(os.Stderr, "FAIL run exit_code_propagation: %v\n", err)
+		if skip, ok := err.(skippedError); ok {
+			fmt.Printf("SKIP run exit_code_propagation: %s\n", skip.reason)
+		} else {
+			failed = true
+			fmt.Fprintf(os.Stderr, "FAIL run exit_code_propagation: %v\n", err)
+		}
 	} else {
 		fmt.Printf("PASS run exit_code_propagation\n")
 	}

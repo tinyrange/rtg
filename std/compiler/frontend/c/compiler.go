@@ -208,29 +208,31 @@ func aggregateTypeKey(keyword string, tag string) string {
 }
 
 func currentCTargetPtrSize() int64 {
+	ptrSize := int64(8)
 	if cAggregateLookupFunc != nil && cAggregateLookupFunc.c != nil && cAggregateLookupFunc.c.target != nil {
-		return int64(cAggregateLookupFunc.c.target.PtrSize)
+		ptrSize = int64(cAggregateLookupFunc.c.target.PtrSize)
+	} else if cAggregateLookupCompiler != nil && cAggregateLookupCompiler.target != nil {
+		ptrSize = int64(cAggregateLookupCompiler.target.PtrSize)
 	}
-	if cAggregateLookupCompiler != nil && cAggregateLookupCompiler.target != nil {
-		return int64(cAggregateLookupCompiler.target.PtrSize)
-	}
-	return 8
+	return ptrSize
 }
 
 func currentCTargetLongSize() int64 {
+	longSize := int64(8)
 	if cAggregateLookupFunc != nil && cAggregateLookupFunc.c != nil && cAggregateLookupFunc.c.target != nil {
 		if cAggregateLookupFunc.c.target.GOOS == "windows" {
-			return 4
+			longSize = 4
+		} else {
+			longSize = int64(cAggregateLookupFunc.c.target.PtrSize)
 		}
-		return int64(cAggregateLookupFunc.c.target.PtrSize)
-	}
-	if cAggregateLookupCompiler != nil && cAggregateLookupCompiler.target != nil {
+	} else if cAggregateLookupCompiler != nil && cAggregateLookupCompiler.target != nil {
 		if cAggregateLookupCompiler.target.GOOS == "windows" {
-			return 4
+			longSize = 4
+		} else {
+			longSize = int64(cAggregateLookupCompiler.target.PtrSize)
 		}
-		return int64(cAggregateLookupCompiler.target.PtrSize)
 	}
-	return 8
+	return longSize
 }
 
 func alignTo(n int64, align int64) int64 {

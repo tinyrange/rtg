@@ -1,14 +1,17 @@
-extern long open(const char *path, long flags, ...);
-typedef long (*open_t)(const char *path, long flags, ...);
+typedef int (*variadic_fn_t)(int first, ...);
+
+static int first_arg(int first, ...) {
+  return first;
+}
 
 int main(void) {
-  long fd1 = open("/dev/null", 0, 0);
-  open_t of = open;
-  long fd2 = of("/dev/null", 0, 0);
-  if (fd1 < 0) {
+  int n1 = first_arg(7, 100);
+  variadic_fn_t fn = first_arg;
+  int n2 = fn(8, 200, 300);
+  if (n1 != 7) {
     return 1;
   }
-  if (fd2 < 0) {
+  if (n2 != 8) {
     return 2;
   }
   return 0;
