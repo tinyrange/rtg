@@ -201,3 +201,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Scope note**
 - `55_stdlib_additions_extended` remains skipped on DOS for target capability reasons (`testing` timers), not allocator OOM.
+
+**Historical note**
+- PR #57 parser hot-path rewrites (`parseUnaryExpr` single-peek and iterative `parsePostfixOps`) caused wasm->native crosscompile instability (`cross_stage2 -h` segfault) and were reverted.
+- Required IR/runtime fixes for `SliceAppendU32LE`/`SliceAppendU64LE` resolution were retained independently of that parser revert.
