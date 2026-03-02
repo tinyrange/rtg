@@ -984,11 +984,24 @@ func (g *CodeGen) compileLoad(inst ir.Inst) {
 		return
 	}
 	g.TestRR(REG_RCX, REG_RCX)
+	if size == 0 {
+		size = 8
+	}
 	if size == 1 {
 		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.XorRR(REG_RAX, REG_RAX)
-		g.EmitBytes(0xeb, 0x04) // jmp +4 (skip load)
-		g.loadMemByte(REG_RAX, REG_RCX, offset)
+		g.EmitBytes(0xeb, 0x04)            // jmp +4 (skip load)
+		g.loadMemByte(REG_RAX, REG_RCX, 0) // movzx rax, byte [rcx]
+	} else if size == 2 {
+		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
+		g.XorRR(REG_RAX, REG_RAX)
+		g.EmitBytes(0xeb, 0x04)             // jmp +4 (skip load)
+		g.EmitBytes(0x48, 0x0f, 0xb7, 0x01) // movzx rax, word [rcx]
+	} else if size == 4 {
+		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
+		g.XorRR(REG_RAX, REG_RAX)
+		g.EmitBytes(0xeb, 0x02) // jmp +2 (skip load)
+		g.EmitBytes(0x8b, 0x01) // mov eax, [rcx]
 	} else {
 		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.XorRR(REG_RAX, REG_RAX)
@@ -1004,8 +1017,15 @@ func (g *CodeGen) compileStore(inst ir.Inst) {
 	// stack: ... value addr  → pop addr into rcx, pop value into rax, store
 	g.OpPop(REG_RCX) // addr
 	g.OpPop(REG_RAX) // value
+	if size == 0 {
+		size = 8
+	}
 	if size == 1 {
-		g.storeMemByte(REG_RCX, offset, REG_RAX)
+		g.EmitBytes(0x88, 0x01) // mov [rcx], al
+	} else if size == 2 {
+		g.EmitBytes(0x66, 0x89, 0x01) // mov [rcx], ax
+	} else if size == 4 {
+		g.EmitBytes(0x89, 0x01) // mov [rcx], eax
 	} else {
 		g.storeMem(REG_RCX, offset, REG_RAX)
 	}

@@ -3126,15 +3126,6 @@ func (fc *funcCompiler) resolveMemberField(ex *expr, diag bool) (cAggregateField
 	}
 	for _, f := range agg.Fields {
 		if f.Name == ex.member {
-			if f.Size > 1 {
-				word := int64(fc.c.target.PtrSize)
-				if word > 1 && (f.Offset%word) != 0 {
-					if diag {
-						fc.errorf(fc.sig.File, 0, 0, "member %q at byte offset %d is not yet supported on this target", ex.member, f.Offset)
-					}
-					return cAggregateField{}, false
-				}
-			}
 			return f, true
 		}
 	}

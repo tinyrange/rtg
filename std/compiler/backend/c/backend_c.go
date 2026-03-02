@@ -1079,6 +1079,7 @@ static rtg_word rtg_alloc(rtg_word sz) {
 
 static rtg_word rtg_load(rtg_word addr, int size) {
   if (addr == 0) return 0;
+  if (size <= 0 || size > RTG_WORD_BYTES) size = RTG_WORD_BYTES;
   if (size == 1) return (rtg_word)(*(unsigned char*)(rtg_size)addr);
   {
     rtg_word v = 0;
@@ -1098,6 +1099,7 @@ static void rtg_memzero(rtg_word addr, int n) {
 
 static void rtg_store(rtg_word addr, rtg_word v, int size) {
   if (addr == 0) return;
+  if (size <= 0 || size > RTG_WORD_BYTES) size = RTG_WORD_BYTES;
   if (size == 1) { *(unsigned char*)(rtg_size)addr = (unsigned char)(v & 0xffu); return; }
   {
     int i;

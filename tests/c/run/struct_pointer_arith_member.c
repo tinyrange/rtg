@@ -1,13 +1,19 @@
-struct Pair { int a; };
+struct Pair { int a; int b; };
 
 int main(void) {
-  int mem[2];
+  int mem[4];
   struct Pair *p = (struct Pair *)mem;
-  p->a = 5;
-  if (p->a != 5) {
+  struct Pair *q = p + 1;
+
+  p->a = 1;
+  p->b = 2;
+  q->a = 5;
+  q->b = 6;
+
+  if (p->a + p->b != 3) {
     return 1;
   }
-  if ((*p).a != 5) {
+  if (q->a + q->b != 11) {
     return 2;
   }
   return 0;

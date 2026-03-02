@@ -830,11 +830,19 @@ func (g *CodeGen) compileLoad_i386(inst ir.Inst) {
 		return
 	}
 	g.testRR32(REG32_ECX, REG32_ECX)
+	if size == 0 {
+		size = 4
+	}
 	if size == 1 {
+		g.emitBytes(0x75, 0x04)                  // jnz +4
+		g.xorRR32(REG32_EAX, REG32_EAX)          // 2 bytes
+		g.emitBytes(0xeb, 0x03)                  // jmp +3
+		g.loadMemByte32(REG32_EAX, REG32_ECX, 0) // movzx eax, byte [ecx]
+	} else if size == 2 {
 		g.emitBytes(0x75, 0x04)         // jnz +4
 		g.xorRR32(REG32_EAX, REG32_EAX) // 2 bytes
 		g.emitBytes(0xeb, 0x03)         // jmp +3
-		g.loadMemByte32(REG32_EAX, REG32_ECX, offset)
+		g.emitBytes(0x0f, 0xb7, 0x01)   // movzx eax, word [ecx]
 	} else {
 		g.emitBytes(0x75, 0x04)         // jnz +4
 		g.xorRR32(REG32_EAX, REG32_EAX) // 2 bytes
@@ -849,8 +857,13 @@ func (g *CodeGen) compileStore_i386(inst ir.Inst) {
 	offset := int(inst.Val)
 	g.opPop(REG32_ECX) // addr
 	g.opPop(REG32_EAX) // value
+	if size == 0 {
+		size = 4
+	}
 	if size == 1 {
-		g.storeMemByte32(REG32_ECX, offset, REG32_EAX)
+		g.storeMemByte32(REG32_ECX, 0, REG32_EAX)
+	} else if size == 2 {
+		g.emitBytes(0x66, 0x89, 0x01) // mov [ecx], ax
 	} else {
 		g.storeMem32(REG32_ECX, offset, REG32_EAX)
 	}

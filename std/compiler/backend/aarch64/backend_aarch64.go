@@ -1136,10 +1136,15 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 	doneFixup := g.emitB()
 	// load case:
 	g.patchArm64BCondAt(loadFixup, len(g.code))
+	if size == 0 {
+		size = 8
+	}
 	if size == 1 {
 		g.emitLdrb(REG_X0, REG_X1, offset)
+	} else if size == 2 {
+		g.emitLdrh(REG_X0, REG_X1, offset)
 	} else if size == 4 {
-		g.emitLdr32(REG_X0, REG_X1, offset)
+		g.emitLdrw(REG_X0, REG_X1, offset)
 	} else {
 		g.emitLdr(REG_X0, REG_X1, offset)
 	}
@@ -1152,10 +1157,15 @@ func (g *CodeGen) compileStoreArm64(inst ir.Inst) {
 	offset := int(inst.Val)
 	g.opPop(REG_X1) // addr
 	g.opPop(REG_X0) // value
+	if size == 0 {
+		size = 8
+	}
 	if size == 1 {
 		g.emitStrb(REG_X0, REG_X1, offset)
+	} else if size == 2 {
+		g.emitStrh(REG_X0, REG_X1, offset)
 	} else if size == 4 {
-		g.emitStr32(REG_X0, REG_X1, offset)
+		g.emitStrw(REG_X0, REG_X1, offset)
 	} else {
 		g.EmitStr(REG_X0, REG_X1, offset)
 	}
