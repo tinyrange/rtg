@@ -213,22 +213,6 @@ func foldSliceAppendU32LE(code []Inst) ([]Inst, bool) {
 	var out []Inst
 	i := 0
 	for i < len(code) {
-		if i+45 < len(code) && matchesSliceAppendU64LEWindow(code, i) {
-			v := code[i]
-			if !changed {
-				out = make([]Inst, 0, len(code))
-				out = append(out, code[:i]...)
-			}
-			out = append(out, v)
-			out = append(out, Inst{
-				Op:   OP_CALL,
-				Name: "runtime.SliceAppendU64LE",
-				Arg:  2,
-			})
-			changed = true
-			i += 46
-			continue
-		}
 		if i+21 < len(code) && matchesSliceAppendU32LEWindow(code, i) {
 			v := code[i]
 			if !changed {

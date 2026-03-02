@@ -201,3 +201,17 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Scope note**
 - `55_stdlib_additions_extended` remains skipped on DOS for target capability reasons (`testing` timers), not allocator OOM.
+
+### 15) `foldSliceAppendU64LE` can corrupt wasm-hosted crosscompile output
+
+**Symptom**
+- In `selfhost-wasm` CI, `crosscompile-wasm-native` produced a native stage2 binary that crashed on startup (`./build/cross_stage2 -h` segfault).
+
+**Root cause**
+- IR fold rewrote byte-wise 64-bit append sequences to `runtime.SliceAppendU64LE(hdr, v)`.
+- The helper takes `v uintptr`; when compiler host is wasm32 (`uintptr` = 32-bit), upper 32 bits of `v` are lost.
+- That truncation can corrupt emitted byte streams for non-wasm native outputs.
+
+**Fix/workaround used**
+- Keep the `u32` append fold.
+- Disable the `u64` append fold rewrite for now (safe behavior), leaving original byte-wise sequence intact.
