@@ -943,9 +943,13 @@ func (c *compiler) emitGlobalInit() {
 		if g.ObjectWords > 0 {
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: g.ObjectBase})
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: g.Index})
-			if len(g.Init) > 0 {
-				c.errorf(g.File, g.Line, g.Col, "aggregate object initializer for %s %q is not yet supported", g.AggregateKeyword, g.Name)
-			}
+			fc.emitAggregateObjectInitializer(g.Name, g.Index, true, cTypeInfo{
+				Kind:             g.Kind,
+				PtrDepth:         g.PtrDepth,
+				Base:             g.Base,
+				AggregateKeyword: g.AggregateKeyword,
+				AggregateTag:     g.AggregateTag,
+			}, g.Init, g.File, g.Line, g.Col)
 			continue
 		}
 		if g.Kind == cDeclArray {
@@ -2887,6 +2891,17 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 }
 
 func parseArrayInitializerExprs(init []Token, arrayLen int64) ([][]Token, error) {
+	out, err := parseBraceInitializerExprs(init)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(out)) > arrayLen {
+		return nil, fmt.Errorf("too many initializer elements (%d > %d)", len(out), arrayLen)
+	}
+	return out, nil
+}
+
+func parseBraceInitializerExprs(init []Token) ([][]Token, error) {
 	init = trimTokens(init)
 	if len(init) == 0 {
 		return nil, nil
@@ -2911,9 +2926,6 @@ func parseArrayInitializerExprs(init []Token, arrayLen int64) ([][]Token, error)
 			return nil, fmt.Errorf("nested initializer lists are not yet supported")
 		}
 		out = append(out, p)
-	}
-	if int64(len(out)) > arrayLen {
-		return nil, fmt.Errorf("too many initializer elements (%d > %d)", len(out), arrayLen)
 	}
 	return out, nil
 }
@@ -3600,8 +3612,58 @@ func (fc *funcCompiler) initLocalAggregateObject(name string, idx int, info cTyp
 	}
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
-	if len(init) > 0 {
-		fc.errorf(file, line, col, "aggregate object initializer for %s %q is not yet supported", info.AggregateKeyword, name)
+	fc.emitAggregateObjectInitializer(name, idx, false, info, init, file, line, col)
+}
+
+func (fc *funcCompiler) emitAggregateObjectInitializer(name string, ptrIdx int, ptrIsGlobal bool, info cTypeInfo, init []Token, file string, line int, col int) {
+	if len(init) == 0 {
+		return
+	}
+	agg, ok := fc.lookupAggregate(info.AggregateKeyword, info.AggregateTag)
+	if !ok || len(agg.Fields) == 0 {
+		fc.errorf(file, line, col, "aggregate object initializer for %s %q uses unknown/incomplete type", info.AggregateKeyword, name)
+		return
+	}
+	initElems, err := parseBraceInitializerExprs(init)
+	if err != nil {
+		fc.errorf(file, line, col, "invalid aggregate initializer for %s: %v", name, err)
+		return
+	}
+	if agg.IsUnion && len(initElems) > 1 {
+		fc.errorf(file, line, col, "union initializer for %s may only initialize the first member for now", name)
+		return
+	}
+	if len(initElems) > len(agg.Fields) {
+		fc.errorf(file, line, col, "too many aggregate initializer elements for %s (%d > %d)", name, len(initElems), len(agg.Fields))
+		return
+	}
+	for i, initExpr := range initElems {
+		field := agg.Fields[i]
+		if field.Type.Kind == cDeclArray {
+			fc.errorf(file, line, col, "aggregate initializer for %s member %q does not yet support array fields", name, field.Name)
+			continue
+		}
+		if field.Type.Kind == cDeclScalar && field.Type.AggregateKeyword != "" && field.Type.AggregateTag != "" && field.Type.PtrDepth == 0 {
+			fc.errorf(file, line, col, "aggregate initializer for %s member %q does not yet support nested aggregate values", name, field.Name)
+			continue
+		}
+		width, _, ok := fc.typeInfoSizeAlign(field.Type)
+		if !ok || width <= 0 {
+			fc.errorf(file, line, col, "aggregate initializer for %s member %q has unsupported type", name, field.Name)
+			continue
+		}
+		fc.emitExprTokens(file, line, col, initExpr)
+		fc.emitCastToType(field.Type)
+		if ptrIsGlobal {
+			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: ptrIdx})
+		} else {
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: ptrIdx})
+		}
+		if field.Offset != 0 {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: field.Offset})
+			fc.emit(ir.Inst{Op: ir.OP_ADD})
+		}
+		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(width)})
 	}
 }
 
