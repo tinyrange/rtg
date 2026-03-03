@@ -13,6 +13,19 @@ import (
 
 // GenerateLinuxELF compiles an IRModule to a Linux ARM64 ELF binary.
 func GenerateLinuxELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	elf, err := GenerateLinuxElfToBytes(target, irmod)
+	if err != nil {
+		return fmt.Errorf("generate ELF: %w", err)
+	}
+
+	if err := os.WriteFile(outputPath, elf, 0755); err != nil {
+		return fmt.Errorf("write output: %v", err)
+	}
+
+	return nil
+}
+
+func GenerateLinuxElfToBytes(target *common.Target, irmod *ir.IRModule) ([]byte, error) {
 	g := aarch64.NewCodeGen(target, irmod, 0x400000, 0, false)
 
 	// Emit _start entry point
@@ -37,17 +50,12 @@ func GenerateLinuxELF(target *common.Target, irmod *ir.IRModule, outputPath stri
 				seen[name] = true
 			}
 		}
-		return fmt.Errorf("%d unresolved calls", len(unresolved))
+		return nil, fmt.Errorf("%d unresolved calls", len(unresolved))
 	}
 
 	// Build and write ELF
 	elf := BuildELF64(g, irmod)
-	err := os.WriteFile(outputPath, elf, 0755)
-	if err != nil {
-		return fmt.Errorf("write output: %v", err)
-	}
-
-	return nil
+	return elf, nil
 }
 
 // emitStartArm64Linux generates the _start entry point for Linux ARM64.
