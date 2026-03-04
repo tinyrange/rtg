@@ -2,6 +2,8 @@
 
 package runtime
 
+const profileOpenFlags = 1537
+
 //rtg:linkstatic libSystem.dylib,_getenv,ptr
 func profileDarwinGetenv(name uintptr) (uintptr, uintptr, int32)
 

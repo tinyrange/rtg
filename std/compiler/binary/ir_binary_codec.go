@@ -9,6 +9,8 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+const IrBinaryEnabled = true
+
 var irBinaryMagic = []byte{'R', 'T', 'G', 'I', 'R', 'B', '1', 0}
 
 type irBinWriter struct {
