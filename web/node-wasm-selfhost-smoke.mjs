@@ -44,8 +44,6 @@ function parseArgs(argv) {
     fail(`unknown argument ${key}`);
   }
 
-  if (!out.compilerOut) fail("required argument --compiler-out is missing");
-  if (!out.smokeOut) fail("required argument --smoke-out is missing");
   return out;
 }
 
