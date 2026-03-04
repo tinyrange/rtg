@@ -13,6 +13,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#19` Unsigned arithmetic/comparison lowering still behaves as signed (`31`/`32`/`33` corpus cases).
 - `#20` Integer overflow semantics for fixed-width integers are still incorrect (`34`/`35`/`36` corpus cases).
 - `#21` WASM->native bootstrap currently converges one stage late (`cross_stage3 != cross_stage4`, `cross_stage4 == cross_stage5`).
+- `#22` Web playground WASI shim can emit host compiler binaries that are non-runnable (`darwin/arm64` repro).
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -130,6 +131,21 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Impact**
 - Indicates a remaining fixed-point issue in the wasm->native bootstrap path.
+
+### 22) Web playground WASI shim native compiler output not reliably runnable
+
+**Repro (2026-03-02)**
+- Using `web/compiler.wasm` with `web/wasi.js` in Node to compile `std/compiler` for `darwin/arm64` produced a Mach-O output (`build/web_stage1`) that exits with `137` when executed.
+- Host-native compile of the same target from `./build/rtg` runs normally on the same machine.
+
+**Current mitigation**
+- CI web smoke test now stays entirely inside WASM-in-Node:
+  - self-compile compiler to `wasi/wasm32`,
+  - run that generated compiler in WASM,
+  - compile and execute a WASM `PASS` smoke program.
+
+**Scope**
+- Confirmed on local `darwin/arm64` during workflow implementation; not yet triaged across other host targets.
 
 ### 1) ICE in `compileGlobalInits` for package-scope initializers (watch)
 

@@ -59,9 +59,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Build bootstrap compiler
         run: go build -o build/rtg${{ matrix.suffix }} ./std/compiler/
+
+      - name: Webpage WASM compiler smoke (Node)
+        run: |
+          ./build/rtg${{ matrix.suffix }} -T wasi/wasm32 -tags no_embed_std -o web/compiler.wasm ./std/compiler/
+          node web/bundle.js
+          node web/node-wasm-selfhost-smoke.mjs --platform "${{ matrix.target }}"
 
       - name: Native self-hosting (3-stage)
         run: |
