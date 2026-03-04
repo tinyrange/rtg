@@ -159,7 +159,7 @@ func Alloc(size int) uintptr {
 			heapChunk = next
 		}
 		// mmap(0, chunk, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
-		ptr, _, err := SysMmap(0, uintptr(chunk), 3, MmapAnonFlags, 0, 0)
+		ptr, _, err := SysMmap(0, uintptr(chunk), 3, MmapAnonFlags, ^uintptr(0), 0)
 		if err != 0 || ptr == 0 {
 			runtimePanic("out of memory")
 		}

@@ -227,7 +227,7 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 	case ir.OP_IFACE_CALL:
 		g.compileIfaceCallArm64(inst)
 	case ir.OP_PANIC:
-		if g.target.GOOS == "linux" {
+		if g.target.GOOS == "linux" || g.target.GOOS == "ccmetal" {
 			g.compilePanicArm64Linux()
 		} else if g.target.GOOS == "windows" {
 			g.compilePanicArm64Windows()

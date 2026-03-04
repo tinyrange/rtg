@@ -524,7 +524,7 @@ func trimLeftSpace(s string) string {
 
 // isKnownOS returns true if s is a known GOOS value.
 func isKnownOS(s string) bool {
-	return s == "linux" || s == "darwin" || s == "windows" || s == "freebsd" || s == "wasi" || s == "dos" || s == "c"
+	return s == "linux" || s == "darwin" || s == "windows" || s == "freebsd" || s == "wasi" || s == "dos" || s == "c" || s == "ccmetal"
 }
 
 // isKnownArch returns true if s is a known GOARCH value.

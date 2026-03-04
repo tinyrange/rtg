@@ -500,6 +500,11 @@ func main() {
 	} else if compileTarget.GOOS == "wasi" && compileTarget.GOARCH == "wasm32" {
 		compileTarget.BuildTags = append(compileTarget.BuildTags, "wasi")
 		compileTarget.BuildTags = append(compileTarget.BuildTags, "wasm32")
+	} else if compileTarget.GOOS == "ccmetal" {
+		compileTarget.BuildTags = append(compileTarget.BuildTags, "ccmetal")
+		compileTarget.BuildTags = append(compileTarget.BuildTags, compileTarget.GOARCH)
+		// ccmetal reuses linux-tagged stdlib/runtime sources.
+		compileTarget.BuildTags = append(compileTarget.BuildTags, "linux")
 	} else {
 		compileTarget.BuildTags = append(compileTarget.BuildTags, compileTarget.GOOS)
 		compileTarget.BuildTags = append(compileTarget.BuildTags, compileTarget.GOARCH)
@@ -519,6 +524,11 @@ func main() {
 	if compilerBuildGitHash != "" {
 		if _, ok := compileTarget.Defines["main.compilerBuildGitHash"]; !ok {
 			compileTarget.Defines["main.compilerBuildGitHash"] = compilerBuildGitHash
+		}
+	}
+	if compileTarget.GOOS == "ccmetal" {
+		if _, ok := compileTarget.Defines["runtime.GOOS"]; !ok {
+			compileTarget.Defines["runtime.GOOS"] = "ccmetal"
 		}
 	}
 	traceExit(10)
@@ -1254,6 +1264,7 @@ func possibleTargets() []string {
 	targets = common.AppendUnique(targets, "windows/386")
 	targets = common.AppendUnique(targets, "windows/arm64")
 	targets = common.AppendUnique(targets, "wasi/wasm32")
+	targets = common.AppendUnique(targets, "ccmetal/arm64")
 	targets = common.AppendUnique(targets, "dos/8086")
 	targets = common.AppendUnique(targets, "c")
 	targets = common.AppendUnique(targets, "c/16")

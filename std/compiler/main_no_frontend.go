@@ -170,6 +170,10 @@ func main() {
 	} else if targetGOOS == "wasi" && targetGOARCH == "wasm32" {
 		buildTags = append(buildTags, "wasi")
 		buildTags = append(buildTags, "wasm32")
+	} else if targetGOOS == "ccmetal" {
+		buildTags = append(buildTags, "ccmetal")
+		buildTags = append(buildTags, targetGOARCH)
+		buildTags = append(buildTags, "linux")
 	} else {
 		buildTags = append(buildTags, targetGOOS)
 		buildTags = append(buildTags, targetGOARCH)
@@ -210,6 +214,9 @@ func main() {
 		Profile:       profileMode,
 		CompilerDebug: compilerDebug,
 		StripBinary:   stripBinary,
+	}
+	if compileTarget.GOOS == "ccmetal" {
+		compileTarget.Defines["runtime.GOOS"] = "ccmetal"
 	}
 	err = backend.Generate(&compileTarget, irmod, outputPath)
 	if err != nil {
