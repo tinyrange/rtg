@@ -9,6 +9,11 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+const (
+	REG_X16 = 16
+	REG_X28 = 28
+)
+
 func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
 }
@@ -31,6 +36,14 @@ func generateLinuxArm64ELF(irmod *IRModule, outputPath string) error {
 
 func generateWinArm64PE(irmod *IRModule, outputPath string) error {
 	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
+}
+
+func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
+	panic("arm64 backend disabled")
+}
+
+func (g *CodeGen) PatchArm64BAt(branchInstOffset int, targetAddr uint64) {
+	panic("arm64 backend disabled")
 }
 
 func (g *CodeGen) EmitArm64(inst uint32)                            { panic("arm64 backend disabled") }

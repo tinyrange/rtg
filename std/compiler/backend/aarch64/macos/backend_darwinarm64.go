@@ -11,6 +11,11 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+// Generate compiles an IRModule to a macOS ARM64 Mach-O binary.
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return GenerateDarwin(target, irmod, outputPath)
+}
+
 // GenerateDarwin compiles an IRModule to a macOS ARM64 Mach-O binary.
 func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := aarch64.NewCodeGen(target, irmod, 0x100000000, 3, true)

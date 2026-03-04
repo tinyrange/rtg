@@ -11,6 +11,11 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+// Generate compiles an IRModule to a Linux ARM64 ELF binary.
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return GenerateLinuxELF(target, irmod, outputPath)
+}
+
 // GenerateLinuxELF compiles an IRModule to a Linux ARM64 ELF binary.
 func GenerateLinuxELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := aarch64.NewCodeGen(target, irmod, 0x400000, 0, false)

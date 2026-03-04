@@ -161,3 +161,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 		panic("ICE: unhandled opcode in 8086 backend")
 	}
 }
+
+func exeSegmentTooLarge(textSize uint32, dataSegSize uint32) bool {
+	return textSize >= segLimitU32 || dataSegSize >= segLimitU32
+}

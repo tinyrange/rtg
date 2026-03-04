@@ -11,6 +11,11 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+// Generate compiles an IRModule to a Windows ARM64 PE32+ executable.
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	return GenerateWinPE(target, irmod, outputPath)
+}
+
 // GenerateWinPE compiles an IRModule to a Windows ARM64 PE32+ executable.
 func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := aarch64.NewCodeGen(target, irmod, 0x140000000, 0, false)
