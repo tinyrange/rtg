@@ -303,6 +303,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 
 	c.compileAssembledFunctions()
 	c.rewriteProfileParentCalls()
+	c.insertDeferRecoverCallWrappers()
 	c.pruneDeferRecoverCallWrappers()
 	c.prunePanicPropagationChecks()
 
@@ -4828,28 +4829,16 @@ func (c *Compiler) emitCallWithPanicCheck(callName string, argCount int) {
 	if callName == "runtime.Alloc" && argCount == 1 {
 		c.emitProfileAllocSample()
 	}
-	if c.panicUnwindLabel >= 0 {
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
-	}
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: callName, Arg: argCount})
 	retCount := 1
 	if n, ok := c.funcRets[callName]; ok {
 		retCount = n
 	}
-	if c.panicUnwindLabel >= 0 {
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverAfterCall", Arg: 0})
-	}
 	c.emitPanicPropagationCheck(retCount)
 }
 
 func (c *Compiler) emitIfaceCallWithPanicCheck(callName string, argCount int, retCount int) {
-	if c.panicUnwindLabel >= 0 {
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
-	}
 	c.emit(ir.Inst{Op: ir.OP_IFACE_CALL, Name: callName, Arg: argCount})
-	if c.panicUnwindLabel >= 0 {
-		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverAfterCall", Arg: 0})
-	}
 	c.emitPanicPropagationCheck(retCount)
 }
 
@@ -7375,6 +7364,40 @@ func (c *Compiler) prunePanicPropagationChecks() {
 					i = j + 2
 					continue
 				}
+			}
+			out = append(out, f.Code[i])
+			i++
+		}
+		f.Code = out
+	}
+}
+
+func (c *Compiler) insertDeferRecoverCallWrappers() {
+	if c == nil || c.irmod == nil {
+		return
+	}
+	mayRecover := c.buildRecoverReachability()
+	for _, f := range c.irmod.Funcs {
+		if f == nil || len(f.Code) < 3 {
+			continue
+		}
+		if !c.deferRecoverWrapFuncs[f.Name] {
+			continue
+		}
+		out := make([]ir.Inst, 0, len(f.Code))
+		i := 0
+		for i < len(f.Code) {
+			if i+2 < len(f.Code) &&
+				(f.Code[i].Op == ir.OP_CALL || f.Code[i].Op == ir.OP_IFACE_CALL) &&
+				f.Code[i+1].Op == ir.OP_CALL &&
+				f.Code[i+1].Name == "runtime.PanicShouldUnwind" &&
+				f.Code[i+2].Op == ir.OP_JMP_IF_NOT &&
+				c.callMayReachRecover(f.Code[i], mayRecover) {
+				out = append(out, ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
+				out = append(out, f.Code[i])
+				out = append(out, ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverAfterCall", Arg: 0})
+				i++
+				continue
 			}
 			out = append(out, f.Code[i])
 			i++
