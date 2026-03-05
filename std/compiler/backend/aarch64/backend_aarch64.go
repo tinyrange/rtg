@@ -925,7 +925,7 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 	size := inst.Arg
 	offset := int(inst.Val)
 	g.opPop(REG_X1) // addr
-	if offset != 0 && inst.Name != ir.InstNonNilMemoryBase {
+	if offset != 0 && !ir.IsNonNilMemoryBase(inst.Name) {
 		// Preserve IR semantics: nil-guarded LOAD checks the effective address
 		// after OP_OFFSET, not the original base pointer.
 		if offset > 0 && offset < 4096 {
@@ -938,7 +938,7 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 		}
 		offset = 0
 	}
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		if size == 1 {
 			g.emitLdrb(REG_X0, REG_X1, offset)
 		} else {
@@ -1012,6 +1012,11 @@ func (g *CodeGen) compileIndexAddrArm64(elemSize int) {
 
 func (g *CodeGen) compileLenArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
+	if ir.IsNonNilMemoryBase(inst.Name) {
+		g.emitLdr(REG_X0, REG_X0, 8) // [header+8] = len
+		g.opPush(REG_X0)
+		return
+	}
 	g.emitCmpImm(REG_X0, 0)
 	nonNilFixup := g.emitBCond(COND_NE)
 	// nil: len = 0
@@ -1025,6 +1030,11 @@ func (g *CodeGen) compileLenArm64(inst ir.Inst) {
 
 func (g *CodeGen) compileCapArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
+	if ir.IsNonNilMemoryBase(inst.Name) {
+		g.emitLdr(REG_X0, REG_X0, 16) // [header+16] = cap
+		g.opPush(REG_X0)
+		return
+	}
 	g.emitCmpImm(REG_X0, 0)
 	nonNilFixup := g.emitBCond(COND_NE)
 	// nil: cap = 0

@@ -21,6 +21,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#27` Non-nil memory-base optimization currently stabilizes only for `LOAD` from `LOCAL_ADDR`; broader forms regress selfhosting.
 - `#28` Panic-propagation-check pruning is currently unsafe on `wasi/wasm32` selfhost (stage1 hits `map hash table full`).
 - `#29` `OFFSET+LOAD/STORE` folding currently causes wasm one-stage selfhost lag (`stage2 != stage3`, `stage3 == stage4`) without a wasm guard.
+- `#30` Non-void shared-return tail merge currently breaks wasm validation (`values remaining on stack at end of block`).
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -55,6 +56,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 10. `#25` Root-cause selfhost `os.OpenFile`/`os.WriteFile` create-mode mismatch and remove chmod workarounds.
 11. `#26` Make WASM stackifier robust to equivalent CFG forms (or formalize and enforce IR shape constraints in one place).
 12. `#27` Revisit non-nil memory-base optimization expansion (`LEN/CAP`, `GLOBAL_ADDR`, C backend direct-load path) with proof/validation coverage.
+13. `#30` Make wasm stackification tolerant of shared non-void return epilogues.
 
 ### 23) Struct field tags are not accepted by parser in selfhost path
 
@@ -116,18 +118,22 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 ### 27) Broader non-nil memory-base lowering can break selfhosting
 
 **Symptom**
-- During size optimization work, broad non-nil annotations for memory ops caused bootstrap regressions:
+- During size optimization work, enabling backend consumption of the non-nil marker more broadly caused bootstrap regressions:
   - `selfhost` stage2 compiler crashed (`Segmentation fault: 11`) on `darwin/arm64`.
-  - `selfhost-c` stage2 compiler also crashed when C backend consumed the same hint aggressively.
+- The same root issue also made some stage2 builds silently elide nil guards for unannotated `LOAD` operations, producing smaller-but-incorrect output and runtime crashes on nil dereference paths.
 
-**Impact**
-- Full cross-backend expansion of the optimization is currently unsafe.
+**Root cause**
+- In selfhosted compiler builds, direct checks like:
+  - `inst.Name == ir.InstNonNilMemoryBase`
+  could be lowered incorrectly in backend package code, effectively comparing against an empty-string header instead of `"$nonnull_base$"` in some cases.
+- This can cause unannotated instructions (`inst.Name == ""`) to be treated as non-nil hints.
 
 **Current mitigation**
-- Keep the optimization narrowly scoped:
-  - only annotate `OP_LOAD` (not `LEN/CAP`),
-  - only when immediately fed by `OP_LOCAL_ADDR`,
-  - keep C backend on the conservative guarded lowering path for now.
+- Avoid direct imported-const comparison in backend packages:
+  - use `ir.IsNonNilMemoryBase(inst.Name)` (comparison stays in package `ir`).
+- Keep conservative annotation production in IR:
+  - annotate only when immediately fed by `OP_LOCAL_ADDR` (now for `OP_LOAD`/`OP_LEN`/`OP_CAP`).
+- C backend remains conservative for now.
 
 ### 27) ARM64 operand-cache branch edges could desync virtual vs hardware value stack (resolved)
 
@@ -171,6 +177,18 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - Skip this fold in `ir/opt_ir.go` for `wasi/wasm32` targets until wasm path reaches stage2 fixed-point with the transform enabled.
+
+### 30) Non-void return tail-merge currently requires a wasm guard
+
+**Symptom**
+- Enabling IR shared-return tail merge for functions with non-zero `RetCount` causes `selfhost-wasm` validator failure:
+  - `Invalid input WebAssembly code ... type mismatch: values remaining on stack at end of block`.
+
+**Impact**
+- Prevents applying backend-independent non-void return-epilogue merging uniformly to wasm targets.
+
+**Current mitigation**
+- In `ir/opt_ir.go`, allow non-void return tail merge for non-wasm targets, but skip it for `wasi/wasm32` until wasm stackification handles the transformed CFG shape.
 
 ## Active / Watch Details
 

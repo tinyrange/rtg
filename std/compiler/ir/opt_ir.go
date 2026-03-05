@@ -584,8 +584,8 @@ func foldOffsetIntoMemoryOps(code []Inst) ([]Inst, bool) {
 	return out, true
 }
 
-// annotateNonNilMemoryBases marks selected LOAD instructions with a backend
-// hint when their input pointer is trivially non-nil.
+// annotateNonNilMemoryBases marks selected LOAD/LEN/CAP instructions with a
+// backend hint when their input pointer is trivially non-nil.
 //
 // The matcher is intentionally narrow to stay semantics-preserving across all
 // targets: it only recognizes immediate producers that are always non-nil.
@@ -600,7 +600,7 @@ func annotateNonNilMemoryBases(code []Inst) ([]Inst, bool) {
 
 	for i := 1; i < len(out); i++ {
 		cur := out[i]
-		if cur.Op != OP_LOAD {
+		if cur.Op != OP_LOAD && cur.Op != OP_LEN && cur.Op != OP_CAP {
 			continue
 		}
 		if cur.Name == InstNonNilMemoryBase {
