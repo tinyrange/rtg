@@ -1647,7 +1647,7 @@ func (g *WasmGen) compileLoad(inst ir.Inst) {
 		g.w.i32WrapI64()
 	}
 	if offset != 0 {
-		if inst.Name != ir.InstNonNilMemoryBase {
+		if !ir.IsNonNilMemoryBase(inst.Name) {
 			// Preserve IR semantics: nil-guarded LOAD checks the effective
 			// address after OP_OFFSET, not the original base pointer.
 			g.w.i32Const(int32(offset))
@@ -1659,7 +1659,7 @@ func (g *WasmGen) compileLoad(inst ir.Inst) {
 			g.w.op(OP_WASM_I32_ADD)
 		}
 	}
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		if size == 1 {
 			g.w.i32Load8u(0, memOffset)
 		} else {
@@ -1759,7 +1759,7 @@ func (g *WasmGen) compileIndexAddr(elemSize int) {
 func (g *WasmGen) compileLen(inst ir.Inst) {
 	// Stack: [headerPtr] → [length]
 	g.popType() // pop headerPtr
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		g.w.i32Load(2, 4) // len at offset 4
 		g.pushType(WASM_TYPE_I32)
 		return
@@ -1778,7 +1778,7 @@ func (g *WasmGen) compileLen(inst ir.Inst) {
 func (g *WasmGen) compileCap(inst ir.Inst) {
 	// Stack: [headerPtr] → [capacity]
 	g.popType() // pop headerPtr
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		g.w.i32Load(2, 8) // cap at offset 8 (2*4)
 		g.pushType(WASM_TYPE_I32)
 		return

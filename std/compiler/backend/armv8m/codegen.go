@@ -480,7 +480,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 				g.asm.EmitSubRRR(1, 1, 2)
 			}
 		}
-		if inst.Name == ir.InstNonNilMemoryBase {
+		if ir.IsNonNilMemoryBase(inst.Name) {
 			if inst.Arg == 1 {
 				g.asm.EmitLdrbImm(0, 1, 0)
 			} else if inst.Arg == 0 || inst.Arg >= 2 {
@@ -561,7 +561,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 		g.opPush(0)
 	case ir.OP_LEN:
 		g.opPop(0)
-		if inst.Name == ir.InstNonNilMemoryBase {
+		if ir.IsNonNilMemoryBase(inst.Name) {
 			g.asm.EmitLdrImm(0, 0, 1)
 			g.opPush(0)
 			return nil
@@ -578,7 +578,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 		g.opPush(0)
 	case ir.OP_CAP:
 		g.opPop(0)
-		if inst.Name == ir.InstNonNilMemoryBase {
+		if ir.IsNonNilMemoryBase(inst.Name) {
 			g.asm.EmitLdrImm(0, 0, 2)
 			g.opPush(0)
 			return nil

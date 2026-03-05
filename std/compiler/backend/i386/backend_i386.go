@@ -849,13 +849,13 @@ func (g *CodeGen) compileLoad_i386(inst ir.Inst) {
 	size := inst.Arg
 	offset := int(inst.Val)
 	g.opPop(REG32_ECX)
-	if offset != 0 && inst.Name != ir.InstNonNilMemoryBase {
+	if offset != 0 && !ir.IsNonNilMemoryBase(inst.Name) {
 		// Preserve IR semantics: nil-guarded LOAD checks the effective address
 		// after OP_OFFSET, not the original base pointer.
 		g.addRI32(REG32_ECX, int32(offset))
 		offset = 0
 	}
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		if size == 1 {
 			g.loadMemByte32(REG32_EAX, REG32_ECX, offset) // movzx eax, byte [ecx+off]
 		} else {
@@ -922,7 +922,7 @@ func (g *CodeGen) compileIndexAddr_i386(elemSize int) {
 
 func (g *CodeGen) compileLen_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		g.loadMem32(REG32_EAX, REG32_EAX, g.slotBytes_i386()) // len at offset ptr
 		g.opPush(REG32_EAX)
 		return
@@ -939,7 +939,7 @@ func (g *CodeGen) compileLen_i386(inst ir.Inst) {
 
 func (g *CodeGen) compileCap_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		g.loadMem32(REG32_EAX, REG32_EAX, 2*g.slotBytes_i386()) // cap at offset 2*ptr
 		g.opPush(REG32_EAX)
 		return

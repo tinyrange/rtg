@@ -1005,13 +1005,13 @@ func (g *CodeGen) compileLoad(inst ir.Inst) {
 	size := inst.Arg
 	offset := int(inst.Val)
 	g.OpPop(REG_RCX)
-	if offset != 0 && inst.Name != ir.InstNonNilMemoryBase {
+	if offset != 0 && !ir.IsNonNilMemoryBase(inst.Name) {
 		// Preserve IR semantics: nil-guarded LOAD checks the effective address
 		// after OP_OFFSET, not the original base pointer.
 		g.AddRI(REG_RCX, int32(offset))
 		offset = 0
 	}
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		if size == 1 {
 			g.loadMemByte(REG_RAX, REG_RCX, offset) // movzx rax, byte [rcx+off]
 		} else {
@@ -1080,7 +1080,7 @@ func (g *CodeGen) compileIndexAddr(elemSize int) {
 
 func (g *CodeGen) compileLen(inst ir.Inst) {
 	g.OpPop(REG_RAX)
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		g.LoadMem(REG_RAX, REG_RAX, 8)
 		g.OpPush(REG_RAX)
 		return
@@ -1095,7 +1095,7 @@ func (g *CodeGen) compileLen(inst ir.Inst) {
 
 func (g *CodeGen) compileCap(inst ir.Inst) {
 	g.OpPop(REG_RAX)
-	if inst.Name == ir.InstNonNilMemoryBase {
+	if ir.IsNonNilMemoryBase(inst.Name) {
 		g.LoadMem(REG_RAX, REG_RAX, 16) // cap at offset 16 (2*8)
 		g.OpPush(REG_RAX)
 		return

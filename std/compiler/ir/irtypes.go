@@ -127,6 +127,13 @@ const (
 	InstNonNilMemoryBase = "$nonnull_base$"
 )
 
+// IsNonNilMemoryBase reports whether inst.Name carries the non-nil base marker.
+// Keep this comparison in package ir to avoid imported-const comparison issues in
+// selfhosted backend builds.
+func IsNonNilMemoryBase(name string) bool {
+	return name == InstNonNilMemoryBase
+}
+
 // Inst represents a single IR instruction.
 type Inst struct {
 	Op    Opcode
