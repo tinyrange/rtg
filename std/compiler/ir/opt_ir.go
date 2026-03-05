@@ -6,6 +6,7 @@ import "j5.nz/rtg/std/compiler/common"
 func OptimizeIRModule(target *common.Target, irmod *IRModule) []string {
 	var errors []string
 	errors = append(errors, inlineZeroCallFuncs(irmod)...)
+	outlineCompositeLiteralCalls(target, irmod)
 	for _, f := range irmod.Funcs {
 		f.Code = optimizeIRFuncCode(target, f)
 	}
@@ -60,6 +61,11 @@ func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
 			changed = true
 		}
 
+		code, stepChanged = mergeReturnsToSharedEpilogue(code, f.RetCount)
+		if stepChanged {
+			changed = true
+		}
+
 		code, stepChanged = removeRedundantFallthroughJumps(code)
 		if stepChanged {
 			changed = true
@@ -79,6 +85,154 @@ func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
 	}
 
 	return code
+}
+
+func isBuiltinCompositeCall(inst Inst) bool {
+	return inst.Op == OP_CALL && len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite."
+}
+
+func compositeHelperName(fieldCount int) string {
+	// Keep helper names deterministic and compact without pulling in strconv.
+	if fieldCount < 0 {
+		fieldCount = -fieldCount
+	}
+	var buf [16]byte
+	i := len(buf)
+	if fieldCount == 0 {
+		i--
+		buf[i] = '0'
+	} else {
+		v := fieldCount
+		for v > 0 {
+			i--
+			buf[i] = common.HexDigit(byte(v & 0xF))
+			v = v >> 4
+		}
+	}
+	return "runtime.$rtgComposite$" + string(buf[i:len(buf)])
+}
+
+func targetWordSize(target *common.Target) int {
+	if target != nil {
+		if target.WordSize > 0 {
+			return target.WordSize
+		}
+		if target.PtrSize > 0 {
+			return target.PtrSize
+		}
+	}
+	return 8
+}
+
+func buildCompositeHelperFunc(name string, fieldCount int, wordSize int) *IRFunc {
+	// Layout: N params (field values) + 1 local for allocated pointer.
+	locals := make([]IRLocal, fieldCount+1)
+	for i := 0; i < fieldCount; i++ {
+		locals[i] = IRLocal{Name: "$f", Index: i, Width: 0}
+	}
+	ptrLocal := fieldCount
+	locals[ptrLocal] = IRLocal{Name: "$ptr", Index: ptrLocal, Width: 0}
+
+	structBytes := fieldCount * wordSize
+	code := make([]Inst, 0, 4+fieldCount*4)
+	code = append(code, Inst{Op: OP_CONST_I64, Val: int64(structBytes)})
+	code = append(code, Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
+	code = append(code, Inst{Op: OP_LOCAL_SET, Arg: ptrLocal})
+
+	for i := 0; i < fieldCount; i++ {
+		code = append(code, Inst{Op: OP_LOCAL_GET, Arg: i})        // value
+		code = append(code, Inst{Op: OP_LOCAL_GET, Arg: ptrLocal}) // base addr
+		if i != 0 {
+			code = append(code, Inst{Op: OP_OFFSET, Arg: i * wordSize})
+		}
+		code = append(code, Inst{Op: OP_STORE, Arg: 0})
+	}
+
+	code = append(code, Inst{Op: OP_LOCAL_GET, Arg: ptrLocal})
+	code = append(code, Inst{Op: OP_RETURN, Arg: 1})
+
+	return &IRFunc{
+		Name:     name,
+		Params:   fieldCount,
+		Locals:   locals,
+		RetCount: 1,
+		Code:     code,
+	}
+}
+
+// outlineCompositeLiteralCalls replaces repeated synthetic composite callsites:
+//
+//	CALL builtin.composite.<Type> (N fields)
+//
+// with shared per-arity helpers:
+//
+//	CALL runtime.$rtgComposite$NN
+//
+// so backends do not duplicate large constructor lowering at every callsite.
+func outlineCompositeLiteralCalls(target *common.Target, irmod *IRModule) {
+	if irmod == nil || len(irmod.Funcs) == 0 {
+		return
+	}
+
+	const minSitesToOutline = 2
+	counts := make(map[int]int)
+	existing := make(map[string]bool)
+	for _, f := range irmod.Funcs {
+		existing[f.Name] = true
+		for _, inst := range f.Code {
+			if isBuiltinCompositeCall(inst) && inst.Arg > 0 {
+				counts[inst.Arg] = counts[inst.Arg] + 1
+			}
+		}
+	}
+	if len(counts) == 0 {
+		return
+	}
+
+	// Deterministic arity order (insertion sort keeps code small).
+	var arities []int
+	for arity, count := range counts {
+		if count < minSitesToOutline {
+			continue
+		}
+		arities = append(arities, arity)
+	}
+	for i := 1; i < len(arities); i++ {
+		j := i
+		for j > 0 && arities[j] < arities[j-1] {
+			arities[j], arities[j-1] = arities[j-1], arities[j]
+			j--
+		}
+	}
+	if len(arities) == 0 {
+		return
+	}
+
+	wordSize := targetWordSize(target)
+	rewrite := make(map[int]string)
+	for _, arity := range arities {
+		name := compositeHelperName(arity)
+		rewrite[arity] = name
+		if existing[name] {
+			continue
+		}
+		irmod.Funcs = append(irmod.Funcs, buildCompositeHelperFunc(name, arity, wordSize))
+		existing[name] = true
+	}
+
+	for _, f := range irmod.Funcs {
+		for i := range f.Code {
+			inst := f.Code[i]
+			if !isBuiltinCompositeCall(inst) || inst.Arg <= 0 {
+				continue
+			}
+			name, ok := rewrite[inst.Arg]
+			if !ok || name == "" {
+				continue
+			}
+			f.Code[i].Name = name
+		}
+	}
 }
 
 // foldLocalAddImm rewrites:
@@ -378,8 +532,8 @@ func matchesSliceAppendU32LEWindow(code []Inst, i int) bool {
 	return true
 }
 
-// annotateNonNilMemoryBases marks selected LOAD instructions with a
-// backend hint when their input pointer is trivially non-nil.
+// annotateNonNilMemoryBases marks selected LOAD instructions with a backend
+// hint when their input pointer is trivially non-nil.
 //
 // The matcher is intentionally narrow to stay semantics-preserving across all
 // targets: it only recognizes immediate producers that are always non-nil.
@@ -528,6 +682,69 @@ func removeUnreachableIRCode(code []Inst) ([]Inst, bool) {
 		changed = true
 	}
 	return filtered, changed
+}
+
+// mergeReturnsToSharedEpilogue rewrites functions with multiple RETURN sites
+// to branch to one shared RETURN block.
+func mergeReturnsToSharedEpilogue(code []Inst, retCount int) ([]Inst, bool) {
+	if len(code) < 2 {
+		return code, false
+	}
+	// For non-void functions, RETURN carries result stack semantics in some
+	// backends (notably wasm), so merging via JMP is not always valid.
+	if retCount != 0 {
+		return code, false
+	}
+
+	returnCount := 0
+	lastReturnIdx := -1
+	for i, inst := range code {
+		if inst.Op == OP_RETURN {
+			returnCount++
+			lastReturnIdx = i
+		}
+	}
+	if returnCount <= 1 || lastReturnIdx < 0 {
+		return code, false
+	}
+
+	epLabel := nextFreshLabelID(code)
+	out := make([]Inst, 0, len(code)+1)
+	changed := false
+
+	for i, inst := range code {
+		if inst.Op != OP_RETURN {
+			out = append(out, inst)
+			continue
+		}
+		if i == lastReturnIdx {
+			out = append(out, Inst{Op: OP_LABEL, Arg: epLabel})
+			out = append(out, inst)
+			continue
+		}
+		out = append(out, Inst{Op: OP_JMP, Arg: epLabel})
+		changed = true
+	}
+
+	return out, changed
+}
+
+func nextFreshLabelID(code []Inst) int {
+	maxLabel := 0
+	found := false
+	for _, inst := range code {
+		if inst.Op != OP_LABEL {
+			continue
+		}
+		if !found || inst.Arg > maxLabel {
+			maxLabel = inst.Arg
+			found = true
+		}
+	}
+	if !found {
+		return 1
+	}
+	return maxLabel + 1
 }
 
 func removeRedundantFallthroughJumps(code []Inst) ([]Inst, bool) {

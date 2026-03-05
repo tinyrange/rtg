@@ -149,6 +149,7 @@ type Compiler struct {
 	assembleFuncs        map[string]assembleInfo
 	inAssembleBuilder    bool
 	entryFunc            string
+	deferRecoverWrapFuncs map[string]bool // function name → keep DeferRecoverBefore/AfterCall wrappers
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -212,6 +213,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		structTypeLookup:     make(map[string]structTypeLookupResult),
 		assembleFuncs:        make(map[string]assembleInfo),
 		entryFunc:            entryFunc,
+		deferRecoverWrapFuncs: make(map[string]bool),
 	}
 	c.initBuiltinTypes()
 
@@ -301,6 +303,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 
 	c.compileAssembledFunctions()
 	c.rewriteProfileParentCalls()
+	c.pruneDeferRecoverCallWrappers()
 
 	// Pass dispatch data to backend
 	c.irmod.TypeIDs = c.typeIDs
@@ -3477,6 +3480,7 @@ func (c *Compiler) compileDeferStmt(node *Node) {
 	if selectorIfaceRetCount >= 0 {
 		site.retCount = selectorIfaceRetCount
 	}
+	c.markDeferRecoverWrapTarget(site.callOp, site.callName)
 	site.argCount = len(call.Nodes)
 	captureArgs := c.localFuncCaptures[calleeName]
 	if localFuncTarget != "" {
@@ -3578,6 +3582,48 @@ func (c *Compiler) compileDeferStmt(node *Node) {
 
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: recIdx})
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
+}
+
+func (c *Compiler) markDeferRecoverWrapTarget(callOp ir.Opcode, callName string) {
+	if c == nil || callName == "" {
+		return
+	}
+	if c.deferRecoverWrapFuncs == nil {
+		c.deferRecoverWrapFuncs = make(map[string]bool)
+	}
+	if callOp == ir.OP_CALL {
+		c.deferRecoverWrapFuncs[callName] = true
+		return
+	}
+	if callOp != ir.OP_IFACE_CALL {
+		return
+	}
+	dot := lastIndexByteInString(callName, '.')
+	if dot < 0 || dot+1 >= len(callName) {
+		return
+	}
+	methodName := callName[dot+1:]
+	for key, resolved := range c.methodTable {
+		kdot := lastIndexByteInString(key, '.')
+		if kdot < 0 || kdot+1 >= len(key) {
+			continue
+		}
+		if key[kdot+1:] != methodName {
+			continue
+		}
+		c.deferRecoverWrapFuncs[resolved] = true
+	}
+}
+
+func lastIndexByteInString(s string, ch byte) int {
+	i := len(s) - 1
+	for i >= 0 {
+		if s[i] == ch {
+			return i
+		}
+		i--
+	}
+	return -1
 }
 
 func (c *Compiler) emitStoreDeferredArg(recLocal int, argIndex int) {
@@ -7059,6 +7105,142 @@ func (c *Compiler) rewriteProfileParentCalls() {
 			rewritten = append(rewritten, inst)
 		}
 		f.Code = rewritten
+	}
+}
+
+func (c *Compiler) buildRecoverReachability() map[string]bool {
+	mayRecover := make(map[string]bool)
+	if c == nil || c.irmod == nil {
+		return mayRecover
+	}
+	// Seed: functions that directly call runtime.Recover.
+	for _, f := range c.irmod.Funcs {
+		if f == nil {
+			continue
+		}
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CALL && inst.Name == "runtime.Recover" {
+				mayRecover[f.Name] = true
+				break
+			}
+		}
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, f := range c.irmod.Funcs {
+			if f == nil || mayRecover[f.Name] {
+				continue
+			}
+			i := 0
+			for i < len(f.Code) {
+				inst := f.Code[i]
+				switch inst.Op {
+				case ir.OP_CALL:
+					if mayRecover[inst.Name] {
+						mayRecover[f.Name] = true
+						changed = true
+						i = len(f.Code)
+						continue
+					}
+				case ir.OP_IFACE_CALL:
+					if c.ifaceCallMayReachRecover(inst.Name, mayRecover) {
+						mayRecover[f.Name] = true
+						changed = true
+						i = len(f.Code)
+						continue
+					}
+				}
+				i++
+			}
+		}
+	}
+	return mayRecover
+}
+
+func (c *Compiler) ifaceCallMayReachRecover(ifaceCallName string, mayRecover map[string]bool) bool {
+	dot := lastIndexByteInString(ifaceCallName, '.')
+	if dot < 0 || dot+1 >= len(ifaceCallName) {
+		return true
+	}
+	methodName := ifaceCallName[dot+1:]
+	found := false
+	for key, resolved := range c.methodTable {
+		kdot := lastIndexByteInString(key, '.')
+		if kdot < 0 || kdot+1 >= len(key) {
+			continue
+		}
+		if key[kdot+1:] != methodName {
+			continue
+		}
+		found = true
+		if mayRecover[resolved] {
+			return true
+		}
+	}
+	if !found {
+		// Unknown dynamic target set: keep wrappers conservatively.
+		return true
+	}
+	return false
+}
+
+func (c *Compiler) callMayReachRecover(inst ir.Inst, mayRecover map[string]bool) bool {
+	switch inst.Op {
+	case ir.OP_CALL:
+		if inst.Name == "" {
+			return true
+		}
+		// Unknown callee names are treated conservatively.
+		if mayRecover[inst.Name] {
+			return true
+		}
+		known := false
+		for _, f := range c.irmod.Funcs {
+			if f != nil && f.Name == inst.Name {
+				known = true
+				break
+			}
+		}
+		return !known
+	case ir.OP_IFACE_CALL:
+		return c.ifaceCallMayReachRecover(inst.Name, mayRecover)
+	default:
+		return false
+	}
+}
+
+func (c *Compiler) pruneDeferRecoverCallWrappers() {
+	if c == nil || c.irmod == nil {
+		return
+	}
+	mayRecover := c.buildRecoverReachability()
+	for _, f := range c.irmod.Funcs {
+		if f == nil || len(f.Code) < 3 {
+			continue
+		}
+		wrapEnabled := c.deferRecoverWrapFuncs[f.Name]
+		out := make([]ir.Inst, 0, len(f.Code))
+		i := 0
+		for i < len(f.Code) {
+			if i+2 < len(f.Code) &&
+				f.Code[i].Op == ir.OP_CALL && f.Code[i].Name == "runtime.DeferRecoverBeforeCall" &&
+				(f.Code[i+1].Op == ir.OP_CALL || f.Code[i+1].Op == ir.OP_IFACE_CALL) &&
+				f.Code[i+2].Op == ir.OP_CALL && f.Code[i+2].Name == "runtime.DeferRecoverAfterCall" {
+				callInst := f.Code[i+1]
+				keep := wrapEnabled && c.callMayReachRecover(callInst, mayRecover)
+				if keep {
+					out = append(out, f.Code[i], callInst, f.Code[i+2])
+				} else {
+					out = append(out, callInst)
+				}
+				i += 3
+				continue
+			}
+			out = append(out, f.Code[i])
+			i++
+		}
+		f.Code = out
 	}
 }
 
