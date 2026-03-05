@@ -1179,9 +1179,28 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		if f.Params > 0 {
 			cWritef(bp, "  for (i = %d; i >= 0; i--) locals[i] = rtg_pop();\n", f.Params-1)
 		}
-		for _, in := range f.Code {
+		i := 0
+		for i < len(f.Code) {
+			in := f.Code[i]
+			if in.Op == ir.OP_DROP {
+				drops := 1
+				j := i + 1
+				for j < len(f.Code) && f.Code[j].Op == ir.OP_DROP {
+					drops++
+					j++
+				}
+				if drops == 1 {
+					bp.WriteString("  (void)rtg_pop();\n")
+				} else {
+					cWritef(bp, "  if (g_sp < %d) rtg_fail(\"operand stack underflow\");\n", drops)
+					cWritef(bp, "  g_sp -= %d;\n", drops)
+				}
+				i = j
+				continue
+			}
 			if in.Op == ir.OP_LABEL {
 				cWritef(bp, "L_%d:\n", in.Arg)
+				i++
 				continue
 			}
 			switch in.Op {
@@ -1219,8 +1238,6 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			case ir.OP_GLOBAL_ADDR:
 				cWritef(bp, "  rtg_push((rtg_word)(rtg_size)&g_globals[%d]);\n", in.Arg)
 
-			case ir.OP_DROP:
-				bp.WriteString("  (void)rtg_pop();\n")
 			case ir.OP_DUP:
 				bp.WriteString("  t = rtg_pop(); rtg_push(t); rtg_push(t);\n")
 
@@ -1336,6 +1353,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			default:
 				return fmt.Errorf("unhandled opcode for C backend: %d", in.Op)
 			}
+			i++
 		}
 		bp.WriteString("}\n\n")
 		ir.FuncSizes = append(ir.FuncSizes, ir.FuncSize{Name: f.Name, Size: bp.Len() - funcStart})

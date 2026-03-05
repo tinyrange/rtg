@@ -84,8 +84,22 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 	}
 
 	// Compile ir.Instructions
-	for _, inst := range f.Code {
+	i := 0
+	for i < len(f.Code) {
+		inst := f.Code[i]
+		if inst.Op == ir.OP_DROP {
+			drops := 1
+			j := i + 1
+			for j < len(f.Code) && f.Code[j].Op == ir.OP_DROP {
+				drops++
+				j++
+			}
+			g.opDropN(drops)
+			i = j
+			continue
+		}
 		g.compileInst(inst)
+		i++
 	}
 
 	// Resolve jump fixups within this function
@@ -265,7 +279,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 		g.compileReturn(inst)
 
 	case ir.OP_LOAD:
-		g.compileLoad(inst.Arg)
+		g.compileLoad(inst)
 	case ir.OP_STORE:
 		g.compileStore(inst.Arg)
 	case ir.OP_OFFSET:
@@ -273,9 +287,9 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	case ir.OP_INDEX_ADDR:
 		g.compileIndexAddr(inst.Arg)
 	case ir.OP_LEN:
-		g.compileLen()
+		g.compileLen(inst)
 	case ir.OP_CAP:
-		g.compileCap()
+		g.compileCap(inst)
 
 	case ir.OP_CONVERT:
 		g.compileConvert(inst.Name)
@@ -987,8 +1001,18 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 
 // === Memory operations ===
 
-func (g *CodeGen) compileLoad(size int) {
+func (g *CodeGen) compileLoad(inst ir.Inst) {
+	size := inst.Arg
 	g.OpPop(REG_RCX)
+	if inst.Name == ir.InstNonNilMemoryBase {
+		if size == 1 {
+			g.loadMemByte(REG_RAX, REG_RCX, 0) // movzx rax, byte [rcx]
+		} else {
+			g.LoadMem(REG_RAX, REG_RCX, 0) // mov rax, [rcx]
+		}
+		g.OpPush(REG_RAX)
+		return
+	}
 	g.TestRR(REG_RCX, REG_RCX)
 	if size == 1 {
 		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
@@ -1045,8 +1069,13 @@ func (g *CodeGen) compileIndexAddr(elemSize int) {
 	g.OpPush(REG_RCX)
 }
 
-func (g *CodeGen) compileLen() {
+func (g *CodeGen) compileLen(inst ir.Inst) {
 	g.OpPop(REG_RAX)
+	if inst.Name == ir.InstNonNilMemoryBase {
+		g.LoadMem(REG_RAX, REG_RAX, 8)
+		g.OpPush(REG_RAX)
+		return
+	}
 	g.TestRR(REG_RAX, REG_RAX)
 	g.EmitBytes(0x75, 0x05)   // jnz +5 (skip zero case)
 	g.XorRR(REG_RAX, REG_RAX) // 3 bytes
@@ -1055,8 +1084,13 @@ func (g *CodeGen) compileLen() {
 	g.OpPush(REG_RAX)
 }
 
-func (g *CodeGen) compileCap() {
+func (g *CodeGen) compileCap(inst ir.Inst) {
 	g.OpPop(REG_RAX)
+	if inst.Name == ir.InstNonNilMemoryBase {
+		g.LoadMem(REG_RAX, REG_RAX, 16) // cap at offset 16 (2*8)
+		g.OpPush(REG_RAX)
+		return
+	}
 	g.TestRR(REG_RAX, REG_RAX)
 	g.EmitBytes(0x75, 0x05)         // jnz +5 (skip zero case)
 	g.XorRR(REG_RAX, REG_RAX)       // 3 bytes
