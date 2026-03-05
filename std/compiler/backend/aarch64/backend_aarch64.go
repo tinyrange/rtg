@@ -13,6 +13,11 @@ import (
 // X29 (FP) as frame pointer, X30 (LR) as link register.
 
 // CompileFuncArm64 generates ARM64 code for a single IR function.
+func (g *CodeGen) initOperandCacheArm64() {
+	g.configureOperandCache(REG_X26, REG_X27)
+}
+
+// CompileFuncArm64 generates ARM64 code for a single IR function.
 func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	if f.Native != nil {
 		if f.Native.Arch != "arm64" {
@@ -211,6 +216,7 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 	case ir.OP_JMP_IF:
 		g.opPop(REG_X0)
 		g.emitCmpImm(REG_X0, 0)
+		g.Flush()
 		fixup := g.emitBCond(COND_NE)
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
 			CodeOffset: fixup,
@@ -219,6 +225,7 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 	case ir.OP_JMP_IF_NOT:
 		g.opPop(REG_X0)
 		g.emitCmpImm(REG_X0, 0)
+		g.Flush()
 		fixup := g.emitBCond(COND_EQ)
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{
 			CodeOffset: fixup,
@@ -436,6 +443,7 @@ func (g *CodeGen) compileCompareJumpArm64(cond int, label int) {
 	g.opPop(REG_X0)
 	g.opPop(REG_X1)
 	g.emitCmpRR(REG_X1, REG_X0)
+	g.Flush()
 	fixup := g.emitBCond(cond)
 	g.jumpFixups = append(g.jumpFixups, JumpFixup{
 		CodeOffset: fixup,

@@ -36,6 +36,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#11` deferred `testing.FinishTest`/`FinishBenchmark` panic-sentinel recovery.
 - `#12` WASM validator/semantic failures in extended stdlib fixtures (`54`/`55`).
 - `#13` DOS/8086 COMEMU OOM for `54_stdlib_cli_core`.
+- `#27` ARM64 operand-cache branch-edge desync (`OP_JMP_IF*`/`OP_JMP_*` could skip cache materialization and corrupt x28).
 - Historical DOS map/slice COMEMU failures from logs (`map_literal`, `slice_ops`, `map_comma_ok`, `map_range`, `map_types`, `slice_append`, `slice_nested`, `slice_range`) now PASS.
 
 ## Work Order
@@ -125,6 +126,22 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
   - only annotate `OP_LOAD` (not `LEN/CAP`),
   - only when immediately fed by `OP_LOCAL_ADDR`,
   - keep C backend on the conservative guarded lowering path for now.
+
+### 27) ARM64 operand-cache branch edges could desync virtual vs hardware value stack (resolved)
+
+**Symptom**
+- Re-enabling ARM64 two-entry operand cache (`x26/x27`) made `selfhost` fail on stage1 execution with `EXC_BAD_ACCESS`.
+- `lldb` showed faults at generated `ldr x0, [x28]` with invalid `x28`.
+
+**Root cause**
+- Conditional IR jumps (`OP_JMP_IF`, `OP_JMP_IF_NOT`, and compare-jump forms) emitted `B.cond` without forcing cache materialization first.
+- Taken edges jumped directly to labels and skipped compile-time `Flush()` code emitted on fallthrough paths, so cache-resident operands were never written to the hardware value stack.
+
+**Resolution**
+- Flush before emitting ARM64 conditional branches for IR jump ops:
+  - in `compileInstArm64` for `OP_JMP_IF` / `OP_JMP_IF_NOT`,
+  - in `compileCompareJumpArm64`.
+- Also moved cache register initialization behind a tagged helper/stub so `no_backend_arm64` builds continue to compile.
 
 ## Active / Watch Details
 
