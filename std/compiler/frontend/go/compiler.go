@@ -304,6 +304,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 	c.compileAssembledFunctions()
 	c.rewriteProfileParentCalls()
 	c.pruneDeferRecoverCallWrappers()
+	c.prunePanicPropagationChecks()
 
 	// Pass dispatch data to backend
 	c.irmod.TypeIDs = c.typeIDs
@@ -7207,6 +7208,178 @@ func (c *Compiler) callMayReachRecover(inst ir.Inst, mayRecover map[string]bool)
 		return c.ifaceCallMayReachRecover(inst.Name, mayRecover)
 	default:
 		return false
+	}
+}
+
+func (c *Compiler) buildPanicReachability() map[string]bool {
+	mayPanic := make(map[string]bool)
+	if c == nil || c.irmod == nil {
+		return mayPanic
+	}
+	// Seed: functions that directly start panic-unwind.
+	for _, f := range c.irmod.Funcs {
+		if f == nil {
+			continue
+		}
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_PANIC {
+				mayPanic[f.Name] = true
+				break
+			}
+			if inst.Op == ir.OP_CALL && inst.Name == "runtime.PanicBegin" {
+				mayPanic[f.Name] = true
+				break
+			}
+		}
+	}
+	known := make(map[string]bool, len(c.irmod.Funcs))
+	for _, f := range c.irmod.Funcs {
+		if f != nil {
+			known[f.Name] = true
+		}
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, f := range c.irmod.Funcs {
+			if f == nil || mayPanic[f.Name] {
+				continue
+			}
+			i := 0
+			for i < len(f.Code) {
+				inst := f.Code[i]
+				switch inst.Op {
+				case ir.OP_CALL:
+					if inst.Name == "" {
+						mayPanic[f.Name] = true
+						changed = true
+						i = len(f.Code)
+						continue
+					}
+					if mayPanic[inst.Name] {
+						mayPanic[f.Name] = true
+						changed = true
+						i = len(f.Code)
+						continue
+					}
+					if !known[inst.Name] {
+						// Unknown calls are treated conservatively.
+						mayPanic[f.Name] = true
+						changed = true
+						i = len(f.Code)
+						continue
+					}
+				case ir.OP_IFACE_CALL:
+					// Interface dispatch is conservative for panic propagation: keep
+					// unwind checks through dynamic call chains.
+					mayPanic[f.Name] = true
+					changed = true
+					i = len(f.Code)
+					continue
+				}
+				i++
+			}
+		}
+	}
+	return mayPanic
+}
+
+func (c *Compiler) ifaceCallMayReachPanic(ifaceCallName string, mayPanic map[string]bool) bool {
+	dot := lastIndexByteInString(ifaceCallName, '.')
+	if dot < 0 || dot+1 >= len(ifaceCallName) {
+		return true
+	}
+	methodName := ifaceCallName[dot+1:]
+	found := false
+	for key, resolved := range c.methodTable {
+		kdot := lastIndexByteInString(key, '.')
+		if kdot < 0 || kdot+1 >= len(key) {
+			continue
+		}
+		if key[kdot+1:] != methodName {
+			continue
+		}
+		found = true
+		if mayPanic[resolved] {
+			return true
+		}
+	}
+	if !found {
+		// Unknown dynamic target set: keep checks conservatively.
+		return true
+	}
+	return false
+}
+
+func (c *Compiler) callMayTriggerPanic(inst ir.Inst, mayPanic map[string]bool) bool {
+	switch inst.Op {
+	case ir.OP_CALL:
+		if inst.Name == "" {
+			return true
+		}
+		if mayPanic[inst.Name] {
+			return true
+		}
+		known := false
+		for _, f := range c.irmod.Funcs {
+			if f != nil && f.Name == inst.Name {
+				known = true
+				break
+			}
+		}
+		return !known
+	case ir.OP_IFACE_CALL:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Compiler) prunePanicPropagationChecks() {
+	if c == nil || c.irmod == nil {
+		return
+	}
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		// WASM stackification currently relies on fully conservative panic
+		// propagation checks in self-hosted compiler builds.
+		return
+	}
+	mayPanic := c.buildPanicReachability()
+	for _, f := range c.irmod.Funcs {
+		if f == nil || len(f.Code) < 4 {
+			continue
+		}
+		out := make([]ir.Inst, 0, len(f.Code))
+		i := 0
+		for i < len(f.Code) {
+			if i+2 < len(f.Code) &&
+				(f.Code[i].Op == ir.OP_CALL || f.Code[i].Op == ir.OP_IFACE_CALL) &&
+				f.Code[i+1].Op == ir.OP_CALL &&
+				f.Code[i+1].Name == "runtime.PanicShouldUnwind" &&
+				f.Code[i+2].Op == ir.OP_JMP_IF_NOT {
+				callInst := f.Code[i]
+				continueLabel := f.Code[i+2].Arg
+				j := i + 3
+				for j < len(f.Code) && f.Code[j].Op == ir.OP_DROP {
+					j++
+				}
+				if j+1 < len(f.Code) &&
+					f.Code[j].Op == ir.OP_JMP &&
+					f.Code[j+1].Op == ir.OP_LABEL &&
+					f.Code[j+1].Arg == continueLabel {
+					if c.callMayTriggerPanic(callInst, mayPanic) {
+						out = append(out, f.Code[i:j+2]...)
+					} else {
+						out = append(out, callInst)
+					}
+					i = j + 2
+					continue
+				}
+			}
+			out = append(out, f.Code[i])
+			i++
+		}
+		f.Code = out
 	}
 }
 

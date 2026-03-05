@@ -19,6 +19,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#25` Selfhost-created files can ignore requested create permissions until an explicit `Chmod`.
 - `#26` WASM backend stackifier depends on specific short-circuit jump shape; generic CFG branch inversion can emit invalid WASM.
 - `#27` Non-nil memory-base optimization currently stabilizes only for `LOAD` from `LOCAL_ADDR`; broader forms regress selfhosting.
+- `#28` Panic-propagation-check pruning is currently unsafe on `wasi/wasm32` selfhost (stage1 hits `map hash table full`).
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -142,6 +143,19 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
   - in `compileInstArm64` for `OP_JMP_IF` / `OP_JMP_IF_NOT`,
   - in `compileCompareJumpArm64`.
 - Also moved cache register initialization behind a tagged helper/stub so `no_backend_arm64` builds continue to compile.
+
+### 28) Panic-propagation-check pruning currently requires a wasm guard
+
+**Symptom**
+- A frontend IR pass that prunes `runtime.PanicShouldUnwind` checks after calls proven non-panicking causes `selfhost-wasm` stage1 failure:
+  - `map hash table full`
+  - build target exits with status `2`.
+
+**Impact**
+- Prevents enabling this optimization uniformly for wasm-targeted compiler builds today.
+
+**Current mitigation**
+- Guard the pruning pass when compiling for `GOARCH=wasm32`; keep conservative panic checks on wasm.
 
 ## Active / Watch Details
 
