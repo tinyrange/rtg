@@ -76,8 +76,19 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	}
 
 	// Compile instructions
-	for _, inst := range f.Code {
+	if g.traceEnabled {
+		g.traceCurFuncInsts = make([]InstByteTrace, len(f.Code))
+	}
+	for i, inst := range f.Code {
+		if g.traceEnabled {
+			g.traceSetCurrentInst(i)
+		}
 		g.compileInstArm64(inst)
+	}
+	if g.traceEnabled {
+		g.traceClearCurrentInst()
+		g.traceByFunc[f.Name] = g.traceCurFuncInsts
+		g.traceCurFuncInsts = nil
 	}
 
 	// Resolve jump fixups within this function

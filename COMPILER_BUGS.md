@@ -14,6 +14,8 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#20` Integer overflow semantics for fixed-width integers are still incorrect (`34`/`35`/`36` corpus cases).
 - `#21` WASM->native bootstrap currently converges one stage late (`cross_stage3 != cross_stage4`, `cross_stage4 == cross_stage5`).
 - `#22` Web playground WASI shim can emit host compiler binaries that are non-runnable (`darwin/arm64` repro).
+- `#23` Parser rejects struct field tags in compiler sources (selfhost parse errors on backtick tags).
+- `#24` IR-binary input compiled for host target can ICE when retargeted to `linux/arm64` (`unknown intrinsic runtime.SysWrite`).
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -43,6 +45,33 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 6. `#21` Root-cause the one-stage WASM->native convergence lag and restore `stage3 == stage4`.
 7. `#14` Diagnose RTG x64 runtime crash in `55_stdlib_additions_extended`.
 8. Re-audit watch items `#1` and `#7`; close or replace with narrow repros.
+9. `#24` Decide whether cross-targeting from host-shaped IR binaries is supported; either hard-fail early with a clear diagnostic or lower required intrinsics for `linux/arm64`.
+
+### 23) Struct field tags are not accepted by parser in selfhost path
+
+**Symptom**
+- During `selfhost` flow, compiler source with struct tags (for example backtick-delimited tags in a codec struct) fails parse with:
+  - `expected IDENT, got RAW_STRING(...)`.
+
+**Impact**
+- Blocks use of standard Go struct tags in compiler/stdlib code paths intended to compile under RTG.
+
+**Current mitigation**
+- Avoid struct tags in RTG-compiled sources; use explicit field names/format conversion logic instead.
+
+### 24) Cross-targeting from host-shaped IR binary to `linux/arm64` can ICE on intrinsic lowering
+
+**Symptom**
+- Running backend-only codegen from a host-generated IR binary with retargeting:
+  - `./build/stage2_exp_backend -T linux/arm64 -from-ir-binary build/selfhost_exp_native.irb -o build/selfhost_exp_native_arm64`
+- Fails with:
+  - `ICE: unknown intrinsic 'runtime.SysWrite' in compileCallIntrinsicArm64`.
+
+**Impact**
+- Prevents this IR-binary reuse pattern for `linux/arm64`; failure mode is an ICE instead of a user-facing diagnostic.
+
+**Current mitigation**
+- Generate IR with matching target assumptions for the intended backend, or avoid cross-targeting this IR-binary path for `linux/arm64`.
 
 ## Active / Watch Details
 

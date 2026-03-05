@@ -51,9 +51,11 @@ type CodeGen struct {
 	// Pending push optimization: tracks a push that hasn't been emitted yet
 	hasPending bool
 	pendingReg int
+	pendingOwn int
 	cacheRegs  []int
 	cacheFree  []int
 	cacheStack []int
+	cacheOwn   []int
 
 	// Word size for the target architecture (8 for amd64, 4 for i386)
 	wordSize int
@@ -67,6 +69,22 @@ type CodeGen struct {
 	// Outlined intrinsic helpers
 	needTostringHelper bool
 	hasTostringHelper  bool
+
+	// Per-instruction machine-byte trace (enabled by -emit-ir-and-binary).
+	traceEnabled      bool
+	traceCurInst      int
+	traceForcedInst   int
+	traceCurFuncInsts []InstByteTrace
+	traceByFunc       map[string][]InstByteTrace
+}
+
+type InstByteSegment struct {
+	Start int
+	End   int
+}
+
+type InstByteTrace struct {
+	Segments []InstByteSegment
 }
 
 const outlinedTostringHelper = "$rtg.tostring$"
@@ -111,15 +129,22 @@ type machoSymEntry struct {
 // NewCodeGen creates an ARM64 code generator with initialized global/data layout.
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64, extraGlobals int, withGOT bool) *CodeGen {
 	g := &CodeGen{
-		target:        target,
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		baseAddr:      baseAddr,
-		irmod:         irmod,
-		wordSize:      8,
-		isArm64:       true,
+		target:          target,
+		funcOffsets:     make(map[string]int),
+		labelOffsets:    make(map[int]int),
+		stringMap:       make(map[string]int),
+		globalOffsets:   make([]int, len(irmod.Globals)),
+		baseAddr:        baseAddr,
+		irmod:           irmod,
+		wordSize:        8,
+		isArm64:         true,
+		pendingOwn:      -1,
+		traceEnabled:    target.EmitIRAndBinaryPath != "",
+		traceCurInst:    -1,
+		traceForcedInst: -1,
+	}
+	if g.traceEnabled {
+		g.traceByFunc = make(map[string][]InstByteTrace)
 	}
 	if withGOT {
 		g.gotEntries = make(map[string]int)
@@ -165,6 +190,80 @@ func (g *CodeGen) LookupFuncOffset(name string) (int, bool) {
 
 func (g *CodeGen) FuncOffsets() map[string]int {
 	return g.funcOffsets
+}
+
+func (g *CodeGen) FuncInstTraces() map[string][]InstByteTrace {
+	return g.traceByFunc
+}
+
+func (g *CodeGen) traceOwner() int {
+	if !g.traceEnabled {
+		return -1
+	}
+	owner := g.traceCurInst
+	if g.traceForcedInst >= 0 {
+		owner = g.traceForcedInst
+	}
+	if owner < 0 || owner >= len(g.traceCurFuncInsts) {
+		return -1
+	}
+	return owner
+}
+
+func (g *CodeGen) traceRecordCode(start int, end int) {
+	if !g.traceEnabled {
+		return
+	}
+	if end <= start {
+		return
+	}
+	owner := g.traceOwner()
+	if owner < 0 {
+		return
+	}
+	segments := g.traceCurFuncInsts[owner].Segments
+	if len(segments) > 0 {
+		last := len(segments) - 1
+		if segments[last].End == start {
+			segments[last].End = end
+			g.traceCurFuncInsts[owner].Segments = segments
+			return
+		}
+	}
+	segments = append(segments, InstByteSegment{Start: start, End: end})
+	g.traceCurFuncInsts[owner].Segments = segments
+}
+
+func (g *CodeGen) traceSetCurrentInst(owner int) {
+	if !g.traceEnabled {
+		return
+	}
+	g.traceCurInst = owner
+	g.traceForcedInst = -1
+}
+
+func (g *CodeGen) traceClearCurrentInst() {
+	if !g.traceEnabled {
+		return
+	}
+	g.traceCurInst = -1
+	g.traceForcedInst = -1
+}
+
+func (g *CodeGen) traceForceInst(owner int) int {
+	if !g.traceEnabled {
+		return -1
+	}
+	prev := g.traceForcedInst
+	g.traceForcedInst = owner
+	return prev
+}
+
+func (g *CodeGen) traceRestoreForcedInst(prev int) {
+	if !g.traceEnabled {
+		return
+	}
+	g.traceForcedInst = prev
 }
 
 // CompileModuleFuncs compiles all IR functions and records deterministic function offsets.
@@ -245,24 +344,34 @@ func (g *CodeGen) NeedTostringHelper() bool { return g.needTostringHelper }
 // === Shared byte emission ===
 
 func (g *CodeGen) emitByte(b byte) {
+	start := len(g.code)
 	g.code = append(g.code, b)
+	g.traceRecordCode(start, len(g.code))
 }
 
 func (g *CodeGen) emitBytes(bytes ...byte) {
+	start := len(g.code)
 	g.code = append(g.code, bytes...)
+	g.traceRecordCode(start, len(g.code))
 }
 
 func (g *CodeGen) emitU32(v uint32) {
+	start := len(g.code)
 	g.code = append(g.code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+	g.traceRecordCode(start, len(g.code))
 }
 
 func (g *CodeGen) emitU16(v uint16) {
+	start := len(g.code)
 	g.code = append(g.code, byte(v), byte(v>>8))
+	g.traceRecordCode(start, len(g.code))
 }
 
 func (g *CodeGen) emitU64(v uint64) {
+	start := len(g.code)
 	g.code = append(g.code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
 		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
+	g.traceRecordCode(start, len(g.code))
 }
 
 func (g *CodeGen) emitRodataU64(v uint64) {
@@ -523,22 +632,29 @@ func (g *CodeGen) Flush() {
 		if len(g.cacheStack) == 0 && !g.hasPending {
 			return
 		}
-		for _, reg := range g.cacheStack {
-			g.rawPush(reg)
+		for i, reg := range g.cacheStack {
+			owner := -1
+			if i < len(g.cacheOwn) {
+				owner = g.cacheOwn[i]
+			}
+			g.rawPushOwned(reg, owner)
 		}
 		if g.hasPending {
-			g.rawPush(g.pendingReg)
+			g.rawPushOwned(g.pendingReg, g.pendingOwn)
 		}
 		g.cacheStack = g.cacheStack[:0]
+		g.cacheOwn = g.cacheOwn[:0]
 		g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
 		g.hasPending = false
+		g.pendingOwn = -1
 		return
 	}
 	if !g.hasPending {
 		return
 	}
 	g.hasPending = false
-	g.rawPush(g.pendingReg)
+	g.rawPushOwned(g.pendingReg, g.pendingOwn)
+	g.pendingOwn = -1
 }
 
 func (g *CodeGen) configureOperandCache(regs ...int) {
@@ -548,7 +664,9 @@ func (g *CodeGen) configureOperandCache(regs ...int) {
 
 func (g *CodeGen) ClearOperandCache() {
 	g.hasPending = false
+	g.pendingOwn = -1
 	g.cacheStack = g.cacheStack[:0]
+	g.cacheOwn = g.cacheOwn[:0]
 	g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
 }
 
@@ -599,22 +717,39 @@ func (g *CodeGen) prepareForClobber(regs ...int) {
 	if len(g.cacheRegs) > 0 {
 		if len(g.cacheFree) == 0 {
 			spill := g.cacheStack[0]
-			g.rawPush(spill)
+			owner := -1
+			if len(g.cacheOwn) > 0 {
+				owner = g.cacheOwn[0]
+			}
+			g.rawPushOwned(spill, owner)
 			g.cacheStack = g.cacheStack[1:]
+			if len(g.cacheOwn) > 0 {
+				g.cacheOwn = g.cacheOwn[1:]
+			}
 			g.cacheFree = append(g.cacheFree, spill)
 		}
 		slot := len(g.cacheFree) - 1
 		dst := g.cacheFree[slot]
 		g.cacheFree = g.cacheFree[:slot]
+		prev := g.traceForceInst(g.pendingOwn)
 		g.moveReg(dst, g.pendingReg)
+		g.traceRestoreForcedInst(prev)
 		g.cacheStack = append(g.cacheStack, dst)
+		g.cacheOwn = append(g.cacheOwn, g.pendingOwn)
 		g.hasPending = false
+		g.pendingOwn = -1
 		return
 	}
 	g.Flush()
 }
 
 func (g *CodeGen) rawPush(reg int) {
+	g.rawPushOwned(reg, g.traceOwner())
+}
+
+func (g *CodeGen) rawPushOwned(reg int, owner int) {
+	prev := g.traceForceInst(owner)
+	defer g.traceRestoreForcedInst(prev)
 	if g.isArm64 {
 		// SUB X28, X28, #8; STR Xreg, [X28]
 		g.emitSubImm(REG_X28, REG_X28, 8)
@@ -715,29 +850,42 @@ func (g *CodeGen) opPush(reg int) {
 		if g.hasPending {
 			if len(g.cacheFree) == 0 {
 				spill := g.cacheStack[0]
-				g.rawPush(spill)
+				owner := -1
+				if len(g.cacheOwn) > 0 {
+					owner = g.cacheOwn[0]
+				}
+				g.rawPushOwned(spill, owner)
 				g.cacheStack = g.cacheStack[1:]
+				if len(g.cacheOwn) > 0 {
+					g.cacheOwn = g.cacheOwn[1:]
+				}
 				g.cacheFree = append(g.cacheFree, spill)
 			}
 			slot := len(g.cacheFree) - 1
 			dst := g.cacheFree[slot]
 			g.cacheFree = g.cacheFree[:slot]
+			prev := g.traceForceInst(g.pendingOwn)
 			g.moveReg(dst, g.pendingReg)
+			g.traceRestoreForcedInst(prev)
 			g.cacheStack = append(g.cacheStack, dst)
+			g.cacheOwn = append(g.cacheOwn, g.pendingOwn)
 		}
 		g.hasPending = true
 		g.pendingReg = reg
+		g.pendingOwn = g.traceOwner()
 		return
 	}
 	g.Flush()
 	g.hasPending = true
 	g.pendingReg = reg
+	g.pendingOwn = g.traceOwner()
 }
 
 func (g *CodeGen) opPop(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
 			g.hasPending = false
+			g.pendingOwn = -1
 			g.moveReg(reg, g.pendingReg)
 			return
 		}
@@ -745,6 +893,9 @@ func (g *CodeGen) opPop(reg int) {
 			last := len(g.cacheStack) - 1
 			src := g.cacheStack[last]
 			g.cacheStack = g.cacheStack[:last]
+			if len(g.cacheOwn) > last {
+				g.cacheOwn = g.cacheOwn[:last]
+			}
 			g.cacheFree = append(g.cacheFree, src)
 			g.moveReg(reg, src)
 			return
@@ -754,6 +905,7 @@ func (g *CodeGen) opPop(reg int) {
 	}
 	if g.hasPending {
 		g.hasPending = false
+		g.pendingOwn = -1
 		g.moveReg(reg, g.pendingReg)
 		return
 	}
@@ -808,12 +960,16 @@ func (g *CodeGen) opDrop() {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
 			g.hasPending = false
+			g.pendingOwn = -1
 			return
 		}
 		if len(g.cacheStack) > 0 {
 			last := len(g.cacheStack) - 1
 			g.cacheFree = append(g.cacheFree, g.cacheStack[last])
 			g.cacheStack = g.cacheStack[:last]
+			if len(g.cacheOwn) > last {
+				g.cacheOwn = g.cacheOwn[:last]
+			}
 			return
 		}
 		g.rawDrop()
@@ -821,6 +977,7 @@ func (g *CodeGen) opDrop() {
 	}
 	if g.hasPending {
 		g.hasPending = false
+		g.pendingOwn = -1
 		return
 	}
 	g.rawDrop()

@@ -81,6 +81,20 @@ jobs:
           mv build/stageN${{ matrix.suffix }} build/stage3${{ matrix.suffix }}
           cmp build/stage2${{ matrix.suffix }} build/stage3${{ matrix.suffix }}
 
+      - name: Text IR fixed-point self-hosting
+        run: |
+          set -euo pipefail
+          rm -f build/stage2_compiler_a.irt build/stage2_compiler_b.irt build/stage3_compiler.irt build/stage3_from_ir${{ matrix.suffix }} build/stage3_from_ir.ref${{ matrix.suffix }}
+          ./build/stage2${{ matrix.suffix }} -strict -T ${{ matrix.target }} -T ir -o - ./std/compiler/ > build/stage2_compiler_a.irt
+          ./build/stage2${{ matrix.suffix }} -strict -T ${{ matrix.target }} -T ir -o build/stage2_compiler_b.irt ./std/compiler/
+          cmp build/stage2_compiler_a.irt build/stage2_compiler_b.irt
+          ./build/stage2${{ matrix.suffix }} -strict -T ${{ matrix.target }} -F ir -o build/stage3_from_ir${{ matrix.suffix }} - < build/stage2_compiler_a.irt
+          ./build/stage3_from_ir${{ matrix.suffix }} -strict -T ${{ matrix.target }} -T ir -o - ./std/compiler/ > build/stage3_compiler.irt
+          cmp build/stage2_compiler_a.irt build/stage3_compiler.irt
+          cp build/stage3_from_ir${{ matrix.suffix }} build/stage3_from_ir.ref${{ matrix.suffix }}
+          ./build/stage3_from_ir${{ matrix.suffix }} -strict -T ${{ matrix.target }} -F ir -o build/stage3_from_ir${{ matrix.suffix }} - < build/stage3_compiler.irt
+          cmp build/stage3_from_ir.ref${{ matrix.suffix }} build/stage3_from_ir${{ matrix.suffix }}
+
       - name: Build Buildfile runner
         run: go build -o build/build${{ matrix.suffix }} ./tools/build.go
 

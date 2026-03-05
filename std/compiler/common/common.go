@@ -15,6 +15,7 @@ type Target struct {
 	Strict                bool
 	Profile               bool
 	CompilerDebug         bool
+	EmitIRAndBinaryPath   string
 	StripBinary           bool
 	StdlibIncludePaths    []string
 	StdlibIncludeExplicit bool

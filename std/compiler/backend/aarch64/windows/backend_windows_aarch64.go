@@ -46,6 +46,11 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 	}
 
 	// Build PE32+
+	if target.EmitIRAndBinaryPath != "" {
+		if err := aarch64.WriteIRAndBinaryDebug(target.EmitIRAndBinaryPath, irmod, g); err != nil {
+			return fmt.Errorf("write debug ir+binary: %v", err)
+		}
+	}
 	pe := BuildPE64(g, irmod)
 	err := os.WriteFile(outputPath, pe, 0755)
 	if err != nil {
