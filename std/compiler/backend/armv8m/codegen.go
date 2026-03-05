@@ -465,7 +465,21 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 	case ir.OP_RETURN:
 		g.emitEpilogue()
 	case ir.OP_LOAD:
+		memOff := int(inst.Val)
 		g.opPop(1)
+		if memOff != 0 {
+			if memOff >= 0 && memOff <= 255 {
+				g.asm.EmitAddsImm(1, uint8(memOff))
+			} else if memOff < 0 && -memOff <= 255 {
+				g.asm.EmitSubsImm(1, uint8(-memOff))
+			} else if memOff >= 0 {
+				g.loadImm32(2, uint32(memOff))
+				g.asm.EmitAddRRR(1, 1, 2)
+			} else {
+				g.loadImm32(2, uint32(-memOff))
+				g.asm.EmitSubRRR(1, 1, 2)
+			}
+		}
 		if inst.Name == ir.InstNonNilMemoryBase {
 			if inst.Arg == 1 {
 				g.asm.EmitLdrbImm(0, 1, 0)
@@ -494,8 +508,22 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 		g.asm.PatchBImm11(endJump, int32(endPos-(endJump+4)))
 		g.opPush(0)
 	case ir.OP_STORE:
+		memOff := int(inst.Val)
 		g.opPop(0) // addr
 		g.opPop(1) // value
+		if memOff != 0 {
+			if memOff >= 0 && memOff <= 255 {
+				g.asm.EmitAddsImm(0, uint8(memOff))
+			} else if memOff < 0 && -memOff <= 255 {
+				g.asm.EmitSubsImm(0, uint8(-memOff))
+			} else if memOff >= 0 {
+				g.loadImm32(2, uint32(memOff))
+				g.asm.EmitAddRRR(0, 0, 2)
+			} else {
+				g.loadImm32(2, uint32(-memOff))
+				g.asm.EmitSubRRR(0, 0, 2)
+			}
+		}
 		if inst.Arg == 1 {
 			g.asm.EmitStrbImm(1, 0, 0)
 		} else if inst.Arg == 0 || inst.Arg >= 2 {

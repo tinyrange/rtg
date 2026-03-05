@@ -129,9 +129,9 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 		g.ret16()
 
 	case ir.OP_LOAD:
-		g.memLoad(inst.Arg, inst.Name == ir.InstNonNilMemoryBase)
+		g.memLoad(inst.Arg, inst.Name == ir.InstNonNilMemoryBase, int(inst.Val))
 	case ir.OP_STORE:
-		g.memStore(inst.Arg)
+		g.memStore(inst.Arg, int(inst.Val))
 	case ir.OP_OFFSET:
 		g.offset(inst.Arg)
 	case ir.OP_INDEX_ADDR:

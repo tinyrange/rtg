@@ -281,7 +281,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	case ir.OP_LOAD:
 		g.compileLoad(inst)
 	case ir.OP_STORE:
-		g.compileStore(inst.Arg)
+		g.compileStore(inst)
 	case ir.OP_OFFSET:
 		g.compileOffset(inst)
 	case ir.OP_INDEX_ADDR:
@@ -1003,12 +1003,19 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 
 func (g *CodeGen) compileLoad(inst ir.Inst) {
 	size := inst.Arg
+	offset := int(inst.Val)
 	g.OpPop(REG_RCX)
+	if offset != 0 && inst.Name != ir.InstNonNilMemoryBase {
+		// Preserve IR semantics: nil-guarded LOAD checks the effective address
+		// after OP_OFFSET, not the original base pointer.
+		g.AddRI(REG_RCX, int32(offset))
+		offset = 0
+	}
 	if inst.Name == ir.InstNonNilMemoryBase {
 		if size == 1 {
-			g.loadMemByte(REG_RAX, REG_RCX, 0) // movzx rax, byte [rcx]
+			g.loadMemByte(REG_RAX, REG_RCX, offset) // movzx rax, byte [rcx+off]
 		} else {
-			g.LoadMem(REG_RAX, REG_RCX, 0) // mov rax, [rcx]
+			g.LoadMem(REG_RAX, REG_RCX, offset) // mov rax, [rcx+off]
 		}
 		g.OpPush(REG_RAX)
 		return
@@ -1017,25 +1024,27 @@ func (g *CodeGen) compileLoad(inst ir.Inst) {
 	if size == 1 {
 		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.XorRR(REG_RAX, REG_RAX)
-		g.EmitBytes(0xeb, 0x04)            // jmp +4 (skip load)
-		g.loadMemByte(REG_RAX, REG_RCX, 0) // movzx rax, byte [rcx]
+		g.EmitBytes(0xeb, 0x04) // jmp +4 (skip load)
+		g.loadMemByte(REG_RAX, REG_RCX, offset)
 	} else {
 		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.XorRR(REG_RAX, REG_RAX)
-		g.EmitBytes(0xeb, 0x03)        // jmp +3 (skip load)
-		g.LoadMem(REG_RAX, REG_RCX, 0) // mov rax, [rcx]
+		g.EmitBytes(0xeb, 0x03) // jmp +3 (skip load)
+		g.LoadMem(REG_RAX, REG_RCX, offset)
 	}
 	g.OpPush(REG_RAX)
 }
 
-func (g *CodeGen) compileStore(size int) {
+func (g *CodeGen) compileStore(inst ir.Inst) {
+	size := inst.Arg
+	offset := int(inst.Val)
 	// stack: ... value addr  → pop addr into rcx, pop value into rax, store
 	g.OpPop(REG_RCX) // addr
 	g.OpPop(REG_RAX) // value
 	if size == 1 {
-		g.EmitBytes(0x88, 0x01) // mov [rcx], al
+		g.storeMemByte(REG_RCX, offset, REG_RAX)
 	} else {
-		g.storeMem(REG_RCX, 0, REG_RAX)
+		g.storeMem(REG_RCX, offset, REG_RAX)
 	}
 }
 

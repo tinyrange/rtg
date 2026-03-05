@@ -467,9 +467,17 @@ func instArgs(inst ir.Inst, f *ir.IRFunc, irmod *ir.IRModule) string {
 		return " " + fmt.Sprintf("%d", arg)
 
 	case ir.OP_LOAD:
-		return " size=" + fmt.Sprintf("%d", arg)
+		s := " size=" + fmt.Sprintf("%d", arg)
+		if val != 0 {
+			s = s + " off=" + fmt.Sprintf("%d", val)
+		}
+		return s
 	case ir.OP_STORE:
-		return " size=" + fmt.Sprintf("%d", arg)
+		s := " size=" + fmt.Sprintf("%d", arg)
+		if val != 0 {
+			s = s + " off=" + fmt.Sprintf("%d", val)
+		}
+		return s
 	case ir.OP_OFFSET:
 		return " " + fmt.Sprintf("%d", arg)
 

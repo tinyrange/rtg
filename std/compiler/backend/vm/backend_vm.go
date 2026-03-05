@@ -1513,6 +1513,9 @@ func (vm *VM) execFunc(f *ir.IRFunc) {
 
 		case ir.OP_LOAD:
 			addr := vm.pop()
+			if inst.Val != 0 {
+				addr = addr + uint64(inst.Val)
+			}
 			n := inst.Arg
 			if n == 0 {
 				n = vm.config.WordSize
@@ -1521,6 +1524,9 @@ func (vm *VM) execFunc(f *ir.IRFunc) {
 
 		case ir.OP_STORE:
 			addr := vm.pop()
+			if inst.Val != 0 {
+				addr = addr + uint64(inst.Val)
+			}
 			val := vm.pop()
 			n := inst.Arg
 			if n == 0 {

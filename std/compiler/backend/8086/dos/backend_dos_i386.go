@@ -546,8 +546,11 @@ func (g *CodeGen) jccNearRel16(cc byte) int {
 
 // ===== Memory / pointer ops =====
 
-func (g *CodeGen) memLoad(size int, nonNil bool) {
+func (g *CodeGen) memLoad(size int, nonNil bool, offset int) {
 	g.opPop(REG16_BX) // addr
+	if offset != 0 {
+		g.addImm16(REG16_BX, int16(offset))
+	}
 	if nonNil {
 		if size == 1 {
 			g.emitBytes(0x30, 0xE4) // xor ah, ah
@@ -578,8 +581,11 @@ func (g *CodeGen) memLoad(size int, nonNil bool) {
 	g.opPush(REG16_AX)
 }
 
-func (g *CodeGen) memStore(size int) {
+func (g *CodeGen) memStore(size int, offset int) {
 	g.opPop(REG16_BX) // addr
+	if offset != 0 {
+		g.addImm16(REG16_BX, int16(offset))
+	}
 	g.opPop(REG16_AX) // value
 	if size == 1 {
 		// mov [bx], al

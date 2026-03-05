@@ -20,6 +20,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#26` WASM backend stackifier depends on specific short-circuit jump shape; generic CFG branch inversion can emit invalid WASM.
 - `#27` Non-nil memory-base optimization currently stabilizes only for `LOAD` from `LOCAL_ADDR`; broader forms regress selfhosting.
 - `#28` Panic-propagation-check pruning is currently unsafe on `wasi/wasm32` selfhost (stage1 hits `map hash table full`).
+- `#29` `OFFSET+LOAD/STORE` folding currently causes wasm one-stage selfhost lag (`stage2 != stage3`, `stage3 == stage4`) without a wasm guard.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -156,6 +157,20 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - Guard the pruning pass when compiling for `GOARCH=wasm32`; keep conservative panic checks on wasm.
+
+### 29) `OFFSET+LOAD/STORE` fold currently requires a wasm guard
+
+**Symptom**
+- Enabling backend-independent `OFFSET+LOAD/STORE` fusion for all targets made `selfhost-wasm` lose fixed-point at stage2:
+  - `build/stage2.wasm != build/stage3.wasm`
+  - extra stage converges:
+    - `build/stage3.wasm == build/stage4.wasm`.
+
+**Impact**
+- Breaks strict wasm selfhost convergence expectations (`stage2 == stage3`) for this optimization.
+
+**Current mitigation**
+- Skip this fold in `ir/opt_ir.go` for `wasi/wasm32` targets until wasm path reaches stage2 fixed-point with the transform enabled.
 
 ## Active / Watch Details
 

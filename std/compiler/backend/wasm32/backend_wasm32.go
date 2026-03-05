@@ -1395,7 +1395,7 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 	case ir.OP_LOAD:
 		g.compileLoad(inst)
 	case ir.OP_STORE:
-		g.compileStore(inst.Arg)
+		g.compileStore(inst)
 	case ir.OP_OFFSET:
 		g.compileOffset(inst)
 	case ir.OP_INDEX_ADDR:
@@ -1633,17 +1633,37 @@ func (g *WasmGen) compileGlobalAddr(inst ir.Inst) {
 
 func (g *WasmGen) compileLoad(inst ir.Inst) {
 	size := inst.Arg
+	offset := inst.Val
+	memOffset := uint32(0)
+	useMemOffset := false
+	if offset >= 0 && offset <= 0xFFFFFFFF {
+		memOffset = uint32(offset)
+		useMemOffset = true
+	}
 	// Stack: [addr] → [value]
 	// addr is always i32, result is always i32
 	t := g.popType()
 	if t == WASM_TYPE_I64 {
 		g.w.i32WrapI64()
 	}
+	if offset != 0 {
+		if inst.Name != ir.InstNonNilMemoryBase {
+			// Preserve IR semantics: nil-guarded LOAD checks the effective
+			// address after OP_OFFSET, not the original base pointer.
+			g.w.i32Const(int32(offset))
+			g.w.op(OP_WASM_I32_ADD)
+			memOffset = 0
+			useMemOffset = false
+		} else if !useMemOffset {
+			g.w.i32Const(int32(offset))
+			g.w.op(OP_WASM_I32_ADD)
+		}
+	}
 	if inst.Name == ir.InstNonNilMemoryBase {
 		if size == 1 {
-			g.w.i32Load8u(0, 0)
+			g.w.i32Load8u(0, memOffset)
 		} else {
-			g.w.i32Load(2, 0)
+			g.w.i32Load(2, memOffset)
 		}
 		g.pushType(WASM_TYPE_I32)
 		return
@@ -1655,15 +1675,23 @@ func (g *WasmGen) compileLoad(inst ir.Inst) {
 	g.w.elseOp()
 	g.w.localGet(uint32(g.tempLocal))
 	if size == 1 {
-		g.w.i32Load8u(0, 0)
+		g.w.i32Load8u(0, memOffset)
 	} else {
-		g.w.i32Load(2, 0)
+		g.w.i32Load(2, memOffset)
 	}
 	g.w.end()
 	g.pushType(WASM_TYPE_I32)
 }
 
-func (g *WasmGen) compileStore(size int) {
+func (g *WasmGen) compileStore(inst ir.Inst) {
+	size := inst.Arg
+	offset := inst.Val
+	memOffset := uint32(0)
+	useMemOffset := false
+	if offset >= 0 && offset <= 0xFFFFFFFF {
+		memOffset = uint32(offset)
+		useMemOffset = true
+	}
 	// IR stack: [value, addr] (addr on top)
 	// WASM i32.store wants: [addr, value]
 	addrType := g.popType()
@@ -1680,11 +1708,15 @@ func (g *WasmGen) compileStore(size int) {
 	temp2 := uint32(g.tempLocal + 1)
 	g.w.localSet(temp2)
 	g.w.localGet(uint32(g.tempLocal))
+	if offset != 0 && !useMemOffset {
+		g.w.i32Const(int32(offset))
+		g.w.op(OP_WASM_I32_ADD)
+	}
 	g.w.localGet(temp2)
 	if size == 1 {
-		g.w.i32Store8(0, 0)
+		g.w.i32Store8(0, memOffset)
 	} else {
-		g.w.i32Store(2, 0)
+		g.w.i32Store(2, memOffset)
 	}
 }
 
