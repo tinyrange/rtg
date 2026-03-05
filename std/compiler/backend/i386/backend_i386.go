@@ -246,7 +246,7 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	case ir.OP_LOAD:
 		g.compileLoad_i386(inst)
 	case ir.OP_STORE:
-		g.compileStore_i386(inst.Arg)
+		g.compileStore_i386(inst)
 	case ir.OP_OFFSET:
 		g.compileOffset_i386(inst)
 	case ir.OP_INDEX_ADDR:
@@ -846,38 +846,47 @@ func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 
 func (g *CodeGen) compileLoad_i386(inst ir.Inst) {
 	size := inst.Arg
+	offset := int(inst.Val)
 	g.opPop(REG32_ECX)
+	if offset != 0 && inst.Name != ir.InstNonNilMemoryBase {
+		// Preserve IR semantics: nil-guarded LOAD checks the effective address
+		// after OP_OFFSET, not the original base pointer.
+		g.addRI32(REG32_ECX, int32(offset))
+		offset = 0
+	}
 	if inst.Name == ir.InstNonNilMemoryBase {
 		if size == 1 {
-			g.loadMemByte32(REG32_EAX, REG32_ECX, 0) // movzx eax, byte [ecx]
+			g.loadMemByte32(REG32_EAX, REG32_ECX, offset) // movzx eax, byte [ecx+off]
 		} else {
-			g.loadMem32(REG32_EAX, REG32_ECX, 0) // mov eax, [ecx]
+			g.loadMem32(REG32_EAX, REG32_ECX, offset) // mov eax, [ecx+off]
 		}
 		g.opPush(REG32_EAX)
 		return
 	}
 	g.testRR32(REG32_ECX, REG32_ECX)
 	if size == 1 {
-		g.emitBytes(0x75, 0x04)                  // jnz +4
-		g.xorRR32(REG32_EAX, REG32_EAX)          // 2 bytes
-		g.emitBytes(0xeb, 0x03)                  // jmp +3
-		g.loadMemByte32(REG32_EAX, REG32_ECX, 0) // movzx eax, byte [ecx]
+		g.emitBytes(0x75, 0x04)         // jnz +4
+		g.xorRR32(REG32_EAX, REG32_EAX) // 2 bytes
+		g.emitBytes(0xeb, 0x03)         // jmp +3
+		g.loadMemByte32(REG32_EAX, REG32_ECX, offset)
 	} else {
-		g.emitBytes(0x75, 0x04)              // jnz +4
-		g.xorRR32(REG32_EAX, REG32_EAX)      // 2 bytes
-		g.emitBytes(0xeb, 0x02)              // jmp +2
-		g.loadMem32(REG32_EAX, REG32_ECX, 0) // mov eax, [ecx]
+		g.emitBytes(0x75, 0x04)         // jnz +4
+		g.xorRR32(REG32_EAX, REG32_EAX) // 2 bytes
+		g.emitBytes(0xeb, 0x02)         // jmp +2
+		g.loadMem32(REG32_EAX, REG32_ECX, offset)
 	}
 	g.opPush(REG32_EAX)
 }
 
-func (g *CodeGen) compileStore_i386(size int) {
+func (g *CodeGen) compileStore_i386(inst ir.Inst) {
+	size := inst.Arg
+	offset := int(inst.Val)
 	g.opPop(REG32_ECX) // addr
 	g.opPop(REG32_EAX) // value
 	if size == 1 {
-		g.storeMemByte32(REG32_ECX, 0, REG32_EAX)
+		g.storeMemByte32(REG32_ECX, offset, REG32_EAX)
 	} else {
-		g.storeMem32(REG32_ECX, 0, REG32_EAX)
+		g.storeMem32(REG32_ECX, offset, REG32_EAX)
 	}
 }
 

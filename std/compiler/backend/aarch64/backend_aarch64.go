@@ -254,7 +254,7 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 	case ir.OP_LOAD:
 		g.compileLoadArm64(inst)
 	case ir.OP_STORE:
-		g.compileStoreArm64(inst.Arg)
+		g.compileStoreArm64(inst)
 	case ir.OP_OFFSET:
 		g.compileOffsetArm64(inst)
 	case ir.OP_INDEX_ADDR:
@@ -922,12 +922,26 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 
 func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 	size := inst.Arg
+	offset := int(inst.Val)
 	g.opPop(REG_X1) // addr
+	if offset != 0 && inst.Name != ir.InstNonNilMemoryBase {
+		// Preserve IR semantics: nil-guarded LOAD checks the effective address
+		// after OP_OFFSET, not the original base pointer.
+		if offset > 0 && offset < 4096 {
+			g.emitAddImm(REG_X1, REG_X1, uint32(offset))
+		} else if offset < 0 && -offset < 4096 {
+			g.emitSubImm(REG_X1, REG_X1, uint32(-offset))
+		} else {
+			g.EmitLoadImm64Compact(REG_X0, uint64(int64(offset)))
+			g.EmitAddRR(REG_X1, REG_X1, REG_X0)
+		}
+		offset = 0
+	}
 	if inst.Name == ir.InstNonNilMemoryBase {
 		if size == 1 {
-			g.emitLdrb(REG_X0, REG_X1, 0)
+			g.emitLdrb(REG_X0, REG_X1, offset)
 		} else {
-			g.emitLdr(REG_X0, REG_X1, 0)
+			g.emitLdr(REG_X0, REG_X1, offset)
 		}
 		g.opPush(REG_X0)
 		return
@@ -940,21 +954,23 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 	// load case:
 	g.patchArm64BCondAt(loadFixup, len(g.code))
 	if size == 1 {
-		g.emitLdrb(REG_X0, REG_X1, 0)
+		g.emitLdrb(REG_X0, REG_X1, offset)
 	} else {
-		g.emitLdr(REG_X0, REG_X1, 0)
+		g.emitLdr(REG_X0, REG_X1, offset)
 	}
 	g.PatchArm64BAt(doneFixup, len(g.code))
 	g.opPush(REG_X0)
 }
 
-func (g *CodeGen) compileStoreArm64(size int) {
+func (g *CodeGen) compileStoreArm64(inst ir.Inst) {
+	size := inst.Arg
+	offset := int(inst.Val)
 	g.opPop(REG_X1) // addr
 	g.opPop(REG_X0) // value
 	if size == 1 {
-		g.emitStrb(REG_X0, REG_X1, 0)
+		g.emitStrb(REG_X0, REG_X1, offset)
 	} else {
-		g.EmitStr(REG_X0, REG_X1, 0)
+		g.EmitStr(REG_X0, REG_X1, offset)
 	}
 }
 

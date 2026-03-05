@@ -1279,16 +1279,28 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(a == 0));\n")
 
 			case ir.OP_LOAD:
-				if in.Arg == 0 {
-					bp.WriteString("  a = rtg_pop(); rtg_push(rtg_load(a, RTG_WORD_BYTES));\n")
+				if in.Val == 0 {
+					if in.Arg == 0 {
+						bp.WriteString("  a = rtg_pop(); rtg_push(rtg_load(a, RTG_WORD_BYTES));\n")
+					} else {
+						cWritef(bp, "  a = rtg_pop(); rtg_push(rtg_load(a, %d));\n", in.Arg)
+					}
+				} else if in.Arg == 0 {
+					cWritef(bp, "  a = rtg_pop(); rtg_push(rtg_load(a + (rtg_word)%d, RTG_WORD_BYTES));\n", in.Val)
 				} else {
-					cWritef(bp, "  a = rtg_pop(); rtg_push(rtg_load(a, %d));\n", in.Arg)
+					cWritef(bp, "  a = rtg_pop(); rtg_push(rtg_load(a + (rtg_word)%d, %d));\n", in.Val, in.Arg)
 				}
 			case ir.OP_STORE:
-				if in.Arg == 0 {
-					bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_store(a, c, RTG_WORD_BYTES);\n")
+				if in.Val == 0 {
+					if in.Arg == 0 {
+						bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_store(a, c, RTG_WORD_BYTES);\n")
+					} else {
+						cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_store(a, c, %d);\n", in.Arg)
+					}
+				} else if in.Arg == 0 {
+					cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_store(a + (rtg_word)%d, c, RTG_WORD_BYTES);\n", in.Val)
 				} else {
-					cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_store(a, c, %d);\n", in.Arg)
+					cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_store(a + (rtg_word)%d, c, %d);\n", in.Val, in.Arg)
 				}
 			case ir.OP_OFFSET:
 				cWritef(bp, "  a = rtg_pop(); rtg_push(a + (rtg_word)%d);\n", in.Arg)

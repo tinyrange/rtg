@@ -46,6 +46,13 @@ func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
 			changed = true
 		}
 
+		if !(target.GOOS == "wasi" && target.GOARCH == "wasm32") {
+			code, stepChanged = foldOffsetIntoMemoryOps(code)
+			if stepChanged {
+				changed = true
+			}
+		}
+
 		code, stepChanged = annotateNonNilMemoryBases(code)
 		if stepChanged {
 			changed = true
@@ -530,6 +537,51 @@ func matchesSliceAppendU32LEWindow(code []Inst, i int) bool {
 	}
 
 	return true
+}
+
+// foldOffsetIntoMemoryOps rewrites:
+//
+//	OFFSET k; LOAD size
+//	OFFSET k; STORE size
+//
+// into:
+//
+//	LOAD size (with Val += k)
+//	STORE size (with Val += k)
+//
+// so backends can directly use base+immediate addressing forms.
+func foldOffsetIntoMemoryOps(code []Inst) ([]Inst, bool) {
+	if len(code) < 2 {
+		return code, false
+	}
+
+	changed := false
+	out := make([]Inst, 0, len(code))
+	i := 0
+	for i < len(code) {
+		if i+1 < len(code) && code[i].Op == OP_OFFSET && (code[i+1].Op == OP_LOAD || code[i+1].Op == OP_STORE) {
+			next := code[i+1]
+			delta := int64(code[i].Arg)
+			sum := next.Val + delta
+			// Keep behavior explicit; skip pathological int64 overflow cases.
+			if (delta > 0 && sum < next.Val) || (delta < 0 && sum > next.Val) {
+				out = append(out, code[i])
+				i++
+				continue
+			}
+			next.Val = sum
+			out = append(out, next)
+			changed = true
+			i += 2
+			continue
+		}
+		out = append(out, code[i])
+		i++
+	}
+	if !changed {
+		return code, false
+	}
+	return out, true
 }
 
 // annotateNonNilMemoryBases marks selected LOAD instructions with a backend
