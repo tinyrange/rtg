@@ -169,7 +169,7 @@ selfhost-ir: selfhost
   sh chmod 600 build/stage3_compiler.irt
   sh cmp build/stage2_compiler_a.irt build/stage3_compiler.irt
   sh cp build/stage3_from_ir build/stage3_from_ir.ref
-  sh ./build/stage3_from_ir -strict -F ir -o build/stage3_from_ir - < build/stage3_compiler.irt
+  sh ./build/stage3_from_ir.ref -strict -F ir -o build/stage3_from_ir - < build/stage3_compiler.irt
   sh chmod +x build/stage3_from_ir
   sh cmp build/stage3_from_ir.ref build/stage3_from_ir && echo "PASS: text IR fixed-point self-hosting OK"
 
