@@ -304,7 +304,6 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 	c.compileAssembledFunctions()
 	c.rewriteProfileParentCalls()
 	c.insertDeferRecoverCallWrappers()
-	c.pruneDeferRecoverCallWrappers()
 	c.prunePanicPropagationChecks()
 
 	// Pass dispatch data to backend
@@ -7397,40 +7396,6 @@ func (c *Compiler) insertDeferRecoverCallWrappers() {
 				out = append(out, f.Code[i])
 				out = append(out, ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverAfterCall", Arg: 0})
 				i++
-				continue
-			}
-			out = append(out, f.Code[i])
-			i++
-		}
-		f.Code = out
-	}
-}
-
-func (c *Compiler) pruneDeferRecoverCallWrappers() {
-	if c == nil || c.irmod == nil {
-		return
-	}
-	mayRecover := c.buildRecoverReachability()
-	for _, f := range c.irmod.Funcs {
-		if f == nil || len(f.Code) < 3 {
-			continue
-		}
-		wrapEnabled := c.deferRecoverWrapFuncs[f.Name]
-		out := make([]ir.Inst, 0, len(f.Code))
-		i := 0
-		for i < len(f.Code) {
-			if i+2 < len(f.Code) &&
-				f.Code[i].Op == ir.OP_CALL && f.Code[i].Name == "runtime.DeferRecoverBeforeCall" &&
-				(f.Code[i+1].Op == ir.OP_CALL || f.Code[i+1].Op == ir.OP_IFACE_CALL) &&
-				f.Code[i+2].Op == ir.OP_CALL && f.Code[i+2].Name == "runtime.DeferRecoverAfterCall" {
-				callInst := f.Code[i+1]
-				keep := wrapEnabled && c.callMayReachRecover(callInst, mayRecover)
-				if keep {
-					out = append(out, f.Code[i], callInst, f.Code[i+2])
-				} else {
-					out = append(out, callInst)
-				}
-				i += 3
 				continue
 			}
 			out = append(out, f.Code[i])
