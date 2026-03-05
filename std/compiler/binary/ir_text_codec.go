@@ -351,7 +351,25 @@ func writeInt(w *textBufferedWriter, v int) {
 }
 
 func writeInt64(w *textBufferedWriter, v int64) {
-	w.WriteString(strconv.FormatInt(v, 10))
+	writeInt64Hex(w, v)
+}
+
+func writeInt64Hex(w *textBufferedWriter, v int64) {
+	u := uint64(v)
+	w.WriteString("0x")
+	started := false
+	shift := 60
+	for {
+		nib := byte((u >> uint(shift)) & 0x0f)
+		if started || nib != 0 || shift == 0 {
+			started = true
+			w.WriteByte(textHexChar(nib))
+		}
+		if shift == 0 {
+			break
+		}
+		shift = shift - 4
+	}
 }
 
 func WriteIRText(irmod *ir.IRModule, path string) error {
@@ -919,7 +937,7 @@ func parseInt64Attr(attrs map[string]string, key string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	v, err := strconv.ParseInt(raw, 10, 64)
+	v, err := parseInt64Literal(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid int64 attr %q=%q", key, raw)
 	}
@@ -957,11 +975,29 @@ func parseOptionalInt64Attr(attrs map[string]string, key string, fallback int64)
 	if !ok {
 		return fallback, nil
 	}
-	v, err := strconv.ParseInt(raw, 10, 64)
+	v, err := parseInt64Literal(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid int64 attr %q=%q", key, raw)
 	}
 	return v, nil
+}
+
+func parseInt64Literal(raw string) (int64, error) {
+	if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
+		if len(raw) == 2 {
+			return 0, fmt.Errorf("empty hex literal")
+		}
+		var u uint64
+		for i := 2; i < len(raw); i++ {
+			nib, ok := textHexNibble(raw[i])
+			if !ok {
+				return 0, fmt.Errorf("invalid hex char %q", raw[i])
+			}
+			u = (u << 4) | uint64(nib)
+		}
+		return int64(u), nil
+	}
+	return strconv.ParseInt(raw, 10, 64)
 }
 
 func parseOptionalStringAttr(attrs map[string]string, key string, fallback string) string {
