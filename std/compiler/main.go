@@ -174,14 +174,19 @@ func main() {
 	var parseOnly bool
 	var buildTagsPath string
 	var emitIRPath string
+	var emitIRAndBinaryPath string
 	var emitIRBinaryPath string
 	var fromIRBinaryPath string
+	var fromIRTextPath string
 	var profileReportPath string
 	var extractStdlibDest string
 	var runMode bool
 	var testMode bool
 	var stdinInput bool
+	var dashInputCount int
 	var showVersion bool
+	var fromKind string = "go"
+	var targetIsIR bool
 	var programArgs []string
 	i := 1
 	for i < len(args) {
@@ -209,9 +214,20 @@ func main() {
 				i = i + 2
 				continue
 			}
-		case "-T":
+		case "-F", "--from":
+			if i+1 < len(args) {
+				fromKind = args[i+1]
+				i = i + 2
+				continue
+			}
+		case "-T", "--to":
 			if i+1 < len(args) {
 				target := args[i+1]
+				if target == "ir" {
+					targetIsIR = true
+					i = i + 2
+					continue
+				}
 				if target == "c" || strings.HasPrefix(target, "c/") {
 					compileTarget.Triple = target
 					compileTarget.Backend = "c"
@@ -239,9 +255,6 @@ func main() {
 					compileTarget.WordSize = compileTarget.PtrSize
 					compileTarget.GOOS = "c"
 					compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
-				} else if target == "ir" {
-					fmt.Fprintf(os.Stderr, "target %q is no longer supported; use -emit-ir <path> with a concrete -T <target>\n", target)
-					os.Exit(1)
 				} else if strings.HasPrefix(target, "vm/") {
 					compileTarget.Triple = target
 					compileTarget.Backend = "vm"
@@ -333,6 +346,12 @@ func main() {
 				i = i + 2
 				continue
 			}
+		case "-emit-ir-and-binary":
+			if i+1 < len(args) {
+				emitIRAndBinaryPath = args[i+1]
+				i = i + 2
+				continue
+			}
 		case "-emit-ir-binary", "-from-ir-binary":
 			if i+1 < len(args) {
 				if !binary.IrBinaryEnabled {
@@ -416,7 +435,7 @@ func main() {
 			}
 			continue
 		case "-":
-			stdinInput = true
+			dashInputCount = dashInputCount + 1
 			i = i + 1
 			continue
 		}
@@ -427,7 +446,49 @@ func main() {
 		fmt.Fprintf(os.Stdout, "%s\n", compilerStamp())
 		os.Exit(0)
 	}
+	if fromKind != "go" && fromKind != "ir" && fromKind != "c" {
+		fmt.Fprintf(os.Stderr, "invalid -F value %q: expected go, ir, or c\n", fromKind)
+		runCleanup()
+		os.Exit(1)
+	}
+	if fromKind == "c" {
+		fmt.Fprintf(os.Stderr, "-F c is not implemented yet\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if fromKind == "ir" && fromIRBinaryPath != "" {
+		fmt.Fprintf(os.Stderr, "cannot combine -F ir with -from-ir-binary\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if dashInputCount > 1 {
+		fmt.Fprintf(os.Stderr, "at most one '-' input is allowed\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if dashInputCount == 1 {
+		if fromKind == "ir" {
+			if len(entryFiles) > 0 {
+				fmt.Fprintf(os.Stderr, "cannot combine -F ir stdin input with IR text file path\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			fromIRTextPath = "-"
+		} else {
+			stdinInput = true
+		}
+	}
+	if stdinInput && len(entryFiles) > 0 {
+		fmt.Fprintf(os.Stderr, "cannot combine '-' stdin input with file path arguments\n")
+		runCleanup()
+		os.Exit(1)
+	}
 	if stdinInput {
+		if fromKind == "ir" {
+			fmt.Fprintf(os.Stderr, "cannot use '-' stdin source input with -F ir; use '-F ir -'\n")
+			runCleanup()
+			os.Exit(1)
+		}
 		if fromIRBinaryPath != "" {
 			fmt.Fprintf(os.Stderr, "cannot use - with -from-ir-binary\n")
 			runCleanup()
@@ -453,8 +514,8 @@ func main() {
 			runTmpBin = runTmpBin + ".exe"
 		}
 
-		// Read from stdin if no entry files
-		if len(entryFiles) == 0 {
+		// Read source from stdin in -run mode only when frontend input is used.
+		if len(entryFiles) == 0 && fromIRBinaryPath == "" && fromIRTextPath == "" {
 			err := readStdinSourceToTemp()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "rtg -run: failed to read stdin source: %v\n", err)
@@ -472,8 +533,33 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
+	if targetIsIR && runMode {
+		fmt.Fprintf(os.Stderr, "-T ir cannot be combined with -run\n")
+		runCleanup()
+		os.Exit(1)
+	}
 	if emitIRPath != "" && emitIRBinaryPath != "" {
 		fmt.Fprintf(os.Stderr, "-emit-ir cannot be combined with -emit-ir-binary\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if emitIRPath != "" && targetIsIR {
+		fmt.Fprintf(os.Stderr, "-emit-ir cannot be combined with -T ir\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if emitIRAndBinaryPath != "" && emitIRPath != "" {
+		fmt.Fprintf(os.Stderr, "-emit-ir-and-binary cannot be combined with -emit-ir\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if emitIRAndBinaryPath != "" && emitIRBinaryPath != "" {
+		fmt.Fprintf(os.Stderr, "-emit-ir-and-binary cannot be combined with -emit-ir-binary\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if emitIRAndBinaryPath != "" && targetIsIR {
+		fmt.Fprintf(os.Stderr, "-emit-ir-and-binary cannot be combined with -T ir\n")
 		runCleanup()
 		os.Exit(1)
 	}
@@ -483,12 +569,34 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
+	if fromKind == "ir" {
+		if fromIRTextPath == "-" {
+			if len(entryFiles) != 0 {
+				fmt.Fprintf(os.Stderr, "-F ir with stdin cannot include file paths\n")
+				runCleanup()
+				os.Exit(1)
+			}
+		} else {
+			if len(entryFiles) != 1 {
+				fmt.Fprintf(os.Stderr, "-F ir requires exactly one IR text input path (or '-')\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			fromIRTextPath = entryFiles[0]
+		}
+		entryFiles = nil
+	}
 	if fromIRBinaryPath != "" && testMode {
 		fmt.Fprintf(os.Stderr, "-test is not valid with -from-ir-binary\n")
 		runCleanup()
 		os.Exit(1)
 	}
-	if extractStdlibDest == "" && profileReportPath == "" && fromIRBinaryPath == "" && len(entryFiles) == 0 {
+	if fromIRTextPath != "" && testMode {
+		fmt.Fprintf(os.Stderr, "-test is not valid with -F ir\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if extractStdlibDest == "" && profileReportPath == "" && fromIRBinaryPath == "" && fromIRTextPath == "" && len(entryFiles) == 0 {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
@@ -524,7 +632,7 @@ func main() {
 	traceExit(10)
 
 	if profileReportPath != "" {
-		if extractStdlibDest != "" || fromIRBinaryPath != "" || runMode || stdinInput || parseOnly || emitIRPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
+		if extractStdlibDest != "" || fromIRBinaryPath != "" || runMode || stdinInput || parseOnly || emitIRPath != "" || emitIRAndBinaryPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
 			fmt.Fprintf(os.Stderr, "-profile-report cannot be combined with compilation/runtime options\n")
 			runCleanup()
 			os.Exit(1)
@@ -540,7 +648,7 @@ func main() {
 	}
 
 	if extractStdlibDest != "" {
-		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || testMode || stdinInput || parseOnly || emitIRPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
+		if fromIRBinaryPath != "" || len(entryFiles) > 0 || runMode || testMode || stdinInput || parseOnly || emitIRPath != "" || emitIRAndBinaryPath != "" || emitIRBinaryPath != "" || buildTagsPath != "" {
 			fmt.Fprintf(os.Stderr, "-extract-stdlib cannot be combined with compilation inputs/options\n")
 			runCleanup()
 			os.Exit(1)
@@ -576,6 +684,27 @@ func main() {
 		}
 		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
+		}
+	} else if fromIRTextPath != "" {
+		if parseOnly {
+			fmt.Fprintf(os.Stderr, "-parse-only is not valid with -F ir\n")
+			runCleanup()
+			os.Exit(1)
+		}
+		if buildTagsPath != "" {
+			fmt.Fprintf(os.Stderr, "-list-build-tags is not valid with -F ir\n")
+			runCleanup()
+			os.Exit(1)
+		}
+		var err error
+		irmod, err = binary.ReadIRText(fromIRTextPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading IR text: %v\n", err)
+			runCleanup()
+			os.Exit(1)
+		}
+		if compileTarget.CompilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: loaded IR text (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 	} else {
 		// Determine base directory for the std library.
@@ -637,6 +766,11 @@ func main() {
 				runCleanup()
 				os.Exit(1)
 			}
+			if emitIRAndBinaryPath != "" {
+				fmt.Fprintf(os.Stderr, "-emit-ir-and-binary is not valid with -parse-only\n")
+				runCleanup()
+				os.Exit(1)
+			}
 			runCleanup()
 			os.Exit(0)
 		}
@@ -692,7 +826,7 @@ func main() {
 	var vmArgs []string
 
 	// Set VM program arguments if using VM backend
-	if compileTarget.Backend == "vm" && emitIRPath == "" {
+	if compileTarget.Backend == "vm" && emitIRPath == "" && !targetIsIR {
 		// argv[0] is the program name, followed by actual args
 		vmArgs = append(vmArgs, "rtg")
 		if len(programArgs) > 0 {
@@ -709,13 +843,25 @@ func main() {
 
 	if compileTarget.CompilerDebug {
 		if emitIRPath != "" {
-			fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s, emit=ir)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
+			fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s, emit=ir-pretty)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
+		} else if targetIsIR {
+			fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s, emit=ir-text)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
 		} else {
 			fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
 		}
 	}
+	if emitIRAndBinaryPath != "" {
+		if compileTarget.Backend != "native" || compileTarget.GOARCH != "arm64" {
+			fmt.Fprintf(os.Stderr, "-emit-ir-and-binary is currently only supported for native arm64 targets\n")
+			runCleanup()
+			os.Exit(1)
+		}
+		compileTarget.EmitIRAndBinaryPath = emitIRAndBinaryPath
+	}
 	if emitIRPath != "" {
 		err = irprint.Generate(irmod, emitIRPath)
+	} else if targetIsIR {
+		err = binary.WriteIRText(irmod, outputPath)
 	} else {
 		err = backend.Generate(&compileTarget, irmod, outputPath)
 	}
@@ -733,7 +879,7 @@ func main() {
 	ir.WriteSizeAnalysis(compileTarget)
 
 	// VM backend executes directly — no binary to run
-	if compileTarget.Backend == "vm" && emitIRPath == "" {
+	if compileTarget.Backend == "vm" && emitIRPath == "" && !targetIsIR {
 		runCleanup()
 		os.Exit(vm.ExitCode)
 	}
@@ -771,11 +917,13 @@ func main() {
 }
 
 func printHelp(program string, out *os.File) {
-	fmt.Fprintf(out, "Usage: %s [options] <file.go> [file2.go ...]\n", program)
+	fmt.Fprintf(out, "Usage: %s [options] <input>\n", program)
 	fmt.Fprintf(out, "\nOptions:\n")
-	fmt.Fprintf(out, "  -o <path>              Output path (default: output)\n")
-	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
+	fmt.Fprintf(out, "  -F, --from <kind>      Input kind: go, ir, c (default: go)\n")
+	fmt.Fprintf(out, "  -o <path>              Output path (default: output, use '-' with -T ir for stdout)\n")
+	fmt.Fprintf(out, "  -T, --to <target>      Target triple/backend mode, or ir for canonical text IR output\n")
 	fmt.Fprintf(out, "  -emit-ir <path>        Emit textual IR for the selected target instead of native/C/VM output\n")
+	fmt.Fprintf(out, "  -emit-ir-and-binary <p> For native arm64: emit separate debug text with per-IR-instruction machine bytes\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -D <key=value>         Set a string value for a global variable symbol\n")
 	fmt.Fprintf(out, "  -target-file <path>    Load a single-file target definition before -T resolution\n")
@@ -798,6 +946,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
 	fmt.Fprintf(out, "  -strip, -s             Strip symbol/debug metadata from native binaries\n")
 	fmt.Fprintf(out, "  -h, --help             Show this help\n")
+	fmt.Fprintf(out, "\nIR text stdin: pass '-' as the input with -F ir\n")
 	fmt.Fprintf(out, "\nDefault target: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(out, "\nPossible -T values:\n")
 	for _, target := range possibleTargets() {
@@ -1255,6 +1404,7 @@ func possibleTargets() []string {
 	targets = common.AppendUnique(targets, "windows/arm64")
 	targets = common.AppendUnique(targets, "wasi/wasm32")
 	targets = common.AppendUnique(targets, "dos/8086")
+	targets = common.AppendUnique(targets, "ir")
 	targets = common.AppendUnique(targets, "c")
 	targets = common.AppendUnique(targets, "c/16")
 	targets = common.AppendUnique(targets, "c/32")

@@ -52,7 +52,7 @@ const (
 
 // EmitArm64 appends a 32-bit ARM64 instruction (little-endian).
 func (g *CodeGen) EmitArm64(inst uint32) {
-	g.code = append(g.code, byte(inst), byte(inst>>8), byte(inst>>16), byte(inst>>24))
+	g.emitU32(inst)
 }
 
 // === Immediate loading ===

@@ -157,6 +157,22 @@ selfhost-exp-win386: selfhost-win386
   sh wine build/selfhost_exp_win386.exe >/dev/null
   sh echo "PASS: windows/386 experimental IR binary roundtrip OK"
 
+selfhost-ir: selfhost
+  sh rm -f build/stage2_compiler_a.irt build/stage2_compiler_b.irt build/stage3_compiler.irt build/stage3_from_ir build/stage3_from_ir.ref
+  sh ./build/stage2 -strict -F go -T ir -o - ./std/compiler/ > build/stage2_compiler_a.irt
+  sh ./build/stage2 -strict -F go -T ir -o build/stage2_compiler_b.irt ./std/compiler/
+  sh chmod 600 build/stage2_compiler_a.irt build/stage2_compiler_b.irt
+  sh cmp build/stage2_compiler_a.irt build/stage2_compiler_b.irt
+  sh ./build/stage2 -strict -F ir -o build/stage3_from_ir - < build/stage2_compiler_a.irt
+  sh chmod +x build/stage3_from_ir
+  sh ./build/stage3_from_ir -strict -F go -T ir -o - ./std/compiler/ > build/stage3_compiler.irt
+  sh chmod 600 build/stage3_compiler.irt
+  sh cmp build/stage2_compiler_a.irt build/stage3_compiler.irt
+  sh cp build/stage3_from_ir build/stage3_from_ir.ref
+  sh ./build/stage3_from_ir -strict -F ir -o build/stage3_from_ir - < build/stage3_compiler.irt
+  sh chmod +x build/stage3_from_ir
+  sh cmp build/stage3_from_ir.ref build/stage3_from_ir && echo "PASS: text IR fixed-point self-hosting OK"
+
 crosscompile-wasm-native: build
   sh ./build/rtg -T wasi/wasm32 -o build/cross_stage1.wasm ./std/compiler/
   sh wasmtime --dir=. build/cross_stage1.wasm -T linux/amd64 -o build/cross_stage2 ./std/compiler/
@@ -194,7 +210,7 @@ test-fullcompiler-armv8m-renode: build
   sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"
   fullcompiler rtg semihost/armv8m
 
-test: test-fullcompiler-rtg selfhost selfhost-wasm
+test: test-fullcompiler-rtg selfhost selfhost-ir selfhost-wasm
 
 test-dosbox-smoke: build
   sh bash tools/test_dosbox_dos16.sh

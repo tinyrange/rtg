@@ -58,6 +58,11 @@ func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string
 	}
 
 	// Build Mach-O binary
+	if target.EmitIRAndBinaryPath != "" {
+		if err := aarch64.WriteIRAndBinaryDebug(target.EmitIRAndBinaryPath, irmod, g); err != nil {
+			return fmt.Errorf("write debug ir+binary: %v", err)
+		}
+	}
 	macho := BuildMachO64(g, irmod, binName)
 	err := os.WriteFile(outputPath, macho, 0755)
 	if err != nil {

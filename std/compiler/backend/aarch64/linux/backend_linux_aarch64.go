@@ -46,6 +46,11 @@ func GenerateLinuxELF(target *common.Target, irmod *ir.IRModule, outputPath stri
 	}
 
 	// Build and write ELF
+	if target.EmitIRAndBinaryPath != "" {
+		if err := aarch64.WriteIRAndBinaryDebug(target.EmitIRAndBinaryPath, irmod, g); err != nil {
+			return fmt.Errorf("write debug ir+binary: %v", err)
+		}
+	}
 	elf := BuildELF64(g, irmod)
 	err := os.WriteFile(outputPath, elf, 0755)
 	if err != nil {

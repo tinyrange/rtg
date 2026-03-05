@@ -41,7 +41,13 @@ func main() {
 	}
 
 	outputPath := "output"
+	var fromKind string = "irb"
 	var fromIRBinaryPath string
+	var fromIRTextPath string
+	var emitIRAndBinaryPath string
+	var entryFiles []string
+	var stdinInput bool
+	var dashInputCount int
 	var extraTags string
 	var strictMode bool
 	var profileMode bool
@@ -52,6 +58,9 @@ func main() {
 			os.Exit(0)
 		} else if os.Args[i] == "-o" && i+1 < len(os.Args) {
 			outputPath = os.Args[i+1]
+			i = i + 2
+		} else if (os.Args[i] == "-F" || os.Args[i] == "--from") && i+1 < len(os.Args) {
+			fromKind = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-T" && i+1 < len(os.Args) {
 			target := os.Args[i+1]
@@ -81,9 +90,6 @@ func main() {
 				targetGOOS = "c"
 				targetGOARCH = fmt.Sprintf("c%d", targetCModel)
 				targetTriple = target
-			} else if target == "ir" {
-				fmt.Fprintf(os.Stderr, "target %q is no longer supported in no_frontend builds\n", target)
-				os.Exit(1)
 			} else if strings.HasPrefix(target, "vm/") {
 				targetBackend = "vm"
 				model := target[3:]
@@ -133,6 +139,10 @@ func main() {
 			i = i + 2
 		} else if os.Args[i] == "-from-ir-binary" && i+1 < len(os.Args) {
 			fromIRBinaryPath = os.Args[i+1]
+			fromKind = "irb"
+			i = i + 2
+		} else if os.Args[i] == "-emit-ir-and-binary" && i+1 < len(os.Args) {
+			emitIRAndBinaryPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
 			ir.SizeAnalysisPath = os.Args[i+1]
@@ -152,15 +162,72 @@ func main() {
 		} else if os.Args[i] == "-strip" || os.Args[i] == "-s" {
 			stripBinary = true
 			i = i + 1
+		} else if os.Args[i] == "-" {
+			dashInputCount = dashInputCount + 1
+			i = i + 1
 		} else {
-			fmt.Fprintf(os.Stderr, "no_frontend build only supports -from-ir-binary input\n")
-			os.Exit(1)
+			entryFiles = append(entryFiles, common.NormalizePath(os.Args[i]))
+			i = i + 1
 		}
 	}
 
-	if fromIRBinaryPath == "" {
-		fmt.Fprintf(os.Stderr, "no_frontend build requires -from-ir-binary <path>\n")
+	if fromKind != "ir" && fromKind != "irb" {
+		fmt.Fprintf(os.Stderr, "invalid -F value %q: expected ir or irb\n", fromKind)
 		os.Exit(1)
+	}
+	if dashInputCount > 1 {
+		fmt.Fprintf(os.Stderr, "at most one '-' input is allowed\n")
+		os.Exit(1)
+	}
+	if dashInputCount == 1 {
+		if fromKind == "ir" {
+			if len(entryFiles) > 0 {
+				fmt.Fprintf(os.Stderr, "cannot combine -F ir stdin input with IR text file path\n")
+				os.Exit(1)
+			}
+			fromIRTextPath = "-"
+		} else {
+			stdinInput = true
+		}
+	}
+	if stdinInput && len(entryFiles) > 0 {
+		fmt.Fprintf(os.Stderr, "cannot combine '-' stdin input with file path arguments\n")
+		os.Exit(1)
+	}
+	if fromKind == "irb" {
+		if stdinInput {
+			fmt.Fprintf(os.Stderr, "cannot use '-' with IR binary input; provide a .irb path\n")
+			os.Exit(1)
+		}
+		if fromIRBinaryPath != "" {
+			if len(entryFiles) > 0 {
+				fmt.Fprintf(os.Stderr, "cannot combine -from-ir-binary with positional input path\n")
+				os.Exit(1)
+			}
+		} else {
+			if len(entryFiles) != 1 {
+				fmt.Fprintf(os.Stderr, "no_frontend build requires one IR binary input path (-from-ir-binary <path> or positional)\n")
+				os.Exit(1)
+			}
+			fromIRBinaryPath = entryFiles[0]
+		}
+	} else {
+		if fromIRBinaryPath != "" {
+			fmt.Fprintf(os.Stderr, "cannot combine -F ir with -from-ir-binary\n")
+			os.Exit(1)
+		}
+		if fromIRTextPath == "-" {
+			if len(entryFiles) != 0 {
+				fmt.Fprintf(os.Stderr, "-F ir with stdin cannot include file paths\n")
+				os.Exit(1)
+			}
+		} else {
+			if len(entryFiles) != 1 {
+				fmt.Fprintf(os.Stderr, "-F ir requires exactly one IR text input path (or '-')\n")
+				os.Exit(1)
+			}
+			fromIRTextPath = entryFiles[0]
+		}
 	}
 
 	// Build active tag set from target + explicit tags.
@@ -187,32 +254,51 @@ func main() {
 		stripBinary = true
 	}
 
-	irmod, err := binary.ReadIRBinary(fromIRBinaryPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading IR binary: %v\n", err)
-		os.Exit(1)
+	var irmod *ir.IRModule
+	if fromKind == "ir" {
+		var err error
+		irmod, err = binary.ReadIRText(fromIRTextPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading IR text: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		var err error
+		irmod, err = binary.ReadIRBinary(fromIRBinaryPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading IR binary: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	if compilerDebug {
-		fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
+		if fromKind == "ir" {
+			fmt.Fprintf(os.Stderr, "debug: loaded IR text (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
+		} else {
+			fmt.Fprintf(os.Stderr, "debug: loaded IR binary (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
+		}
 		fmt.Fprintf(os.Stderr, "debug: generating output (backend=%s, target=%s/%s)\n", targetBackend, targetGOOS, targetGOARCH)
 	}
 	compileTarget := common.Target{
-		Triple:        targetTriple,
-		GOOS:          targetGOOS,
-		GOARCH:        targetGOARCH,
-		PtrSize:       targetPtrSize,
-		Backend:       targetBackend,
-		CModel:        targetCModel,
-		WordSize:      targetWordSize,
-		BuildTags:     buildTags,
-		Defines:       map[string]string{},
-		Strict:        strictMode,
-		Profile:       profileMode,
-		CompilerDebug: compilerDebug,
-		StripBinary:   stripBinary,
+		Triple:              targetTriple,
+		GOOS:                targetGOOS,
+		GOARCH:              targetGOARCH,
+		PtrSize:             targetPtrSize,
+		Backend:             targetBackend,
+		CModel:              targetCModel,
+		WordSize:            targetWordSize,
+		BuildTags:           buildTags,
+		Defines:             map[string]string{},
+		Strict:              strictMode,
+		Profile:             profileMode,
+		CompilerDebug:       compilerDebug,
+		EmitIRAndBinaryPath: emitIRAndBinaryPath,
+		StripBinary:         stripBinary,
 	}
-	err = backend.Generate(&compileTarget, irmod, outputPath)
-	if err != nil {
+	if emitIRAndBinaryPath != "" && (compileTarget.Backend != "native" || compileTarget.GOARCH != "arm64") {
+		fmt.Fprintf(os.Stderr, "-emit-ir-and-binary is currently only supported for native arm64 targets\n")
+		os.Exit(1)
+	}
+	if err := backend.Generate(&compileTarget, irmod, outputPath); err != nil {
 		fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
 		os.Exit(1)
 	}
@@ -220,12 +306,15 @@ func main() {
 }
 
 func printHelp(program string, out *os.File) {
-	fmt.Fprintf(out, "Usage: %s [options] -from-ir-binary <module.irb>\n", program)
+	fmt.Fprintf(out, "Usage: %s [options] <module.irt|module.irb>\n", program)
 	fmt.Fprintf(out, "\nThis build is backend-only (built with no_frontend,exp_ir_binary).\n")
 	fmt.Fprintf(out, "\nOptions:\n")
+	fmt.Fprintf(out, "  -F, --from <kind>      Input kind: ir or irb (default: irb)\n")
 	fmt.Fprintf(out, "  -o <path>              Output path (default: output)\n")
 	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
+	fmt.Fprintf(out, "                         (equivalent to -F irb <path>)\n")
+	fmt.Fprintf(out, "  -emit-ir-and-binary <p> For native arm64: emit separate debug text with per-IR-instruction machine bytes\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -strict                Preserve strict-mode metadata in target config\n")
 	fmt.Fprintf(out, "  -profile               Preserve profile metadata in target config\n")
@@ -233,5 +322,6 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
 	fmt.Fprintf(out, "  -strip, -s             Strip symbol/debug metadata from native binaries\n")
 	fmt.Fprintf(out, "  -h, --help             Show this help\n")
+	fmt.Fprintf(out, "\nIR text stdin: pass '-' as the input with -F ir\n")
 	fmt.Fprintf(out, "\nDefault target: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 }
