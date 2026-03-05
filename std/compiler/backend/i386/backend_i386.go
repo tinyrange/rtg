@@ -4,6 +4,7 @@ package i386
 
 import (
 	"j5.nz/rtg/std/compiler/backend/becommon"
+	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
@@ -326,7 +327,7 @@ func (g *CodeGen) compileConstStr_i386(s string) {
 
 		g.StringMap[decoded] = headerOff
 		// Store dataOff in the placeholder temporarily
-		putU32(g.Rodata[headerOff:headerOff+4], uint32(dataOff))
+		common.PutU32(g.Rodata[headerOff:headerOff+4], uint32(dataOff))
 	}
 
 	// Push header address onto operand stack: mov eax, imm32

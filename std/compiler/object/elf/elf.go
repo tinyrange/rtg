@@ -14,21 +14,6 @@ type SectionNameOffsets struct {
 	Shstrtab int
 }
 
-func AlignUp(v, align int) int {
-	if align <= 0 {
-		return v
-	}
-	mask := align - 1
-	return (v + mask) & ^mask
-}
-
-func SectionSpan(size, align int) int {
-	if size <= 0 {
-		return align
-	}
-	return AlignUp(size, align)
-}
-
 func DefaultShStrtab() ([]byte, SectionNameOffsets) {
 	return []byte("\x00.text\x00.rodata\x00.data\x00.symtab\x00.strtab\x00.shstrtab\x00"), SectionNameOffsets{
 		Text:     1,

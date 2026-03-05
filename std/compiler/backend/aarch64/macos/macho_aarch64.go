@@ -5,6 +5,7 @@ package macos
 import (
 	"j5.nz/rtg/std/compiler/backend/aarch64"
 	"j5.nz/rtg/std/compiler/backend/aarch64/codesign"
+	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
@@ -99,8 +100,8 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 	// Load command sizes (all must be multiples of 8 for 64-bit Mach-O)
 	lcSegSize := 72
 	lcSectSize := 80
-	lcDylinkerSize := aarch64.AlignUp(12+len(dylinkerPath), 8)
-	lcDylibSize := aarch64.AlignUp(24+len(dylibPath), 8)
+	lcDylinkerSize := common.AlignUp(12+len(dylinkerPath), 8)
+	lcDylibSize := common.AlignUp(24+len(dylibPath), 8)
 	lcMainSize := 24
 	lcSymtabSize := 0
 	lcDysymtabSize := 0
@@ -131,9 +132,9 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 
 	// __TEXT segment starts at file offset 0, includes header
 	// __text section starts after header (aligned)
-	textSectionOff := aarch64.AlignUp(headerSize, 16)
+	textSectionOff := common.AlignUp(headerSize, 16)
 	constSectionOff := textSectionOff + textSize
-	textSegEnd := aarch64.AlignUp(constSectionOff+rodataSize, machoPageSize)
+	textSegEnd := common.AlignUp(constSectionOff+rodataSize, machoPageSize)
 	if textSegEnd < machoPageSize {
 		textSegEnd = machoPageSize
 	}
@@ -141,8 +142,8 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 	// __DATA segment
 	dataSegStart := textSegEnd
 	dataSectionOff := dataSegStart
-	gotSectionOff := dataSectionOff + aarch64.AlignUp(dataSize, 8)
-	dataSegEnd := aarch64.AlignUp(gotSectionOff+gotSize, machoPageSize)
+	gotSectionOff := dataSectionOff + common.AlignUp(dataSize, 8)
+	dataSegEnd := common.AlignUp(gotSectionOff+gotSize, machoPageSize)
 	if dataSegEnd == dataSegStart {
 		dataSegEnd = dataSegStart + machoPageSize
 	}
@@ -154,11 +155,11 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 	bindOff := linkeditStart
 	bindSize := len(bindOpcodes)
 
-	exportOff := aarch64.AlignUp(bindOff+bindSize, 8)
+	exportOff := common.AlignUp(bindOff+bindSize, 8)
 	exportSize := len(exportTrie)
 
 	nlistSize := 16
-	symtabOff := aarch64.AlignUp(exportOff+exportSize, 8)
+	symtabOff := common.AlignUp(exportOff+exportSize, 8)
 	symtabNEntries := len(syms)
 	symtabDataSize := symtabNEntries * nlistSize
 
@@ -166,14 +167,14 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 	strtabSize := len(strtab)
 
 	// Code signature goes at the end of __LINKEDIT, 16-byte aligned
-	codeSignOff := aarch64.AlignUp(strtabOff+strtabSize, 16)
+	codeSignOff := common.AlignUp(strtabOff+strtabSize, 16)
 	codeSignID := outputName
 	if codeSignID == "" {
 		codeSignID = "a.out"
 	}
 	sigSize := int(codesign.CodeSignSize(int64(codeSignOff), codeSignID))
 
-	linkeditEnd := aarch64.AlignUp(codeSignOff+sigSize, machoPageSize)
+	linkeditEnd := common.AlignUp(codeSignOff+sigSize, machoPageSize)
 	if linkeditEnd == linkeditStart {
 		linkeditEnd = linkeditStart + machoPageSize
 	}
@@ -210,7 +211,7 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 		case "$data_addr$":
 			targetAddr := dataSectionVAddr + value
 			// Check if this is an ADRP+LDR or ADRP+ADD by inspecting the second instruction
-			secondInst := aarch64.GetU32(g.Code()[codeOffset+4:])
+			secondInst := common.GetU32(g.Code()[codeOffset+4:])
 			if secondInst&0xFFC00000 == 0xF9400000 {
 				g.PatchAdrpLdr(codeOffset, pcAddr, targetAddr)
 			} else {
@@ -229,143 +230,143 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 	bin := make([]byte, totalFileSize)
 
 	// === Mach-O Header (32 bytes) ===
-	aarch64.PutU32(bin[0:], 0xFEEDFACF)
-	aarch64.PutU32(bin[4:], 0x0100000C) // CPU_TYPE_ARM64
-	aarch64.PutU32(bin[8:], 0x00000000) // CPU_SUBTYPE_ALL
-	aarch64.PutU32(bin[12:], 0x02)      // MH_EXECUTE
-	aarch64.PutU32(bin[16:], uint32(ncmds))
-	aarch64.PutU32(bin[20:], uint32(lcTotal))
-	aarch64.PutU32(bin[24:], 0x00200085) // MH_NOUNDEFS|MH_DYLDLINK|MH_TWOLEVEL|MH_PIE
-	aarch64.PutU32(bin[28:], 0)
+	common.PutU32(bin[0:], 0xFEEDFACF)
+	common.PutU32(bin[4:], 0x0100000C) // CPU_TYPE_ARM64
+	common.PutU32(bin[8:], 0x00000000) // CPU_SUBTYPE_ALL
+	common.PutU32(bin[12:], 0x02)      // MH_EXECUTE
+	common.PutU32(bin[16:], uint32(ncmds))
+	common.PutU32(bin[20:], uint32(lcTotal))
+	common.PutU32(bin[24:], 0x00200085) // MH_NOUNDEFS|MH_DYLDLINK|MH_TWOLEVEL|MH_PIE
+	common.PutU32(bin[28:], 0)
 
 	off := 32
 
 	// LC_SEGMENT_64: __PAGEZERO
-	aarch64.PutU32(bin[off:], 0x19)
-	aarch64.PutU32(bin[off+4:], uint32(lcSegSize))
+	common.PutU32(bin[off:], 0x19)
+	common.PutU32(bin[off+4:], uint32(lcSegSize))
 	copy(bin[off+8:], "__PAGEZERO\x00\x00\x00\x00\x00\x00")
-	aarch64.PutU64(bin[off+24:], 0)
-	aarch64.PutU64(bin[off+32:], pagezeroVMSize)
+	common.PutU64(bin[off+24:], 0)
+	common.PutU64(bin[off+32:], pagezeroVMSize)
 	off += lcSegSize
 
 	// LC_SEGMENT_64: __TEXT (fileoff=0, covers header + code + rodata)
 	textSegCmdSize := lcSegSize + 2*lcSectSize
-	aarch64.PutU32(bin[off:], 0x19)
-	aarch64.PutU32(bin[off+4:], uint32(textSegCmdSize))
+	common.PutU32(bin[off:], 0x19)
+	common.PutU32(bin[off+4:], uint32(textSegCmdSize))
 	copy(bin[off+8:], "__TEXT\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
-	aarch64.PutU64(bin[off+24:], textSegVAddr)
-	aarch64.PutU64(bin[off+32:], textSegVMSize)
-	aarch64.PutU64(bin[off+40:], 0)                  // fileoff = 0
-	aarch64.PutU64(bin[off+48:], uint64(textSegEnd)) // filesize
-	aarch64.PutU32(bin[off+56:], 5)                  // maxprot: r-x
-	aarch64.PutU32(bin[off+60:], 5)                  // initprot: r-x
-	aarch64.PutU32(bin[off+64:], 2)                  // nsects
-	aarch64.PutU32(bin[off+68:], 0)
+	common.PutU64(bin[off+24:], textSegVAddr)
+	common.PutU64(bin[off+32:], textSegVMSize)
+	common.PutU64(bin[off+40:], 0)                  // fileoff = 0
+	common.PutU64(bin[off+48:], uint64(textSegEnd)) // filesize
+	common.PutU32(bin[off+56:], 5)                  // maxprot: r-x
+	common.PutU32(bin[off+60:], 5)                  // initprot: r-x
+	common.PutU32(bin[off+64:], 2)                  // nsects
+	common.PutU32(bin[off+68:], 0)
 	off += lcSegSize
 
 	// Section: __text
 	copy(bin[off:], "__text\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
 	copy(bin[off+16:], "__TEXT\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
-	aarch64.PutU64(bin[off+32:], textSectionVAddr)
-	aarch64.PutU64(bin[off+40:], uint64(textSize))
-	aarch64.PutU32(bin[off+48:], uint32(textSectionOff))
-	aarch64.PutU32(bin[off+52:], 2) // align 2^2=4
-	aarch64.PutU32(bin[off+64:], 0x80000400)
+	common.PutU64(bin[off+32:], textSectionVAddr)
+	common.PutU64(bin[off+40:], uint64(textSize))
+	common.PutU32(bin[off+48:], uint32(textSectionOff))
+	common.PutU32(bin[off+52:], 2) // align 2^2=4
+	common.PutU32(bin[off+64:], 0x80000400)
 	off += lcSectSize
 
 	// Section: __const
 	copy(bin[off:], "__const\x00\x00\x00\x00\x00\x00\x00\x00\x00")
 	copy(bin[off+16:], "__TEXT\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
-	aarch64.PutU64(bin[off+32:], constSectionVAddr)
-	aarch64.PutU64(bin[off+40:], uint64(rodataSize))
-	aarch64.PutU32(bin[off+48:], uint32(constSectionOff))
-	aarch64.PutU32(bin[off+52:], 3)
-	aarch64.PutU32(bin[off+64:], 0)
+	common.PutU64(bin[off+32:], constSectionVAddr)
+	common.PutU64(bin[off+40:], uint64(rodataSize))
+	common.PutU32(bin[off+48:], uint32(constSectionOff))
+	common.PutU32(bin[off+52:], 3)
+	common.PutU32(bin[off+64:], 0)
 	off += lcSectSize
 
 	// LC_SEGMENT_64: __DATA
 	dataSegCmdSize := lcSegSize + 2*lcSectSize
-	aarch64.PutU32(bin[off:], 0x19)
-	aarch64.PutU32(bin[off+4:], uint32(dataSegCmdSize))
+	common.PutU32(bin[off:], 0x19)
+	common.PutU32(bin[off+4:], uint32(dataSegCmdSize))
 	copy(bin[off+8:], "__DATA\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
-	aarch64.PutU64(bin[off+24:], dataSegVAddr)
-	aarch64.PutU64(bin[off+32:], dataSegVMSize)
-	aarch64.PutU64(bin[off+40:], uint64(dataSegStart))
-	aarch64.PutU64(bin[off+48:], uint64(dataSegEnd-dataSegStart))
-	aarch64.PutU32(bin[off+56:], 3) // maxprot: rw-
-	aarch64.PutU32(bin[off+60:], 3) // initprot: rw-
-	aarch64.PutU32(bin[off+64:], 2) // nsects
+	common.PutU64(bin[off+24:], dataSegVAddr)
+	common.PutU64(bin[off+32:], dataSegVMSize)
+	common.PutU64(bin[off+40:], uint64(dataSegStart))
+	common.PutU64(bin[off+48:], uint64(dataSegEnd-dataSegStart))
+	common.PutU32(bin[off+56:], 3) // maxprot: rw-
+	common.PutU32(bin[off+60:], 3) // initprot: rw-
+	common.PutU32(bin[off+64:], 2) // nsects
 	off += lcSegSize
 
 	// Section: __data
 	copy(bin[off:], "__data\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
 	copy(bin[off+16:], "__DATA\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
-	aarch64.PutU64(bin[off+32:], dataSectionVAddr)
-	aarch64.PutU64(bin[off+40:], uint64(dataSize))
-	aarch64.PutU32(bin[off+48:], uint32(dataSectionOff))
-	aarch64.PutU32(bin[off+52:], 3)
-	aarch64.PutU32(bin[off+64:], 0)
+	common.PutU64(bin[off+32:], dataSectionVAddr)
+	common.PutU64(bin[off+40:], uint64(dataSize))
+	common.PutU32(bin[off+48:], uint32(dataSectionOff))
+	common.PutU32(bin[off+52:], 3)
+	common.PutU32(bin[off+64:], 0)
 	off += lcSectSize
 
 	// Section: __got
 	copy(bin[off:], "__got\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
 	copy(bin[off+16:], "__DATA\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
-	aarch64.PutU64(bin[off+32:], gotSectionVAddr)
-	aarch64.PutU64(bin[off+40:], uint64(gotSize))
-	aarch64.PutU32(bin[off+48:], uint32(gotSectionOff))
-	aarch64.PutU32(bin[off+52:], 3)
-	aarch64.PutU32(bin[off+64:], 0x06) // S_NON_LAZY_SYMBOL_POINTERS
+	common.PutU64(bin[off+32:], gotSectionVAddr)
+	common.PutU64(bin[off+40:], uint64(gotSize))
+	common.PutU32(bin[off+48:], uint32(gotSectionOff))
+	common.PutU32(bin[off+52:], 3)
+	common.PutU32(bin[off+64:], 0x06) // S_NON_LAZY_SYMBOL_POINTERS
 	off += lcSectSize
 
 	// LC_SEGMENT_64: __LINKEDIT
-	aarch64.PutU32(bin[off:], 0x19)
-	aarch64.PutU32(bin[off+4:], uint32(lcSegSize))
+	common.PutU32(bin[off:], 0x19)
+	common.PutU32(bin[off+4:], uint32(lcSegSize))
 	copy(bin[off+8:], "__LINKEDIT\x00\x00\x00\x00\x00\x00")
-	aarch64.PutU64(bin[off+24:], linkeditVAddr)
-	aarch64.PutU64(bin[off+32:], linkeditVMSize)
-	aarch64.PutU64(bin[off+40:], uint64(linkeditStart))
-	aarch64.PutU64(bin[off+48:], uint64(linkeditEnd-linkeditStart))
-	aarch64.PutU32(bin[off+56:], 1) // maxprot: r--
-	aarch64.PutU32(bin[off+60:], 1) // initprot: r--
+	common.PutU64(bin[off+24:], linkeditVAddr)
+	common.PutU64(bin[off+32:], linkeditVMSize)
+	common.PutU64(bin[off+40:], uint64(linkeditStart))
+	common.PutU64(bin[off+48:], uint64(linkeditEnd-linkeditStart))
+	common.PutU32(bin[off+56:], 1) // maxprot: r--
+	common.PutU32(bin[off+60:], 1) // initprot: r--
 	off += lcSegSize
 
 	// LC_LOAD_DYLINKER
-	aarch64.PutU32(bin[off:], 0x0E)
-	aarch64.PutU32(bin[off+4:], uint32(lcDylinkerSize))
-	aarch64.PutU32(bin[off+8:], 12)
+	common.PutU32(bin[off:], 0x0E)
+	common.PutU32(bin[off+4:], uint32(lcDylinkerSize))
+	common.PutU32(bin[off+8:], 12)
 	copy(bin[off+12:], dylinkerPath)
 	off += lcDylinkerSize
 
 	// LC_LOAD_DYLIB
-	aarch64.PutU32(bin[off:], 0x0C)
-	aarch64.PutU32(bin[off+4:], uint32(lcDylibSize))
-	aarch64.PutU32(bin[off+8:], 24)
-	aarch64.PutU32(bin[off+12:], 2)        // timestamp
-	aarch64.PutU32(bin[off+16:], 0x010000) // current_version
-	aarch64.PutU32(bin[off+20:], 0x010000) // compat_version
+	common.PutU32(bin[off:], 0x0C)
+	common.PutU32(bin[off+4:], uint32(lcDylibSize))
+	common.PutU32(bin[off+8:], 24)
+	common.PutU32(bin[off+12:], 2)        // timestamp
+	common.PutU32(bin[off+16:], 0x010000) // current_version
+	common.PutU32(bin[off+20:], 0x010000) // compat_version
 	copy(bin[off+24:], dylibPath)
 	off += lcDylibSize
 
 	// LC_MAIN
-	aarch64.PutU32(bin[off:], 0x80000028)
-	aarch64.PutU32(bin[off+4:], uint32(lcMainSize))
-	aarch64.PutU64(bin[off+8:], entryOff)
-	aarch64.PutU64(bin[off+16:], 0) // stacksize
+	common.PutU32(bin[off:], 0x80000028)
+	common.PutU32(bin[off+4:], uint32(lcMainSize))
+	common.PutU64(bin[off+8:], entryOff)
+	common.PutU64(bin[off+16:], 0) // stacksize
 	off += lcMainSize
 
 	if !g.Target().StripBinary {
 		// LC_SYMTAB
-		aarch64.PutU32(bin[off:], 0x02)
-		aarch64.PutU32(bin[off+4:], uint32(lcSymtabSize))
-		aarch64.PutU32(bin[off+8:], uint32(symtabOff))
-		aarch64.PutU32(bin[off+12:], uint32(symtabNEntries))
-		aarch64.PutU32(bin[off+16:], uint32(strtabOff))
-		aarch64.PutU32(bin[off+20:], uint32(strtabSize))
+		common.PutU32(bin[off:], 0x02)
+		common.PutU32(bin[off+4:], uint32(lcSymtabSize))
+		common.PutU32(bin[off+8:], uint32(symtabOff))
+		common.PutU32(bin[off+12:], uint32(symtabNEntries))
+		common.PutU32(bin[off+16:], uint32(strtabOff))
+		common.PutU32(bin[off+20:], uint32(strtabSize))
 		off += lcSymtabSize
 
 		// LC_DYSYMTAB
-		aarch64.PutU32(bin[off:], 0x0B)
-		aarch64.PutU32(bin[off+4:], uint32(lcDysymtabSize))
+		common.PutU32(bin[off:], 0x0B)
+		common.PutU32(bin[off+4:], uint32(lcDysymtabSize))
 		// ilocalsym = 0, nlocalsym = number of local symbols
 		nLocalSyms := 0
 		nExtSyms := 0
@@ -376,31 +377,31 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 				nLocalSyms++
 			}
 		}
-		aarch64.PutU32(bin[off+8:], 0)                       // ilocalsym
-		aarch64.PutU32(bin[off+12:], uint32(nLocalSyms))     // nlocalsym
-		aarch64.PutU32(bin[off+16:], uint32(nLocalSyms))     // iextdefsym (starts after locals)
-		aarch64.PutU32(bin[off+20:], uint32(nExtSyms))       // nextdefsym
-		aarch64.PutU32(bin[off+24:], uint32(symtabNEntries)) // iundefsym (no undefs)
-		aarch64.PutU32(bin[off+28:], 0)                      // nundefsym
+		common.PutU32(bin[off+8:], 0)                       // ilocalsym
+		common.PutU32(bin[off+12:], uint32(nLocalSyms))     // nlocalsym
+		common.PutU32(bin[off+16:], uint32(nLocalSyms))     // iextdefsym (starts after locals)
+		common.PutU32(bin[off+20:], uint32(nExtSyms))       // nextdefsym
+		common.PutU32(bin[off+24:], uint32(symtabNEntries)) // iundefsym (no undefs)
+		common.PutU32(bin[off+28:], 0)                      // nundefsym
 		off += lcDysymtabSize
 	}
 
 	// LC_DYLD_INFO_ONLY
-	aarch64.PutU32(bin[off:], 0x80000022)
-	aarch64.PutU32(bin[off+4:], uint32(lcDyldInfoSize))
+	common.PutU32(bin[off:], 0x80000022)
+	common.PutU32(bin[off+4:], uint32(lcDyldInfoSize))
 	// bind info
-	aarch64.PutU32(bin[off+16:], uint32(bindOff))
-	aarch64.PutU32(bin[off+20:], uint32(bindSize))
+	common.PutU32(bin[off+16:], uint32(bindOff))
+	common.PutU32(bin[off+20:], uint32(bindSize))
 	// export info
-	aarch64.PutU32(bin[off+40:], uint32(exportOff))
-	aarch64.PutU32(bin[off+44:], uint32(exportSize))
+	common.PutU32(bin[off+40:], uint32(exportOff))
+	common.PutU32(bin[off+44:], uint32(exportSize))
 	off += lcDyldInfoSize
 
 	// LC_CODE_SIGNATURE
-	aarch64.PutU32(bin[off:], 0x1d)
-	aarch64.PutU32(bin[off+4:], uint32(lcCodeSigSize))
-	aarch64.PutU32(bin[off+8:], uint32(codeSignOff))
-	aarch64.PutU32(bin[off+12:], uint32(sigSize))
+	common.PutU32(bin[off:], 0x1d)
+	common.PutU32(bin[off+4:], uint32(lcCodeSigSize))
+	common.PutU32(bin[off+8:], uint32(codeSignOff))
+	common.PutU32(bin[off+12:], uint32(sigSize))
 	off += lcCodeSigSize
 
 	_ = off
@@ -424,10 +425,10 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 				continue
 			}
 			nlist := bin[symOff:]
-			aarch64.PutU32(nlist[0:], uint32(sym.nameOff))
+			common.PutU32(nlist[0:], uint32(sym.nameOff))
 			nlist[4] = sym.ntype
 			nlist[5] = 1 // n_sect: 1 = __text
-			aarch64.PutU64(nlist[8:], textSectionVAddr+sym.value)
+			common.PutU64(nlist[8:], textSectionVAddr+sym.value)
 			symOff += nlistSize
 		}
 		// Write external symbols
@@ -436,10 +437,10 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 				continue
 			}
 			nlist := bin[symOff:]
-			aarch64.PutU32(nlist[0:], uint32(sym.nameOff))
+			common.PutU32(nlist[0:], uint32(sym.nameOff))
 			nlist[4] = sym.ntype
 			nlist[5] = 1 // n_sect: 1 = __text
-			aarch64.PutU64(nlist[8:], textSectionVAddr+sym.value)
+			common.PutU64(nlist[8:], textSectionVAddr+sym.value)
 			symOff += nlistSize
 		}
 
@@ -491,7 +492,7 @@ func buildBindOpcodes(g *aarch64.CodeGen) []byte {
 	var ops []byte
 
 	dataSegIdx := 2
-	dataSize := aarch64.AlignUp(len(g.Data()), 8)
+	dataSize := common.AlignUp(len(g.Data()), 8)
 	gotOffsetInDataSeg := dataSize
 
 	for i, sym := range g.GotSymbols() {

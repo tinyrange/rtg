@@ -2,6 +2,8 @@
 
 package dos
 
+import "j5.nz/rtg/std/compiler/common"
+
 func (g *CodeGen) compileConstStr(raw string) {
 	decoded := decodeTinyStringLiteral(raw)
 
@@ -15,7 +17,7 @@ func (g *CodeGen) compileConstStr(raw string) {
 		g.rodata = append(g.rodata, 0, 0, byte(len(decoded)), byte(len(decoded)>>8))
 
 		g.stringMap[decoded] = headerOff
-		putU16(g.rodata[headerOff:headerOff+2], uint16(dataOff))
+		common.PutU16(g.rodata[headerOff:headerOff+2], uint16(dataOff))
 	}
 
 	g.emitMovImm16(REG16_AX, uint16(headerOff))

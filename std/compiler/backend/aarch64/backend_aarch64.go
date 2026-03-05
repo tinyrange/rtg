@@ -4,6 +4,7 @@ package aarch64
 
 import (
 	"j5.nz/rtg/std/compiler/backend/becommon"
+	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
@@ -122,7 +123,7 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 			continue
 		}
 		// Determine if this is a B.cond or B instruction
-		existing := getU32(g.code[fix.CodeOffset : fix.CodeOffset+4])
+		existing := common.GetU32(g.code[fix.CodeOffset : fix.CodeOffset+4])
 		if existing&0xFF000010 == 0x54000000 {
 			// B.cond
 			g.patchArm64BCondAt(fix.CodeOffset, labelOff)
@@ -317,7 +318,7 @@ func (g *CodeGen) compileConstStrArm64(s string) {
 		g.data = append(g.data, 0, 0, 0, 0, 0, 0, 0, 0)
 		// length
 		g.data = append(g.data, 0, 0, 0, 0, 0, 0, 0, 0)
-		putU64(g.data[headerOff+8:headerOff+16], uint64(len(decoded)))
+		common.PutU64(g.data[headerOff+8:headerOff+16], uint64(len(decoded)))
 
 		g.stringMap[decoded] = headerOff
 		g.stringHeaderOff = append(g.stringHeaderOff, headerOff)

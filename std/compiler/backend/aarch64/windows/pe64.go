@@ -4,6 +4,7 @@ package windows
 
 import (
 	"j5.nz/rtg/std/compiler/backend/aarch64"
+	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 	objpe "j5.nz/rtg/std/compiler/object/pe"
 )
@@ -86,7 +87,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	sectionTableSize := numSections * 40
 
 	headersRawSize := dosHeaderSize + dosStubSize + peSignatureSize + coffHeaderSize + optionalHeaderSize + sectionTableSize
-	headersAligned := aarch64.AlignUp(headersRawSize, fileAlignment)
+	headersAligned := common.AlignUp(headersRawSize, fileAlignment)
 
 	// Ensure empty initialized-data sections still emit a minimal payload.
 	// Some Windows loaders reject images with zero-sized initialized sections.
@@ -100,20 +101,20 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	}
 
 	// Section sizes
-	textRawSize := aarch64.AlignUp(len(g.Code()), fileAlignment)
-	rdataRawSize := aarch64.AlignUp(len(rdataContent), fileAlignment)
-	dataRawSize := aarch64.AlignUp(len(dataContent), fileAlignment)
+	textRawSize := common.AlignUp(len(g.Code()), fileAlignment)
+	rdataRawSize := common.AlignUp(len(rdataContent), fileAlignment)
+	dataRawSize := common.AlignUp(len(dataContent), fileAlignment)
 	imports := collectWinImportsFromFixups(g)
 
 	// Build .idata section with 8-byte ILT/IAT entries
 	idataContent := buildIData64(g, imports)
-	idataRawSize := aarch64.AlignUp(len(idataContent), fileAlignment)
+	idataRawSize := common.AlignUp(len(idataContent), fileAlignment)
 
 	// RVAs
 	textRVA := sectionAlignment // 0x1000
-	rdataRVA := textRVA + aarch64.SectionSpan(len(g.Code()), sectionAlignment)
-	dataRVA := rdataRVA + aarch64.SectionSpan(len(rdataContent), sectionAlignment)
-	idataRVA := dataRVA + aarch64.SectionSpan(len(dataContent), sectionAlignment)
+	rdataRVA := textRVA + common.SectionSpan(len(g.Code()), sectionAlignment)
+	dataRVA := rdataRVA + common.SectionSpan(len(rdataContent), sectionAlignment)
+	idataRVA := dataRVA + common.SectionSpan(len(dataContent), sectionAlignment)
 
 	// Fix up .idata internal RVAs
 	fixupIData64(g, idataContent, idataRVA, imports)
@@ -131,8 +132,8 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 		}
 		sortRelocOffsets(relocOffsets)
 		relocContent = buildBaseRelocations(g, dataRVA, relocOffsets)
-		relocRVA = idataRVA + aarch64.SectionSpan(len(idataContent), sectionAlignment)
-		relocRawSize = aarch64.AlignUp(len(relocContent), fileAlignment)
+		relocRVA = idataRVA + common.SectionSpan(len(idataContent), sectionAlignment)
+		relocRawSize = common.AlignUp(len(relocContent), fileAlignment)
 	}
 
 	// Build DWARF debug sections with 8-byte addresses
@@ -144,15 +145,15 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	debugInfoRawSize := 0
 	if !g.Target().StripBinary {
 		debugAbbrev, debugInfo = buildDWARF64(g, irmod, textVAInt, len(g.Code()))
-		debugAbbrevRawSize = aarch64.AlignUp(len(debugAbbrev), fileAlignment)
-		debugInfoRawSize = aarch64.AlignUp(len(debugInfo), fileAlignment)
+		debugAbbrevRawSize = common.AlignUp(len(debugAbbrev), fileAlignment)
+		debugInfoRawSize = common.AlignUp(len(debugInfo), fileAlignment)
 	}
 
-	debugAbbrevRVA := idataRVA + aarch64.SectionSpan(len(idataContent), sectionAlignment)
+	debugAbbrevRVA := idataRVA + common.SectionSpan(len(idataContent), sectionAlignment)
 	if hasReloc {
-		debugAbbrevRVA = relocRVA + aarch64.SectionSpan(len(relocContent), sectionAlignment)
+		debugAbbrevRVA = relocRVA + common.SectionSpan(len(relocContent), sectionAlignment)
 	}
-	debugInfoRVA := debugAbbrevRVA + aarch64.SectionSpan(len(debugAbbrev), sectionAlignment)
+	debugInfoRVA := debugAbbrevRVA + common.SectionSpan(len(debugAbbrev), sectionAlignment)
 
 	// File offsets
 	textFileOff := headersAligned
@@ -183,7 +184,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 		debugInfoNameOff = len(coffStrtab)
 		coffStrtab = append(coffStrtab, []byte(".debug_info")...)
 		coffStrtab = append(coffStrtab, 0)
-		aarch64.PutU32(coffStrtab[0:], uint32(len(coffStrtab)))
+		common.PutU32(coffStrtab[0:], uint32(len(coffStrtab)))
 	}
 
 	symtabFileOff := debugInfoFileOff + debugInfoRawSize
@@ -197,12 +198,12 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 		}
 	}
 
-	imageSize := debugInfoRVA + aarch64.SectionSpan(len(debugInfo), sectionAlignment)
+	imageSize := debugInfoRVA + common.SectionSpan(len(debugInfo), sectionAlignment)
 	if g.Target().StripBinary {
 		if hasReloc {
-			imageSize = relocRVA + aarch64.SectionSpan(len(relocContent), sectionAlignment)
+			imageSize = relocRVA + common.SectionSpan(len(relocContent), sectionAlignment)
 		} else {
-			imageSize = idataRVA + aarch64.SectionSpan(len(idataContent), sectionAlignment)
+			imageSize = idataRVA + common.SectionSpan(len(idataContent), sectionAlignment)
 		}
 	}
 
@@ -212,7 +213,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 		// ARM64: string headers are in .data section
 		for _, headerOff := range g.StringHeaderOffsets() {
 			rodataOff := g.StringRodataMap()[headerOff]
-			aarch64.PutU64(g.Data()[headerOff:headerOff+8], imageBase+uint64(rdataRVA+rodataOff))
+			common.PutU64(g.Data()[headerOff:headerOff+8], imageBase+uint64(rdataRVA+rodataOff))
 		}
 
 		// Fix up code references (ADRP+ADD/LDR pairs)
@@ -239,8 +240,8 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	} else {
 		// x64: string headers are in .rodata section
 		for _, headerOff := range g.StringHeaderOffsets() {
-			dataOff := aarch64.GetU64(g.Rodata()[headerOff : headerOff+8])
-			aarch64.PutU64(g.Rodata()[headerOff:headerOff+8], imageBase+uint64(rdataRVA)+dataOff)
+			dataOff := common.GetU64(g.Rodata()[headerOff : headerOff+8])
+			common.PutU64(g.Rodata()[headerOff:headerOff+8], imageBase+uint64(rdataRVA)+dataOff)
 		}
 
 		// Fix up code references (movabs imm64 and RIP-relative call)
@@ -248,12 +249,12 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 			codeOffset, targetName, _ := g.CallFixupAt(i)
 			if targetName == "$rodata_header$" {
 				// Patch 8-byte movabs immediate with rodata VA
-				headerOff := aarch64.GetU64(g.Code()[codeOffset : codeOffset+8])
-				aarch64.PutU64(g.Code()[codeOffset:codeOffset+8], imageBase+uint64(rdataRVA)+headerOff)
+				headerOff := common.GetU64(g.Code()[codeOffset : codeOffset+8])
+				common.PutU64(g.Code()[codeOffset:codeOffset+8], imageBase+uint64(rdataRVA)+headerOff)
 			} else if targetName == "$data_addr$" {
 				// Patch 8-byte movabs immediate with data VA
-				dataOff := aarch64.GetU64(g.Code()[codeOffset : codeOffset+8])
-				aarch64.PutU64(g.Code()[codeOffset:codeOffset+8], imageBase+uint64(dataRVA)+dataOff)
+				dataOff := common.GetU64(g.Code()[codeOffset : codeOffset+8])
+				common.PutU64(g.Code()[codeOffset:codeOffset+8], imageBase+uint64(dataRVA)+dataOff)
 			} else if libName, funcName, ok := decodeIATFixupTarget(targetName); ok {
 				iatOff, ok := iatOffsets[winImportKey(libName, funcName)]
 				if !ok {
@@ -263,7 +264,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 				iatVA := imageBase + uint64(idataRVA) + uint64(iatOff)
 				rip := imageBase + uint64(textRVA) + uint64(codeOffset) + 4
 				disp32 := int32(int64(iatVA) - int64(rip))
-				aarch64.PutU32(g.Code()[codeOffset:codeOffset+4], uint32(disp32))
+				common.PutU32(g.Code()[codeOffset:codeOffset+4], uint32(disp32))
 			}
 		}
 	}
@@ -274,7 +275,7 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	// === DOS Header (64 bytes) ===
 	pe[0] = 'M'
 	pe[1] = 'Z'
-	aarch64.PutU32(pe[0x3C:], 0x80)
+	common.PutU32(pe[0x3C:], 0x80)
 
 	// === DOS Stub (64 bytes at 0x40) ===
 	dosStub := []byte{
@@ -301,73 +302,73 @@ func BuildPE64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	if g.IsArm64() {
 		machineType = 0xAA64 // IMAGE_FILE_MACHINE_ARM64
 	}
-	aarch64.PutU16(coff[0:], machineType)         // Machine
-	aarch64.PutU16(coff[2:], uint16(numSections)) // NumberOfSections
-	aarch64.PutU32(coff[4:], 0)                   // TimeDateStamp
+	common.PutU16(coff[0:], machineType)         // Machine
+	common.PutU16(coff[2:], uint16(numSections)) // NumberOfSections
+	common.PutU32(coff[4:], 0)                   // TimeDateStamp
 	if g.Target().StripBinary {
-		aarch64.PutU32(coff[8:], 0) // PointerToSymbolTable
-		aarch64.PutU32(coff[12:], 0)
+		common.PutU32(coff[8:], 0) // PointerToSymbolTable
+		common.PutU32(coff[12:], 0)
 	} else {
-		aarch64.PutU32(coff[8:], uint32(symtabFileOff)) // PointerToSymbolTable
-		aarch64.PutU32(coff[12:], uint32(numSyms))      // NumberOfSymbols
+		common.PutU32(coff[8:], uint32(symtabFileOff)) // PointerToSymbolTable
+		common.PutU32(coff[12:], uint32(numSyms))      // NumberOfSymbols
 	}
-	aarch64.PutU16(coff[16:], uint16(optionalHeaderSize)) // SizeOfOptionalHeader
-	aarch64.PutU16(coff[18:], 0x0022)                     // Characteristics: EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
+	common.PutU16(coff[16:], uint16(optionalHeaderSize)) // SizeOfOptionalHeader
+	common.PutU16(coff[18:], 0x0022)                     // Characteristics: EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
 
 	// === Optional Header (240 bytes at 0x98) ===
 	opt := pe[0x98:]
-	aarch64.PutU16(opt[0:], 0x020B)                                                       // Magic: PE32+
-	opt[2] = 1                                                                            // MajorLinkerVersion
-	opt[3] = 0                                                                            // MinorLinkerVersion
-	aarch64.PutU32(opt[4:], uint32(len(g.Code())))                                        // SizeOfCode
-	aarch64.PutU32(opt[8:], uint32(len(rdataContent)+len(dataContent)+len(idataContent))) // SizeOfInitializedData
-	aarch64.PutU32(opt[12:], 0)                                                           // SizeOfUninitializedData
-	aarch64.PutU32(opt[16:], uint32(textRVA))                                             // AddressOfEntryPoint
-	aarch64.PutU32(opt[20:], uint32(textRVA))                                             // BaseOfCode
+	common.PutU16(opt[0:], 0x020B)                                                       // Magic: PE32+
+	opt[2] = 1                                                                           // MajorLinkerVersion
+	opt[3] = 0                                                                           // MinorLinkerVersion
+	common.PutU32(opt[4:], uint32(len(g.Code())))                                        // SizeOfCode
+	common.PutU32(opt[8:], uint32(len(rdataContent)+len(dataContent)+len(idataContent))) // SizeOfInitializedData
+	common.PutU32(opt[12:], 0)                                                           // SizeOfUninitializedData
+	common.PutU32(opt[16:], uint32(textRVA))                                             // AddressOfEntryPoint
+	common.PutU32(opt[20:], uint32(textRVA))                                             // BaseOfCode
 	// PE32+ has NO BaseOfData field — ImageBase is at offset 24
-	aarch64.PutU64(opt[24:], imageBase)                // ImageBase (8 bytes)
-	aarch64.PutU32(opt[32:], uint32(sectionAlignment)) // SectionAlignment
-	aarch64.PutU32(opt[36:], uint32(fileAlignment))    // FileAlignment
-	aarch64.PutU16(opt[40:], 6)                        // MajorOperatingSystemVersion
-	aarch64.PutU16(opt[42:], 0)                        // MinorOperatingSystemVersion
-	aarch64.PutU16(opt[44:], 0)                        // MajorImageVersion
-	aarch64.PutU16(opt[46:], 0)                        // MinorImageVersion
-	aarch64.PutU16(opt[48:], 6)                        // MajorSubsystemVersion
-	aarch64.PutU16(opt[50:], 0)                        // MinorSubsystemVersion
-	aarch64.PutU32(opt[52:], 0)                        // Win32VersionValue
-	aarch64.PutU32(opt[56:], uint32(imageSize))        // SizeOfImage
-	aarch64.PutU32(opt[60:], uint32(headersAligned))   // SizeOfHeaders
-	aarch64.PutU32(opt[64:], 0)                        // CheckSum
-	aarch64.PutU16(opt[68:], 3)                        // Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI
-	dllChars := uint16(0x0100)                         // NX_COMPAT
+	common.PutU64(opt[24:], imageBase)                // ImageBase (8 bytes)
+	common.PutU32(opt[32:], uint32(sectionAlignment)) // SectionAlignment
+	common.PutU32(opt[36:], uint32(fileAlignment))    // FileAlignment
+	common.PutU16(opt[40:], 6)                        // MajorOperatingSystemVersion
+	common.PutU16(opt[42:], 0)                        // MinorOperatingSystemVersion
+	common.PutU16(opt[44:], 0)                        // MajorImageVersion
+	common.PutU16(opt[46:], 0)                        // MinorImageVersion
+	common.PutU16(opt[48:], 6)                        // MajorSubsystemVersion
+	common.PutU16(opt[50:], 0)                        // MinorSubsystemVersion
+	common.PutU32(opt[52:], 0)                        // Win32VersionValue
+	common.PutU32(opt[56:], uint32(imageSize))        // SizeOfImage
+	common.PutU32(opt[60:], uint32(headersAligned))   // SizeOfHeaders
+	common.PutU32(opt[64:], 0)                        // CheckSum
+	common.PutU16(opt[68:], 3)                        // Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI
+	dllChars := uint16(0x0100)                        // NX_COMPAT
 	if hasReloc {
 		dllChars = 0x0140 // DYNAMIC_BASE | NX_COMPAT
 	}
-	aarch64.PutU16(opt[70:], dllChars) // DllCharacteristics
+	common.PutU16(opt[70:], dllChars) // DllCharacteristics
 	// PE32+: Stack/Heap sizes are 8 bytes each
-	aarch64.PutU64(opt[72:], 0x100000) // SizeOfStackReserve (1MB)
-	aarch64.PutU64(opt[80:], 0x1000)   // SizeOfStackCommit (4KB)
-	aarch64.PutU64(opt[88:], 0x100000) // SizeOfHeapReserve (1MB)
-	aarch64.PutU64(opt[96:], 0x1000)   // SizeOfHeapCommit (4KB)
-	aarch64.PutU32(opt[104:], 0)       // LoaderFlags
-	aarch64.PutU32(opt[108:], 16)      // NumberOfRvaAndSizes
+	common.PutU64(opt[72:], 0x100000) // SizeOfStackReserve (1MB)
+	common.PutU64(opt[80:], 0x1000)   // SizeOfStackCommit (4KB)
+	common.PutU64(opt[88:], 0x100000) // SizeOfHeapReserve (1MB)
+	common.PutU64(opt[96:], 0x1000)   // SizeOfHeapCommit (4KB)
+	common.PutU32(opt[104:], 0)       // LoaderFlags
+	common.PutU32(opt[108:], 16)      // NumberOfRvaAndSizes
 
 	// Data directories (16 entries x 8 bytes = 128 bytes starting at opt[112])
 	// [1] Import Table
 	importDirRVA, importDirSize := getImportDirInfo(g, imports, idataRVA)
-	aarch64.PutU32(opt[112+1*8:], uint32(importDirRVA))
-	aarch64.PutU32(opt[112+1*8+4:], uint32(importDirSize))
+	common.PutU32(opt[112+1*8:], uint32(importDirRVA))
+	common.PutU32(opt[112+1*8+4:], uint32(importDirSize))
 
 	// [5] Base Relocation Table
 	if hasReloc {
-		aarch64.PutU32(opt[112+5*8:], uint32(relocRVA))
-		aarch64.PutU32(opt[112+5*8+4:], uint32(len(relocContent)))
+		common.PutU32(opt[112+5*8:], uint32(relocRVA))
+		common.PutU32(opt[112+5*8+4:], uint32(len(relocContent)))
 	}
 
 	// [12] IAT
 	iatRVA, iatSize := getIATInfo64(g, imports, idataRVA)
-	aarch64.PutU32(opt[112+12*8:], uint32(iatRVA))
-	aarch64.PutU32(opt[112+12*8+4:], uint32(iatSize))
+	common.PutU32(opt[112+12*8:], uint32(iatRVA))
+	common.PutU32(opt[112+12*8+4:], uint32(iatSize))
 
 	// === Section Table (at 0x188) ===
 	sectBase := 0x188
