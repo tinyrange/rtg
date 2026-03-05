@@ -14,6 +14,8 @@ const (
 	REG_X28 = 28
 )
 
+func (g *CodeGen) initOperandCacheArm64() {}
+
 func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	return fmt.Errorf("arm64 backend disabled (built with no_backend_arm64 tag)")
 }

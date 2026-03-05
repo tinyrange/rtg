@@ -159,6 +159,7 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64, extr
 		g.globalOffsets[i] = i * 8
 	}
 	g.data = make([]byte, (len(irmod.Globals)+extraGlobals)*8)
+	g.initOperandCacheArm64()
 	return g
 }
 

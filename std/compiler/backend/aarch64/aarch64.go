@@ -25,6 +25,8 @@ const (
 	REG_X15 = 15
 	REG_X16 = 16 // IP0 (intra-procedure scratch)
 	REG_X17 = 17 // IP1
+	REG_X26 = 26 // operand cache spill register (callee-saved)
+	REG_X27 = 27 // operand cache spill register (callee-saved)
 	REG_X28 = 28 // operand stack pointer (callee-saved)
 	REG_FP  = 29 // frame pointer (X29)
 	REG_LR  = 30 // link register (X30)
