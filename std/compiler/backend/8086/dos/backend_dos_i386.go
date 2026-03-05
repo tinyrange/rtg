@@ -196,8 +196,8 @@ func (g *CodeGen) buildEXE() ([]byte, error) {
 
 	// In EXE small-model, rodata/data live in DS with offset-based pointers.
 	for _, headerOff := range g.stringMap {
-		dataOff := getU16(dataBlob[headerOff : headerOff+2])
-		putU16(dataBlob[headerOff:headerOff+2], dataOff)
+		dataOff := common.GetU16(dataBlob[headerOff : headerOff+2])
+		common.PutU16(dataBlob[headerOff:headerOff+2], dataOff)
 	}
 
 	// Module image is code followed by paragraph-aligned data segment payload.
@@ -210,18 +210,18 @@ func (g *CodeGen) buildEXE() ([]byte, error) {
 
 	dataSegRel := uint16(codeParas)
 	for _, off := range g.dataSegFixups {
-		putU16(module[off:off+2], dataSegRel)
+		common.PutU16(module[off:off+2], dataSegRel)
 	}
 
 	// Patch code immediates referencing rodata header/data base.
 	for _, fix := range g.callFixups {
 		switch fix.Target {
 		case "$rodata_header$":
-			off := getU16(module[fix.CodeOffset : fix.CodeOffset+2])
-			putU16(module[fix.CodeOffset:fix.CodeOffset+2], off)
+			off := common.GetU16(module[fix.CodeOffset : fix.CodeOffset+2])
+			common.PutU16(module[fix.CodeOffset:fix.CodeOffset+2], off)
 		case "$data_addr$":
-			off := getU16(module[fix.CodeOffset : fix.CodeOffset+2])
-			putU16(module[fix.CodeOffset:fix.CodeOffset+2], uint16(rodataSize)+off)
+			off := common.GetU16(module[fix.CodeOffset : fix.CodeOffset+2])
+			common.PutU16(module[fix.CodeOffset:fix.CodeOffset+2], uint16(rodataSize)+off)
 		}
 	}
 
@@ -233,20 +233,20 @@ func (g *CodeGen) buildEXE() ([]byte, error) {
 		last = 512
 	}
 	header := make([]byte, mzHeaderBytes)
-	putU16(header[0:2], 0x5A4D)         // MZ
-	putU16(header[2:4], uint16(last))   // e_cblp
-	putU16(header[4:6], uint16(pages))  // e_cp
-	putU16(header[6:8], 0)              // e_crlc
-	putU16(header[8:10], mzHeaderParas) // e_cparhdr
-	putU16(header[10:12], 0x0010)       // e_minalloc
-	putU16(header[12:14], 0xFFFF)       // e_maxalloc
-	putU16(header[14:16], dataSegRel)   // e_ss
-	putU16(header[16:18], 0xFFFE)       // e_sp
-	putU16(header[18:20], 0)            // e_csum
-	putU16(header[20:22], 0x0000)       // e_ip
-	putU16(header[22:24], 0x0000)       // e_cs
-	putU16(header[24:26], 0x0040)       // e_lfarlc
-	putU16(header[26:28], 0)            // e_ovno
+	common.PutU16(header[0:2], 0x5A4D)         // MZ
+	common.PutU16(header[2:4], uint16(last))   // e_cblp
+	common.PutU16(header[4:6], uint16(pages))  // e_cp
+	common.PutU16(header[6:8], 0)              // e_crlc
+	common.PutU16(header[8:10], mzHeaderParas) // e_cparhdr
+	common.PutU16(header[10:12], 0x0010)       // e_minalloc
+	common.PutU16(header[12:14], 0xFFFF)       // e_maxalloc
+	common.PutU16(header[14:16], dataSegRel)   // e_ss
+	common.PutU16(header[16:18], 0xFFFE)       // e_sp
+	common.PutU16(header[18:20], 0)            // e_csum
+	common.PutU16(header[20:22], 0x0000)       // e_ip
+	common.PutU16(header[22:24], 0x0000)       // e_cs
+	common.PutU16(header[24:26], 0x0040)       // e_lfarlc
+	common.PutU16(header[26:28], 0)            // e_ovno
 
 	out := make([]byte, fileSize)
 	copy(out, header)
@@ -516,7 +516,7 @@ func (g *CodeGen) emitCallPlaceholder(target string) {
 
 func (g *CodeGen) patchRel16At(fixupOff int, targetOff int) {
 	rel := int16(targetOff - (fixupOff + 2))
-	putU16(g.code[fixupOff:fixupOff+2], uint16(rel))
+	common.PutU16(g.code[fixupOff:fixupOff+2], uint16(rel))
 }
 
 func (g *CodeGen) patchRel16(fixupOff int) {
@@ -841,8 +841,6 @@ func (g *CodeGen) leaLocal(offset int, reg int) {
 func (g *CodeGen) emitByte(b byte)      { g.code = append(g.code, b) }
 func (g *CodeGen) emitBytes(bs ...byte) { g.code = append(g.code, bs...) }
 func (g *CodeGen) emitU16(v uint16)     { g.code = append(g.code, byte(v), byte(v>>8)) }
-func putU16(b []byte, v uint16)         { b[0], b[1] = byte(v), byte(v>>8) }
-func getU16(b []byte) uint16            { return uint16(b[0]) | uint16(b[1])<<8 }
 func modrmRR16(dst, src int) byte       { return byte(0xC0 | ((dst & 7) << 3) | (src & 7)) }
 func modrmMem16(mod byte, reg int, rm byte) byte {
 	return byte((mod << 6) | byte((reg&7)<<3) | (rm & 7))

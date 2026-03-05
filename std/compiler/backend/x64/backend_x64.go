@@ -64,7 +64,7 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 
 	frameBytes := g.curFrameSize * 8
 	if g.target.GOOS == "windows" {
-		frameBytes = AlignUp(frameBytes, 16)
+		frameBytes = common.AlignUp(frameBytes, 16)
 	}
 	if frameBytes > 0 {
 		g.SubRI(REG_RSP, int32(frameBytes))
@@ -719,7 +719,7 @@ func (g *CodeGen) EmitTostringHelperX64() {
 
 	frameBytes := 8
 	if g.target.GOOS == "windows" {
-		frameBytes = AlignUp(frameBytes, 16)
+		frameBytes = common.AlignUp(frameBytes, 16)
 	}
 	if frameBytes > 0 {
 		g.SubRI(REG_RSP, int32(frameBytes))

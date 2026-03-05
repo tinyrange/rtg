@@ -140,6 +140,10 @@ func PutU16(b []byte, v uint16) {
 	b[1] = byte(v >> 8)
 }
 
+func GetU16(b []byte) uint16 {
+	return uint16(b[0]) | uint16(b[1])<<8
+}
+
 func PutU32(b []byte, v uint32) {
 	b[0] = byte(v)
 	b[1] = byte(v >> 8)
@@ -149,4 +153,19 @@ func PutU32(b []byte, v uint32) {
 
 func GetU32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+}
+
+func AlignUp(v, align int) int {
+	if align <= 0 {
+		return v
+	}
+	mask := align - 1
+	return (v + mask) & ^mask
+}
+
+func SectionSpan(size, align int) int {
+	if size <= 0 {
+		return align
+	}
+	return AlignUp(size, align)
 }

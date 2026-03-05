@@ -4,6 +4,7 @@ package linux
 
 import (
 	"j5.nz/rtg/std/compiler/backend/aarch64"
+	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 	objelf "j5.nz/rtg/std/compiler/object/elf"
 )
@@ -60,19 +61,19 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	} else {
 		// x86-64: fix up string headers in rodata with absolute virtual addresses
 		for _, headerOff := range g.StringHeaderOffsets() {
-			dataOff := aarch64.GetU64(g.Rodata()[headerOff : headerOff+8])
-			aarch64.PutU64(g.Rodata()[headerOff:headerOff+8], rodataVAddr+dataOff)
+			dataOff := common.GetU64(g.Rodata()[headerOff : headerOff+8])
+			common.PutU64(g.Rodata()[headerOff:headerOff+8], rodataVAddr+dataOff)
 		}
 
 		// Fix up code references to rodata headers and data section
 		for i := 0; i < g.CallFixupCount(); i++ {
 			codeOffset, targetName, _ := g.CallFixupAt(i)
 			if targetName == "$rodata_header$" {
-				headerOff := aarch64.GetU64(g.Code()[codeOffset : codeOffset+8])
-				aarch64.PutU64(g.Code()[codeOffset:codeOffset+8], rodataVAddr+headerOff)
+				headerOff := common.GetU64(g.Code()[codeOffset : codeOffset+8])
+				common.PutU64(g.Code()[codeOffset:codeOffset+8], rodataVAddr+headerOff)
 			} else if targetName == "$data_addr$" {
-				dataOff := aarch64.GetU64(g.Code()[codeOffset : codeOffset+8])
-				aarch64.PutU64(g.Code()[codeOffset:codeOffset+8], dataVAddr+dataOff)
+				dataOff := common.GetU64(g.Code()[codeOffset : codeOffset+8])
+				common.PutU64(g.Code()[codeOffset:codeOffset+8], dataVAddr+dataOff)
 			}
 		}
 	}
@@ -113,43 +114,43 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 	elf[6] = 1 // EV_CURRENT
 	elf[7] = 0 // ELFOSABI_NONE
 	// bytes 8-15: padding (zero)
-	aarch64.PutU16(elf[16:], 2) // e_type: ET_EXEC
-	var eMachine uint16 = 62    // EM_X86_64
+	common.PutU16(elf[16:], 2) // e_type: ET_EXEC
+	var eMachine uint16 = 62   // EM_X86_64
 	if g.IsArm64() {
 		eMachine = 183 // EM_AARCH64
 	}
-	aarch64.PutU16(elf[18:], eMachine)
-	aarch64.PutU32(elf[20:], 1)                     // e_version: EV_CURRENT
-	aarch64.PutU64(elf[24:], entryAddr)             // e_entry
-	aarch64.PutU64(elf[32:], uint64(elfHeaderSize)) // e_phoff
+	common.PutU16(elf[18:], eMachine)
+	common.PutU32(elf[20:], 1)                     // e_version: EV_CURRENT
+	common.PutU64(elf[24:], entryAddr)             // e_entry
+	common.PutU64(elf[32:], uint64(elfHeaderSize)) // e_phoff
 	if g.Target().StripBinary {
-		aarch64.PutU64(elf[40:], 0) // e_shoff
+		common.PutU64(elf[40:], 0) // e_shoff
 	} else {
-		aarch64.PutU64(elf[40:], uint64(shdrOffset)) // e_shoff
+		common.PutU64(elf[40:], uint64(shdrOffset)) // e_shoff
 	}
-	aarch64.PutU32(elf[48:], 0)                     // e_flags
-	aarch64.PutU16(elf[52:], uint16(elfHeaderSize)) // e_ehsize
-	aarch64.PutU16(elf[54:], uint16(phdrSize))      // e_phentsize
-	aarch64.PutU16(elf[56:], 1)                     // e_phnum
-	aarch64.PutU16(elf[58:], uint16(shdrEntrySize)) // e_shentsize
+	common.PutU32(elf[48:], 0)                     // e_flags
+	common.PutU16(elf[52:], uint16(elfHeaderSize)) // e_ehsize
+	common.PutU16(elf[54:], uint16(phdrSize))      // e_phentsize
+	common.PutU16(elf[56:], 1)                     // e_phnum
+	common.PutU16(elf[58:], uint16(shdrEntrySize)) // e_shentsize
 	if g.Target().StripBinary {
-		aarch64.PutU16(elf[60:], 0) // e_shnum
-		aarch64.PutU16(elf[62:], 0) // e_shstrndx
+		common.PutU16(elf[60:], 0) // e_shnum
+		common.PutU16(elf[62:], 0) // e_shstrndx
 	} else {
-		aarch64.PutU16(elf[60:], uint16(shdrCount)) // e_shnum
-		aarch64.PutU16(elf[62:], 6)                 // e_shstrndx: index of .shstrtab
+		common.PutU16(elf[60:], uint16(shdrCount)) // e_shnum
+		common.PutU16(elf[62:], 6)                 // e_shstrndx: index of .shstrtab
 	}
 
 	// Program header (single PT_LOAD, RWX)
 	phdr := elf[elfHeaderSize:]
-	aarch64.PutU32(phdr[0:], 1)                   // p_type: PT_LOAD
-	aarch64.PutU32(phdr[4:], 7)                   // p_flags: PF_R|PF_W|PF_X
-	aarch64.PutU64(phdr[8:], 0)                   // p_offset: 0 (load from start of file)
-	aarch64.PutU64(phdr[16:], g.BaseAddr())       // p_vaddr
-	aarch64.PutU64(phdr[24:], g.BaseAddr())       // p_paddr
-	aarch64.PutU64(phdr[32:], uint64(loadedSize)) // p_filesz
-	aarch64.PutU64(phdr[40:], uint64(loadedSize)) // p_memsz
-	aarch64.PutU64(phdr[48:], 0x200000)           // p_align: 2MB
+	common.PutU32(phdr[0:], 1)                   // p_type: PT_LOAD
+	common.PutU32(phdr[4:], 7)                   // p_flags: PF_R|PF_W|PF_X
+	common.PutU64(phdr[8:], 0)                   // p_offset: 0 (load from start of file)
+	common.PutU64(phdr[16:], g.BaseAddr())       // p_vaddr
+	common.PutU64(phdr[24:], g.BaseAddr())       // p_paddr
+	common.PutU64(phdr[32:], uint64(loadedSize)) // p_filesz
+	common.PutU64(phdr[40:], uint64(loadedSize)) // p_memsz
+	common.PutU64(phdr[48:], 0x200000)           // p_align: 2MB
 
 	// Copy loaded sections
 	copy(elf[textOffset:], g.Code())
@@ -169,69 +170,69 @@ func BuildELF64(g *aarch64.CodeGen, irmod *ir.IRModule) []byte {
 
 		// Section 1: .text
 		s := shdr[1*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNames.Text)) // sh_name
-		aarch64.PutU32(s[4:], 1)                    // sh_type: SHT_PROGBITS
-		aarch64.PutU64(s[8:], 6)                    // sh_flags: SHF_ALLOC|SHF_EXECINSTR
-		aarch64.PutU64(s[16:], textVAddr)           // sh_addr
-		aarch64.PutU64(s[24:], uint64(textOffset))  // sh_offset
-		aarch64.PutU64(s[32:], uint64(textSize))    // sh_size
-		aarch64.PutU32(s[40:], 0)                   // sh_link
-		aarch64.PutU32(s[44:], 0)                   // sh_info
-		aarch64.PutU64(s[48:], 16)                  // sh_addralign
-		aarch64.PutU64(s[56:], 0)                   // sh_entsize
+		common.PutU32(s[0:], uint32(shNames.Text)) // sh_name
+		common.PutU32(s[4:], 1)                    // sh_type: SHT_PROGBITS
+		common.PutU64(s[8:], 6)                    // sh_flags: SHF_ALLOC|SHF_EXECINSTR
+		common.PutU64(s[16:], textVAddr)           // sh_addr
+		common.PutU64(s[24:], uint64(textOffset))  // sh_offset
+		common.PutU64(s[32:], uint64(textSize))    // sh_size
+		common.PutU32(s[40:], 0)                   // sh_link
+		common.PutU32(s[44:], 0)                   // sh_info
+		common.PutU64(s[48:], 16)                  // sh_addralign
+		common.PutU64(s[56:], 0)                   // sh_entsize
 
 		// Section 2: .rodata
 		s = shdr[2*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNames.Rodata))
-		aarch64.PutU32(s[4:], 1) // SHT_PROGBITS
-		aarch64.PutU64(s[8:], 2) // SHF_ALLOC
-		aarch64.PutU64(s[16:], rodataVAddr)
-		aarch64.PutU64(s[24:], uint64(rodataOffset))
-		aarch64.PutU64(s[32:], uint64(rodataSize))
-		aarch64.PutU64(s[48:], 8) // sh_addralign
+		common.PutU32(s[0:], uint32(shNames.Rodata))
+		common.PutU32(s[4:], 1) // SHT_PROGBITS
+		common.PutU64(s[8:], 2) // SHF_ALLOC
+		common.PutU64(s[16:], rodataVAddr)
+		common.PutU64(s[24:], uint64(rodataOffset))
+		common.PutU64(s[32:], uint64(rodataSize))
+		common.PutU64(s[48:], 8) // sh_addralign
 
 		// Section 3: .data
 		s = shdr[3*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNames.Data))
-		aarch64.PutU32(s[4:], 1) // SHT_PROGBITS
-		aarch64.PutU64(s[8:], 3) // SHF_ALLOC|SHF_WRITE
-		aarch64.PutU64(s[16:], dataVAddr)
-		aarch64.PutU64(s[24:], uint64(dataOffset))
-		aarch64.PutU64(s[32:], uint64(dataSize))
-		aarch64.PutU64(s[48:], 8) // sh_addralign
+		common.PutU32(s[0:], uint32(shNames.Data))
+		common.PutU32(s[4:], 1) // SHT_PROGBITS
+		common.PutU64(s[8:], 3) // SHF_ALLOC|SHF_WRITE
+		common.PutU64(s[16:], dataVAddr)
+		common.PutU64(s[24:], uint64(dataOffset))
+		common.PutU64(s[32:], uint64(dataSize))
+		common.PutU64(s[48:], 8) // sh_addralign
 
 		// Section 4: .symtab
 		s = shdr[4*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNames.Symtab))
-		aarch64.PutU32(s[4:], 2)  // SHT_SYMTAB
-		aarch64.PutU64(s[8:], 0)  // no flags
-		aarch64.PutU64(s[16:], 0) // sh_addr: not loaded
-		aarch64.PutU64(s[24:], uint64(symtabOffset))
-		aarch64.PutU64(s[32:], uint64(symtabSize))
-		aarch64.PutU32(s[40:], 5)                    // sh_link: index of .strtab
-		aarch64.PutU32(s[44:], 1)                    // sh_info: index of first global symbol (after null)
-		aarch64.PutU64(s[48:], 8)                    // sh_addralign
-		aarch64.PutU64(s[56:], uint64(symEntrySize)) // sh_entsize
+		common.PutU32(s[0:], uint32(shNames.Symtab))
+		common.PutU32(s[4:], 2)  // SHT_SYMTAB
+		common.PutU64(s[8:], 0)  // no flags
+		common.PutU64(s[16:], 0) // sh_addr: not loaded
+		common.PutU64(s[24:], uint64(symtabOffset))
+		common.PutU64(s[32:], uint64(symtabSize))
+		common.PutU32(s[40:], 5)                    // sh_link: index of .strtab
+		common.PutU32(s[44:], 1)                    // sh_info: index of first global symbol (after null)
+		common.PutU64(s[48:], 8)                    // sh_addralign
+		common.PutU64(s[56:], uint64(symEntrySize)) // sh_entsize
 
 		// Section 5: .strtab
 		s = shdr[5*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNames.Strtab))
-		aarch64.PutU32(s[4:], 3) // SHT_STRTAB
-		aarch64.PutU64(s[8:], 0)
-		aarch64.PutU64(s[16:], 0)
-		aarch64.PutU64(s[24:], uint64(strtabOffset))
-		aarch64.PutU64(s[32:], uint64(len(strtab)))
-		aarch64.PutU64(s[48:], 1) // sh_addralign
+		common.PutU32(s[0:], uint32(shNames.Strtab))
+		common.PutU32(s[4:], 3) // SHT_STRTAB
+		common.PutU64(s[8:], 0)
+		common.PutU64(s[16:], 0)
+		common.PutU64(s[24:], uint64(strtabOffset))
+		common.PutU64(s[32:], uint64(len(strtab)))
+		common.PutU64(s[48:], 1) // sh_addralign
 
 		// Section 6: .shstrtab
 		s = shdr[6*shdrEntrySize:]
-		aarch64.PutU32(s[0:], uint32(shNames.Shstrtab))
-		aarch64.PutU32(s[4:], 3) // SHT_STRTAB
-		aarch64.PutU64(s[8:], 0)
-		aarch64.PutU64(s[16:], 0)
-		aarch64.PutU64(s[24:], uint64(shstrtabOffset))
-		aarch64.PutU64(s[32:], uint64(len(shstrtab)))
-		aarch64.PutU64(s[48:], 1) // sh_addralign
+		common.PutU32(s[0:], uint32(shNames.Shstrtab))
+		common.PutU32(s[4:], 3) // SHT_STRTAB
+		common.PutU64(s[8:], 0)
+		common.PutU64(s[16:], 0)
+		common.PutU64(s[24:], uint64(shstrtabOffset))
+		common.PutU64(s[32:], uint64(len(shstrtab)))
+		common.PutU64(s[48:], 1) // sh_addralign
 	}
 
 	return elf

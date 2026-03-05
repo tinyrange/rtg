@@ -2,7 +2,10 @@
 
 package aarch64
 
-import "j5.nz/rtg/std/compiler/ir"
+import (
+	"j5.nz/rtg/std/compiler/common"
+	"j5.nz/rtg/std/compiler/ir"
+)
 
 // writeSection writes a 40-byte section header entry.
 func writeSection(buf []byte, name string, virtualSize, rva, rawSize, fileOff int, characteristics uint32) {
@@ -12,15 +15,15 @@ func writeSection(buf []byte, name string, virtualSize, rva, rawSize, fileOff in
 		buf[i] = name[i]
 		i++
 	}
-	putU32(buf[8:], uint32(virtualSize)) // VirtualSize
-	putU32(buf[12:], uint32(rva))        // VirtualAddress (RVA)
-	putU32(buf[16:], uint32(rawSize))    // SizeOfRawData
-	putU32(buf[20:], uint32(fileOff))    // PointerToRawData
-	putU32(buf[24:], 0)                  // PointerToRelocations
-	putU32(buf[28:], 0)                  // PointerToLinenumbers
-	putU16(buf[32:], 0)                  // NumberOfRelocations
-	putU16(buf[34:], 0)                  // NumberOfLinenumbers
-	putU32(buf[36:], characteristics)    // Characteristics
+	common.PutU32(buf[8:], uint32(virtualSize)) // VirtualSize
+	common.PutU32(buf[12:], uint32(rva))        // VirtualAddress (RVA)
+	common.PutU32(buf[16:], uint32(rawSize))    // SizeOfRawData
+	common.PutU32(buf[20:], uint32(fileOff))    // PointerToRawData
+	common.PutU32(buf[24:], 0)                  // PointerToRelocations
+	common.PutU32(buf[28:], 0)                  // PointerToLinenumbers
+	common.PutU16(buf[32:], 0)                  // NumberOfRelocations
+	common.PutU16(buf[34:], 0)                  // NumberOfLinenumbers
+	common.PutU32(buf[36:], characteristics)    // Characteristics
 }
 
 // writeSectionLongName writes a section header with a long name referenced via
@@ -33,15 +36,15 @@ func writeSectionLongName(buf []byte, strtabOffset int, virtualSize, rva, rawSiz
 		buf[i] = s[i]
 		i++
 	}
-	putU32(buf[8:], uint32(virtualSize))
-	putU32(buf[12:], uint32(rva))
-	putU32(buf[16:], uint32(rawSize))
-	putU32(buf[20:], uint32(fileOff))
-	putU32(buf[24:], 0)
-	putU32(buf[28:], 0)
-	putU16(buf[32:], 0)
-	putU16(buf[34:], 0)
-	putU32(buf[36:], characteristics)
+	common.PutU32(buf[8:], uint32(virtualSize))
+	common.PutU32(buf[12:], uint32(rva))
+	common.PutU32(buf[16:], uint32(rawSize))
+	common.PutU32(buf[20:], uint32(fileOff))
+	common.PutU32(buf[24:], 0)
+	common.PutU32(buf[28:], 0)
+	common.PutU16(buf[32:], 0)
+	common.PutU16(buf[34:], 0)
+	common.PutU32(buf[36:], characteristics)
 }
 
 // formatSlashOffset formats an integer as "/<decimal>" for PE long section names.
@@ -86,12 +89,12 @@ func makeCOFFSym(name []byte, value uint32, section uint16, symType uint16, stor
 	} else {
 		// Long name marker: first 4 bytes zero, next 4 = strtab offset
 		// Caller must set bytes 4..7 to the strtab offset after calling this
-		putU32(sym[0:], 0)
-		putU32(sym[4:], 0) // placeholder
+		common.PutU32(sym[0:], 0)
+		common.PutU32(sym[4:], 0) // placeholder
 	}
-	putU32(sym[8:], value)
-	putU16(sym[12:], section)
-	putU16(sym[14:], symType)
+	common.PutU32(sym[8:], value)
+	common.PutU16(sym[12:], section)
+	common.PutU16(sym[14:], symType)
 	sym[16] = storageClass
 	sym[17] = 0
 	return sym
@@ -118,7 +121,7 @@ func (g *CodeGen) buildCOFFSymbols(irmod *ir.IRModule) ([]byte, []byte, int) {
 		sym = makeCOFFSym(nameBytes, uint32(funcOff), 1, 0x20, 2)
 		if len(nameBytes) > 8 {
 			// Patch long name offset
-			putU32(sym[4:], uint32(len(coffStrtab)))
+			common.PutU32(sym[4:], uint32(len(coffStrtab)))
 			coffStrtab = append(coffStrtab, nameBytes...)
 			coffStrtab = append(coffStrtab, 0)
 		}
@@ -128,7 +131,7 @@ func (g *CodeGen) buildCOFFSymbols(irmod *ir.IRModule) ([]byte, []byte, int) {
 	}
 
 	// Patch string table size
-	putU32(coffStrtab[0:], uint32(len(coffStrtab)))
+	common.PutU32(coffStrtab[0:], uint32(len(coffStrtab)))
 
 	return coffSyms, coffStrtab, numSyms
 }
@@ -167,7 +170,7 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	sectionTableSize := numSections * 40
 
 	headersRawSize := dosHeaderSize + dosStubSize + peSignatureSize + coffHeaderSize + optionalHeaderSize + sectionTableSize
-	headersAligned := alignUp(headersRawSize, fileAlignment)
+	headersAligned := common.AlignUp(headersRawSize, fileAlignment)
 
 	// Ensure empty initialized-data sections still emit a minimal payload.
 	// Some Windows loaders reject images with zero-sized initialized sections.
@@ -181,20 +184,20 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	}
 
 	// Section sizes
-	textRawSize := alignUp(len(g.code), fileAlignment)
-	rdataRawSize := alignUp(len(rdataContent), fileAlignment)
-	dataRawSize := alignUp(len(dataContent), fileAlignment)
+	textRawSize := common.AlignUp(len(g.code), fileAlignment)
+	rdataRawSize := common.AlignUp(len(rdataContent), fileAlignment)
+	dataRawSize := common.AlignUp(len(dataContent), fileAlignment)
 	imports := collectWinImportsFromFixupsArm64(g.callFixups)
 
 	// Build .idata section with 8-byte ILT/IAT entries
 	idataContent := g.buildIData64(imports)
-	idataRawSize := alignUp(len(idataContent), fileAlignment)
+	idataRawSize := common.AlignUp(len(idataContent), fileAlignment)
 
 	// RVAs
 	textRVA := sectionAlignment // 0x1000
-	rdataRVA := textRVA + sectionSpan(len(g.code), sectionAlignment)
-	dataRVA := rdataRVA + sectionSpan(len(rdataContent), sectionAlignment)
-	idataRVA := dataRVA + sectionSpan(len(dataContent), sectionAlignment)
+	rdataRVA := textRVA + common.SectionSpan(len(g.code), sectionAlignment)
+	dataRVA := rdataRVA + common.SectionSpan(len(rdataContent), sectionAlignment)
+	idataRVA := dataRVA + common.SectionSpan(len(dataContent), sectionAlignment)
 
 	// Fix up .idata internal RVAs
 	g.fixupIData64(idataContent, idataRVA, imports)
@@ -222,8 +225,8 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 			si = si + 1
 		}
 		relocContent = g.buildBaseRelocations(dataRVA, relocOffsets)
-		relocRVA = idataRVA + sectionSpan(len(idataContent), sectionAlignment)
-		relocRawSize = alignUp(len(relocContent), fileAlignment)
+		relocRVA = idataRVA + common.SectionSpan(len(idataContent), sectionAlignment)
+		relocRawSize = common.AlignUp(len(relocContent), fileAlignment)
 	}
 
 	// Build DWARF debug sections with 8-byte addresses
@@ -235,15 +238,15 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	debugInfoRawSize := 0
 	if !g.target.StripBinary {
 		debugAbbrev, debugInfo = g.buildDWARF64(irmod, textVAInt, len(g.code))
-		debugAbbrevRawSize = alignUp(len(debugAbbrev), fileAlignment)
-		debugInfoRawSize = alignUp(len(debugInfo), fileAlignment)
+		debugAbbrevRawSize = common.AlignUp(len(debugAbbrev), fileAlignment)
+		debugInfoRawSize = common.AlignUp(len(debugInfo), fileAlignment)
 	}
 
-	debugAbbrevRVA := idataRVA + sectionSpan(len(idataContent), sectionAlignment)
+	debugAbbrevRVA := idataRVA + common.SectionSpan(len(idataContent), sectionAlignment)
 	if g.isArm64 {
-		debugAbbrevRVA = relocRVA + sectionSpan(len(relocContent), sectionAlignment)
+		debugAbbrevRVA = relocRVA + common.SectionSpan(len(relocContent), sectionAlignment)
 	}
-	debugInfoRVA := debugAbbrevRVA + sectionSpan(len(debugAbbrev), sectionAlignment)
+	debugInfoRVA := debugAbbrevRVA + common.SectionSpan(len(debugAbbrev), sectionAlignment)
 
 	// File offsets
 	textFileOff := headersAligned
@@ -274,7 +277,7 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 		debugInfoNameOff = len(coffStrtab)
 		coffStrtab = append(coffStrtab, []byte(".debug_info")...)
 		coffStrtab = append(coffStrtab, 0)
-		putU32(coffStrtab[0:], uint32(len(coffStrtab)))
+		common.PutU32(coffStrtab[0:], uint32(len(coffStrtab)))
 	}
 
 	symtabFileOff := debugInfoFileOff + debugInfoRawSize
@@ -288,12 +291,12 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 		}
 	}
 
-	imageSize := debugInfoRVA + sectionSpan(len(debugInfo), sectionAlignment)
+	imageSize := debugInfoRVA + common.SectionSpan(len(debugInfo), sectionAlignment)
 	if g.target.StripBinary {
 		if g.isArm64 {
-			imageSize = relocRVA + sectionSpan(len(relocContent), sectionAlignment)
+			imageSize = relocRVA + common.SectionSpan(len(relocContent), sectionAlignment)
 		} else {
-			imageSize = idataRVA + sectionSpan(len(idataContent), sectionAlignment)
+			imageSize = idataRVA + common.SectionSpan(len(idataContent), sectionAlignment)
 		}
 	}
 
@@ -303,7 +306,7 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 		// ARM64: string headers are in .data section
 		for _, headerOff := range g.stringHeaderOff {
 			rodataOff := g.stringRodataMap[headerOff]
-			putU64(g.data[headerOff:headerOff+8], imageBase+uint64(rdataRVA+rodataOff))
+			common.PutU64(g.data[headerOff:headerOff+8], imageBase+uint64(rdataRVA+rodataOff))
 		}
 
 		// Fix up code references (ADRP+ADD/LDR pairs)
@@ -329,20 +332,20 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	} else {
 		// x64: string headers are in .rodata section
 		for _, headerOff := range g.stringHeaderOff {
-			dataOff := getU64(g.rodata[headerOff : headerOff+8])
-			putU64(g.rodata[headerOff:headerOff+8], imageBase+uint64(rdataRVA)+dataOff)
+			dataOff := common.GetU64(g.rodata[headerOff : headerOff+8])
+			common.PutU64(g.rodata[headerOff:headerOff+8], imageBase+uint64(rdataRVA)+dataOff)
 		}
 
 		// Fix up code references (movabs imm64 and RIP-relative call)
 		for _, fix := range g.callFixups {
 			if fix.Target == "$rodata_header$" {
 				// Patch 8-byte movabs immediate with rodata VA
-				headerOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
-				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], imageBase+uint64(rdataRVA)+headerOff)
+				headerOff := common.GetU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
+				common.PutU64(g.code[fix.CodeOffset:fix.CodeOffset+8], imageBase+uint64(rdataRVA)+headerOff)
 			} else if fix.Target == "$data_addr$" {
 				// Patch 8-byte movabs immediate with data VA
-				dataOff := getU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
-				putU64(g.code[fix.CodeOffset:fix.CodeOffset+8], imageBase+uint64(dataRVA)+dataOff)
+				dataOff := common.GetU64(g.code[fix.CodeOffset : fix.CodeOffset+8])
+				common.PutU64(g.code[fix.CodeOffset:fix.CodeOffset+8], imageBase+uint64(dataRVA)+dataOff)
 			} else if libName, funcName, ok := decodeIATFixupTargetArm64(fix.Target); ok {
 				iatOff, ok := iatOffsets[winImportKeyArm64(libName, funcName)]
 				if !ok {
@@ -352,7 +355,7 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 				iatVA := imageBase + uint64(idataRVA) + uint64(iatOff)
 				rip := imageBase + uint64(textRVA) + uint64(fix.CodeOffset) + 4
 				disp32 := int32(int64(iatVA) - int64(rip))
-				putU32(g.code[fix.CodeOffset:fix.CodeOffset+4], uint32(disp32))
+				common.PutU32(g.code[fix.CodeOffset:fix.CodeOffset+4], uint32(disp32))
 			}
 		}
 	}
@@ -363,7 +366,7 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	// === DOS Header (64 bytes) ===
 	pe[0] = 'M'
 	pe[1] = 'Z'
-	putU32(pe[0x3C:], 0x80)
+	common.PutU32(pe[0x3C:], 0x80)
 
 	// === DOS Stub (64 bytes at 0x40) ===
 	dosStub := []byte{
@@ -390,73 +393,73 @@ func (g *CodeGen) buildPE64(irmod *ir.IRModule) []byte {
 	if g.isArm64 {
 		machineType = 0xAA64 // IMAGE_FILE_MACHINE_ARM64
 	}
-	putU16(coff[0:], machineType)         // Machine
-	putU16(coff[2:], uint16(numSections)) // NumberOfSections
-	putU32(coff[4:], 0)                   // TimeDateStamp
+	common.PutU16(coff[0:], machineType)         // Machine
+	common.PutU16(coff[2:], uint16(numSections)) // NumberOfSections
+	common.PutU32(coff[4:], 0)                   // TimeDateStamp
 	if g.target.StripBinary {
-		putU32(coff[8:], 0) // PointerToSymbolTable
-		putU32(coff[12:], 0)
+		common.PutU32(coff[8:], 0) // PointerToSymbolTable
+		common.PutU32(coff[12:], 0)
 	} else {
-		putU32(coff[8:], uint32(symtabFileOff)) // PointerToSymbolTable
-		putU32(coff[12:], uint32(numSyms))      // NumberOfSymbols
+		common.PutU32(coff[8:], uint32(symtabFileOff)) // PointerToSymbolTable
+		common.PutU32(coff[12:], uint32(numSyms))      // NumberOfSymbols
 	}
-	putU16(coff[16:], uint16(optionalHeaderSize)) // SizeOfOptionalHeader
-	putU16(coff[18:], 0x0022)                     // Characteristics: EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
+	common.PutU16(coff[16:], uint16(optionalHeaderSize)) // SizeOfOptionalHeader
+	common.PutU16(coff[18:], 0x0022)                     // Characteristics: EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
 
 	// === Optional Header (240 bytes at 0x98) ===
 	opt := pe[0x98:]
-	putU16(opt[0:], 0x020B)                                                       // Magic: PE32+
-	opt[2] = 1                                                                    // MajorLinkerVersion
-	opt[3] = 0                                                                    // MinorLinkerVersion
-	putU32(opt[4:], uint32(len(g.code)))                                          // SizeOfCode
-	putU32(opt[8:], uint32(len(rdataContent)+len(dataContent)+len(idataContent))) // SizeOfInitializedData
-	putU32(opt[12:], 0)                                                           // SizeOfUninitializedData
-	putU32(opt[16:], uint32(textRVA))                                             // AddressOfEntryPoint
-	putU32(opt[20:], uint32(textRVA))                                             // BaseOfCode
+	common.PutU16(opt[0:], 0x020B)                                                       // Magic: PE32+
+	opt[2] = 1                                                                           // MajorLinkerVersion
+	opt[3] = 0                                                                           // MinorLinkerVersion
+	common.PutU32(opt[4:], uint32(len(g.code)))                                          // SizeOfCode
+	common.PutU32(opt[8:], uint32(len(rdataContent)+len(dataContent)+len(idataContent))) // SizeOfInitializedData
+	common.PutU32(opt[12:], 0)                                                           // SizeOfUninitializedData
+	common.PutU32(opt[16:], uint32(textRVA))                                             // AddressOfEntryPoint
+	common.PutU32(opt[20:], uint32(textRVA))                                             // BaseOfCode
 	// PE32+ has NO BaseOfData field — ImageBase is at offset 24
-	putU64(opt[24:], uint64(imageBase))        // ImageBase (8 bytes)
-	putU32(opt[32:], uint32(sectionAlignment)) // SectionAlignment
-	putU32(opt[36:], uint32(fileAlignment))    // FileAlignment
-	putU16(opt[40:], 6)                        // MajorOperatingSystemVersion
-	putU16(opt[42:], 0)                        // MinorOperatingSystemVersion
-	putU16(opt[44:], 0)                        // MajorImageVersion
-	putU16(opt[46:], 0)                        // MinorImageVersion
-	putU16(opt[48:], 6)                        // MajorSubsystemVersion
-	putU16(opt[50:], 0)                        // MinorSubsystemVersion
-	putU32(opt[52:], 0)                        // Win32VersionValue
-	putU32(opt[56:], uint32(imageSize))        // SizeOfImage
-	putU32(opt[60:], uint32(headersAligned))   // SizeOfHeaders
-	putU32(opt[64:], 0)                        // CheckSum
-	putU16(opt[68:], 3)                        // Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI
-	dllChars := uint16(0x0100)                 // NX_COMPAT
+	common.PutU64(opt[24:], uint64(imageBase))        // ImageBase (8 bytes)
+	common.PutU32(opt[32:], uint32(sectionAlignment)) // SectionAlignment
+	common.PutU32(opt[36:], uint32(fileAlignment))    // FileAlignment
+	common.PutU16(opt[40:], 6)                        // MajorOperatingSystemVersion
+	common.PutU16(opt[42:], 0)                        // MinorOperatingSystemVersion
+	common.PutU16(opt[44:], 0)                        // MajorImageVersion
+	common.PutU16(opt[46:], 0)                        // MinorImageVersion
+	common.PutU16(opt[48:], 6)                        // MajorSubsystemVersion
+	common.PutU16(opt[50:], 0)                        // MinorSubsystemVersion
+	common.PutU32(opt[52:], 0)                        // Win32VersionValue
+	common.PutU32(opt[56:], uint32(imageSize))        // SizeOfImage
+	common.PutU32(opt[60:], uint32(headersAligned))   // SizeOfHeaders
+	common.PutU32(opt[64:], 0)                        // CheckSum
+	common.PutU16(opt[68:], 3)                        // Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI
+	dllChars := uint16(0x0100)                        // NX_COMPAT
 	if g.isArm64 {
 		dllChars = 0x0140 // DYNAMIC_BASE | NX_COMPAT
 	}
-	putU16(opt[70:], dllChars) // DllCharacteristics
+	common.PutU16(opt[70:], dllChars) // DllCharacteristics
 	// PE32+: Stack/Heap sizes are 8 bytes each
-	putU64(opt[72:], 0x100000) // SizeOfStackReserve (1MB)
-	putU64(opt[80:], 0x1000)   // SizeOfStackCommit (4KB)
-	putU64(opt[88:], 0x100000) // SizeOfHeapReserve (1MB)
-	putU64(opt[96:], 0x1000)   // SizeOfHeapCommit (4KB)
-	putU32(opt[104:], 0)       // LoaderFlags
-	putU32(opt[108:], 16)      // NumberOfRvaAndSizes
+	common.PutU64(opt[72:], 0x100000) // SizeOfStackReserve (1MB)
+	common.PutU64(opt[80:], 0x1000)   // SizeOfStackCommit (4KB)
+	common.PutU64(opt[88:], 0x100000) // SizeOfHeapReserve (1MB)
+	common.PutU64(opt[96:], 0x1000)   // SizeOfHeapCommit (4KB)
+	common.PutU32(opt[104:], 0)       // LoaderFlags
+	common.PutU32(opt[108:], 16)      // NumberOfRvaAndSizes
 
 	// Data directories (16 entries x 8 bytes = 128 bytes starting at opt[112])
 	// [1] Import Table
 	importDirRVA, importDirSize := g.getImportDirInfo(imports, idataRVA)
-	putU32(opt[112+1*8:], uint32(importDirRVA))
-	putU32(opt[112+1*8+4:], uint32(importDirSize))
+	common.PutU32(opt[112+1*8:], uint32(importDirRVA))
+	common.PutU32(opt[112+1*8+4:], uint32(importDirSize))
 
 	// [5] Base Relocation Table (ARM64 only — required for ASLR)
 	if g.isArm64 {
-		putU32(opt[112+5*8:], uint32(relocRVA))
-		putU32(opt[112+5*8+4:], uint32(len(relocContent)))
+		common.PutU32(opt[112+5*8:], uint32(relocRVA))
+		common.PutU32(opt[112+5*8+4:], uint32(len(relocContent)))
 	}
 
 	// [12] IAT
 	iatRVA, iatSize := g.getIATInfo64(imports, idataRVA)
-	putU32(opt[112+12*8:], uint32(iatRVA))
-	putU32(opt[112+12*8+4:], uint32(iatSize))
+	common.PutU32(opt[112+12*8:], uint32(iatRVA))
+	common.PutU32(opt[112+12*8+4:], uint32(iatSize))
 
 	// === Section Table (at 0x188) ===
 	sectBase := 0x188
@@ -580,17 +583,17 @@ func (g *CodeGen) buildIData64(imports []winImportArm64) []byte {
 	// Import directory descriptors.
 	for i, grp := range groups {
 		base := i * 20
-		putU32(idata[base+0:], uint32(iltOffsets[i]))  // OriginalFirstThunk
-		putU32(idata[base+4:], 0)                      // TimeDateStamp
-		putU32(idata[base+8:], 0)                      // ForwarderChain
-		putU32(idata[base+12:], uint32(dllOffsets[i])) // Name
-		putU32(idata[base+16:], uint32(iatOffsets[i])) // FirstThunk
+		common.PutU32(idata[base+0:], uint32(iltOffsets[i]))  // OriginalFirstThunk
+		common.PutU32(idata[base+4:], 0)                      // TimeDateStamp
+		common.PutU32(idata[base+8:], 0)                      // ForwarderChain
+		common.PutU32(idata[base+12:], uint32(dllOffsets[i])) // Name
+		common.PutU32(idata[base+16:], uint32(iatOffsets[i])) // FirstThunk
 
 		for j, sym := range grp.Symbols {
 			key := winImportKeyArm64(grp.Library, sym)
 			hnt := uint64(hntOffsets[key])
-			putU64(idata[iltOffsets[i]+j*8:], hnt)
-			putU64(idata[iatOffsets[i]+j*8:], hnt)
+			common.PutU64(idata[iltOffsets[i]+j*8:], hnt)
+			common.PutU64(idata[iatOffsets[i]+j*8:], hnt)
 		}
 	}
 
@@ -626,16 +629,16 @@ func (g *CodeGen) fixupIData64(idata []byte, idataRVA int, imports []winImportAr
 	// Fix Import Directory descriptors.
 	for i := 0; i < numLibs; i++ {
 		base := i * 20
-		putU32(idata[base+0:], uint32(idataRVA)+getU32(idata[base+0:base+4]))    // OriginalFirstThunk
-		putU32(idata[base+12:], uint32(idataRVA)+getU32(idata[base+12:base+16])) // Name
-		putU32(idata[base+16:], uint32(idataRVA)+getU32(idata[base+16:base+20])) // FirstThunk
+		common.PutU32(idata[base+0:], uint32(idataRVA)+common.GetU32(idata[base+0:base+4]))    // OriginalFirstThunk
+		common.PutU32(idata[base+12:], uint32(idataRVA)+common.GetU32(idata[base+12:base+16])) // Name
+		common.PutU32(idata[base+16:], uint32(idataRVA)+common.GetU32(idata[base+16:base+20])) // FirstThunk
 	}
 
 	iltOff := idtSize
 	for _, grp := range groups {
 		for i := 0; i < len(grp.Symbols); i++ {
 			off := iltOff + i*8
-			putU64(idata[off:], uint64(idataRVA)+getU64(idata[off:off+8]))
+			common.PutU64(idata[off:], uint64(idataRVA)+common.GetU64(idata[off:off+8]))
 		}
 		iltOff += (len(grp.Symbols) + 1) * 8
 	}
@@ -644,7 +647,7 @@ func (g *CodeGen) fixupIData64(idata []byte, idataRVA int, imports []winImportAr
 	for _, grp := range groups {
 		for i := 0; i < len(grp.Symbols); i++ {
 			off := iatOff + i*8
-			putU64(idata[off:], uint64(idataRVA)+getU64(idata[off:off+8]))
+			common.PutU64(idata[off:], uint64(idataRVA)+common.GetU64(idata[off:off+8]))
 		}
 		iatOff += (len(grp.Symbols) + 1) * 8
 	}
@@ -765,7 +768,7 @@ func (g *CodeGen) buildDWARF64(irmod *ir.IRModule, textVA int, textSize int) ([]
 	info = append(info, 0) // null terminator
 
 	unitLen := len(info) - 4
-	putU32(info[0:], uint32(unitLen))
+	common.PutU32(info[0:], uint32(unitLen))
 
 	return abbrev, info
 }
@@ -811,8 +814,8 @@ func (g *CodeGen) buildBaseRelocations(sectionRVA int, offsets []int) []byte {
 		}
 
 		// Patch block header
-		putU32(reloc[blockStart:], uint32(pageRVA))
-		putU32(reloc[blockStart+4:], uint32(blockSize))
+		common.PutU32(reloc[blockStart:], uint32(pageRVA))
+		common.PutU32(reloc[blockStart+4:], uint32(blockSize))
 	}
 
 	return reloc

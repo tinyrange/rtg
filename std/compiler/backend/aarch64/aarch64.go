@@ -2,6 +2,8 @@
 
 package aarch64
 
+import "j5.nz/rtg/std/compiler/common"
+
 // === ARM64 Assembler: instruction encoding for AArch64 ===
 // ARM64 uses fixed-width 32-bit instructions, little-endian.
 
@@ -514,19 +516,19 @@ func (g *CodeGen) emitAdrpLdr(rd int, target string, rawOff uint64) {
 // PatchArm64BAt patches a B or BL instruction at codeOffset to branch to target.
 func (g *CodeGen) PatchArm64BAt(codeOffset int, target int) {
 	delta := (target - codeOffset) / 4 // offset in instructions
-	existing := getU32(g.code[codeOffset : codeOffset+4])
+	existing := common.GetU32(g.code[codeOffset : codeOffset+4])
 	opcode := existing & 0xFC000000 // preserve opcode bits
 	imm26 := uint32(delta) & 0x03FFFFFF
-	putU32(g.code[codeOffset:], opcode|imm26)
+	common.PutU32(g.code[codeOffset:], opcode|imm26)
 }
 
 // patchArm64BCondAt patches a B.cond instruction at codeOffset.
 func (g *CodeGen) patchArm64BCondAt(codeOffset int, target int) {
 	delta := (target - codeOffset) / 4
-	existing := getU32(g.code[codeOffset : codeOffset+4])
+	existing := common.GetU32(g.code[codeOffset : codeOffset+4])
 	cond := existing & 0xF // preserve condition
 	imm19 := (uint32(delta) & 0x7FFFF) << 5
-	putU32(g.code[codeOffset:], 0x54000000|imm19|cond)
+	common.PutU32(g.code[codeOffset:], 0x54000000|imm19|cond)
 }
 
 // patchArm64Imm64At patches a MOVZ/MOVK 4-instruction sequence at codeOffset
@@ -539,16 +541,16 @@ func (g *CodeGen) patchArm64Imm64At(codeOffset int, val uint64) {
 	chunks[3] = uint16((val >> 48) & 0xFFFF)
 	for i := 0; i < 4; i++ {
 		off := codeOffset + i*4
-		existing := getU32(g.code[off : off+4])
+		existing := common.GetU32(g.code[off : off+4])
 		// Clear the imm16 field (bits 20:5) and re-encode
 		cleared := existing & 0xFFE0001F
-		putU32(g.code[off:], cleared|(uint32(chunks[i])<<5))
+		common.PutU32(g.code[off:], cleared|(uint32(chunks[i])<<5))
 	}
 }
 
 // PatchAdrpAddOrLdr dispatches to PatchAdrpAdd or PatchAdrpLdr based on the second instruction.
 func (g *CodeGen) PatchAdrpAddOrLdr(codeOffset int, pcAddr, targetAddr uint64) {
-	secondInst := getU32(g.code[codeOffset+4:])
+	secondInst := common.GetU32(g.code[codeOffset+4:])
 	if secondInst&0xFFC00000 == 0xF9400000 {
 		// LDR (unsigned offset, 64-bit): top bits = 1111 1001 01xx xxxx
 		g.PatchAdrpLdr(codeOffset, pcAddr, targetAddr)
@@ -567,15 +569,15 @@ func (g *CodeGen) PatchAdrpAdd(codeOffset int, pcAddr, targetAddr uint64) {
 	// Patch ADRP: immhi = bits 23:5, immlo = bits 30:29
 	immlo := uint32(pageDelta) & 0x3
 	immhi := (uint32(pageDelta) >> 2) & 0x7FFFF
-	adrp := getU32(g.code[codeOffset:])
+	adrp := common.GetU32(g.code[codeOffset:])
 	adrp = (adrp & 0x9F00001F) | (immlo << 29) | (immhi << 5)
-	putU32(g.code[codeOffset:], adrp)
+	common.PutU32(g.code[codeOffset:], adrp)
 
 	// Patch ADD: imm12 = bits 21:10
 	addOff := codeOffset + 4
-	add := getU32(g.code[addOff:])
+	add := common.GetU32(g.code[addOff:])
 	add = (add & 0xFFC003FF) | (uint32(pageOff) << 10)
-	putU32(g.code[addOff:], add)
+	common.PutU32(g.code[addOff:], add)
 }
 
 // PatchAdrpLdr patches an ADRP+LDR pair at codeOffset to load from targetAddr,
@@ -588,14 +590,14 @@ func (g *CodeGen) PatchAdrpLdr(codeOffset int, pcAddr, targetAddr uint64) {
 	// Patch ADRP
 	immlo := uint32(pageDelta) & 0x3
 	immhi := (uint32(pageDelta) >> 2) & 0x7FFFF
-	adrp := getU32(g.code[codeOffset:])
+	adrp := common.GetU32(g.code[codeOffset:])
 	adrp = (adrp & 0x9F00001F) | (immlo << 29) | (immhi << 5)
-	putU32(g.code[codeOffset:], adrp)
+	common.PutU32(g.code[codeOffset:], adrp)
 
 	// Patch LDR: imm12 = pageOff/8, in bits 21:10
 	ldrOff := codeOffset + 4
-	ldr := getU32(g.code[ldrOff:])
+	ldr := common.GetU32(g.code[ldrOff:])
 	scaledOff := uint32(pageOff / 8)
 	ldr = (ldr & 0xFFC003FF) | (scaledOff << 10)
-	putU32(g.code[ldrOff:], ldr)
+	common.PutU32(g.code[ldrOff:], ldr)
 }

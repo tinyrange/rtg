@@ -1,49 +1,35 @@
 package elf
 
+import "j5.nz/rtg/std/compiler/common"
+
 type Symbol struct {
-	Name string
-	Addr uint32
-	Size uint32
-	Info uint8
+	Name  string
+	Addr  uint32
+	Size  uint32
+	Info  uint8
 	Local bool
 }
 
-func putU16(b []byte, v uint16) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-}
-
-func putU32(b []byte, v uint32) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-}
-
-func alignUp(v int, a int) int {
-	return (v + (a - 1)) & ^(a - 1)
-}
-
 func putSym32(b []byte, nameOff uint32, value uint32, size uint32, info uint8, other uint8, shndx uint16) {
-	putU32(b[0:], nameOff)
-	putU32(b[4:], value)
-	putU32(b[8:], size)
+	common.PutU32(b[0:], nameOff)
+	common.PutU32(b[4:], value)
+	common.PutU32(b[8:], size)
 	b[12] = info
 	b[13] = other
-	putU16(b[14:], shndx)
+	common.PutU16(b[14:], shndx)
 }
 
 func putShdr32(b []byte, name uint32, typ uint32, flags uint32, addr uint32, off uint32, size uint32, link uint32, info uint32, addralign uint32, entsize uint32) {
-	putU32(b[0:], name)
-	putU32(b[4:], typ)
-	putU32(b[8:], flags)
-	putU32(b[12:], addr)
-	putU32(b[16:], off)
-	putU32(b[20:], size)
-	putU32(b[24:], link)
-	putU32(b[28:], info)
-	putU32(b[32:], addralign)
-	putU32(b[36:], entsize)
+	common.PutU32(b[0:], name)
+	common.PutU32(b[4:], typ)
+	common.PutU32(b[8:], flags)
+	common.PutU32(b[12:], addr)
+	common.PutU32(b[16:], off)
+	common.PutU32(b[20:], size)
+	common.PutU32(b[24:], link)
+	common.PutU32(b[28:], info)
+	common.PutU32(b[32:], addralign)
+	common.PutU32(b[36:], entsize)
 }
 
 // BuildELF32Bringup builds a simple ARM ELF32 executable whose payload starts
@@ -74,12 +60,12 @@ func BuildELF32BringupWithSymbols(code []byte, initialSP uint32, symbols []Symbo
 		shfExecInstr = 0x4
 	)
 
-	payloadOff := alignUp(elfHeaderSize+programHdrSize, payloadAlign)
+	payloadOff := common.AlignUp(elfHeaderSize+programHdrSize, payloadAlign)
 
 	payload := make([]byte, vectorTableLen+len(code))
 	resetAddr := flashBase + uint32(vectorTableLen)
-	putU32(payload[0:], initialSP)
-	putU32(payload[4:], resetAddr|1)
+	common.PutU32(payload[0:], initialSP)
+	common.PutU32(payload[4:], resetAddr|1)
 	copy(payload[vectorTableLen:], code)
 
 	textOff := payloadOff + vectorTableLen
@@ -126,10 +112,10 @@ func BuildELF32BringupWithSymbols(code []byte, initialSP uint32, symbols []Symbo
 	shNameStrtab := uint32(15)
 	shNameShstrtab := uint32(23)
 
-	symtabOff := alignUp(payloadOff+len(payload), 4)
+	symtabOff := common.AlignUp(payloadOff+len(payload), 4)
 	strtabOff := symtabOff + len(symtab)
 	shstrtabOff := strtabOff + len(strtab)
-	shoff := alignUp(shstrtabOff+len(shstrtab), 4)
+	shoff := common.AlignUp(shstrtabOff+len(shstrtab), 4)
 	shnum := 5
 	totalSize := shoff + shnum*shdrSize
 
@@ -145,29 +131,29 @@ func BuildELF32BringupWithSymbols(code []byte, initialSP uint32, symbols []Symbo
 	bin[6] = 1 // EV_CURRENT
 	bin[7] = 0 // ELFOSABI_NONE
 
-	putU16(bin[16:], 2)           // ET_EXEC
-	putU16(bin[18:], 40)          // EM_ARM
-	putU32(bin[20:], 1)           // EV_CURRENT
-	putU32(bin[24:], resetAddr|1) // e_entry
-	putU32(bin[28:], elfHeaderSize)
-	putU32(bin[32:], uint32(shoff))
-	putU32(bin[36:], 0x05000000) // EF_ARM_EABI_VER5
-	putU16(bin[40:], elfHeaderSize)
-	putU16(bin[42:], programHdrSize)
-	putU16(bin[44:], 1) // one PT_LOAD
-	putU16(bin[46:], shdrSize)
-	putU16(bin[48:], uint16(shnum))
-	putU16(bin[50:], 4) // .shstrtab
+	common.PutU16(bin[16:], 2)           // ET_EXEC
+	common.PutU16(bin[18:], 40)          // EM_ARM
+	common.PutU32(bin[20:], 1)           // EV_CURRENT
+	common.PutU32(bin[24:], resetAddr|1) // e_entry
+	common.PutU32(bin[28:], elfHeaderSize)
+	common.PutU32(bin[32:], uint32(shoff))
+	common.PutU32(bin[36:], 0x05000000) // EF_ARM_EABI_VER5
+	common.PutU16(bin[40:], elfHeaderSize)
+	common.PutU16(bin[42:], programHdrSize)
+	common.PutU16(bin[44:], 1) // one PT_LOAD
+	common.PutU16(bin[46:], shdrSize)
+	common.PutU16(bin[48:], uint16(shnum))
+	common.PutU16(bin[50:], 4) // .shstrtab
 
 	ph := bin[elfHeaderSize : elfHeaderSize+programHdrSize]
-	putU32(ph[0:], 1)                     // PT_LOAD
-	putU32(ph[4:], uint32(payloadOff))    // p_offset
-	putU32(ph[8:], flashBase)             // p_vaddr
-	putU32(ph[12:], flashBase)            // p_paddr
-	putU32(ph[16:], uint32(len(payload))) // p_filesz
-	putU32(ph[20:], uint32(len(payload))) // p_memsz
-	putU32(ph[24:], 5)                    // PF_R|PF_X
-	putU32(ph[28:], 0x1000)               // p_align
+	common.PutU32(ph[0:], 1)                     // PT_LOAD
+	common.PutU32(ph[4:], uint32(payloadOff))    // p_offset
+	common.PutU32(ph[8:], flashBase)             // p_vaddr
+	common.PutU32(ph[12:], flashBase)            // p_paddr
+	common.PutU32(ph[16:], uint32(len(payload))) // p_filesz
+	common.PutU32(ph[20:], uint32(len(payload))) // p_memsz
+	common.PutU32(ph[24:], 5)                    // PF_R|PF_X
+	common.PutU32(ph[28:], 0x1000)               // p_align
 
 	copy(bin[payloadOff:], payload)
 	copy(bin[symtabOff:], symtab)

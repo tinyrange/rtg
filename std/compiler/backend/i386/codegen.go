@@ -139,38 +139,6 @@ func (g *CodeGen) emitRodataU32(v uint32) {
 	g.Rodata = append(g.Rodata, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
-func putU64(buf []byte, v uint64) {
-	buf[0] = byte(v)
-	buf[1] = byte(v >> 8)
-	buf[2] = byte(v >> 16)
-	buf[3] = byte(v >> 24)
-	buf[4] = byte(v >> 32)
-	buf[5] = byte(v >> 40)
-	buf[6] = byte(v >> 48)
-	buf[7] = byte(v >> 56)
-}
-
-func getU64(b []byte) uint64 {
-	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
-		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
-}
-
-func putU16(b []byte, v uint16) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-}
-
-func putU32(b []byte, v uint32) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-}
-
-func getU32(b []byte) uint32 {
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
-}
-
 // === Shared code emission helpers ===
 
 // emitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
@@ -578,18 +546,4 @@ func (g *CodeGen) emitJmpIATInLib(libName string, funcName string) {
 		Target:     encodeIATFixupTarget(libName, funcName),
 	})
 	g.emitU32(0) // placeholder
-}
-
-// alignUp aligns v up to the next multiple of align.
-func alignUp(v, align int) int {
-	return (v + align - 1) & ^(align - 1)
-}
-
-// sectionSpan returns the in-memory RVA span for a section.
-// Even empty sections must consume one aligned slot so RVAs stay strictly increasing.
-func sectionSpan(size, align int) int {
-	if size <= 0 {
-		return align
-	}
-	return alignUp(size, align)
 }

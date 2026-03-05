@@ -683,17 +683,3 @@ func (g *CodeGen) opDropN(count int) {
 		i++
 	}
 }
-
-// AlignUp aligns v up to the next multiple of align.
-func AlignUp(v, align int) int {
-	return (v + align - 1) & ^(align - 1)
-}
-
-// sectionSpan returns the in-memory RVA span for a section.
-// Even empty sections must consume one aligned slot so RVAs stay strictly increasing.
-func SectionSpan(size, align int) int {
-	if size <= 0 {
-		return align
-	}
-	return AlignUp(size, align)
-}

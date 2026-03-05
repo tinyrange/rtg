@@ -1241,13 +1241,6 @@ func (g *CodeGen) internString(s string) int {
 	return idx
 }
 
-func putU32(b []byte, v uint32) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-}
-
 func (g *CodeGen) finalizeRodata() {
 	if len(g.rodata) == 0 {
 		return
@@ -1263,8 +1256,8 @@ func (g *CodeGen) finalizeRodata() {
 		se := g.strs[i]
 		headerAbs := codeBase + uint32(rodataOff+se.headerOff)
 		dataAbs := codeBase + uint32(rodataOff+se.dataOff)
-		putU32(g.asm.code[rodataOff+se.headerOff:], dataAbs)
-		putU32(g.asm.code[rodataOff+se.headerOff+4:], uint32(se.length))
+		common.PutU32(g.asm.code[rodataOff+se.headerOff:], dataAbs)
+		common.PutU32(g.asm.code[rodataOff+se.headerOff+4:], uint32(se.length))
 		_ = headerAbs
 		i = i + 1
 	}

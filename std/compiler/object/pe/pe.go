@@ -16,21 +16,6 @@ type DwarfSymbol struct {
 	HighPC int
 }
 
-func AlignUp(v, align int) int {
-	if align <= 0 {
-		return v
-	}
-	mask := align - 1
-	return (v + mask) & ^mask
-}
-
-func SectionSpan(size, align int) int {
-	if size <= 0 {
-		return align
-	}
-	return AlignUp(size, align)
-}
-
 func FormatSlashOffset(n int) []byte {
 	if n == 0 {
 		return []byte("/0")

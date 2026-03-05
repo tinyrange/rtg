@@ -83,7 +83,7 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 	sectionTableSize := numSections * 40
 
 	headersRawSize := dosHeaderSize + dosStubSize + peSignatureSize + coffHeaderSize + optionalHeaderSize + sectionTableSize
-	headersAligned := core.AlignUp(headersRawSize, fileAlignment)
+	headersAligned := common.AlignUp(headersRawSize, fileAlignment)
 
 	// Ensure empty initialized-data sections still emit a minimal payload.
 	// Some Windows loaders reject images with zero-sized initialized sections.
@@ -97,21 +97,21 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 	}
 
 	// Section sizes
-	textRawSize := core.AlignUp(len(g.Code), fileAlignment)
-	rdataRawSize := core.AlignUp(len(rdataContent), fileAlignment)
-	dataRawSize := core.AlignUp(len(dataContent), fileAlignment)
+	textRawSize := common.AlignUp(len(g.Code), fileAlignment)
+	rdataRawSize := common.AlignUp(len(rdataContent), fileAlignment)
+	dataRawSize := common.AlignUp(len(dataContent), fileAlignment)
 
 	imports := collectWinImportsFromFixups(g)
 
 	// Build .idata section with 8-byte ILT/IAT entries
 	idataContent := buildIData64(g, imports)
-	idataRawSize := core.AlignUp(len(idataContent), fileAlignment)
+	idataRawSize := common.AlignUp(len(idataContent), fileAlignment)
 
 	// RVAs
 	textRVA := sectionAlignment // 0x1000
-	rdataRVA := textRVA + core.SectionSpan(len(g.Code), sectionAlignment)
-	dataRVA := rdataRVA + core.SectionSpan(len(rdataContent), sectionAlignment)
-	idataRVA := dataRVA + core.SectionSpan(len(dataContent), sectionAlignment)
+	rdataRVA := textRVA + common.SectionSpan(len(g.Code), sectionAlignment)
+	dataRVA := rdataRVA + common.SectionSpan(len(rdataContent), sectionAlignment)
+	idataRVA := dataRVA + common.SectionSpan(len(dataContent), sectionAlignment)
 
 	// Fix up .idata internal RVAs
 	fixupIData64(g, idataContent, idataRVA, imports)
@@ -124,12 +124,12 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 	debugInfoRawSize := 0
 	if !g.Target().StripBinary {
 		debugAbbrev, debugInfo = buildDWARF64(g, irmod, textVA, len(g.Code))
-		debugAbbrevRawSize = core.AlignUp(len(debugAbbrev), fileAlignment)
-		debugInfoRawSize = core.AlignUp(len(debugInfo), fileAlignment)
+		debugAbbrevRawSize = common.AlignUp(len(debugAbbrev), fileAlignment)
+		debugInfoRawSize = common.AlignUp(len(debugInfo), fileAlignment)
 	}
 
-	debugAbbrevRVA := idataRVA + core.SectionSpan(len(idataContent), sectionAlignment)
-	debugInfoRVA := debugAbbrevRVA + core.SectionSpan(len(debugAbbrev), sectionAlignment)
+	debugAbbrevRVA := idataRVA + common.SectionSpan(len(idataContent), sectionAlignment)
+	debugInfoRVA := debugAbbrevRVA + common.SectionSpan(len(debugAbbrev), sectionAlignment)
 
 	// File offsets
 	textFileOff := headersAligned
@@ -166,9 +166,9 @@ func buildPE64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 		totalFileSize = idataFileOff + idataRawSize
 	}
 
-	imageSize := debugInfoRVA + core.SectionSpan(len(debugInfo), sectionAlignment)
+	imageSize := debugInfoRVA + common.SectionSpan(len(debugInfo), sectionAlignment)
 	if g.Target().StripBinary {
-		imageSize = idataRVA + core.SectionSpan(len(idataContent), sectionAlignment)
+		imageSize = idataRVA + common.SectionSpan(len(idataContent), sectionAlignment)
 	}
 
 	// Fix up string headers and code references
