@@ -146,6 +146,11 @@ func generateBuiltinAArch64Macho(tgt *common.Target, irmod *ir.IRModule, outputP
 	if lastSlash >= 0 {
 		binName = outputPath[lastSlash+1:]
 	}
+	if tgt.EmitIRAndBinaryPath != "" {
+		if err := aarch64.WriteIRAndBinaryDebug(tgt.EmitIRAndBinaryPath, irmod, g); err != nil {
+			return fmt.Errorf("write codegen debug: %v", err)
+		}
+	}
 	macho := aarch64macos.BuildMachO64(g, irmod, binName)
 	if err := os.WriteFile(outputPath, macho, 0755); err != nil {
 		return fmt.Errorf("write output: %v", err)

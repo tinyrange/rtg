@@ -346,7 +346,7 @@ func main() {
 				i = i + 2
 				continue
 			}
-		case "-emit-ir-and-binary":
+		case "-emit-codegen-debug", "-emit-ir-and-binary":
 			if i+1 < len(args) {
 				emitIRAndBinaryPath = args[i+1]
 				i = i + 2
@@ -549,17 +549,17 @@ func main() {
 		os.Exit(1)
 	}
 	if emitIRAndBinaryPath != "" && emitIRPath != "" {
-		fmt.Fprintf(os.Stderr, "-emit-ir-and-binary cannot be combined with -emit-ir\n")
+		fmt.Fprintf(os.Stderr, "-emit-codegen-debug cannot be combined with -emit-ir\n")
 		runCleanup()
 		os.Exit(1)
 	}
 	if emitIRAndBinaryPath != "" && emitIRBinaryPath != "" {
-		fmt.Fprintf(os.Stderr, "-emit-ir-and-binary cannot be combined with -emit-ir-binary\n")
+		fmt.Fprintf(os.Stderr, "-emit-codegen-debug cannot be combined with -emit-ir-binary\n")
 		runCleanup()
 		os.Exit(1)
 	}
 	if emitIRAndBinaryPath != "" && targetIsIR {
-		fmt.Fprintf(os.Stderr, "-emit-ir-and-binary cannot be combined with -T ir\n")
+		fmt.Fprintf(os.Stderr, "-emit-codegen-debug cannot be combined with -T ir\n")
 		runCleanup()
 		os.Exit(1)
 	}
@@ -767,7 +767,7 @@ func main() {
 				os.Exit(1)
 			}
 			if emitIRAndBinaryPath != "" {
-				fmt.Fprintf(os.Stderr, "-emit-ir-and-binary is not valid with -parse-only\n")
+				fmt.Fprintf(os.Stderr, "-emit-codegen-debug is not valid with -parse-only\n")
 				runCleanup()
 				os.Exit(1)
 			}
@@ -851,8 +851,8 @@ func main() {
 		}
 	}
 	if emitIRAndBinaryPath != "" {
-		if compileTarget.Backend != "native" || compileTarget.GOARCH != "arm64" {
-			fmt.Fprintf(os.Stderr, "-emit-ir-and-binary is currently only supported for native arm64 targets\n")
+		if !backend.SupportsCodegenDebug(&compileTarget) {
+			fmt.Fprintf(os.Stderr, "-emit-codegen-debug is not supported for backend=%s target=%s/%s\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
 			runCleanup()
 			os.Exit(1)
 		}
@@ -923,7 +923,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -o <path>              Output path (default: output, use '-' with -T ir for stdout)\n")
 	fmt.Fprintf(out, "  -T, --to <target>      Target triple/backend mode, or ir for canonical text IR output\n")
 	fmt.Fprintf(out, "  -emit-ir <path>        Emit textual IR for the selected target instead of native/C/VM output\n")
-	fmt.Fprintf(out, "  -emit-ir-and-binary <p> For native arm64: emit separate debug text with per-IR-instruction machine bytes\n")
+	fmt.Fprintf(out, "  -emit-codegen-debug <p> Emit separate backend debug text (per-IR-instruction machine bytes where supported)\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -D <key=value>         Set a string value for a global variable symbol\n")
 	fmt.Fprintf(out, "  -target-file <path>    Load a single-file target definition before -T resolution\n")
