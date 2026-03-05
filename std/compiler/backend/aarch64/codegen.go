@@ -40,6 +40,12 @@ type CodeGen struct {
 
 	// Number of locals (slots) in current function frame
 	curFrameSize int
+	// True while compiling a function that should share one epilogue across
+	// multiple RETURN instructions.
+	shareReturnEpilogue bool
+	// Code offset of the shared function epilogue for multi-return functions.
+	// -1 means the shared epilogue has not been emitted yet.
+	returnEpilogueOffset int
 
 	// ELF layout constants
 	baseAddr  uint64
@@ -981,6 +987,45 @@ func (g *CodeGen) opDrop() {
 		return
 	}
 	g.rawDrop()
+}
+
+func (g *CodeGen) opDropN(count int) {
+	if count <= 0 {
+		return
+	}
+	if len(g.cacheRegs) > 0 {
+		i := 0
+		for i < count {
+			g.opDrop()
+			i++
+		}
+		return
+	}
+	if g.hasPending {
+		g.hasPending = false
+		g.pendingOwn = -1
+		count--
+		if count <= 0 {
+			return
+		}
+	}
+	if g.isArm64 {
+		bytes := count * 8
+		for bytes > 0 {
+			chunk := bytes
+			if chunk > 4095 {
+				chunk = 4095
+			}
+			g.emitAddImm(REG_X28, REG_X28, uint32(chunk))
+			bytes = bytes - chunk
+		}
+		return
+	}
+	i := 0
+	for i < count {
+		g.rawDrop()
+		i++
+	}
 }
 
 // === ARM64 GOT helpers ===

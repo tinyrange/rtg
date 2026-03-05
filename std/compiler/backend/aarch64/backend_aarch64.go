@@ -45,6 +45,8 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 		}
 	}
 	g.jumpFixups = g.jumpFixups[:0]
+	g.shareReturnEpilogue = shouldShareReturnEpilogueArm64(f.Code)
+	g.returnEpilogueOffset = -1
 
 	// Prologue: STP X29, X30, [SP, #-16]!; MOV X29, SP; SUB SP, SP, #frameBytes
 	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
@@ -79,11 +81,28 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	if g.traceEnabled {
 		g.traceCurFuncInsts = make([]InstByteTrace, len(f.Code))
 	}
-	for i, inst := range f.Code {
+	i := 0
+	for i < len(f.Code) {
+		inst := f.Code[i]
+		if inst.Op == ir.OP_DROP {
+			drops := 1
+			j := i + 1
+			for j < len(f.Code) && f.Code[j].Op == ir.OP_DROP {
+				drops++
+				j++
+			}
+			if g.traceEnabled {
+				g.traceSetCurrentInst(i)
+			}
+			g.opDropN(drops)
+			i = j
+			continue
+		}
 		if g.traceEnabled {
 			g.traceSetCurrentInst(i)
 		}
 		g.compileInstArm64(inst)
+		i++
 	}
 	if g.traceEnabled {
 		g.traceClearCurrentInst()
@@ -109,6 +128,8 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	}
 
 	g.curFunc = nil
+	g.shareReturnEpilogue = false
+	g.returnEpilogueOffset = -1
 }
 
 // compileInstArm64 generates ARM64 code for a single IR instruction.
@@ -224,7 +245,7 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 		g.compileReturnArm64(inst)
 
 	case ir.OP_LOAD:
-		g.compileLoadArm64(inst.Arg)
+		g.compileLoadArm64(inst)
 	case ir.OP_STORE:
 		g.compileStoreArm64(inst.Arg)
 	case ir.OP_OFFSET:
@@ -232,9 +253,9 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 	case ir.OP_INDEX_ADDR:
 		g.compileIndexAddrArm64(inst.Arg)
 	case ir.OP_LEN:
-		g.compileLenArm64()
+		g.compileLenArm64(inst)
 	case ir.OP_CAP:
-		g.compileCapArm64()
+		g.compileCapArm64(inst)
 
 	case ir.OP_CONVERT:
 		g.compileConvertArm64(inst.Name)
@@ -441,13 +462,24 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 		return
 	}
 
-	// Save field values from operand stack to hardware stack
+	saveBytes := structSize
+	if saveBytes%16 != 0 {
+		saveBytes += 16 - (saveBytes % 16)
+	}
+	if saveBytes < 4096 {
+		g.emitSubImm(REG_SP, REG_SP, uint32(saveBytes))
+	} else {
+		g.EmitLoadImm64Compact(REG_X16, uint64(saveBytes))
+		g.emitSubRR(REG_SP, REG_SP, REG_X16)
+	}
+
+	// Save field values from operand stack to hardware stack.
+	// Fields are popped in reverse order, so store reversed to preserve field0..N layout.
 	i := 0
 	for i < fieldCount {
 		g.opPop(REG_X0)
-		// STP-style push: SUB SP, SP, #16; STR X0, [SP]
-		g.emitSubImm(REG_SP, REG_SP, 16)
-		g.EmitStr(REG_X0, REG_SP, 0)
+		saveOff := (fieldCount - 1 - i) * 8
+		g.EmitStr(REG_X0, REG_SP, saveOff)
 		i++
 	}
 
@@ -459,11 +491,16 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 	// Pop fields from hardware stack and store into struct
 	i = 0
 	for i < fieldCount {
-		g.emitLdr(REG_X0, REG_SP, 0)
-		g.emitAddImm(REG_SP, REG_SP, 16)
+		g.emitLdr(REG_X0, REG_SP, i*8)
 		offset := i * 8
 		g.EmitStr(REG_X0, REG_X1, offset)
 		i++
+	}
+	if saveBytes < 4096 {
+		g.emitAddImm(REG_SP, REG_SP, uint32(saveBytes))
+	} else {
+		g.EmitLoadImm64Compact(REG_X16, uint64(saveBytes))
+		g.EmitAddRR(REG_SP, REG_SP, REG_X16)
 	}
 
 	g.opPush(REG_X1)
@@ -471,6 +508,34 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 
 func (g *CodeGen) compileReturnArm64(inst ir.Inst) {
 	g.Flush()
+	if g.curFunc != nil && g.shareReturnEpilogue {
+		if g.returnEpilogueOffset >= 0 {
+			fixup := g.emitB()
+			g.PatchArm64BAt(fixup, g.returnEpilogueOffset)
+			return
+		}
+		g.returnEpilogueOffset = len(g.code)
+		g.emitFuncEpilogueArm64()
+		return
+	}
+	g.emitFuncEpilogueArm64()
+}
+
+func shouldShareReturnEpilogueArm64(code []ir.Inst) bool {
+	returns := 0
+	for _, inst := range code {
+		if inst.Op != ir.OP_RETURN {
+			continue
+		}
+		returns++
+		if returns > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *CodeGen) emitFuncEpilogueArm64() {
 	// Epilogue: MOV SP, FP; LDP FP, LR, [SP], #16; RET
 	g.EmitMovRRArm64(REG_SP, REG_FP)
 	g.EmitLdp(REG_FP, REG_LR, REG_SP, 16)
@@ -847,8 +912,18 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 
 // === Memory operations ===
 
-func (g *CodeGen) compileLoadArm64(size int) {
+func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
+	size := inst.Arg
 	g.opPop(REG_X1) // addr
+	if inst.Name == ir.InstNonNilMemoryBase {
+		if size == 1 {
+			g.emitLdrb(REG_X0, REG_X1, 0)
+		} else {
+			g.emitLdr(REG_X0, REG_X1, 0)
+		}
+		g.opPush(REG_X0)
+		return
+	}
 	g.emitCmpImm(REG_X1, 0)
 	loadFixup := g.emitBCond(COND_NE) // branch to load if non-nil
 	// nil case: X0 = 0
@@ -910,7 +985,7 @@ func (g *CodeGen) compileIndexAddrArm64(elemSize int) {
 	g.opPush(REG_X1)
 }
 
-func (g *CodeGen) compileLenArm64() {
+func (g *CodeGen) compileLenArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
 	g.emitCmpImm(REG_X0, 0)
 	nonNilFixup := g.emitBCond(COND_NE)
@@ -923,7 +998,7 @@ func (g *CodeGen) compileLenArm64() {
 	g.opPush(REG_X0)
 }
 
-func (g *CodeGen) compileCapArm64() {
+func (g *CodeGen) compileCapArm64(inst ir.Inst) {
 	g.opPop(REG_X0)
 	g.emitCmpImm(REG_X0, 0)
 	nonNilFixup := g.emitBCond(COND_NE)

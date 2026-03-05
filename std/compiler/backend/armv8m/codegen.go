@@ -214,10 +214,24 @@ func (g *CodeGen) compileFunc(f *ir.IRFunc) error {
 		}
 	}
 
-	for _, inst := range f.Code {
+	i := 0
+	for i < len(f.Code) {
+		inst := f.Code[i]
+		if inst.Op == ir.OP_DROP {
+			drops := 1
+			j := i + 1
+			for j < len(f.Code) && f.Code[j].Op == ir.OP_DROP {
+				drops++
+				j++
+			}
+			g.opDropN(drops)
+			i = j
+			continue
+		}
 		if err := g.compileInst(inst); err != nil {
 			return err
 		}
+		i++
 	}
 
 	for _, fx := range g.curFixups {
@@ -298,7 +312,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 		g.loadImm32(0, addr)
 		g.opPush(0)
 	case ir.OP_DROP:
-		g.opPop(0)
+		g.opDrop()
 	case ir.OP_DUP:
 		g.opPop(0)
 		g.opPush(0)
@@ -452,6 +466,22 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 		g.emitEpilogue()
 	case ir.OP_LOAD:
 		g.opPop(1)
+		if inst.Name == ir.InstNonNilMemoryBase {
+			if inst.Arg == 1 {
+				g.asm.EmitLdrbImm(0, 1, 0)
+			} else if inst.Arg == 0 || inst.Arg >= 2 {
+				g.emitLoadWordUnaligned(1, 0)
+			} else {
+				return fmt.Errorf("unsupported load width: %d", inst.Arg)
+			}
+			g.opPush(0)
+			return nil
+		}
+		g.asm.EmitCmpImm(1, 0)
+		nonNil := g.asm.EmitBCond(condNE, 0)
+		g.asm.EmitMovsImm(0, 0)
+		endJump := g.asm.EmitBImm11(0)
+		loadPos := g.asm.Pos()
 		if inst.Arg == 1 {
 			g.asm.EmitLdrbImm(0, 1, 0)
 		} else if inst.Arg == 0 || inst.Arg >= 2 {
@@ -459,6 +489,9 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 		} else {
 			return fmt.Errorf("unsupported load width: %d", inst.Arg)
 		}
+		endPos := g.asm.Pos()
+		g.asm.PatchBCond(nonNil, condNE, int32(loadPos-(nonNil+4)))
+		g.asm.PatchBImm11(endJump, int32(endPos-(endJump+4)))
 		g.opPush(0)
 	case ir.OP_STORE:
 		g.opPop(0) // addr
@@ -500,6 +533,11 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 		g.opPush(0)
 	case ir.OP_LEN:
 		g.opPop(0)
+		if inst.Name == ir.InstNonNilMemoryBase {
+			g.asm.EmitLdrImm(0, 0, 1)
+			g.opPush(0)
+			return nil
+		}
 		g.asm.EmitCmpImm(0, 0)
 		nonNil := g.asm.EmitBCond(condNE, 0)
 		g.asm.EmitMovsImm(0, 0)
@@ -512,6 +550,11 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 		g.opPush(0)
 	case ir.OP_CAP:
 		g.opPop(0)
+		if inst.Name == ir.InstNonNilMemoryBase {
+			g.asm.EmitLdrImm(0, 0, 2)
+			g.opPush(0)
+			return nil
+		}
 		g.asm.EmitCmpImm(0, 0)
 		nonNil := g.asm.EmitBCond(condNE, 0)
 		g.asm.EmitMovsImm(0, 0)
@@ -780,6 +823,25 @@ func (g *CodeGen) PushOperand(reg uint8) {
 func (g *CodeGen) opPop(reg uint8) {
 	g.asm.EmitLdrImm(reg, 6, 0)
 	g.asm.EmitAddsImm(6, 4)
+}
+
+func (g *CodeGen) opDrop() {
+	g.asm.EmitAddsImm(6, 4)
+}
+
+func (g *CodeGen) opDropN(count int) {
+	if count <= 0 {
+		return
+	}
+	bytes := count * 4
+	for bytes > 0 {
+		chunk := bytes
+		if chunk > 255 {
+			chunk = 255
+		}
+		g.asm.EmitAddsImm(6, uint8(chunk))
+		bytes = bytes - chunk
+	}
 }
 
 func (g *CodeGen) emitLoadWordUnaligned(addrReg uint8, outReg uint8) {

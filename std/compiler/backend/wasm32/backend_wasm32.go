@@ -1393,7 +1393,7 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 		}
 
 	case ir.OP_LOAD:
-		g.compileLoad(inst.Arg)
+		g.compileLoad(inst)
 	case ir.OP_STORE:
 		g.compileStore(inst.Arg)
 	case ir.OP_OFFSET:
@@ -1401,9 +1401,9 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 	case ir.OP_INDEX_ADDR:
 		g.compileIndexAddr(inst.Arg)
 	case ir.OP_LEN:
-		g.compileLen()
+		g.compileLen(inst)
 	case ir.OP_CAP:
-		g.compileCap()
+		g.compileCap(inst)
 
 	case ir.OP_CALL:
 		g.compileCall(inst)
@@ -1631,12 +1631,22 @@ func (g *WasmGen) compileGlobalAddr(inst ir.Inst) {
 
 // === Memory operations ===
 
-func (g *WasmGen) compileLoad(size int) {
+func (g *WasmGen) compileLoad(inst ir.Inst) {
+	size := inst.Arg
 	// Stack: [addr] → [value]
 	// addr is always i32, result is always i32
 	t := g.popType()
 	if t == WASM_TYPE_I64 {
 		g.w.i32WrapI64()
+	}
+	if inst.Name == ir.InstNonNilMemoryBase {
+		if size == 1 {
+			g.w.i32Load8u(0, 0)
+		} else {
+			g.w.i32Load(2, 0)
+		}
+		g.pushType(WASM_TYPE_I32)
+		return
 	}
 	g.w.localTee(uint32(g.tempLocal))
 	g.w.op(OP_WASM_I32_EQZ)
@@ -1714,9 +1724,14 @@ func (g *WasmGen) compileIndexAddr(elemSize int) {
 	g.pushType(WASM_TYPE_I32)
 }
 
-func (g *WasmGen) compileLen() {
+func (g *WasmGen) compileLen(inst ir.Inst) {
 	// Stack: [headerPtr] → [length]
 	g.popType() // pop headerPtr
+	if inst.Name == ir.InstNonNilMemoryBase {
+		g.w.i32Load(2, 4) // len at offset 4
+		g.pushType(WASM_TYPE_I32)
+		return
+	}
 	g.w.localTee(uint32(g.tempLocal))
 	g.w.op(OP_WASM_I32_EQZ)
 	g.w.ifOp(WASM_TYPE_I32)
@@ -1728,9 +1743,14 @@ func (g *WasmGen) compileLen() {
 	g.pushType(WASM_TYPE_I32)
 }
 
-func (g *WasmGen) compileCap() {
+func (g *WasmGen) compileCap(inst ir.Inst) {
 	// Stack: [headerPtr] → [capacity]
 	g.popType() // pop headerPtr
+	if inst.Name == ir.InstNonNilMemoryBase {
+		g.w.i32Load(2, 8) // cap at offset 8 (2*4)
+		g.pushType(WASM_TYPE_I32)
+		return
+	}
 	g.w.localTee(uint32(g.tempLocal))
 	g.w.op(OP_WASM_I32_EQZ)
 	g.w.ifOp(WASM_TYPE_I32)

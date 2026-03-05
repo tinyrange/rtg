@@ -642,6 +642,48 @@ func (g *CodeGen) opDrop() {
 	g.rawDrop()
 }
 
+func (g *CodeGen) opDropN(count int) {
+	if count <= 0 {
+		return
+	}
+	if len(g.cacheRegs) > 0 {
+		i := 0
+		for i < count {
+			g.opDrop()
+			i++
+		}
+		return
+	}
+	if g.hasPending {
+		g.hasPending = false
+		count--
+		if count <= 0 {
+			return
+		}
+	}
+	if g.wordSize == 8 {
+		total := count * 8
+		g.EmitBytes(0x49, 0x81, 0xC7) // add r15, imm32
+		g.EmitU32(uint32(total))
+		return
+	}
+	if g.wordSize == 4 && g.target.GOOS != "dos" {
+		total := count * 4
+		if total <= 127 {
+			g.EmitBytes(0x83, 0xC7, byte(total)) // add edi, imm8
+		} else {
+			g.EmitBytes(0x81, 0xC7) // add edi, imm32
+			g.EmitU32(uint32(total))
+		}
+		return
+	}
+	i := 0
+	for i < count {
+		g.rawDrop()
+		i++
+	}
+}
+
 // AlignUp aligns v up to the next multiple of align.
 func AlignUp(v, align int) int {
 	return (v + align - 1) & ^(align - 1)

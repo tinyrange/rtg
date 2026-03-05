@@ -123,7 +123,7 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 		g.ret16()
 
 	case ir.OP_LOAD:
-		g.memLoad(inst.Arg)
+		g.memLoad(inst.Arg, inst.Name == ir.InstNonNilMemoryBase)
 	case ir.OP_STORE:
 		g.memStore(inst.Arg)
 	case ir.OP_OFFSET:
@@ -131,9 +131,9 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	case ir.OP_INDEX_ADDR:
 		g.indexAddr(inst.Arg)
 	case ir.OP_LEN:
-		g.sliceLen()
+		g.sliceLen(inst.Name == ir.InstNonNilMemoryBase)
 	case ir.OP_CAP:
-		g.sliceCap()
+		g.sliceCap(inst.Name == ir.InstNonNilMemoryBase)
 
 	case ir.OP_CONVERT:
 		g.convert(inst.Name)

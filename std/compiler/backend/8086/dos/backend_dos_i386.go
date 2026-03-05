@@ -310,8 +310,22 @@ func (g *CodeGen) compileFunc(f *ir.IRFunc) {
 		g.storeLocal(off, REG16_AX)
 	}
 
-	for _, inst := range f.Code {
+	i := 0
+	for i < len(f.Code) {
+		inst := f.Code[i]
+		if inst.Op == ir.OP_DROP {
+			drops := 1
+			j := i + 1
+			for j < len(f.Code) && f.Code[j].Op == ir.OP_DROP {
+				drops++
+				j++
+			}
+			g.opDropN(drops)
+			i = j
+			continue
+		}
 		g.compileInst(inst)
+		i++
 	}
 
 	// Resolve jumps in this function.
@@ -532,8 +546,18 @@ func (g *CodeGen) jccNearRel16(cc byte) int {
 
 // ===== Memory / pointer ops =====
 
-func (g *CodeGen) memLoad(size int) {
+func (g *CodeGen) memLoad(size int, nonNil bool) {
 	g.opPop(REG16_BX) // addr
+	if nonNil {
+		if size == 1 {
+			g.emitBytes(0x30, 0xE4) // xor ah, ah
+			g.emitBytes(0x8A, 0x07) // mov al, [bx]
+		} else {
+			g.emitLoadRM16(REG16_AX, EA16_BX, 0)
+		}
+		g.opPush(REG16_AX)
+		return
+	}
 	g.testRR16(REG16_BX, REG16_BX)
 
 	if size == 1 {
@@ -601,9 +625,14 @@ func (g *CodeGen) indexAddr(elemSize int) {
 	g.opPush(REG16_BX)
 }
 
-func (g *CodeGen) sliceLen() {
+func (g *CodeGen) sliceLen(nonNil bool) {
 	// if nil => 0 else [hdr+2]
 	g.opPop(REG16_BX)
+	if nonNil {
+		g.emitLoadRM16(REG16_AX, EA16_BX, 2)
+		g.opPush(REG16_AX)
+		return
+	}
 	g.testRR16(REG16_BX, REG16_BX)
 	fixNonNil := g.jccNearRel16(CC16_NE)
 	g.xorRR16(REG16_AX, REG16_AX)
@@ -614,9 +643,14 @@ func (g *CodeGen) sliceLen() {
 	g.opPush(REG16_AX)
 }
 
-func (g *CodeGen) sliceCap() {
+func (g *CodeGen) sliceCap(nonNil bool) {
 	// if nil => 0 else [hdr+4]
 	g.opPop(REG16_BX)
+	if nonNil {
+		g.emitLoadRM16(REG16_AX, EA16_BX, 4)
+		g.opPush(REG16_AX)
+		return
+	}
 	g.testRR16(REG16_BX, REG16_BX)
 	fixNonNil := g.jccNearRel16(CC16_NE)
 	g.xorRR16(REG16_AX, REG16_AX)
@@ -755,6 +789,25 @@ func (g *CodeGen) opLoad(reg int) {
 func (g *CodeGen) opDrop() {
 	// add di, 2
 	g.emitBytes(0x83, 0xC7, 0x02)
+}
+
+func (g *CodeGen) opDropN(count int) {
+	if count <= 0 {
+		return
+	}
+	total := count * 2
+	if total <= 127 {
+		g.emitBytes(0x83, 0xC7, byte(total)) // add di, imm8
+		return
+	}
+	for total > 0 {
+		chunk := total
+		if chunk > 0x7FFF {
+			chunk = 0x7FFF
+		}
+		g.emitBytes(0x81, 0xC7, byte(chunk), byte(chunk>>8)) // add di, imm16
+		total = total - chunk
+	}
 }
 
 // ===== Locals via BP =====

@@ -33,7 +33,19 @@ func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
 			changed = true
 		}
 
+		if !(target.GOOS == "wasi" && target.GOARCH == "wasm32") {
+			code, stepChanged = foldConditionalJumpOverUnconditionalJump(code)
+			if stepChanged {
+				changed = true
+			}
+		}
+
 		code, stepChanged = foldSliceAppendU32LE(code)
+		if stepChanged {
+			changed = true
+		}
+
+		code, stepChanged = annotateNonNilMemoryBases(code)
 		if stepChanged {
 			changed = true
 		}
@@ -156,6 +168,68 @@ func foldNotConditionalJumps(code []Inst) ([]Inst, bool) {
 		out = append(out, code[i])
 	}
 	return out, changed
+}
+
+// foldConditionalJumpOverUnconditionalJump rewrites:
+//
+//	JCC L_then
+//	JMP L_else
+//	LABEL L_then
+//
+// into:
+//
+//	J!CC L_else
+//	LABEL L_then
+//
+// when the conditional target is the immediate fallthrough label.
+func foldConditionalJumpOverUnconditionalJump(code []Inst) ([]Inst, bool) {
+	if len(code) < 3 {
+		return code, false
+	}
+
+	changed := false
+	out := make([]Inst, 0, len(code))
+	i := 0
+	for i < len(code) {
+		if i+2 < len(code) && code[i+1].Op == OP_JMP && code[i+2].Op == OP_LABEL && code[i].Arg == code[i+2].Arg {
+			inv, ok := invertConditionalJumpOpcode(code[i].Op)
+			if ok {
+				inst := code[i]
+				inst.Op = inv
+				inst.Arg = code[i+1].Arg
+				out = append(out, inst)
+				i += 2
+				changed = true
+				continue
+			}
+		}
+		out = append(out, code[i])
+		i++
+	}
+	return out, changed
+}
+
+func invertConditionalJumpOpcode(op Opcode) (Opcode, bool) {
+	switch op {
+	case OP_JMP_IF:
+		return OP_JMP_IF_NOT, true
+	case OP_JMP_IF_NOT:
+		return OP_JMP_IF, true
+	case OP_JMP_EQ:
+		return OP_JMP_NEQ, true
+	case OP_JMP_NEQ:
+		return OP_JMP_EQ, true
+	case OP_JMP_LT:
+		return OP_JMP_GEQ, true
+	case OP_JMP_GEQ:
+		return OP_JMP_LT, true
+	case OP_JMP_GT:
+		return OP_JMP_LEQ, true
+	case OP_JMP_LEQ:
+		return OP_JMP_GT, true
+	default:
+		return 0, false
+	}
 }
 
 func matchesSliceAppendU64LEWindow(code []Inst, i int) bool {
@@ -302,6 +376,43 @@ func matchesSliceAppendU32LEWindow(code []Inst, i int) bool {
 	}
 
 	return true
+}
+
+// annotateNonNilMemoryBases marks selected LOAD instructions with a
+// backend hint when their input pointer is trivially non-nil.
+//
+// The matcher is intentionally narrow to stay semantics-preserving across all
+// targets: it only recognizes immediate producers that are always non-nil.
+func annotateNonNilMemoryBases(code []Inst) ([]Inst, bool) {
+	if len(code) < 2 {
+		return code, false
+	}
+
+	changed := false
+	out := make([]Inst, len(code))
+	copy(out, code)
+
+	for i := 1; i < len(out); i++ {
+		cur := out[i]
+		if cur.Op != OP_LOAD {
+			continue
+		}
+		if cur.Name == InstNonNilMemoryBase {
+			continue
+		}
+
+		prev := out[i-1]
+		switch prev.Op {
+		case OP_LOCAL_ADDR:
+			out[i].Name = InstNonNilMemoryBase
+			changed = true
+		}
+	}
+
+	if !changed {
+		return code, false
+	}
+	return out, true
 }
 
 // deadLocalStoreToDrop rewrites LOCAL_SET to DROP when the local is never read

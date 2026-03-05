@@ -522,6 +522,34 @@ func (g *CodeGen) opDrop() {
 	g.rawDrop()
 }
 
+func (g *CodeGen) opDropN(count int) {
+	if count <= 0 {
+		return
+	}
+	if len(g.CacheRegs) > 0 {
+		i := 0
+		for i < count {
+			g.opDrop()
+			i++
+		}
+		return
+	}
+	if g.HasPending {
+		g.HasPending = false
+		count--
+		if count <= 0 {
+			return
+		}
+	}
+	total := count * 4
+	if total <= 127 {
+		g.emitBytes(0x83, 0xC7, byte(total)) // add edi, imm8
+		return
+	}
+	g.emitBytes(0x81, 0xC7) // add edi, imm32
+	g.emitU32(uint32(total))
+}
+
 // emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.
 func (g *CodeGen) emitCallIAT(funcName string) {
 	g.emitCallIATInLib(winDefaultImportLibrary, funcName)

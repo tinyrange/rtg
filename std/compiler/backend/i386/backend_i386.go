@@ -69,8 +69,22 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 	}
 
 	// Compile instructions
-	for _, inst := range f.Code {
+	i := 0
+	for i < len(f.Code) {
+		inst := f.Code[i]
+		if inst.Op == ir.OP_DROP {
+			drops := 1
+			j := i + 1
+			for j < len(f.Code) && f.Code[j].Op == ir.OP_DROP {
+				drops++
+				j++
+			}
+			g.opDropN(drops)
+			i = j
+			continue
+		}
 		g.compileInst_i386(inst)
+		i++
 	}
 
 	// Resolve jump fixups within this function
@@ -230,7 +244,7 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 		g.compileReturn_i386(inst)
 
 	case ir.OP_LOAD:
-		g.compileLoad_i386(inst.Arg)
+		g.compileLoad_i386(inst)
 	case ir.OP_STORE:
 		g.compileStore_i386(inst.Arg)
 	case ir.OP_OFFSET:
@@ -238,9 +252,9 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	case ir.OP_INDEX_ADDR:
 		g.compileIndexAddr_i386(inst.Arg)
 	case ir.OP_LEN:
-		g.compileLen_i386()
+		g.compileLen_i386(inst)
 	case ir.OP_CAP:
-		g.compileCap_i386()
+		g.compileCap_i386(inst)
 
 	case ir.OP_CONVERT:
 		g.compileConvert_i386(inst.Name)
@@ -830,8 +844,18 @@ func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 
 // === Memory operations (i386) ===
 
-func (g *CodeGen) compileLoad_i386(size int) {
+func (g *CodeGen) compileLoad_i386(inst ir.Inst) {
+	size := inst.Arg
 	g.opPop(REG32_ECX)
+	if inst.Name == ir.InstNonNilMemoryBase {
+		if size == 1 {
+			g.loadMemByte32(REG32_EAX, REG32_ECX, 0) // movzx eax, byte [ecx]
+		} else {
+			g.loadMem32(REG32_EAX, REG32_ECX, 0) // mov eax, [ecx]
+		}
+		g.opPush(REG32_EAX)
+		return
+	}
 	g.testRR32(REG32_ECX, REG32_ECX)
 	if size == 1 {
 		g.emitBytes(0x75, 0x04)                  // jnz +4
@@ -886,8 +910,13 @@ func (g *CodeGen) compileIndexAddr_i386(elemSize int) {
 	g.opPush(REG32_ECX)
 }
 
-func (g *CodeGen) compileLen_i386() {
+func (g *CodeGen) compileLen_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
+	if inst.Name == ir.InstNonNilMemoryBase {
+		g.loadMem32(REG32_EAX, REG32_EAX, g.slotBytes_i386()) // len at offset ptr
+		g.opPush(REG32_EAX)
+		return
+	}
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixNonNil := g.jccRel32(CC32_NE)
 	g.xorRR32(REG32_EAX, REG32_EAX)
@@ -898,8 +927,13 @@ func (g *CodeGen) compileLen_i386() {
 	g.opPush(REG32_EAX)
 }
 
-func (g *CodeGen) compileCap_i386() {
+func (g *CodeGen) compileCap_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
+	if inst.Name == ir.InstNonNilMemoryBase {
+		g.loadMem32(REG32_EAX, REG32_EAX, 2*g.slotBytes_i386()) // cap at offset 2*ptr
+		g.opPush(REG32_EAX)
+		return
+	}
 	g.testRR32(REG32_EAX, REG32_EAX)
 	fixNonNil := g.jccRel32(CC32_NE)
 	g.xorRR32(REG32_EAX, REG32_EAX)

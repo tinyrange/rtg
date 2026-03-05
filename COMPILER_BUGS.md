@@ -17,6 +17,8 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#23` Parser rejects struct field tags in compiler sources (selfhost parse errors on backtick tags).
 - `#24` IR-binary input compiled for host target can ICE when retargeted to `linux/arm64` (`unknown intrinsic runtime.SysWrite`).
 - `#25` Selfhost-created files can ignore requested create permissions until an explicit `Chmod`.
+- `#26` WASM backend stackifier depends on specific short-circuit jump shape; generic CFG branch inversion can emit invalid WASM.
+- `#27` Non-nil memory-base optimization currently stabilizes only for `LOAD` from `LOCAL_ADDR`; broader forms regress selfhosting.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -48,6 +50,8 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 8. Re-audit watch items `#1` and `#7`; close or replace with narrow repros.
 9. `#24` Decide whether cross-targeting from host-shaped IR binaries is supported; either hard-fail early with a clear diagnostic or lower required intrinsics for `linux/arm64`.
 10. `#25` Root-cause selfhost `os.OpenFile`/`os.WriteFile` create-mode mismatch and remove chmod workarounds.
+11. `#26` Make WASM stackifier robust to equivalent CFG forms (or formalize and enforce IR shape constraints in one place).
+12. `#27` Revisit non-nil memory-base optimization expansion (`LEN/CAP`, `GLOBAL_ADDR`, C backend direct-load path) with proof/validation coverage.
 
 ### 23) Struct field tags are not accepted by parser in selfhost path
 
@@ -89,6 +93,38 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - Normalize final permissions with `os.Chmod` after close in affected compiler output paths.
+
+### 26) WASM stackifier depends on specific short-circuit jump adjacency
+
+**Symptom**
+- A backend-independent CFG optimization that rewrites:
+  - `JMP_IF/JMP_IF_NOT <L_then>; JMP <L_else>; LABEL <L_then>`
+  into:
+  - inverted conditional jump to `<L_else>` with fallthrough
+- can break WASM self-hosting with validator error:
+  - `Invalid input WebAssembly code ... control frames remain at end of function body or expression`.
+
+**Impact**
+- Prevents enabling this otherwise-valid CFG rewrite for WASM targets until stackification handles the equivalent form.
+
+**Current mitigation**
+- In `ir/opt_ir.go`, skip `foldConditionalJumpOverUnconditionalJump` when target is `wasi/wasm32`.
+
+### 27) Broader non-nil memory-base lowering can break selfhosting
+
+**Symptom**
+- During size optimization work, broad non-nil annotations for memory ops caused bootstrap regressions:
+  - `selfhost` stage2 compiler crashed (`Segmentation fault: 11`) on `darwin/arm64`.
+  - `selfhost-c` stage2 compiler also crashed when C backend consumed the same hint aggressively.
+
+**Impact**
+- Full cross-backend expansion of the optimization is currently unsafe.
+
+**Current mitigation**
+- Keep the optimization narrowly scoped:
+  - only annotate `OP_LOAD` (not `LEN/CAP`),
+  - only when immediately fed by `OP_LOCAL_ADDR`,
+  - keep C backend on the conservative guarded lowering path for now.
 
 ## Active / Watch Details
 

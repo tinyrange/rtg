@@ -120,6 +120,13 @@ const (
 	OP_CAP
 )
 
+// Inst annotation names used by backend-independent optimization passes.
+const (
+	// InstNonNilMemoryBase marks LOAD/LEN/CAP instructions whose pointer input
+	// is provably non-nil (conservative local proof).
+	InstNonNilMemoryBase = "$nonnull_base$"
+)
+
 // Inst represents a single IR instruction.
 type Inst struct {
 	Op    Opcode
