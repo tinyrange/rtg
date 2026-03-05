@@ -368,16 +368,20 @@ func IntToString(n int) string {
 		return Makestring(Stringptr("0"), 1)
 	}
 	neg := false
+	var u uint
 	if n < 0 {
 		neg = true
-		n = 0 - n
+		// Avoid signed overflow for the minimum int value on 32/64-bit targets.
+		u = uint(0) - uint(n)
+	} else {
+		u = uint(n)
 	}
 	// Build digits in reverse
 	buf := make([]byte, 20)
 	i := 19
-	for n > 0 {
-		buf[i] = byte(n%10) + '0'
-		n = n / 10
+	for u > 0 {
+		buf[i] = byte(u%10) + '0'
+		u = u / 10
 		i = i - 1
 	}
 	if neg {

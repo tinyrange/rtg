@@ -129,7 +129,8 @@ func FormatInt(i int64, base int) string {
 	neg := i < 0
 	var u uint64
 	if neg {
-		u = uint64(^i) + 1
+		// Use unsigned subtraction to avoid any signed overflow edge cases.
+		u = uint64(0) - uint64(i)
 	} else {
 		u = uint64(i)
 	}
