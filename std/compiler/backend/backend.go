@@ -21,6 +21,41 @@ import (
 	targetcfg "j5.nz/rtg/std/target"
 )
 
+// SupportsCodegenDebug reports whether -emit-codegen-debug is supported for a target.
+func SupportsCodegenDebug(tgt *common.Target) bool {
+	if tgt == nil {
+		return false
+	}
+	if tgt.Backend != "native" {
+		return false
+	}
+	triple := tgt.Triple
+	if triple == "" {
+		triple = tgt.GOOS + "/" + tgt.GOARCH
+	}
+	// Explicit target drivers are currently not integrated with codegen debug output.
+	if spec, ok := targetcfg.Lookup(triple); ok {
+		if spec.Driver != nil {
+			return false
+		}
+		asmProvider := spec.Assembler
+		if p, ok := targetcfg.LookupAssembler(spec.Assembler); ok && p != "" {
+			asmProvider = p
+		}
+		fmtProvider := spec.BinFormat
+		if p, ok := targetcfg.LookupBinFormat(spec.BinFormat); ok && p != "" {
+			fmtProvider = p
+		}
+		if asmProvider != "" || fmtProvider != "" {
+			return asmProvider == "builtin.aarch64" && fmtProvider == "builtin.macho64"
+		}
+	}
+	if tgt.GOARCH != "arm64" {
+		return false
+	}
+	return tgt.GOOS == "linux" || tgt.GOOS == "darwin" || tgt.GOOS == "windows"
+}
+
 // Generate dispatches to the appropriate backend based on selected target.
 func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 	triple := tgt.Triple

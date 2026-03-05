@@ -141,7 +141,7 @@ func main() {
 			fromIRBinaryPath = os.Args[i+1]
 			fromKind = "irb"
 			i = i + 2
-		} else if os.Args[i] == "-emit-ir-and-binary" && i+1 < len(os.Args) {
+		} else if (os.Args[i] == "-emit-codegen-debug" || os.Args[i] == "-emit-ir-and-binary") && i+1 < len(os.Args) {
 			emitIRAndBinaryPath = os.Args[i+1]
 			i = i + 2
 		} else if os.Args[i] == "-size-analysis" && i+1 < len(os.Args) {
@@ -294,8 +294,8 @@ func main() {
 		EmitIRAndBinaryPath: emitIRAndBinaryPath,
 		StripBinary:         stripBinary,
 	}
-	if emitIRAndBinaryPath != "" && (compileTarget.Backend != "native" || compileTarget.GOARCH != "arm64") {
-		fmt.Fprintf(os.Stderr, "-emit-ir-and-binary is currently only supported for native arm64 targets\n")
+	if emitIRAndBinaryPath != "" && !backend.SupportsCodegenDebug(&compileTarget) {
+		fmt.Fprintf(os.Stderr, "-emit-codegen-debug is not supported for backend=%s target=%s/%s\n", compileTarget.Backend, compileTarget.GOOS, compileTarget.GOARCH)
 		os.Exit(1)
 	}
 	if err := backend.Generate(&compileTarget, irmod, outputPath); err != nil {
@@ -314,7 +314,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -from-ir-binary <p>    Load binary IR module from path and run codegen\n")
 	fmt.Fprintf(out, "                         (equivalent to -F irb <path>)\n")
-	fmt.Fprintf(out, "  -emit-ir-and-binary <p> For native arm64: emit separate debug text with per-IR-instruction machine bytes\n")
+	fmt.Fprintf(out, "  -emit-codegen-debug <p> Emit separate backend debug text (per-IR-instruction machine bytes where supported)\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -strict                Preserve strict-mode metadata in target config\n")
 	fmt.Fprintf(out, "  -profile               Preserve profile metadata in target config\n")
