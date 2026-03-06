@@ -594,7 +594,7 @@ async function loadCompilerModule() {
       setStatus("Failed to load compiler.wasm");
       return;
     }
-    compilerModule = await WebAssembly.compileStreaming(fetch("compiler.wasm"));
+    compilerModule = await WebAssembly.compileStreaming(response);
     setStatus("Ready");
     await loadCompilerStamp();
     discoverBuildTags();

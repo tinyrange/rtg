@@ -111,7 +111,7 @@ html = html.replace(
 
 // Patch loadCompilerModule to decode from base64 instead of fetching
 html = html.replace(
-  'compilerModule = await WebAssembly.compileStreaming(fetch("compiler.wasm"));',
+  "compilerModule = await WebAssembly.compileStreaming(response);",
   [
     "const b64 = COMPILER_WASM_B64;",
     "    const binStr = atob(b64);",
