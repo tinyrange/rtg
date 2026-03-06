@@ -333,6 +333,73 @@ func prevSignificant(tokens []Token) Token {
 	return Token{Kind: TokEOF}
 }
 
+func looksLikeFunctionDefHead(tokens []Token) bool {
+	tokens = filterNonNewline(tokens)
+	if len(tokens) == 0 {
+		return false
+	}
+	if hasTopLevelPunct(tokens, "=") {
+		return false
+	}
+	prev := prevSignificant(tokens)
+	if prev.Kind == TokPunct && prev.Text == ")" {
+		return true
+	}
+	if prev.Kind == TokPunct && prev.Text == ";" {
+		lpar := topLevelPunctIndex(tokens, "(")
+		if lpar <= 0 {
+			return false
+		}
+		rpar := matchingParenClose(tokens, lpar)
+		if rpar <= lpar {
+			return false
+		}
+		return rpar < len(tokens)-1
+	}
+	return false
+}
+
+func knrFunctionNameList(tokens []Token) (int, int, bool) {
+	tokens = filterNonNewline(tokens)
+	lpar := topLevelPunctIndex(tokens, "(")
+	if lpar <= 0 || lpar >= len(tokens) {
+		return -1, -1, false
+	}
+	if tokens[lpar-1].Kind != TokIdent || isDeclarationKeyword(tokens[lpar-1]) {
+		return -1, -1, false
+	}
+	rpar := matchingParenClose(tokens, lpar)
+	if rpar <= lpar {
+		return -1, -1, false
+	}
+	parts := splitTopLevel(tokens[lpar+1:rpar], ",")
+	if len(parts) == 0 {
+		return -1, -1, false
+	}
+	for _, p := range parts {
+		p = filterNonNewline(p)
+		if len(p) == 0 {
+			continue
+		}
+		if len(p) != 1 || p[0].Kind != TokIdent || isDeclarationKeyword(p[0]) {
+			return -1, -1, false
+		}
+	}
+	return lpar, rpar, true
+}
+
+func looksLikeKNRFunctionHeadPrefix(tokens []Token) bool {
+	tokens = filterNonNewline(tokens)
+	if len(tokens) == 0 || hasTopLevelPunct(tokens, "=") {
+		return false
+	}
+	_, rpar, ok := knrFunctionNameList(tokens)
+	if !ok {
+		return false
+	}
+	return rpar < len(tokens)-1
+}
+
 // ParseTranslationUnit parses a whole C translation unit.
 func (p *Parser) ParseTranslationUnit() *Node {
 	root := &Node{Kind: NTranslationUnit}
@@ -383,8 +450,7 @@ func (p *Parser) parseExternalDecl() *Node {
 			case "{":
 				if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
 					head := p.collectRange(start, p.pos)
-					prev := prevSignificant(head)
-					if prev.Kind == TokPunct && prev.Text == ")" {
+					if looksLikeFunctionDefHead(head) {
 						fn := &Node{Kind: NFunctionDef, Text: tokenSliceText(head), Line: startTok.Line, Col: startTok.Col}
 						body := p.parseCompoundStmt()
 						if body != nil {
@@ -400,6 +466,11 @@ func (p *Parser) parseExternalDecl() *Node {
 				}
 			case ";":
 				if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+					head := p.collectRange(start, p.pos)
+					if looksLikeKNRFunctionHeadPrefix(head) {
+						p.pos++
+						continue
+					}
 					p.pos++
 					decl := &Node{Kind: NExternalDecl, Text: tokenSliceText(p.collectRange(start, p.pos-1)), Line: startTok.Line, Col: startTok.Col}
 					return decl
