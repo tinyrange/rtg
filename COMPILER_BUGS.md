@@ -16,6 +16,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#22` Web playground WASI shim can emit host compiler binaries that are non-runnable (`darwin/arm64` repro).
 - `#23` Parser rejects struct field tags in compiler sources (selfhost parse errors on backtick tags).
 - `#24` IR-binary input compiled for host target can ICE when retargeted to `linux/arm64` (`unknown intrinsic runtime.SysWrite`).
+- `#25` Selfhost-created files can ignore requested create permissions until an explicit `Chmod`.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -46,6 +47,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 7. `#14` Diagnose RTG x64 runtime crash in `55_stdlib_additions_extended`.
 8. Re-audit watch items `#1` and `#7`; close or replace with narrow repros.
 9. `#24` Decide whether cross-targeting from host-shaped IR binaries is supported; either hard-fail early with a clear diagnostic or lower required intrinsics for `linux/arm64`.
+10. `#25` Root-cause selfhost `os.OpenFile`/`os.WriteFile` create-mode mismatch and remove chmod workarounds.
 
 ### 23) Struct field tags are not accepted by parser in selfhost path
 
@@ -72,6 +74,21 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - Generate IR with matching target assumptions for the intended backend, or avoid cross-targeting this IR-binary path for `linux/arm64`.
+
+### 25) Selfhost-created files can ignore requested create permissions until `Chmod`
+
+**Symptom**
+- Programs compiled by RTG can create files with incorrect permissions even when the requested mode constant is correct.
+- Repro on `darwin/arm64` selfhost binary:
+  - `os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)` produced execute-only output until `os.Chmod(path, 0600)` was applied.
+  - `os.WriteFile(path, data, 0600)` showed the same behavior.
+
+**Impact**
+- Broke text-IR fixed-point self-hosting after switching `.irt` output creation to `0600` at open time.
+- Any selfhosted tool relying on initial create permissions can emit unreadable or incorrectly executable files.
+
+**Current mitigation**
+- Normalize final permissions with `os.Chmod` after close in affected compiler output paths.
 
 ## Active / Watch Details
 

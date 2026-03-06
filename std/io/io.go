@@ -1,7 +1,5 @@
 package io
 
-import "errors"
-
 type Writer interface {
 	Write(p []byte) (n int, err error)
 }
@@ -10,7 +8,13 @@ type Reader interface {
 	Read(p []byte) (n int, err error)
 }
 
-var EOF error = errors.New("EOF")
+type eofError struct{}
+
+func (e eofError) Error() string {
+	return "EOF"
+}
+
+var EOF eofError
 
 func Copy(dst Writer, src Reader) (int64, error) {
 	var written int64
