@@ -312,6 +312,10 @@ jobs:
                 echo "SKIP_UNSUPPORTED_OS: $test_path"
                 continue
                 ;;
+              *56_compileas_embed.go)
+                echo "SKIP_UNSUPPORTED_OS: $test_path"
+                continue
+                ;;
               *_amd64.go|*_386.go|*_arm64.go)
                 echo "SKIP_ARCH: $test_path"
                 continue
