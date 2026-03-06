@@ -924,6 +924,7 @@ func main() {
 				TargetOS:           compileTarget.GOOS,
 				TargetArch:         compileTarget.GOARCH,
 				PtrSize:            compileTarget.PtrSize,
+				Hosted:             len(cSystemIncludePaths) > 0,
 			}
 			var preprocessOut strings.Builder
 			var parseOut strings.Builder

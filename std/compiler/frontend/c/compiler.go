@@ -18,6 +18,7 @@ type cFuncSig struct {
 	Name          string
 	IRName        string
 	RetCount      int
+	RetByPtr      bool
 	RetKind       cDeclKind
 	RetBase       cScalarType
 	RetPtrDepth   int
@@ -46,6 +47,7 @@ type cFuncTypeSig struct {
 	RetBase       cScalarType
 	RetPtrDepth   int
 	RetIsVoid     bool
+	RetByPtr      bool
 	RetOpaque     bool
 	RetAggKeyword string
 	RetAggTag     string
@@ -64,6 +66,7 @@ type cDeclItem struct {
 	Name             string
 	Init             []Token
 	Kind             cDeclKind
+	DirectFunc       bool
 	PtrDepth         int
 	ArrayLen         int64
 	ArrayDims        []int64
@@ -73,6 +76,49 @@ type cDeclItem struct {
 	OpaqueAggregate  bool
 	AggregateKeyword string
 	AggregateTag     string
+}
+
+type cDeclaratorSuffix struct {
+	IsFunction    bool
+	ArrayLen      int64
+	ParamKinds    []cDeclKind
+	ParamBases    []cScalarType
+	ParamPtrDepth []int
+	ParamOpaque   []bool
+	ParamAggKey   []string
+	ParamAggTag   []string
+	ParamFuncSigs []*cFuncTypeSig
+	Variadic      bool
+}
+
+type cDeclaratorNode struct {
+	Name      string
+	PtrPrefix int
+	Inner     *cDeclaratorNode
+	Suffixes  []cDeclaratorSuffix
+}
+
+type cDeclaratorEntityKind int
+
+const (
+	cDeclaratorEntityBase cDeclaratorEntityKind = iota
+	cDeclaratorEntityPointer
+	cDeclaratorEntityArray
+	cDeclaratorEntityFunction
+)
+
+type cDeclaratorEntity struct {
+	Kind        cDeclaratorEntityKind
+	Inner       *cDeclaratorEntity
+	ArrayLen    int64
+	ParamKinds  []cDeclKind
+	ParamBases  []cScalarType
+	ParamPtr    []int
+	ParamOpaque []bool
+	ParamAggKey []string
+	ParamAggTag []string
+	ParamFuncs  []*cFuncTypeSig
+	Variadic    bool
 }
 
 type cGlobalInit struct {
@@ -179,6 +225,15 @@ func lookupTypedefAlias(name string) (cTypeInfo, bool) {
 		return cTypedefLookupCompiler.lookupTypedef(name)
 	}
 	return cTypeInfo{}, false
+}
+
+func lookupBuiltinTypedefAlias(name string) (cTypeInfo, bool) {
+	switch name {
+	case "__builtin_va_list":
+		return cTypeInfo{Kind: cDeclPointer, PtrDepth: 1, IsVoid: true}, true
+	default:
+		return cTypeInfo{}, false
+	}
 }
 
 func lookupAggregateAlias(keyword string, tag string) (*cAggregateInfo, bool) {
@@ -576,6 +631,7 @@ func cloneFuncTypeSig(in *cFuncTypeSig) *cFuncTypeSig {
 		RetBase:       in.RetBase,
 		RetPtrDepth:   in.RetPtrDepth,
 		RetIsVoid:     in.RetIsVoid,
+		RetByPtr:      in.RetByPtr,
 		RetOpaque:     in.RetOpaque,
 		RetAggKeyword: in.RetAggKeyword,
 		RetAggTag:     in.RetAggTag,
@@ -605,7 +661,8 @@ func funcSigToTypeSig(sig *cFuncSig) *cFuncTypeSig {
 		RetKind:       sig.RetKind,
 		RetBase:       sig.RetBase,
 		RetPtrDepth:   sig.RetPtrDepth,
-		RetIsVoid:     sig.RetCount == 0,
+		RetIsVoid:     sig.RetCount == 0 && !sig.RetByPtr,
+		RetByPtr:      sig.RetByPtr,
 		RetOpaque:     sig.RetOpaque,
 		RetAggKeyword: sig.RetAggKeyword,
 		RetAggTag:     sig.RetAggTag,
@@ -802,20 +859,33 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 				c.errorf(file, n.Line, n.Col, "typedef declaration with initializer is not supported: %s", it.Name)
 				continue
 			}
-			if it.Kind == cDeclArray {
-				c.errorf(file, n.Line, n.Col, "typedef array declarations are not yet supported: %s", it.Name)
-				continue
-			}
 			if it.Kind == cDeclPointer && it.PtrDepth == 0 {
 				it.PtrDepth = 1
 			}
-			if _, exists := c.typedefs[it.Name]; exists {
+			if existing, exists := c.typedefs[it.Name]; exists {
+				candidate := cTypeInfo{
+					Kind:             it.Kind,
+					PtrDepth:         it.PtrDepth,
+					ArrayLen:         it.ArrayLen,
+					ArrayDims:        cloneInt64s(it.ArrayDims),
+					IsVoid:           it.IsVoid,
+					Base:             it.Base,
+					FuncSig:          cloneFuncTypeSig(it.FuncSig),
+					OpaqueAggregate:  it.OpaqueAggregate,
+					AggregateKeyword: it.AggregateKeyword,
+					AggregateTag:     it.AggregateTag,
+				}
+				if cTypeInfoEquivalent(existing, candidate) {
+					continue
+				}
 				c.errorf(file, n.Line, n.Col, "duplicate typedef name %q", it.Name)
 				continue
 			}
 			c.typedefs[it.Name] = cTypeInfo{
 				Kind:             it.Kind,
 				PtrDepth:         it.PtrDepth,
+				ArrayLen:         it.ArrayLen,
+				ArrayDims:        cloneInt64s(it.ArrayDims),
 				IsVoid:           it.IsVoid,
 				Base:             it.Base,
 				FuncSig:          cloneFuncTypeSig(it.FuncSig),
@@ -827,6 +897,46 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		return
 	}
 	for _, it := range items {
+		if it.FuncSig != nil && it.Kind == cDeclScalar && it.PtrDepth == 0 {
+			sig := &cFuncSig{
+				Name:          it.Name,
+				IRName:        "c." + it.Name,
+				RetByPtr:      it.FuncSig.RetByPtr,
+				RetKind:       it.FuncSig.RetKind,
+				RetBase:       it.FuncSig.RetBase,
+				RetPtrDepth:   it.FuncSig.RetPtrDepth,
+				RetOpaque:     it.FuncSig.RetOpaque,
+				RetAggKeyword: it.FuncSig.RetAggKeyword,
+				RetAggTag:     it.FuncSig.RetAggTag,
+				ParamCount:    it.FuncSig.ParamCount,
+				Variadic:      it.FuncSig.Variadic,
+				ParamKinds:    append([]cDeclKind{}, it.FuncSig.ParamKinds...),
+				ParamBases:    append([]cScalarType{}, it.FuncSig.ParamBases...),
+				ParamPtrDepth: append([]int{}, it.FuncSig.ParamPtrDepth...),
+				ParamOpaque:   append([]bool{}, it.FuncSig.ParamOpaque...),
+				ParamAggKey:   append([]string{}, it.FuncSig.ParamAggKey...),
+				ParamAggTag:   append([]string{}, it.FuncSig.ParamAggTag...),
+				ParamFuncSigs: cloneFuncTypeSigs(it.FuncSig.ParamFuncSigs),
+				Defined:       false,
+				File:          file,
+				Line:          n.Line,
+				Col:           n.Col,
+			}
+			if it.FuncSig.RetIsVoid || it.FuncSig.RetByPtr {
+				sig.RetCount = 0
+			} else {
+				sig.RetCount = 1
+			}
+			if prev, ok := c.funcs[sig.Name]; ok {
+				if !funcTypeSigEqual(funcSigToTypeSig(prev), funcSigToTypeSig(sig)) {
+					c.errorf(file, n.Line, n.Col, "conflicting function declaration for %q", sig.Name)
+				}
+			} else {
+				c.funcs[sig.Name] = sig
+				c.funcOrder = append(c.funcOrder, sig)
+			}
+			continue
+		}
 		if hasExtern && len(it.Init) == 0 {
 			if _, exists := c.globalIndex[it.Name]; exists {
 				continue
@@ -878,18 +988,20 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			c.globalArray[it.Name] = it.ArrayLen
 			c.globalArrayDims[it.Name] = cloneInt64s(it.ArrayDims)
 			c.globalInits = append(c.globalInits, cGlobalInit{
-				Name:      it.Name,
-				Index:     idx,
-				Kind:      it.Kind,
-				PtrDepth:  it.PtrDepth,
-				ArrayLen:  it.ArrayLen,
-				ArrayDims: cloneInt64s(it.ArrayDims),
-				Base:      it.Base,
-				Init:      append([]Token{}, it.Init...),
-				File:      file,
-				Line:      n.Line,
-				Col:       n.Col,
-				IRName:    irName,
+				Name:             it.Name,
+				Index:            idx,
+				Kind:             it.Kind,
+				PtrDepth:         it.PtrDepth,
+				ArrayLen:         it.ArrayLen,
+				ArrayDims:        cloneInt64s(it.ArrayDims),
+				Base:             it.Base,
+				AggregateKeyword: it.AggregateKeyword,
+				AggregateTag:     it.AggregateTag,
+				Init:             append([]Token{}, it.Init...),
+				File:             file,
+				Line:             n.Line,
+				Col:              n.Col,
+				IRName:           irName,
 			})
 			continue
 		}
@@ -993,45 +1105,15 @@ func (c *compiler) emitGlobalInit() {
 				AggregateKeyword: g.AggregateKeyword,
 				AggregateTag:     g.AggregateTag,
 			}
-			elemInfo := arrayElementTypeInfo(arrInfo)
-			elemStep := fc.typeByteSize(elemInfo)
 			totalBytes := fc.typeByteSize(arrInfo)
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: totalBytes})
 			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
 			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: g.Index})
-			if vals, ok, err := stringArrayInitializerValues(g.Init, g.Base, g.ArrayLen); ok {
-				if err != nil {
-					c.errorf(g.File, g.Line, g.Col, "invalid array initializer for %s: %v", g.Name, err)
-					continue
-				}
-				for i, v := range vals {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
-					fc.emitCastToType(elemInfo)
-					fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: g.Index})
-					if i > 0 {
-						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
-						fc.emit(ir.Inst{Op: ir.OP_ADD})
-					}
-					fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
-				}
-				continue
-			}
-			initElems, err := parseArrayInitializerExprs(g.Init, g.ArrayLen)
-			if err != nil {
-				c.errorf(g.File, g.Line, g.Col, "invalid array initializer for %s: %v", g.Name, err)
-				continue
-			}
-			for i, initExpr := range initElems {
-				fc.emitExprTokens(g.File, g.Line, g.Col, initExpr)
-				fc.emitCastToType(elemInfo)
-				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: g.Index})
-				if i > 0 {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
-					fc.emit(ir.Inst{Op: ir.OP_ADD})
-				}
-				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
-			}
+			baseTmp := fc.allocTempLocal("$global_array_init")
+			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: g.Index})
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: baseTmp})
+			fc.emitArrayInitializerAt(g.Name, baseTmp, 0, arrInfo, g.Init, g.File, g.Line, g.Col)
 			continue
 		}
 		fc.emitExprTokens(g.File, g.Line, g.Col, g.Init)
@@ -1053,6 +1135,9 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 	}
 
 	paramSlots := sig.ParamCount
+	if sig.RetByPtr {
+		paramSlots++
+	}
 	if sig.Variadic {
 		paramSlots += 2
 	}
@@ -1066,8 +1151,12 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		enumScopes:    []map[string]int64{{}},
 		aggregateTags: []map[string]*cAggregateInfo{{}},
 		userLabels:    make(map[string]cUserLabel),
+		retPtrLocal:   -1,
 		variadicCount: -1,
 		variadicData:  -1,
+	}
+	if sig.RetByPtr {
+		fc.retPtrLocal = fc.addLocalTyped("$sret", cDeclPointer, cScalarInt, 1, int64(fc.c.target.PtrSize), nil, sig.File, sig.Line, sig.Col)
 	}
 	for i, p := range sig.ParamNames {
 		name := p
@@ -1230,6 +1319,7 @@ func splitTopLevel(tokens []Token, sep string) [][]Token {
 	depthParen := 0
 	depthBracket := 0
 	depthBrace := 0
+	depthTernary := 0
 	for _, t := range tokens {
 		if t.Kind == TokPunct {
 			switch t.Text {
@@ -1251,8 +1341,16 @@ func splitTopLevel(tokens []Token, sep string) [][]Token {
 				if depthBrace > 0 {
 					depthBrace--
 				}
+			case "?":
+				if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+					depthTernary++
+				}
+			case ":":
+				if depthParen == 0 && depthBracket == 0 && depthBrace == 0 && depthTernary > 0 {
+					depthTernary--
+				}
 			}
-			if t.Text == sep && depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+			if t.Text == sep && depthParen == 0 && depthBracket == 0 && depthBrace == 0 && depthTernary == 0 {
 				parts = append(parts, nil)
 				continue
 			}
@@ -1331,7 +1429,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if err != nil {
 		return nil, err
 	}
-	name, retDeclKind, retDeclPtrDepth, _, _, _, err := parseDeclarator(decl, false)
+	name, retDeclKind, retDeclPtrDepth, _, _, _, _, err := parseDeclarator(decl, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1342,11 +1440,10 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if retInfo.Kind == cDeclArray {
 		return nil, fmt.Errorf("function %q cannot return array type", name)
 	}
-	if isAggregateObjectType(retInfo) {
-		return nil, fmt.Errorf("function %q returning %s %q by value is not yet supported", name, retInfo.AggregateKeyword, retInfo.AggregateTag)
-	}
 	retCount := 1
 	if retInfo.IsVoid && retInfo.Kind == cDeclScalar {
+		retCount = 0
+	} else if isAggregateObjectType(retInfo) {
 		retCount = 0
 	}
 
@@ -1371,11 +1468,11 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				if err == nil {
 					baseInfo, _, _, err := parseScalarTypeSpec(spec, "function parameter list", true)
 					if err == nil {
-						_, kind, ptrDepth, arrLen, arrDims, _, err := parseDeclarator(decl, true)
+						_, kind, ptrDepth, arrLen, arrDims, _, _, err := parseDeclarator(decl, true)
 						if err == nil {
 							info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, false, "function parameter list")
 							if cerr == nil {
-								info.ArrayDims = cloneInt64s(arrDims)
+								applyDeclaratorArrayDims(&info, arrDims)
 							}
 							if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
 								parts = nil
@@ -1405,24 +1502,22 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			if err != nil {
 				return nil, err
 			}
-			pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, err := parseDeclarator(decl, true)
+			pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, directFunc, err := parseDeclarator(decl, true)
 			if err != nil {
 				return nil, err
+			}
+			if directFunc {
+				pdeclKind = cDeclPointer
+				pdeclPtrDepth = 1
 			}
 			pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, false, fmt.Sprintf("function parameter %d", i+1))
 			if err != nil {
 				return nil, err
 			}
-			pinfo.ArrayDims = cloneInt64s(parrDims)
+			applyDeclaratorArrayDims(&pinfo, parrDims)
 			if pfnSig != nil {
 				fnSig := cloneFuncTypeSig(pfnSig)
-				fnSig.RetKind = pbaseInfo.Kind
-				fnSig.RetBase = pbaseInfo.Base
-				fnSig.RetPtrDepth = pbaseInfo.PtrDepth
-				fnSig.RetIsVoid = pbaseInfo.IsVoid
-				fnSig.RetOpaque = pbaseInfo.OpaqueAggregate
-				fnSig.RetAggKeyword = pbaseInfo.AggregateKeyword
-				fnSig.RetAggTag = pbaseInfo.AggregateTag
+				applyFuncReturnBase(fnSig, pbaseInfo)
 				pinfo.FuncSig = fnSig
 			}
 			if pname == "" {
@@ -1454,6 +1549,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 		Name:          name,
 		IRName:        "c." + name,
 		RetCount:      retCount,
+		RetByPtr:      isAggregateObjectType(retInfo),
 		RetKind:       retInfo.Kind,
 		RetBase:       retInfo.Base,
 		RetPtrDepth:   retInfo.PtrDepth,
@@ -1488,7 +1584,7 @@ func isStorageClassKeyword(text string) bool {
 
 func isTypeQualifierKeyword(text string) bool {
 	switch text {
-	case "const", "volatile", "restrict", "inline":
+	case "const", "volatile", "restrict", "inline", "__const", "__volatile", "__restrict", "__inline", "__inline__":
 		return true
 	default:
 		return false
@@ -1585,7 +1681,18 @@ func splitDeclSpecPrefix(tokens []Token, context string) ([]Token, []Token, erro
 			end++
 			continue
 		}
+		if _, ok := lookupBuiltinTypedefAlias(t.Text); ok {
+			if sawType {
+				break
+			}
+			sawType = true
+			end++
+			continue
+		}
 		if _, ok := lookupTypedefAlias(t.Text); ok {
+			if sawType {
+				break
+			}
 			sawType = true
 			end++
 			continue
@@ -1694,9 +1801,6 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 		for _, it := range items {
 			if len(it.Init) > 0 {
 				return nil, 0, 0, fmt.Errorf("%s member %q cannot have initializer", dctx, it.Name)
-			}
-			if it.FuncSig != nil {
-				return nil, 0, 0, fmt.Errorf("%s member %q cannot be a function type", dctx, it.Name)
 			}
 			if it.Name == "" {
 				return nil, 0, 0, fmt.Errorf("%s has unnamed member", dctx)
@@ -1905,7 +2009,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			case "typedef":
 				hasTypedef = true
 				continue
-			case "const", "volatile", "restrict", "inline":
+			case "const", "volatile", "restrict", "inline", "__const", "__volatile", "__restrict", "__inline", "__inline__":
 				continue
 			}
 			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine typedef name %q with additional type specifiers", context, t.Text)
@@ -1917,7 +2021,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			hasTypedef = true
 		case "auto", "register", "static":
 			// Accepted for parser compatibility; not all storage semantics are modeled yet.
-		case "const", "volatile", "restrict", "inline":
+		case "const", "volatile", "restrict", "inline", "__const", "__volatile", "__restrict", "__inline", "__inline__":
 			// Qualifiers are currently ignored in this lowering stage.
 		case "void":
 			if sawEnum || sawAggregate {
@@ -1952,7 +2056,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			if sawLongCount > 2 {
 				return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid long type combination", context)
 			}
-		case "signed":
+		case "signed", "__signed":
 			if sawEnum || sawAggregate {
 				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with signed", context)
 			}
@@ -1965,6 +2069,18 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			sawType = true
 			sawUnsigned = true
 		default:
+			if builtin, ok := lookupBuiltinTypedefAlias(t.Text); ok {
+				if sawEnum || sawAggregate {
+					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with typedef name %q", context, t.Text)
+				}
+				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
+					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
+				}
+				sawType = true
+				aliasSet = true
+				aliasInfo = builtin
+				break
+			}
 			if alias, ok := lookupTypedefAlias(t.Text); ok {
 				if sawEnum || sawAggregate {
 					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with typedef name %q", context, t.Text)
@@ -2052,12 +2168,6 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 
 func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth int, declArrayLen int64, allowOpaqueObject bool, context string) (cTypeInfo, error) {
 	out := base
-	if base.AggregateKeyword != "" && base.Kind != cDeclPointer && declKind == cDeclArray {
-		if base.AggregateTag != "" {
-			return cTypeInfo{}, fmt.Errorf("%s does not yet support array declarators over %s %q object types", context, base.AggregateKeyword, base.AggregateTag)
-		}
-		return cTypeInfo{}, fmt.Errorf("%s does not yet support array declarators over aggregate object types", context)
-	}
 	if base.AggregateKeyword != "" && base.OpaqueAggregate && base.Kind != cDeclPointer && declKind != cDeclPointer && !allowOpaqueObject {
 		what := base.AggregateKeyword
 		if what == "" {
@@ -2073,12 +2183,18 @@ func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth i
 	case cDeclArray:
 		out.Kind = cDeclArray
 		out.ArrayLen = declArrayLen
-		if base.Kind == cDeclPointer {
+		if base.Kind == cDeclArray {
+			out.ArrayDims = append([]int64{base.ArrayLen}, cloneInt64s(base.ArrayDims)...)
+			out.PtrDepth = declPtrDepth
+		} else if base.Kind == cDeclPointer {
 			out.PtrDepth = base.PtrDepth + declPtrDepth
 		} else {
 			out.PtrDepth = declPtrDepth
 		}
 	case cDeclPointer:
+		if base.Kind == cDeclArray {
+			return cTypeInfo{}, fmt.Errorf("%s cannot form pointer-to-array type from typedef array base", context)
+		}
 		if base.Kind == cDeclPointer {
 			out.Kind = cDeclPointer
 			out.PtrDepth = base.PtrDepth + declPtrDepth
@@ -2141,6 +2257,16 @@ func cloneInt64s(src []int64) []int64 {
 	return out
 }
 
+func applyDeclaratorArrayDims(info *cTypeInfo, dims []int64) {
+	if len(dims) == 0 {
+		if info.Kind != cDeclArray {
+			info.ArrayDims = nil
+		}
+		return
+	}
+	info.ArrayDims = cloneInt64s(dims)
+}
+
 func cTypeInfoEquivalent(a cTypeInfo, b cTypeInfo) bool {
 	if a.Kind != b.Kind || a.PtrDepth != b.PtrDepth || a.ArrayLen != b.ArrayLen || a.IsVoid != b.IsVoid || a.Base != b.Base || a.OpaqueAggregate != b.OpaqueAggregate || a.AggregateKeyword != b.AggregateKeyword || a.AggregateTag != b.AggregateTag {
 		return false
@@ -2174,6 +2300,30 @@ func matchingParenClose(tokens []Token, open int) int {
 		if tokens[i].Text == "(" {
 			depth++
 		} else if tokens[i].Text == ")" {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func matchingParenOpen(tokens []Token, close int) int {
+	if close < 0 || close >= len(tokens) {
+		return -1
+	}
+	if tokens[close].Kind != TokPunct || tokens[close].Text != ")" {
+		return -1
+	}
+	depth := 1
+	for i := close - 1; i >= 0; i-- {
+		if tokens[i].Kind != TokPunct {
+			continue
+		}
+		if tokens[i].Text == ")" {
+			depth++
+		} else if tokens[i].Text == "(" {
 			depth--
 			if depth == 0 {
 				return i
@@ -2256,6 +2406,9 @@ func parseSimplePointerCore(tokens []Token, allowAbstract bool) (string, int, er
 	for i < len(tokens) && tokens[i].Kind == TokPunct && tokens[i].Text == "*" {
 		ptrDepth++
 		i++
+		for i < len(tokens) && tokens[i].Kind == TokIdent && isTypeQualifierKeyword(tokens[i].Text) {
+			i++
+		}
 	}
 	rest := trimTokens(tokens[i:])
 	if len(rest) == 0 {
@@ -2280,6 +2433,30 @@ func parseSimplePointerCore(tokens []Token, allowAbstract bool) (string, int, er
 	return "", 0, fmt.Errorf("complex declarators are not yet supported")
 }
 
+func trimTrailingDeclaratorDecorators(tokens []Token) []Token {
+	work := trimTokens(tokens)
+	for len(work) >= 3 {
+		last := len(work) - 1
+		if work[last].Kind != TokPunct || work[last].Text != ")" {
+			break
+		}
+		open := matchingParenOpen(work, last)
+		if open < 1 {
+			break
+		}
+		if work[open-1].Kind != TokIdent {
+			break
+		}
+		switch work[open-1].Text {
+		case "__asm", "asm":
+			work = trimTokens(work[:open-1])
+			continue
+		}
+		break
+	}
+	return work
+}
+
 func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, []cScalarType, []int, []bool, []string, []string, []*cFuncTypeSig, bool, error) {
 	paramTokens = trimTokens(paramTokens)
 	if len(paramTokens) == 0 {
@@ -2293,11 +2470,11 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 			if err == nil {
 				baseInfo, _, _, err := parseScalarTypeSpec(spec, context, true)
 				if err == nil {
-					_, kind, ptrDepth, arrLen, arrDims, _, err := parseDeclarator(decl, true)
+					_, kind, ptrDepth, arrLen, arrDims, _, _, err := parseDeclarator(decl, true)
 					if err == nil {
 						info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, false, context)
 						if cerr == nil {
-							info.ArrayDims = cloneInt64s(arrDims)
+							applyDeclaratorArrayDims(&info, arrDims)
 						}
 						if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
 							parts = nil
@@ -2337,15 +2514,19 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
-		pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, err := parseDeclarator(decl, true)
+		pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, directFunc, err := parseDeclarator(decl, true)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, err
+		}
+		if directFunc {
+			pdeclKind = cDeclPointer
+			pdeclPtrDepth = 1
 		}
 		pinfo, err := combineTypeAndDeclarator(pbaseInfo, pdeclKind, pdeclPtrDepth, parrLen, false, pctx)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
-		pinfo.ArrayDims = cloneInt64s(parrDims)
+		applyDeclaratorArrayDims(&pinfo, parrDims)
 		if pinfo.Kind == cDeclArray {
 			// Arrays in parameter lists decay to pointers.
 			pinfo = decayArrayTypeInfo(pinfo)
@@ -2362,13 +2543,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		}
 		if pfnSig != nil {
 			pfn := cloneFuncTypeSig(pfnSig)
-			pfn.RetKind = pbaseInfo.Kind
-			pfn.RetBase = pbaseInfo.Base
-			pfn.RetPtrDepth = pbaseInfo.PtrDepth
-			pfn.RetIsVoid = pbaseInfo.IsVoid
-			pfn.RetOpaque = pbaseInfo.OpaqueAggregate
-			pfn.RetAggKeyword = pbaseInfo.AggregateKeyword
-			pfn.RetAggTag = pbaseInfo.AggregateTag
+			applyFuncReturnBase(pfn, pbaseInfo)
 			pinfo.FuncSig = pfn
 		}
 		paramKinds = append(paramKinds, pinfo.Kind)
@@ -2400,71 +2575,325 @@ func parseTrailingArraySuffixes(tokens []Token) ([]Token, []int64, error) {
 	return work, lens, nil
 }
 
-func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, []int64, *cFuncTypeSig, error) {
-	tokens = trimTokens(tokens)
-	if len(tokens) == 0 {
-		if allowAbstract {
-			return "", cDeclScalar, 0, 0, nil, nil, nil
-		}
-		return "", cDeclScalar, 0, 0, nil, nil, fmt.Errorf("missing declarator")
+func matchingBracketClose(tokens []Token, open int) int {
+	if open < 0 || open >= len(tokens) {
+		return -1
 	}
-
-	// Support function-pointer declarators like `(*fp)(int)` and `(*)(int)`.
-	if fnOpen := trailingFunctionSuffixOpen(tokens); fnOpen >= 0 {
-		core := trimTokens(tokens[:fnOpen])
-		if len(core) == 0 {
-			return "", cDeclScalar, 0, 0, nil, nil, fmt.Errorf("function declarator is missing pointer core")
-		}
-		name, ptrDepth, err := parseSimplePointerCore(core, allowAbstract)
-		if err != nil {
-			return "", cDeclScalar, 0, 0, nil, nil, err
-		}
-		if ptrDepth == 0 {
-			return "", cDeclScalar, 0, 0, nil, nil, fmt.Errorf("function declarators are only supported through pointers")
-		}
-		paramKinds, paramBases, paramPtrDepth, paramOpaque, paramAggKey, paramAggTag, paramFuncSigs, variadic, err := parseFunctionParamList(tokens[fnOpen+1:len(tokens)-1], "function declarator")
-		if err != nil {
-			return "", cDeclScalar, 0, 0, nil, nil, err
-		}
-		fnSig := &cFuncTypeSig{
-			ParamCount:    len(paramKinds),
-			Variadic:      variadic,
-			ParamKinds:    paramKinds,
-			ParamBases:    paramBases,
-			ParamPtrDepth: paramPtrDepth,
-			ParamOpaque:   paramOpaque,
-			ParamAggKey:   paramAggKey,
-			ParamAggTag:   paramAggTag,
-			ParamFuncSigs: paramFuncSigs,
-		}
-		return name, cDeclPointer, ptrDepth, 0, nil, fnSig, nil
+	if tokens[open].Kind != TokPunct || tokens[open].Text != "[" {
+		return -1
 	}
-
-	if core, lens, err := parseTrailingArraySuffixes(tokens); err != nil {
-		return "", cDeclScalar, 0, 0, nil, nil, err
-	} else if len(lens) > 0 {
-		if len(core) > 0 && core[0].Kind == TokPunct && core[0].Text == "(" {
-			if close := matchingParenClose(core, 0); close == len(core)-1 {
-				if _, innerPtrDepth, err := parseSimplePointerCore(core[1:close], allowAbstract); err == nil && innerPtrDepth > 0 {
-					return "", cDeclScalar, 0, 0, nil, nil, fmt.Errorf("pointer-to-array declarators are not yet supported")
-				}
+	depth := 1
+	for i := open + 1; i < len(tokens); i++ {
+		if tokens[i].Kind != TokPunct {
+			continue
+		}
+		if tokens[i].Text == "[" {
+			depth++
+		} else if tokens[i].Text == "]" {
+			depth--
+			if depth == 0 {
+				return i
 			}
 		}
-		name, ptrDepth, err := parseSimplePointerCore(core, allowAbstract)
-		if err != nil {
-			return "", cDeclScalar, 0, 0, nil, nil, err
+	}
+	return -1
+}
+
+func matchingBraceClose(tokens []Token, open int) int {
+	if open < 0 || open >= len(tokens) {
+		return -1
+	}
+	if tokens[open].Kind != TokPunct || tokens[open].Text != "{" {
+		return -1
+	}
+	depth := 1
+	for i := open + 1; i < len(tokens); i++ {
+		if tokens[i].Kind != TokPunct {
+			continue
 		}
-		return name, cDeclArray, ptrDepth, lens[0], lens[1:], nil, nil
+		if tokens[i].Text == "{" {
+			depth++
+		} else if tokens[i].Text == "}" {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func parseDeclaratorNode(tokens []Token, allowAbstract bool) (*cDeclaratorNode, int, error) {
+	node := &cDeclaratorNode{}
+	i := 0
+	for i < len(tokens) && tokens[i].Kind == TokPunct && tokens[i].Text == "*" {
+		node.PtrPrefix++
+		i++
+		for i < len(tokens) && tokens[i].Kind == TokIdent && isTypeQualifierKeyword(tokens[i].Text) {
+			i++
+		}
 	}
 
-	name, ptrDepth, err := parseSimplePointerCore(tokens, allowAbstract)
+	if i < len(tokens) && tokens[i].Kind == TokIdent && !isDeclarationKeyword(tokens[i]) {
+		node.Name = tokens[i].Text
+		i++
+	} else if i < len(tokens) && tokens[i].Kind == TokPunct && tokens[i].Text == "(" {
+		sub, consumed, err := parseDeclaratorNode(tokens[i+1:], allowAbstract)
+		if err != nil {
+			return nil, 0, err
+		}
+		closeIdx := i + 1 + consumed
+		if closeIdx >= len(tokens) || tokens[closeIdx].Kind != TokPunct || tokens[closeIdx].Text != ")" {
+			return nil, 0, fmt.Errorf("unterminated parenthesized declarator")
+		}
+		node.Inner = sub
+		i = closeIdx + 1
+	} else if !allowAbstract {
+		return nil, 0, fmt.Errorf("unable to parse declarator name")
+	}
+
+	for i < len(tokens) {
+		if tokens[i].Kind != TokPunct {
+			break
+		}
+		switch tokens[i].Text {
+		case "[":
+			close := matchingBracketClose(tokens, i)
+			if close < 0 {
+				return nil, 0, fmt.Errorf("unterminated array declarator")
+			}
+			n, err := parseArrayLength(tokens[i+1 : close])
+			if err != nil {
+				return nil, 0, err
+			}
+			node.Suffixes = append(node.Suffixes, cDeclaratorSuffix{ArrayLen: n})
+			i = close + 1
+		case "(":
+			close := matchingParenClose(tokens, i)
+			if close < 0 {
+				return nil, 0, fmt.Errorf("unterminated function declarator")
+			}
+			paramKinds, paramBases, paramPtrDepth, paramOpaque, paramAggKey, paramAggTag, paramFuncSigs, variadic, err := parseFunctionParamList(tokens[i+1:close], "function declarator")
+			if err != nil {
+				return nil, 0, err
+			}
+			node.Suffixes = append(node.Suffixes, cDeclaratorSuffix{
+				IsFunction:    true,
+				ParamKinds:    paramKinds,
+				ParamBases:    paramBases,
+				ParamPtrDepth: paramPtrDepth,
+				ParamOpaque:   paramOpaque,
+				ParamAggKey:   paramAggKey,
+				ParamAggTag:   paramAggTag,
+				ParamFuncSigs: paramFuncSigs,
+				Variadic:      variadic,
+			})
+			i = close + 1
+		default:
+			return node, i, nil
+		}
+	}
+	return node, i, nil
+}
+
+func declaratorNodeName(node *cDeclaratorNode) string {
+	if node == nil {
+		return ""
+	}
+	if node.Inner != nil {
+		return declaratorNodeName(node.Inner)
+	}
+	return node.Name
+}
+
+func buildDeclaratorEntity(node *cDeclaratorNode, base *cDeclaratorEntity) *cDeclaratorEntity {
+	cur := base
+	if node == nil {
+		return cur
+	}
+	for i := 0; i < node.PtrPrefix; i++ {
+		cur = &cDeclaratorEntity{Kind: cDeclaratorEntityPointer, Inner: cur}
+	}
+	for i := len(node.Suffixes) - 1; i >= 0; i-- {
+		suf := node.Suffixes[i]
+		if suf.IsFunction {
+			cur = &cDeclaratorEntity{
+				Kind:        cDeclaratorEntityFunction,
+				Inner:       cur,
+				ParamKinds:  append([]cDeclKind{}, suf.ParamKinds...),
+				ParamBases:  append([]cScalarType{}, suf.ParamBases...),
+				ParamPtr:    append([]int{}, suf.ParamPtrDepth...),
+				ParamOpaque: append([]bool{}, suf.ParamOpaque...),
+				ParamAggKey: append([]string{}, suf.ParamAggKey...),
+				ParamAggTag: append([]string{}, suf.ParamAggTag...),
+				ParamFuncs:  cloneFuncTypeSigs(suf.ParamFuncSigs),
+				Variadic:    suf.Variadic,
+			}
+			continue
+		}
+		cur = &cDeclaratorEntity{Kind: cDeclaratorEntityArray, Inner: cur, ArrayLen: suf.ArrayLen}
+	}
+	if node.Inner != nil {
+		return buildDeclaratorEntity(node.Inner, cur)
+	}
+	return cur
+}
+
+func cloneFuncTypeSigs(src []*cFuncTypeSig) []*cFuncTypeSig {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*cFuncTypeSig, len(src))
+	for i := range src {
+		out[i] = cloneFuncTypeSig(src[i])
+	}
+	return out
+}
+
+func applyFuncReturnBase(sig *cFuncTypeSig, baseInfo cTypeInfo) {
+	if sig == nil {
+		return
+	}
+	info := baseInfo
+	if info.Kind == cDeclArray {
+		info = decayArrayTypeInfo(info)
+	}
+	if sig.RetPtrDepth > 0 {
+		if info.Kind == cDeclPointer {
+			info.PtrDepth += sig.RetPtrDepth
+		} else {
+			info.Kind = cDeclPointer
+			info.PtrDepth = sig.RetPtrDepth
+		}
+	}
+	sig.RetKind = info.Kind
+	sig.RetBase = info.Base
+	sig.RetPtrDepth = info.PtrDepth
+	sig.RetIsVoid = info.IsVoid
+	sig.RetByPtr = isAggregateObjectType(info)
+	sig.RetOpaque = info.OpaqueAggregate
+	sig.RetAggKeyword = info.AggregateKeyword
+	sig.RetAggTag = info.AggregateTag
+}
+
+func declaratorReturnPtrDepth(ent *cDeclaratorEntity) (int, error) {
+	if ent == nil {
+		return 0, nil
+	}
+	switch ent.Kind {
+	case cDeclaratorEntityBase:
+		return 0, nil
+	case cDeclaratorEntityPointer:
+		n, err := declaratorReturnPtrDepth(ent.Inner)
+		if err != nil {
+			return 0, err
+		}
+		return n + 1, nil
+	case cDeclaratorEntityArray:
+		return 0, fmt.Errorf("function cannot return array type")
+	case cDeclaratorEntityFunction:
+		return 0, fmt.Errorf("function declarators are only supported through pointers")
+	default:
+		return 0, fmt.Errorf("unsupported function return declarator")
+	}
+}
+
+func buildDeclaratorFunctionSig(ent *cDeclaratorEntity) (*cFuncTypeSig, error) {
+	if ent == nil || ent.Kind != cDeclaratorEntityFunction {
+		return nil, fmt.Errorf("expected function declarator")
+	}
+	retPtrDepth, err := declaratorReturnPtrDepth(ent.Inner)
 	if err != nil {
-		return "", cDeclScalar, 0, 0, nil, nil, err
+		return nil, err
 	}
-	if ptrDepth > 0 {
-		return name, cDeclPointer, ptrDepth, 0, nil, nil, nil
+	return &cFuncTypeSig{
+		RetPtrDepth:   retPtrDepth,
+		ParamCount:    len(ent.ParamKinds),
+		Variadic:      ent.Variadic,
+		ParamKinds:    append([]cDeclKind{}, ent.ParamKinds...),
+		ParamBases:    append([]cScalarType{}, ent.ParamBases...),
+		ParamPtrDepth: append([]int{}, ent.ParamPtr...),
+		ParamOpaque:   append([]bool{}, ent.ParamOpaque...),
+		ParamAggKey:   append([]string{}, ent.ParamAggKey...),
+		ParamAggTag:   append([]string{}, ent.ParamAggTag...),
+		ParamFuncSigs: cloneFuncTypeSigs(ent.ParamFuncs),
+	}, nil
+}
+
+func flattenDeclaratorEntity(ent *cDeclaratorEntity) (cDeclKind, int, []int64, *cFuncTypeSig, bool, error) {
+	if ent == nil {
+		return cDeclScalar, 0, nil, nil, false, nil
 	}
-	return name, cDeclScalar, 0, 0, nil, nil, nil
+	switch ent.Kind {
+	case cDeclaratorEntityBase:
+		return cDeclScalar, 0, nil, nil, false, nil
+	case cDeclaratorEntityPointer:
+		if ent.Inner != nil && ent.Inner.Kind == cDeclaratorEntityFunction {
+			fnSig, err := buildDeclaratorFunctionSig(ent.Inner)
+			if err != nil {
+				return cDeclScalar, 0, nil, nil, false, err
+			}
+			return cDeclPointer, 1, nil, fnSig, false, nil
+		}
+		kind, ptrDepth, lens, fnSig, directFunc, err := flattenDeclaratorEntity(ent.Inner)
+		if err != nil {
+			return cDeclScalar, 0, nil, nil, false, err
+		}
+		if kind == cDeclArray {
+			return cDeclScalar, 0, nil, nil, false, fmt.Errorf("pointer-to-array declarators are not yet supported")
+		}
+		if kind == cDeclScalar {
+			kind = cDeclPointer
+		}
+		return kind, ptrDepth + 1, lens, fnSig, directFunc, nil
+	case cDeclaratorEntityArray:
+		kind, ptrDepth, lens, fnSig, directFunc, err := flattenDeclaratorEntity(ent.Inner)
+		if err != nil {
+			return cDeclScalar, 0, nil, nil, false, err
+		}
+		if directFunc {
+			return cDeclScalar, 0, nil, nil, false, fmt.Errorf("function declarators are only supported through pointers")
+		}
+		if kind != cDeclArray {
+			kind = cDeclArray
+		}
+		lens = append([]int64{ent.ArrayLen}, lens...)
+		return kind, ptrDepth, lens, fnSig, false, nil
+	case cDeclaratorEntityFunction:
+		fnSig, err := buildDeclaratorFunctionSig(ent)
+		if err != nil {
+			return cDeclScalar, 0, nil, nil, false, err
+		}
+		return cDeclScalar, 0, nil, fnSig, true, nil
+	default:
+		return cDeclScalar, 0, nil, nil, false, fmt.Errorf("unsupported declarator")
+	}
+}
+
+func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, []int64, *cFuncTypeSig, bool, error) {
+	tokens = trimTrailingDeclaratorDecorators(tokens)
+	if len(tokens) == 0 {
+		if allowAbstract {
+			return "", cDeclScalar, 0, 0, nil, nil, false, nil
+		}
+		return "", cDeclScalar, 0, 0, nil, nil, false, fmt.Errorf("missing declarator")
+	}
+	node, consumed, err := parseDeclaratorNode(tokens, allowAbstract)
+	if err != nil {
+		return "", cDeclScalar, 0, 0, nil, nil, false, err
+	}
+	if consumed != len(tokens) {
+		return "", cDeclScalar, 0, 0, nil, nil, false, fmt.Errorf("complex declarators are not yet supported")
+	}
+	entity := buildDeclaratorEntity(node, &cDeclaratorEntity{Kind: cDeclaratorEntityBase})
+	kind, ptrDepth, lens, fnSig, directFunc, err := flattenDeclaratorEntity(entity)
+	if err != nil {
+		return "", cDeclScalar, 0, 0, nil, nil, false, err
+	}
+	if len(lens) == 0 {
+		return declaratorNodeName(node), kind, ptrDepth, 0, nil, fnSig, directFunc, nil
+	}
+	return declaratorNodeName(node), kind, ptrDepth, lens[0], lens[1:], fnSig, directFunc, nil
 }
 
 func parseArrayLength(tokens []Token) (int64, error) {
@@ -2472,12 +2901,37 @@ func parseArrayLength(tokens []Token) (int64, error) {
 	if len(tokens) == 0 {
 		return cArrayLenUnspecified, nil
 	}
-	n, err := parseEnumConstExprTokens(tokens, nil)
+	filtered := make([]Token, 0, len(tokens))
+	for _, t := range tokens {
+		if t.Kind == TokIdent && (isTypeQualifierKeyword(t.Text) || t.Text == "static") {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	if len(filtered) == 0 {
+		return cArrayLenUnspecified, nil
+	}
+	n, err := parseEnumConstExprTokens(filtered, nil)
 	if err != nil {
 		return 0, err
 	}
 	if n <= 0 {
 		return 0, fmt.Errorf("array bounds must be positive")
+	}
+	return n, nil
+}
+
+func parseArrayDesignatorIndex(tokens []Token) (int64, error) {
+	tokens = trimTokens(tokens)
+	if len(tokens) == 0 {
+		return 0, fmt.Errorf("initializer designator index is empty")
+	}
+	n, err := parseEnumConstExprTokens(tokens, nil)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("initializer designator index must not be negative")
 	}
 	return n, nil
 }
@@ -2524,7 +2978,7 @@ func isEnumConstCastToken(t Token) bool {
 		return false
 	}
 	switch t.Text {
-	case "char", "short", "int", "long", "signed", "unsigned", "const", "volatile", "restrict":
+	case "char", "short", "int", "long", "signed", "unsigned", "__signed", "const", "volatile", "restrict", "__const", "__volatile", "__restrict":
 		return true
 	default:
 		return false
@@ -2964,6 +3418,8 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 		eqIdx := -1
 		depthParen := 0
 		depthBracket := 0
+		depthBrace := 0
+		depthTernary := 0
 		for i, t := range part {
 			if t.Kind == TokPunct {
 				switch t.Text {
@@ -2979,8 +3435,22 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 					if depthBracket > 0 {
 						depthBracket--
 					}
+				case "{":
+					depthBrace++
+				case "}":
+					if depthBrace > 0 {
+						depthBrace--
+					}
+				case "?":
+					if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+						depthTernary++
+					}
+				case ":":
+					if depthParen == 0 && depthBracket == 0 && depthBrace == 0 && depthTernary > 0 {
+						depthTernary--
+					}
 				case "=":
-					if depthParen == 0 && depthBracket == 0 {
+					if eqIdx < 0 && depthParen == 0 && depthBracket == 0 && depthBrace == 0 && depthTernary == 0 {
 						eqIdx = i
 					}
 				}
@@ -2998,7 +3468,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 			return nil, fmt.Errorf("missing declarator in declaration")
 		}
 
-		name, kind, ptrDepth, arrayLen, arrayDims, fnSig, err := parseDeclarator(lhs, false)
+		name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(lhs, false)
 		if err != nil {
 			return nil, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
 		}
@@ -3006,16 +3476,10 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 		if err != nil {
 			return nil, err
 		}
-		info.ArrayDims = cloneInt64s(arrayDims)
+		applyDeclaratorArrayDims(&info, arrayDims)
 		if fnSig != nil {
-			if isAggregateObjectType(baseInfo) {
-				return nil, fmt.Errorf("declaration of %q uses function type returning %s %q by value, which is not yet supported", name, baseInfo.AggregateKeyword, baseInfo.AggregateTag)
-			}
 			sig := cloneFuncTypeSig(fnSig)
-			sig.RetKind = baseInfo.Kind
-			sig.RetBase = baseInfo.Base
-			sig.RetPtrDepth = baseInfo.PtrDepth
-			sig.RetIsVoid = baseInfo.IsVoid
+			applyFuncReturnBase(sig, baseInfo)
 			info.FuncSig = sig
 		}
 		if info.Kind == cDeclArray {
@@ -3036,13 +3500,14 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 				return nil, fmt.Errorf("array bounds must not be empty")
 			}
 		}
-		if !hasTypedef && info.IsVoid && info.Kind != cDeclPointer {
+		if !hasTypedef && info.IsVoid && info.Kind != cDeclPointer && info.FuncSig == nil {
 			return nil, fmt.Errorf("declaration of %q cannot use void object type", name)
 		}
 		items = append(items, cDeclItem{
 			Name:             name,
 			Init:             init,
 			Kind:             info.Kind,
+			DirectFunc:       directFunc,
 			PtrDepth:         info.PtrDepth,
 			ArrayLen:         info.ArrayLen,
 			ArrayDims:        cloneInt64s(info.ArrayDims),
@@ -3136,7 +3601,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64) ([]cDeclItem, map
 
 func isTypeSpecifierKeyword(text string) bool {
 	switch text {
-	case "void", "char", "short", "int", "long", "signed", "unsigned":
+	case "void", "char", "short", "int", "long", "signed", "unsigned", "__signed":
 		return true
 	default:
 		return false
@@ -3156,9 +3621,13 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if err != nil {
 		return cTypeInfo{}, err
 	}
-	name, kind, ptrDepth, arrayLen, arrayDims, fnSig, err := parseDeclarator(decl, true)
+	name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(decl, true)
 	if err != nil {
 		return cTypeInfo{}, err
+	}
+	if directFunc {
+		kind = cDeclPointer
+		ptrDepth = 1
 	}
 	if name != "" {
 		return cTypeInfo{}, fmt.Errorf("named declarators are not supported in type names (%s)", name)
@@ -3167,13 +3636,10 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if err != nil {
 		return cTypeInfo{}, err
 	}
-	info.ArrayDims = cloneInt64s(arrayDims)
+	applyDeclaratorArrayDims(&info, arrayDims)
 	if fnSig != nil {
 		sig := cloneFuncTypeSig(fnSig)
-		sig.RetKind = baseInfo.Kind
-		sig.RetBase = baseInfo.Base
-		sig.RetPtrDepth = baseInfo.PtrDepth
-		sig.RetIsVoid = baseInfo.IsVoid
+		applyFuncReturnBase(sig, baseInfo)
 		info.FuncSig = sig
 	}
 	if info.IsVoid && info.Kind == cDeclArray {
@@ -3189,6 +3655,30 @@ func parseArrayInitializerExprs(init []Token, arrayLen int64) ([][]Token, error)
 	}
 	if int64(len(out)) > arrayLen {
 		return nil, fmt.Errorf("too many initializer elements (%d > %d)", len(out), arrayLen)
+	}
+	return out, nil
+}
+
+func parseBraceInitializerParts(init []Token) ([][]Token, error) {
+	init = trimTokens(init)
+	if len(init) == 0 {
+		return nil, nil
+	}
+	if len(init) < 2 || init[0].Kind != TokPunct || init[0].Text != "{" || init[len(init)-1].Kind != TokPunct || init[len(init)-1].Text != "}" {
+		return nil, fmt.Errorf("expected brace initializer list")
+	}
+	inner := trimTokens(init[1 : len(init)-1])
+	if len(inner) == 0 {
+		return nil, nil
+	}
+	parts := splitTopLevel(inner, ",")
+	out := make([][]Token, 0, len(parts))
+	for _, p := range parts {
+		p = trimTokens(p)
+		if len(p) == 0 {
+			continue
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }
@@ -3231,7 +3721,26 @@ func inferArrayLengthFromInit(base cScalarType, init []Token) (int64, bool, erro
 	if err == nil {
 		return int64(len(elems)), true, nil
 	}
+	if n, ok := countTopLevelInitializerElems(init); ok {
+		return n, true, nil
+	}
 	return 0, false, fmt.Errorf("array bounds may only be omitted with brace or string initializers")
+}
+
+func countTopLevelInitializerElems(init []Token) (int64, bool) {
+	init = trimTokens(init)
+	if len(init) < 2 || init[0].Kind != TokPunct || init[0].Text != "{" || init[len(init)-1].Kind != TokPunct || init[len(init)-1].Text != "}" {
+		return 0, false
+	}
+	parts := splitTopLevel(trimTokens(init[1:len(init)-1]), ",")
+	var count int64
+	for _, p := range parts {
+		if len(trimTokens(p)) == 0 {
+			continue
+		}
+		count++
+	}
+	return count, true
 }
 
 func stringArrayInitializerValues(init []Token, base cScalarType, arrayLen int64) ([]int64, bool, error) {
@@ -3257,6 +3766,22 @@ func stringArrayInitializerValues(init []Token, base cScalarType, arrayLen int64
 }
 
 func parseBraceInitializerExprs(init []Token) ([][]Token, error) {
+	parts, err := parseBraceInitializerParts(init)
+	if err != nil {
+		return nil, err
+	}
+	out := make([][]Token, 0, len(parts))
+	for _, p := range parts {
+		p = trimTokens(p)
+		if p[0].Kind == TokPunct && p[0].Text == "{" {
+			return nil, fmt.Errorf("nested initializer lists are not yet supported")
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func parseBraceInitializerItems(init []Token) ([][]Token, error) {
 	init = trimTokens(init)
 	if len(init) == 0 {
 		return nil, nil
@@ -3268,21 +3793,84 @@ func parseBraceInitializerExprs(init []Token) ([][]Token, error) {
 	if len(inner) == 0 {
 		return nil, nil
 	}
-
 	parts := splitTopLevel(inner, ",")
 	out := make([][]Token, 0, len(parts))
 	for _, p := range parts {
 		p = trimTokens(p)
 		if len(p) == 0 {
-			// Allow trailing comma.
 			continue
-		}
-		if p[0].Kind == TokPunct && p[0].Text == "{" {
-			return nil, fmt.Errorf("nested initializer lists are not yet supported")
 		}
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+func parseFieldDesignator(init []Token) (string, []Token, bool) {
+	init = trimTokens(init)
+	if len(init) < 4 {
+		return "", init, false
+	}
+	if init[0].Kind != TokPunct || init[0].Text != "." {
+		return "", init, false
+	}
+	if init[1].Kind != TokIdent {
+		return "", init, false
+	}
+	if init[2].Kind != TokPunct || init[2].Text != "=" {
+		return "", init, false
+	}
+	return init[1].Text, trimTokens(init[3:]), true
+}
+
+func isBraceInitializer(init []Token) bool {
+	init = trimTokens(init)
+	return len(init) >= 2 &&
+		init[0].Kind == TokPunct &&
+		init[0].Text == "{" &&
+		init[len(init)-1].Kind == TokPunct &&
+		init[len(init)-1].Text == "}"
+}
+
+func isZeroInitializerExpr(tokens []Token) bool {
+	tokens = trimTokens(tokens)
+	if len(tokens) == 0 {
+		return false
+	}
+	if len(tokens) == 1 {
+		switch tokens[0].Kind {
+		case TokNumber:
+			v, err := parseCIntLiteral(tokens[0].Text)
+			return err == nil && v == 0
+		case TokChar:
+			v, err := parseCCharLiteral(tokens[0].Text)
+			return err == nil && v == 0
+		}
+	}
+	return false
+}
+
+func matchBraceClose(tokens []Token, open int) int {
+	if open < 0 || open >= len(tokens) {
+		return -1
+	}
+	if tokens[open].Kind != TokPunct || tokens[open].Text != "{" {
+		return -1
+	}
+	depth := 1
+	for i := open + 1; i < len(tokens); i++ {
+		if tokens[i].Kind != TokPunct {
+			continue
+		}
+		if tokens[i].Text == "{" {
+			depth++
+		} else if tokens[i].Text == "}" {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func isStringLiteralExpr(tokens []Token) bool {
@@ -3312,6 +3900,7 @@ type funcCompiler struct {
 	continueTargets []int
 
 	userLabels map[string]cUserLabel
+	retPtrLocal int
 
 	variadicCount int
 	variadicData  int
@@ -3352,7 +3941,10 @@ func (fc *funcCompiler) addLocalTypedef(name string, info cTypeInfo, file string
 		fc.typedefScopes = append(fc.typedefScopes, make(map[string]cTypeInfo))
 	}
 	cur := fc.typedefScopes[len(fc.typedefScopes)-1]
-	if _, exists := cur[name]; exists {
+	if existing, exists := cur[name]; exists {
+		if cTypeInfoEquivalent(existing, info) {
+			return
+		}
 		fc.errorf(file, line, col, "duplicate typedef name %q in same scope", name)
 		return
 	}
@@ -3539,22 +4131,10 @@ func (fc *funcCompiler) resolveMemberField(ex *expr, diag bool) (cAggregateField
 			}
 			return cAggregateField{}, false
 		}
-		if baseType.OpaqueAggregate {
-			if diag {
-				fc.errorf(fc.sig.File, 0, 0, "member access via '.' on incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
-			}
-			return cAggregateField{}, false
-		}
 	case "->":
 		if baseType.Kind != cDeclPointer || baseType.PtrDepth != 1 || baseType.AggregateKeyword == "" || baseType.AggregateTag == "" {
 			if diag {
 				fc.errorf(fc.sig.File, 0, 0, "member access via '->' requires pointer to struct/union")
-			}
-			return cAggregateField{}, false
-		}
-		if baseType.OpaqueAggregate {
-			if diag {
-				fc.errorf(fc.sig.File, 0, 0, "member access via '->' on incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
 			}
 			return cAggregateField{}, false
 		}
@@ -3567,7 +4147,11 @@ func (fc *funcCompiler) resolveMemberField(ex *expr, diag bool) (cAggregateField
 	agg, ok := fc.lookupAggregate(baseType.AggregateKeyword, baseType.AggregateTag)
 	if !ok || len(agg.Fields) == 0 {
 		if diag {
-			fc.errorf(fc.sig.File, 0, 0, "member access on unknown/incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
+			if ex.op == "." {
+				fc.errorf(fc.sig.File, 0, 0, "member access via '.' on incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
+			} else {
+				fc.errorf(fc.sig.File, 0, 0, "member access via '->' on incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
+			}
 		}
 		return cAggregateField{}, false
 	}
@@ -4036,7 +4620,168 @@ func (fc *funcCompiler) initLocalAggregateObject(name string, idx int, info cTyp
 	fc.emitAggregateObjectInitializer(name, idx, false, info, init, file, line, col)
 }
 
-func (fc *funcCompiler) emitAggregateObjectInitializer(name string, ptrIdx int, ptrIsGlobal bool, info cTypeInfo, init []Token, file string, line int, col int) {
+type cAggregateInitElem struct {
+	Field   string
+	Indexes []int64
+	Init    []Token
+}
+
+func findTopLevelInitAssign(tokens []Token) int {
+	depthParen := 0
+	depthBracket := 0
+	depthBrace := 0
+	for i, t := range tokens {
+		if t.Kind != TokPunct {
+			continue
+		}
+		switch t.Text {
+		case "(":
+			depthParen++
+		case ")":
+			if depthParen > 0 {
+				depthParen--
+			}
+		case "[":
+			depthBracket++
+		case "]":
+			if depthBracket > 0 {
+				depthBracket--
+			}
+		case "{":
+			depthBrace++
+		case "}":
+			if depthBrace > 0 {
+				depthBrace--
+			}
+		case "=":
+			if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func parseAggregateInitializerElems(init []Token) ([]cAggregateInitElem, error) {
+	parts, err := parseBraceInitializerParts(init)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]cAggregateInitElem, 0, len(parts))
+	for _, p := range parts {
+		field := ""
+		var indexes []int64
+		value := trimTokens(p)
+		if len(value) >= 4 && value[0].Kind == TokPunct && value[0].Text == "." && value[1].Kind == TokIdent {
+			field = value[1].Text
+			i := 2
+			for i < len(value) && value[i].Kind == TokPunct && value[i].Text == "[" {
+				close := matchingBracketClose(value, i)
+				if close < 0 {
+					return nil, fmt.Errorf("unterminated initializer designator index")
+				}
+				n, err := parseArrayDesignatorIndex(value[i+1 : close])
+				if err != nil {
+					return nil, err
+				}
+				indexes = append(indexes, n)
+				i = close + 1
+			}
+			if i < len(value) && value[i].Kind == TokPunct && value[i].Text == "=" {
+				value = trimTokens(value[i+1:])
+			} else {
+				field = ""
+				indexes = nil
+			}
+		}
+		out = append(out, cAggregateInitElem{Field: field, Indexes: indexes, Init: value})
+	}
+	return out, nil
+}
+
+func (fc *funcCompiler) emitBaseAddr(baseIdx int, offset int64) {
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: baseIdx})
+	if offset != 0 {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: offset})
+		fc.emit(ir.Inst{Op: ir.OP_ADD})
+	}
+}
+
+func (fc *funcCompiler) emitScalarLikeInitializerAt(baseIdx int, offset int64, info cTypeInfo, init []Token, file string, line int, col int) {
+	width, _, ok := fc.typeInfoSizeAlign(info)
+	if !ok || width <= 0 {
+		fc.errorf(file, line, col, "initializer target has unsupported type")
+		return
+	}
+	fc.emitExprTokens(file, line, col, init)
+	fc.emitCastToType(info)
+	fc.emitBaseAddr(baseIdx, offset)
+	fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(width)})
+}
+
+func (fc *funcCompiler) emitArrayInitializerAt(name string, baseIdx int, offset int64, info cTypeInfo, init []Token, file string, line int, col int) {
+	if len(init) == 0 {
+		return
+	}
+	if vals, ok, err := stringArrayInitializerValues(init, info.Base, info.ArrayLen); ok {
+		if err != nil {
+			fc.errorf(file, line, col, "invalid array initializer for %s: %v", name, err)
+			return
+		}
+		elemInfo := arrayElementTypeInfo(info)
+		elemStep := fc.typeByteSize(elemInfo)
+		for i, v := range vals {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
+			fc.emitCastToType(elemInfo)
+			fc.emitBaseAddr(baseIdx, offset+int64(i)*elemStep)
+			fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
+		}
+		return
+	}
+	parts, err := parseBraceInitializerParts(init)
+	if err != nil {
+		fc.errorf(file, line, col, "invalid array initializer for %s: %v", name, err)
+		return
+	}
+	if int64(len(parts)) > info.ArrayLen {
+		fc.errorf(file, line, col, "too many initializer elements for %s (%d > %d)", name, len(parts), info.ArrayLen)
+		return
+	}
+	elemInfo := arrayElementTypeInfo(info)
+	elemStep := fc.typeByteSize(elemInfo)
+	for i, part := range parts {
+		part = trimTokens(part)
+		if len(part) == 0 {
+			continue
+		}
+		elemOff := offset + int64(i)*elemStep
+		if elemInfo.Kind == cDeclArray {
+			if !isBraceInitializer(part) && !isStringLiteralExpr(part) {
+				if isZeroInitializerExpr(part) {
+					continue
+				}
+				fc.errorf(file, line, col, "invalid array initializer for %s: expected brace initializer list", name)
+				continue
+			}
+			fc.emitArrayInitializerAt(name, baseIdx, elemOff, elemInfo, part, file, line, col)
+			continue
+		}
+		if isAggregateObjectType(elemInfo) {
+			if !isBraceInitializer(part) {
+				if isZeroInitializerExpr(part) {
+					continue
+				}
+				fc.errorf(file, line, col, "invalid aggregate initializer for %s: expected brace initializer list", name)
+				continue
+			}
+			fc.emitAggregateObjectInitializerAt(name, baseIdx, elemOff, elemInfo, part, file, line, col)
+			continue
+		}
+		fc.emitScalarLikeInitializerAt(baseIdx, elemOff, elemInfo, part, file, line, col)
+	}
+}
+
+func (fc *funcCompiler) emitAggregateObjectInitializerAt(name string, baseIdx int, offset int64, info cTypeInfo, init []Token, file string, line int, col int) {
 	if len(init) == 0 {
 		return
 	}
@@ -4045,47 +4790,96 @@ func (fc *funcCompiler) emitAggregateObjectInitializer(name string, ptrIdx int, 
 		fc.errorf(file, line, col, "aggregate object initializer for %s %q uses unknown/incomplete type", info.AggregateKeyword, name)
 		return
 	}
-	initElems, err := parseBraceInitializerExprs(init)
+	initElems, err := parseAggregateInitializerElems(init)
 	if err != nil {
 		fc.errorf(file, line, col, "invalid aggregate initializer for %s: %v", name, err)
 		return
 	}
 	if agg.IsUnion && len(initElems) > 1 {
-		fc.errorf(file, line, col, "union initializer for %s may only initialize the first member for now", name)
+		fc.errorf(file, line, col, "union initializer for %s may only initialize one member for now", name)
 		return
 	}
-	if len(initElems) > len(agg.Fields) {
-		fc.errorf(file, line, col, "too many aggregate initializer elements for %s (%d > %d)", name, len(initElems), len(agg.Fields))
-		return
-	}
-	for i, initExpr := range initElems {
-		field := agg.Fields[i]
+	nextField := 0
+	for _, initElem := range initElems {
+		fieldIdx := nextField
+		if initElem.Field != "" {
+			fieldIdx = -1
+			for i, field := range agg.Fields {
+				if field.Name == initElem.Field {
+					fieldIdx = i
+					break
+				}
+			}
+			if fieldIdx < 0 {
+				fc.errorf(file, line, col, "unknown aggregate initializer designator .%s for %s", initElem.Field, name)
+				continue
+			}
+		}
+		if fieldIdx >= len(agg.Fields) {
+			fc.errorf(file, line, col, "too many aggregate initializer elements for %s (%d > %d)", name, fieldIdx+1, len(agg.Fields))
+			return
+		}
+		field := agg.Fields[fieldIdx]
+		nextField = fieldIdx + 1
+		fieldOff := offset + field.Offset
 		if field.Type.Kind == cDeclArray {
-			fc.errorf(file, line, col, "aggregate initializer for %s member %q does not yet support array fields", name, field.Name)
+			if len(initElem.Indexes) > 0 {
+				curInfo := field.Type
+				curOff := fieldOff
+				ok := true
+				for _, index := range initElem.Indexes {
+					if curInfo.Kind != cDeclArray {
+						fc.errorf(file, line, col, "initializer designator for %s member %q indexes non-array type", name, field.Name)
+						ok = false
+						break
+					}
+					if index < 0 || index >= curInfo.ArrayLen {
+						fc.errorf(file, line, col, "initializer designator for %s member %q has out-of-bounds index %d", name, field.Name, index)
+						ok = false
+						break
+					}
+					elemInfo := arrayElementTypeInfo(curInfo)
+					curOff += index * fc.typeByteSize(elemInfo)
+					curInfo = elemInfo
+				}
+				if !ok {
+					continue
+				}
+				if curInfo.Kind == cDeclArray {
+					fc.emitArrayInitializerAt(name, baseIdx, curOff, curInfo, initElem.Init, file, line, col)
+				} else if isAggregateObjectType(curInfo) {
+					fc.emitAggregateObjectInitializerAt(name, baseIdx, curOff, curInfo, initElem.Init, file, line, col)
+				} else {
+					fc.emitScalarLikeInitializerAt(baseIdx, curOff, curInfo, initElem.Init, file, line, col)
+				}
+				continue
+			}
+			fc.emitArrayInitializerAt(name, baseIdx, fieldOff, field.Type, initElem.Init, file, line, col)
 			continue
 		}
-		if field.Type.Kind == cDeclScalar && field.Type.AggregateKeyword != "" && field.Type.AggregateTag != "" && field.Type.PtrDepth == 0 {
-			fc.errorf(file, line, col, "aggregate initializer for %s member %q does not yet support nested aggregate values", name, field.Name)
+		if len(initElem.Indexes) > 0 {
+			fc.errorf(file, line, col, "initializer designator for %s member %q indexes non-array type", name, field.Name)
 			continue
 		}
-		width, _, ok := fc.typeInfoSizeAlign(field.Type)
-		if !ok || width <= 0 {
-			fc.errorf(file, line, col, "aggregate initializer for %s member %q has unsupported type", name, field.Name)
+		if isAggregateObjectType(field.Type) {
+			fc.emitAggregateObjectInitializerAt(name, baseIdx, fieldOff, field.Type, initElem.Init, file, line, col)
 			continue
 		}
-		fc.emitExprTokens(file, line, col, initExpr)
-		fc.emitCastToType(field.Type)
-		if ptrIsGlobal {
-			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: ptrIdx})
-		} else {
-			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: ptrIdx})
-		}
-		if field.Offset != 0 {
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: field.Offset})
-			fc.emit(ir.Inst{Op: ir.OP_ADD})
-		}
-		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(width)})
+		fc.emitScalarLikeInitializerAt(baseIdx, fieldOff, field.Type, initElem.Init, file, line, col)
 	}
+}
+
+func (fc *funcCompiler) emitAggregateObjectInitializer(name string, ptrIdx int, ptrIsGlobal bool, info cTypeInfo, init []Token, file string, line int, col int) {
+	if len(init) == 0 {
+		return
+	}
+	baseTmp := ptrIdx
+	if ptrIsGlobal {
+		baseTmp = fc.allocTempLocal("$agg_init_base")
+		fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: ptrIdx})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: baseTmp})
+	}
+	fc.emitAggregateObjectInitializerAt(name, baseTmp, 0, info, init, file, line, col)
 }
 
 func (fc *funcCompiler) compileDeclStmt(n *Node) {
@@ -4111,13 +4905,11 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 				fc.errorf(fc.sig.File, n.Line, n.Col, "typedef declaration with initializer is not supported: %s", it.Name)
 				continue
 			}
-			if it.Kind == cDeclArray {
-				fc.errorf(fc.sig.File, n.Line, n.Col, "typedef array declarations are not yet supported: %s", it.Name)
-				continue
-			}
 			fc.addLocalTypedef(it.Name, cTypeInfo{
 				Kind:             it.Kind,
 				PtrDepth:         it.PtrDepth,
+				ArrayLen:         it.ArrayLen,
+				ArrayDims:        cloneInt64s(it.ArrayDims),
 				IsVoid:           it.IsVoid,
 				Base:             it.Base,
 				FuncSig:          cloneFuncTypeSig(it.FuncSig),
@@ -4173,45 +4965,12 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 				AggregateKeyword: it.AggregateKeyword,
 				AggregateTag:     it.AggregateTag,
 			}
-			elemInfo := arrayElementTypeInfo(arrInfo)
-			elemStep := fc.typeByteSize(elemInfo)
 			totalBytes := fc.typeByteSize(arrInfo)
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: totalBytes})
 			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
 			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
-			if vals, ok, err := stringArrayInitializerValues(it.Init, it.Base, it.ArrayLen); ok {
-				if err != nil {
-					fc.errorf(fc.sig.File, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
-					continue
-				}
-				for i, v := range vals {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
-					fc.emitCastToType(elemInfo)
-					fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
-					if i > 0 {
-						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
-						fc.emit(ir.Inst{Op: ir.OP_ADD})
-					}
-					fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
-				}
-				continue
-			}
-			initElems, err := parseArrayInitializerExprs(it.Init, it.ArrayLen)
-			if err != nil {
-				fc.errorf(fc.sig.File, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
-				continue
-			}
-			for i, initExpr := range initElems {
-				fc.emitExprTokens(fc.sig.File, n.Line, n.Col, initExpr)
-				fc.emitCastToType(elemInfo)
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
-				if i > 0 {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
-					fc.emit(ir.Inst{Op: ir.OP_ADD})
-				}
-				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
-			}
+			fc.emitArrayInitializerAt(it.Name, idx, 0, arrInfo, it.Init, fc.sig.File, n.Line, n.Col)
 			continue
 		}
 		if len(it.Init) == 0 {
@@ -4347,6 +5106,36 @@ func (fc *funcCompiler) compileForStmt(n *Node) {
 }
 
 func (fc *funcCompiler) compileReturnStmt(n *Node) {
+	if fc.sig.RetByPtr {
+		if strings.TrimSpace(n.Text) != "" {
+			toks, err := lexSnippet(fc.sig.File, n.Text)
+			if err != nil {
+				fc.errorf(fc.sig.File, n.Line, n.Col, "invalid expression: %v", err)
+			} else {
+				ep := &cExprParser{fc: fc, file: fc.sig.File, line: n.Line, col: n.Col, toks: trimTokens(toks)}
+				ex := ep.parseExpression()
+				if ex != nil {
+					if ep.pos < len(ep.toks) {
+						got := ep.toks[ep.pos]
+						fc.errorf(fc.sig.File, n.Line, n.Col, "unexpected token in expression: %q", got.Text)
+					} else if srcInfo, ok := fc.exprTypeInfo(ex); ok && isAggregateObjectType(srcInfo) {
+						srcTmp := fc.allocTempLocal("$ret_src")
+						if fc.emitAggregateExprAddress(ex) {
+							fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: srcTmp})
+							size := fc.typeByteSize(srcInfo)
+							fc.emitCopyAggregateBytes(fc.retPtrLocal, srcTmp, size)
+						} else {
+							fc.errorf(fc.sig.File, n.Line, n.Col, "aggregate return expression must be addressable")
+						}
+					} else if ex != nil {
+						fc.errorf(fc.sig.File, n.Line, n.Col, "return expression must produce aggregate object")
+					}
+				}
+			}
+		}
+		fc.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
+		return
+	}
 	if fc.sig.RetCount == 0 {
 		if strings.TrimSpace(n.Text) != "" {
 			fc.compileExprText(n.Text, n.Line, n.Col)
@@ -4386,13 +5175,11 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 				fc.errorf(file, n.Line, n.Col, "typedef declaration with initializer is not supported: %s", it.Name)
 				continue
 			}
-			if it.Kind == cDeclArray {
-				fc.errorf(file, n.Line, n.Col, "typedef array declarations are not yet supported: %s", it.Name)
-				continue
-			}
 			fc.addLocalTypedef(it.Name, cTypeInfo{
 				Kind:             it.Kind,
 				PtrDepth:         it.PtrDepth,
+				ArrayLen:         it.ArrayLen,
+				ArrayDims:        cloneInt64s(it.ArrayDims),
 				IsVoid:           it.IsVoid,
 				Base:             it.Base,
 				FuncSig:          cloneFuncTypeSig(it.FuncSig),
@@ -4448,45 +5235,12 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 				AggregateKeyword: it.AggregateKeyword,
 				AggregateTag:     it.AggregateTag,
 			}
-			elemInfo := arrayElementTypeInfo(arrInfo)
-			elemStep := fc.typeByteSize(elemInfo)
 			totalBytes := fc.typeByteSize(arrInfo)
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: totalBytes})
 			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
 			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
-			if vals, ok, err := stringArrayInitializerValues(it.Init, it.Base, it.ArrayLen); ok {
-				if err != nil {
-					fc.errorf(file, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
-					continue
-				}
-				for i, v := range vals {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
-					fc.emitCastToType(elemInfo)
-					fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
-					if i > 0 {
-						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
-						fc.emit(ir.Inst{Op: ir.OP_ADD})
-					}
-					fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
-				}
-				continue
-			}
-			initElems, err := parseArrayInitializerExprs(it.Init, it.ArrayLen)
-			if err != nil {
-				fc.errorf(file, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
-				continue
-			}
-			for i, initExpr := range initElems {
-				fc.emitExprTokens(file, n.Line, n.Col, initExpr)
-				fc.emitCastToType(elemInfo)
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
-				if i > 0 {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
-					fc.emit(ir.Inst{Op: ir.OP_ADD})
-				}
-				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
-			}
+			fc.emitArrayInitializerAt(it.Name, idx, 0, arrInfo, it.Init, file, n.Line, n.Col)
 			continue
 		}
 		if len(it.Init) == 0 {
@@ -4597,6 +5351,37 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 		return true
 	case exprMember:
 		return fc.emitMemberAddress(ex, false)
+	case exprCompoundLit:
+		info := ex.typeInfo
+		tmpName := fmt.Sprintf("$compound_lit$%d", fc.c.nextLabel())
+		if isAggregateObjectType(info) {
+			idx := fc.addLocalDecl(tmpName, info.Kind, info.Base, info.PtrDepth, int64(fc.c.target.PtrSize), 0, nil, cloneFuncTypeSig(info.FuncSig), info.OpaqueAggregate, info.AggregateKeyword, info.AggregateTag, fc.sig.File, 0, 0)
+			fc.initLocalAggregateObject(tmpName, idx, info, ex.initTok, fc.sig.File, 0, 0)
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+			return true
+		}
+		if info.Kind == cDeclArray {
+			idx := fc.addLocalDecl(tmpName, info.Kind, info.Base, info.PtrDepth, fc.typeByteSize(arrayElementTypeInfo(info)), info.ArrayLen, info.ArrayDims, cloneFuncTypeSig(info.FuncSig), info.OpaqueAggregate, info.AggregateKeyword, info.AggregateTag, fc.sig.File, 0, 0)
+			totalBytes := fc.typeByteSize(info)
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: totalBytes})
+			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			fc.emitArrayInitializerAt(tmpName, idx, 0, info, ex.initTok, fc.sig.File, 0, 0)
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+			return true
+		}
+		idx := fc.addLocalDecl(tmpName, info.Kind, info.Base, info.PtrDepth, int64(fc.c.target.PtrSize), 0, nil, cloneFuncTypeSig(info.FuncSig), info.OpaqueAggregate, info.AggregateKeyword, info.AggregateTag, fc.sig.File, 0, 0)
+		parts, err := parseBraceInitializerParts(ex.initTok)
+		if err != nil || len(parts) == 0 {
+			fc.errorf(fc.sig.File, 0, 0, "invalid compound literal initializer")
+			return false
+		}
+		fc.emitExprTokens(fc.sig.File, 0, 0, parts[0])
+		fc.emitCastToType(info)
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: idx})
+		return true
 	default:
 		return false
 	}
@@ -5075,7 +5860,7 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 			}
 		}
 		if sig, ok := fc.resolveDirectCallSig(ex); ok {
-			if sig.RetCount == 0 {
+			if sig.RetCount == 0 && !sig.RetByPtr {
 				return cTypeInfo{Kind: cDeclScalar, IsVoid: true}, true
 			}
 			return cTypeInfo{
@@ -5089,6 +5874,16 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		}
 		if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 {
 			if t.FuncSig != nil {
+				if t.FuncSig.RetByPtr {
+					return cTypeInfo{
+						Kind:             t.FuncSig.RetKind,
+						PtrDepth:         t.FuncSig.RetPtrDepth,
+						Base:             t.FuncSig.RetBase,
+						OpaqueAggregate:  t.FuncSig.RetOpaque,
+						AggregateKeyword: t.FuncSig.RetAggKeyword,
+						AggregateTag:     t.FuncSig.RetAggTag,
+					}, true
+				}
 				return cTypeInfo{
 					Kind:             t.FuncSig.RetKind,
 					PtrDepth:         t.FuncSig.RetPtrDepth,
@@ -5103,6 +5898,8 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		}
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprCast:
+		return ex.typeInfo, true
+	case exprCompoundLit:
 		return ex.typeInfo, true
 	case exprSizeof:
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarULong}, true
@@ -5326,6 +6123,7 @@ func funcTypeSigEqual(a *cFuncTypeSig, b *cFuncTypeSig) bool {
 		a.RetBase != b.RetBase ||
 		a.RetPtrDepth != b.RetPtrDepth ||
 		a.RetIsVoid != b.RetIsVoid ||
+		a.RetByPtr != b.RetByPtr ||
 		a.RetOpaque != b.RetOpaque ||
 		a.RetAggKeyword != b.RetAggKeyword ||
 		a.RetAggTag != b.RetAggTag {
@@ -5377,7 +6175,8 @@ func funcSigMatchesType(sig *cFuncSig, want *cFuncTypeSig) bool {
 	if want.RetKind != sig.RetKind ||
 		want.RetBase != sig.RetBase ||
 		want.RetPtrDepth != sig.RetPtrDepth ||
-		want.RetIsVoid != (sig.RetCount == 0) ||
+		want.RetIsVoid != (sig.RetCount == 0 && !sig.RetByPtr) ||
+		want.RetByPtr != sig.RetByPtr ||
 		want.RetOpaque != sig.RetOpaque ||
 		want.RetAggKeyword != sig.RetAggKeyword ||
 		want.RetAggTag != sig.RetAggTag {
@@ -5487,6 +6286,122 @@ func (fc *funcCompiler) allocTempLocal(name string) int {
 	return fc.addLocal(fmt.Sprintf("%s$%d", name, fc.c.nextLabel()), fc.sig.File, 0, 0)
 }
 
+func (fc *funcCompiler) emitCopyAggregateBytes(dstAddrLocal int, srcAddrLocal int, size int64) {
+	offset := int64(0)
+	for offset < size {
+		chunk := int64(fc.c.target.PtrSize)
+		remain := size - offset
+		if chunk > remain {
+			switch {
+			case remain >= 4:
+				chunk = 4
+			case remain >= 2:
+				chunk = 2
+			default:
+				chunk = 1
+			}
+		}
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: srcAddrLocal})
+		if offset != 0 {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: offset})
+			fc.emit(ir.Inst{Op: ir.OP_ADD})
+		}
+		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: int(chunk)})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: dstAddrLocal})
+		if offset != 0 {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: offset})
+			fc.emit(ir.Inst{Op: ir.OP_ADD})
+		}
+		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(chunk)})
+		offset += chunk
+	}
+}
+
+func (fc *funcCompiler) allocLocalAggregateTemp(info cTypeInfo, name string) int {
+	idx := fc.addLocalDecl(name, info.Kind, info.Base, info.PtrDepth, int64(fc.c.target.PtrSize), 0, nil, cloneFuncTypeSig(info.FuncSig), info.OpaqueAggregate, info.AggregateKeyword, info.AggregateTag, fc.sig.File, 0, 0)
+	fc.initLocalAggregateObject(name, idx, info, nil, fc.sig.File, 0, 0)
+	return idx
+}
+
+func (fc *funcCompiler) emitAggregateCallAddress(sig *cFuncSig, ex *expr) bool {
+	if sig == nil || ex == nil || !sig.RetByPtr {
+		return false
+	}
+	if sig.Variadic {
+		fc.errorf(fc.sig.File, 0, 0, "aggregate return from variadic functions is not yet supported")
+		return false
+	}
+	if !fc.checkCallArgs(sig, ex) {
+		return false
+	}
+	if !sig.Defined {
+		fc.errorf(fc.sig.File, 0, 0, "aggregate return from external function %q is not yet supported", sig.Name)
+		return false
+	}
+	retInfo := cTypeInfo{
+		Kind:             sig.RetKind,
+		PtrDepth:         sig.RetPtrDepth,
+		Base:             sig.RetBase,
+		OpaqueAggregate:  sig.RetOpaque,
+		AggregateKeyword: sig.RetAggKeyword,
+		AggregateTag:     sig.RetAggTag,
+	}
+	tmpIdx := fc.allocLocalAggregateTemp(retInfo, fmt.Sprintf("$call$ret$%d", fc.c.nextLabel()))
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+	for _, a := range ex.args {
+		fc.emitExpr(a)
+	}
+	fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount + 1})
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+	return true
+}
+
+func (fc *funcCompiler) emitAggregateExprAddress(ex *expr) bool {
+	if ex == nil {
+		return false
+	}
+	switch ex.kind {
+	case exprComma:
+		return fc.emitAggregateExprAddress(ex.right)
+	case exprConditional:
+		info, ok := fc.exprTypeInfo(ex)
+		if !ok || !isAggregateObjectType(info) || len(ex.args) < 2 {
+			return false
+		}
+		tmpIdx := fc.allocLocalAggregateTemp(info, fmt.Sprintf("$cond$ret$%d", fc.c.nextLabel()))
+		dstTmp := fc.allocTempLocal("$cond_dst")
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: dstTmp})
+		falseLabel := fc.c.nextLabel()
+		endLabel := fc.c.nextLabel()
+		fc.emitExpr(ex.left)
+		fc.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: falseLabel})
+		srcTmp := fc.allocTempLocal("$cond_src")
+		if fc.emitAggregateExprAddress(ex.args[0]) {
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: srcTmp})
+			fc.emitCopyAggregateBytes(dstTmp, srcTmp, fc.typeByteSize(info))
+		} else {
+			fc.errorf(fc.sig.File, 0, 0, "aggregate conditional expression requires aggregate-valued true branch")
+		}
+		fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
+		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: falseLabel})
+		if fc.emitAggregateExprAddress(ex.args[1]) {
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: srcTmp})
+			fc.emitCopyAggregateBytes(dstTmp, srcTmp, fc.typeByteSize(info))
+		} else {
+			fc.errorf(fc.sig.File, 0, 0, "aggregate conditional expression requires aggregate-valued false branch")
+		}
+		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: endLabel})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
+		return true
+	case exprCall:
+		if sig, ok := fc.resolveDirectCallSig(ex); ok && sig.RetByPtr {
+			return fc.emitAggregateCallAddress(sig, ex)
+		}
+	}
+	return fc.emitAddressOf(ex)
+}
+
 func (fc *funcCompiler) emitUpdateExpr(ex *expr, step int64, op string, postfix bool) {
 	if ex == nil {
 		fc.errorf(fc.sig.File, 0, 0, "%s requires assignable operand", op)
@@ -5586,8 +6501,22 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			return
 		}
 		if t, ok := fc.exprTypeInfo(ex.left); ok && isAggregateObjectType(t) {
-			fc.errorf(fc.sig.File, 0, 0, "aggregate assignment is not yet supported")
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			addrTmp := fc.allocTempLocal("$assign_addr")
+			if !fc.emitAddressOf(ex.left) {
+				fc.errorf(fc.sig.File, 0, 0, "left-hand side of assignment is not assignable")
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: addrTmp})
+			srcTmp := fc.allocTempLocal("$assign_src")
+			if !fc.emitAggregateExprAddress(ex.right) {
+				fc.errorf(fc.sig.File, 0, 0, "aggregate assignment requires aggregate-valued right-hand side")
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: srcTmp})
+			fc.emitCopyAggregateBytes(addrTmp, srcTmp, fc.typeByteSize(t))
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
 			return
 		}
 		addrTmp := fc.allocTempLocal("$assign_addr")
@@ -5618,6 +6547,10 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				fc.emit(ir.Inst{Op: ir.OP_XOR})
 			case "|=":
 				fc.emit(ir.Inst{Op: ir.OP_OR})
+			case "<<=":
+				fc.emit(ir.Inst{Op: ir.OP_SHL})
+			case ">>=":
+				fc.emit(ir.Inst{Op: ir.OP_SHR})
 			default:
 				fc.errorf(fc.sig.File, 0, 0, "unsupported assignment operator %q", ex.op)
 			}
@@ -5786,6 +6719,9 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			break
 		}
+		if field.Type.Kind == cDeclArray {
+			return
+		}
 		if field.Type.Kind == cDeclScalar && field.Type.AggregateKeyword != "" && field.Type.AggregateTag != "" && field.Type.PtrDepth == 0 {
 			fc.errorf(fc.sig.File, 0, 0, "aggregate-valued member expression is not yet supported")
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
@@ -5799,6 +6735,12 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		if sig, ok := fc.resolveDirectCallSig(ex); ok {
 			if !fc.checkCallArgs(sig, ex) {
 				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				return
+			}
+			if sig.RetByPtr {
+				if !fc.emitAggregateCallAddress(sig, ex) {
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				}
 				return
 			}
 			if sig.Variadic && sig.Defined {
@@ -5899,6 +6841,31 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			}
 			candidates = append(candidates, sig)
 		}
+		if len(candidates) == 0 && indirectSig != nil {
+			wantRetCount := 1
+			if indirectSig.RetIsVoid {
+				wantRetCount = 0
+			}
+			for _, sig := range fc.c.funcOrder {
+				if sig == nil {
+					continue
+				}
+				if sig.RetCount != wantRetCount {
+					continue
+				}
+				if sig.Variadic {
+					if len(ex.args) < sig.ParamCount {
+						continue
+					}
+					candidates = append(candidates, sig)
+					continue
+				}
+				if sig.ParamCount != len(ex.args) {
+					continue
+				}
+				candidates = append(candidates, sig)
+			}
+		}
 		if len(candidates) == 0 {
 			if indirectSig != nil {
 				fc.errorf(fc.sig.File, 0, 0, "indirect call has no matching function candidates for resolved signature")
@@ -5974,6 +6941,18 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 	case exprCast:
 		fc.emitExpr(ex.left)
 		fc.emitCastToType(ex.typeInfo)
+	case exprCompoundLit:
+		if isAggregateObjectType(ex.typeInfo) || ex.typeInfo.Kind == cDeclArray {
+			fc.errorf(fc.sig.File, 0, 0, "compound literal value use for aggregate objects is not yet supported")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			break
+		}
+		if !fc.emitAddressOf(ex) {
+			fc.errorf(fc.sig.File, 0, 0, "invalid compound literal")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			break
+		}
+		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: int(fc.typeByteSize(ex.typeInfo))})
 	case exprSizeof:
 		if ex.left == nil {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: fc.sizeofType(ex.typeInfo)})
@@ -6030,6 +7009,7 @@ const (
 	exprMember
 	exprCall
 	exprCast
+	exprCompoundLit
 	exprSizeof
 )
 
@@ -6048,6 +7028,7 @@ type expr struct {
 	member string
 
 	typeInfo cTypeInfo
+	initTok  []Token
 }
 
 type cExprParser struct {
@@ -6060,16 +7041,30 @@ type cExprParser struct {
 }
 
 func looksLikeTypeNameTokens(tokens []Token) bool {
-	for _, t := range tokens {
+	tokens = trimTokens(tokens)
+	if len(tokens) == 0 {
+		return false
+	}
+	i := 0
+	for i < len(tokens) {
+		t := tokens[i]
 		if t.Kind != TokIdent {
+			break
+		}
+		if isStorageClassKeyword(t.Text) || isTypeQualifierKeyword(t.Text) {
+			i++
 			continue
 		}
-		if isTypeSpecifierKeyword(t.Text) || isUnsupportedCTypeKeyword(t.Text) || isDeclarationKeyword(t) {
+		if t.Text == "struct" || t.Text == "union" || t.Text == "enum" {
+			return true
+		}
+		if isTypeSpecifierKeyword(t.Text) || isUnsupportedCTypeKeyword(t.Text) {
 			return true
 		}
 		if _, ok := lookupTypedefAlias(t.Text); ok {
 			return true
 		}
+		break
 	}
 	return false
 }
@@ -6150,13 +7145,13 @@ func (p *cExprParser) tryParseParenType(allowArray bool) (cTypeInfo, int, bool) 
 		return cTypeInfo{}, 0, false
 	}
 	inner := trimTokens(p.toks[start+1 : end])
+	if !looksLikeTypeNameTokens(inner) {
+		return cTypeInfo{}, 0, false
+	}
 	info, err := parseCTypeInfo(inner)
 	if err != nil {
-		if looksLikeTypeNameTokens(inner) {
-			p.errorf("%v", err)
-			return cTypeInfo{Kind: cDeclScalar}, end - start + 1, true
-		}
-		return cTypeInfo{}, 0, false
+		p.errorf("%v", err)
+		return cTypeInfo{Kind: cDeclScalar}, end - start + 1, true
 	}
 	if !allowArray && info.Kind == cDeclArray {
 		return cTypeInfo{}, 0, false
@@ -6202,6 +7197,10 @@ func (p *cExprParser) parseAssignment() *expr {
 		assignOp = "^="
 	case p.matchPunct("|="):
 		assignOp = "|="
+	case p.matchPunct("<<="):
+		assignOp = "<<="
+	case p.matchPunct(">>="):
+		assignOp = ">>="
 	}
 	if assignOp != "" {
 		rhs := p.parseAssignment()
@@ -6398,7 +7397,21 @@ func (p *cExprParser) parseUnary() *expr {
 		}
 		return &expr{kind: exprSizeof, left: operand}
 	}
-	if info, consumed, ok := p.tryParseParenType(false); ok {
+	if info, consumed, ok := p.tryParseParenType(true); ok {
+		bracePos := p.pos + consumed
+		if bracePos < len(p.toks) && p.toks[bracePos].Kind == TokPunct && p.toks[bracePos].Text == "{" {
+			close := matchBraceClose(p.toks, bracePos)
+			if close < 0 {
+				p.errorf("unterminated compound literal initializer")
+				return &expr{kind: exprIntLit, intVal: 0}
+			}
+			p.pos = close + 1
+			return &expr{kind: exprCompoundLit, typeInfo: info, initTok: append([]Token{}, p.toks[bracePos:close+1]...)}
+		}
+		if info.Kind == cDeclArray {
+			// Preserve previous cast behavior: casts do not accept array types.
+			return p.parsePostfix()
+		}
 		p.pos += consumed
 		rhs := p.parseUnary()
 		if rhs == nil {

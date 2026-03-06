@@ -51,6 +51,10 @@ func builtinPredefineSpecs(targetOS string, targetArch string, ptrSize int, host
 		"__STDC__=1",
 		"__STDC_VERSION__=199901L",
 		"__STDC_HOSTED__=0",
+		"__ORDER_LITTLE_ENDIAN__=1234",
+		"__ORDER_BIG_ENDIAN__=4321",
+		"__ORDER_PDP_ENDIAN__=3412",
+		"__BYTE_ORDER__=__ORDER_LITTLE_ENDIAN__",
 		"__CHAR_BIT__=8",
 		"__SCHAR_MAX__=127",
 		"__SHRT_MAX__=32767",
@@ -69,7 +73,12 @@ func builtinPredefineSpecs(targetOS string, targetArch string, ptrSize int, host
 		"__UINTPTR_TYPE__=" + uintptrType,
 	}
 	if hosted {
-		specs = append(specs, "__STDC_HOSTED__=1")
+		specs = append(specs,
+			"__STDC_HOSTED__=1",
+			"__GNUC__=4",
+			"__GNUC_MINOR__=2",
+			"__GNUC_PATCHLEVEL__=1",
+		)
 	}
 	if ptrSize == 8 {
 		specs = append(specs, "__LP64__=1", "_LP64=1")
@@ -86,7 +95,7 @@ func builtinPredefineSpecs(targetOS string, targetArch string, ptrSize int, host
 	}
 	switch targetOS {
 	case "darwin":
-		specs = append(specs, "__APPLE__=1", "__MACH__=1", "__unix__=1")
+		specs = append(specs, "__APPLE__=1", "__APPLE_CC__=1", "__MACH__=1", "__unix__=1")
 	case "linux":
 		specs = append(specs, "__linux__=1", "__unix__=1")
 	case "windows":

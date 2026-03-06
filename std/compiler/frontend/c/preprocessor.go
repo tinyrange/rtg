@@ -38,6 +38,7 @@ type Preprocessor struct {
 	builtinIncludePaths []string
 	macros              map[string]*Macro
 	once                map[string]bool
+	headerGuards        map[string]string
 	included            map[string]bool
 	activeFiles         map[string]bool
 	maxIncludeDepth     int
@@ -66,6 +67,7 @@ func NewPreprocessor(opts Options) *Preprocessor {
 		builtinIncludePaths: builtinIncludeSearchPaths(!opts.DisableBuiltinHeaders),
 		macros:              make(map[string]*Macro),
 		once:                make(map[string]bool),
+		headerGuards:        make(map[string]string),
 		included:            make(map[string]bool),
 		activeFiles:         make(map[string]bool),
 		maxIncludeDepth:     maxDepth,
@@ -156,6 +158,60 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+func detectHeaderGuard(path string, src string) string {
+	lx := NewLexer(path, src)
+	toks, err := lx.Tokenize()
+	if err != nil {
+		return ""
+	}
+	i := 0
+	for i < len(toks) && toks[i].Kind == TokNewline {
+		i++
+	}
+	if i+5 >= len(toks) {
+		return ""
+	}
+	if toks[i].Kind != TokPunct || toks[i].Text != "#" {
+		return ""
+	}
+	if toks[i+1].Kind != TokIdent || toks[i+1].Text != "ifndef" {
+		return ""
+	}
+	if toks[i+2].Kind != TokIdent {
+		return ""
+	}
+	guard := toks[i+2].Text
+	if toks[i+3].Kind != TokNewline {
+		return ""
+	}
+	i += 4
+	for i < len(toks) && toks[i].Kind == TokNewline {
+		i++
+	}
+	if i+3 >= len(toks) {
+		return ""
+	}
+	if toks[i].Kind != TokPunct || toks[i].Text != "#" {
+		return ""
+	}
+	if toks[i+1].Kind != TokIdent || toks[i+1].Text != "define" {
+		return ""
+	}
+	if toks[i+2].Kind != TokIdent || toks[i+2].Text != guard {
+		return ""
+	}
+	return guard
+}
+
+func (p *Preprocessor) headerGuardFor(path string, src string) string {
+	if guard, ok := p.headerGuards[path]; ok {
+		return guard
+	}
+	guard := detectHeaderGuard(path, src)
+	p.headerGuards[path] = guard
+	return guard
+}
+
 func (p *Preprocessor) resolveInclude(include string, quoted bool, currentFile string) (string, error) {
 	if isAbsPath(include) {
 		if fileExists(include) {
@@ -202,6 +258,9 @@ func (p *Preprocessor) processPath(path string, depth int) ([]Token, error) {
 			return nil, nil
 		}
 		if p.activeFiles[path] {
+			if guard := p.headerGuardFor(path, src); guard != "" && p.isDefined(guard) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", path)
 		}
 		p.activeFiles[path] = true
@@ -214,19 +273,23 @@ func (p *Preprocessor) processPath(path string, depth int) ([]Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.once[abs] && p.included[abs] {
-		return nil, nil
-	}
-	if p.activeFiles[abs] {
-		return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", abs)
-	}
 	content, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, err
 	}
+	src := string(content)
+	if p.once[abs] && p.included[abs] {
+		return nil, nil
+	}
+	if p.activeFiles[abs] {
+		if guard := p.headerGuardFor(abs, src); guard != "" && p.isDefined(guard) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", abs)
+	}
 	p.activeFiles[abs] = true
 	p.included[abs] = true
-	out, procErr := p.processSource(abs, string(content), depth)
+	out, procErr := p.processSource(abs, src, depth)
 	p.activeFiles[abs] = false
 	return out, procErr
 }
@@ -375,7 +438,7 @@ func (p *Preprocessor) handleDirective(file string, line []Token, state *condSta
 		parent := state.active
 		cond := false
 		if parent {
-			expanded, err := p.expandTokens(file, args, nil, 0)
+			expanded, err := p.expandIfExprTokens(file, args, nil, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -416,7 +479,7 @@ func (p *Preprocessor) handleDirective(file string, line []Token, state *condSta
 		} else if f.branchTaken {
 			f.active = false
 		} else {
-			expanded, err := p.expandTokens(file, args, nil, 0)
+			expanded, err := p.expandIfExprTokens(file, args, nil, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -680,6 +743,102 @@ func (p *Preprocessor) expandTokens(file string, in []Token, disabled map[string
 				}
 				nextDisabled := copyDisabled(disabled, tok.Text)
 				repl, err := p.expandTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, repl...)
+				continue
+			}
+		}
+		out = append(out, tok)
+	}
+	return out, nil
+}
+
+func (p *Preprocessor) expandIfExprTokens(file string, in []Token, disabled map[string]bool, depth int) ([]Token, error) {
+	if depth > 128 {
+		return nil, fmt.Errorf("preprocessor: macro expansion depth exceeded")
+	}
+	var out []Token
+	for i := 0; i < len(in); i++ {
+		tok := in[i]
+		if tok.Kind == TokIdent && tok.Text == "defined" {
+			out = append(out, tok)
+			j := i + 1
+			for j < len(in) && in[j].Kind == TokNewline {
+				out = append(out, in[j])
+				j++
+			}
+			if j < len(in) && in[j].Kind == TokPunct && in[j].Text == "(" {
+				out = append(out, in[j])
+				j++
+				for j < len(in) && in[j].Kind == TokNewline {
+					out = append(out, in[j])
+					j++
+				}
+				if j < len(in) {
+					out = append(out, in[j])
+					j++
+				}
+				for j < len(in) && in[j].Kind == TokNewline {
+					out = append(out, in[j])
+					j++
+				}
+				if j < len(in) && in[j].Kind == TokPunct && in[j].Text == ")" {
+					out = append(out, in[j])
+					i = j
+					continue
+				}
+				i = j - 1
+				continue
+			}
+			if j < len(in) {
+				out = append(out, in[j])
+				i = j
+				continue
+			}
+			i = j - 1
+			continue
+		}
+		if tok.Kind == TokIdent {
+			if tok.Text == "__LINE__" {
+				out = append(out, Token{Kind: TokNumber, Text: decimalItoa(tok.Line), File: file, Line: tok.Line, Col: tok.Col})
+				continue
+			}
+			if tok.Text == "__FILE__" {
+				out = append(out, Token{Kind: TokString, Text: quoteTokenText(file), File: file, Line: tok.Line, Col: tok.Col})
+				continue
+			}
+			m, ok := p.macros[tok.Text]
+			if ok && m != nil && !disabled[tok.Text] {
+				if m.FunctionLike {
+					open := i + 1
+					for open < len(in) && in[open].Kind == TokNewline {
+						open++
+					}
+					if open >= len(in) || in[open].Kind != TokPunct || in[open].Text != "(" {
+						out = append(out, tok)
+						continue
+					}
+					args, end, ok := parseMacroArgs(in, open)
+					if !ok {
+						return nil, fmt.Errorf("%s:%d:%d: unterminated macro call", file, tok.Line, tok.Col)
+					}
+					repl, err := p.applyMacro(file, tok, m, args)
+					if err != nil {
+						return nil, err
+					}
+					nextDisabled := copyDisabled(disabled, tok.Text)
+					repl, err = p.expandIfExprTokens(file, repl, nextDisabled, depth+1)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, repl...)
+					i = end
+					continue
+				}
+				nextDisabled := copyDisabled(disabled, tok.Text)
+				repl, err := p.expandIfExprTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
 				if err != nil {
 					return nil, err
 				}

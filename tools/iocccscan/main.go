@@ -44,6 +44,8 @@ type entryCase struct {
 	Award     string
 	SourceRel string
 	SourceAbs string
+	Defines   []string
+	Includes  []string
 }
 
 type stageOutcome struct {
@@ -427,6 +429,10 @@ func discoverCases(yearDir string) ([]entryCase, error) {
 		if _, err := os.Stat(srcAbs); err != nil {
 			return fmt.Errorf("%s: source %q missing: %w", path, srcRel, err)
 		}
+		defines, includes, err := discoverEntryBuildFlags(entryDir)
+		if err != nil {
+			return fmt.Errorf("%s: parse build flags: %w", path, err)
+		}
 		entries = append(entries, entryCase{
 			Year:      manifest.Year,
 			EntryID:   manifest.EntryID,
@@ -435,6 +441,8 @@ func discoverCases(yearDir string) ([]entryCase, error) {
 			Award:     manifest.Award,
 			SourceRel: srcRel,
 			SourceAbs: srcAbs,
+			Defines:   defines,
+			Includes:  includes,
 		})
 		return nil
 	})
@@ -459,11 +467,29 @@ func runCase(tc entryCase, compilerPath string, target string, timeout time.Dura
 	preOut := filepath.Join(baseDir, prefix+".tokens")
 	parseOut := filepath.Join(baseDir, prefix+".ast")
 	irOut := filepath.Join(baseDir, prefix+".ir")
+	srcPath := tc.SourceAbs
 	defer os.Remove(preOut)
 	defer os.Remove(parseOut)
 	defer os.Remove(irOut)
+	if len(tc.Includes) > 0 {
+		wrapperPath := filepath.Join(baseDir, prefix+".wrapper.c")
+		if err := writeWrapperSource(wrapperPath, tc.Includes, tc.SourceAbs); err != nil {
+			return resultRow{
+				Year:         tc.Year,
+				EntryID:      tc.EntryID,
+				Dir:          tc.Dir,
+				Title:        tc.Title,
+				Award:        tc.Award,
+				SourceRel:    tc.SourceRel,
+				Category:     "preprocess_fail",
+				ErrorSummary: fmt.Sprintf("wrapper generation error: %v", err),
+			}
+		}
+		defer os.Remove(wrapperPath)
+		srcPath = wrapperPath
+	}
 
-	preArgs := append(cArgs(systemIncludes), "-x", "c99", "-E", "-o", preOut, tc.SourceAbs)
+	preArgs := append(cArgs(systemIncludes, tc.Defines), "-x", "c99", "-E", "-o", preOut, srcPath)
 	pre := runStage(timeout, compilerPath, preArgs...)
 	if !pre.OK {
 		return resultRow{
@@ -479,7 +505,7 @@ func runCase(tc entryCase, compilerPath string, target string, timeout time.Dura
 		}
 	}
 
-	parseArgs := append(cArgs(systemIncludes), "-x", "c99", "-parse-only", "-o", parseOut, tc.SourceAbs)
+	parseArgs := append(cArgs(systemIncludes, tc.Defines), "-x", "c99", "-parse-only", "-o", parseOut, srcPath)
 	parse := runStage(timeout, compilerPath, parseArgs...)
 	if !parse.OK {
 		return resultRow{
@@ -496,7 +522,7 @@ func runCase(tc entryCase, compilerPath string, target string, timeout time.Dura
 		}
 	}
 
-	compArgs := append(cArgs(systemIncludes), "-x", "c99", "-T", target, "-emit-ir", irOut, tc.SourceAbs)
+	compArgs := append(cArgs(systemIncludes, tc.Defines), "-x", "c99", "-T", target, "-emit-ir", irOut, srcPath)
 	comp := runStage(timeout, compilerPath, compArgs...)
 	if !comp.OK {
 		return resultRow{
@@ -548,12 +574,109 @@ func runStage(timeout time.Duration, compilerPath string, args ...string) stageO
 	return stageOutcome{Name: args[0], OK: true, Duration: dur}
 }
 
-func cArgs(systemIncludes []string) []string {
-	args := make([]string, 0, len(systemIncludes)*2)
+func cArgs(systemIncludes []string, defines []string) []string {
+	args := make([]string, 0, len(systemIncludes)*2+len(defines)*2)
+	for _, def := range defines {
+		args = append(args, "-D", def)
+	}
 	for _, dir := range systemIncludes {
 		args = append(args, "-isystem", dir)
 	}
 	return args
+}
+
+func discoverEntryBuildFlags(entryDir string) ([]string, []string, error) {
+	makefilePath := filepath.Join(entryDir, "Makefile")
+	data, err := os.ReadFile(makefilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	vars := parseSimpleMakeVars(string(data))
+	cdefine := expandMakeVars(vars["CDEFINE"], vars)
+	cinclude := expandMakeVars(vars["CINCLUDE"], vars)
+	return extractDefines(cdefine), extractForcedIncludes(cinclude), nil
+}
+
+func parseSimpleMakeVars(src string) map[string]string {
+	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
+	vars := make(map[string]string)
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = line[:idx]
+		}
+		line = strings.TrimRight(line, " \t")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		for strings.HasSuffix(line, "\\") && i+1 < len(lines) {
+			line = strings.TrimRight(strings.TrimSuffix(line, "\\"), " \t") + " " + strings.TrimSpace(lines[i+1])
+			i++
+		}
+		m := regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*[:?+]?=\s*(.*)$`).FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		vars[m[1]] = strings.TrimSpace(m[2])
+	}
+	return vars
+}
+
+func expandMakeVars(s string, vars map[string]string) string {
+	re := regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}`)
+	for i := 0; i < 16; i++ {
+		changed := false
+		s = re.ReplaceAllStringFunc(s, func(m string) string {
+			sub := re.FindStringSubmatch(m)
+			if len(sub) != 2 {
+				return m
+			}
+			if v, ok := vars[sub[1]]; ok {
+				changed = true
+				return v
+			}
+			return ""
+		})
+		if !changed {
+			break
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+func extractDefines(s string) []string {
+	fields := strings.Fields(s)
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if strings.HasPrefix(f, "-D") && len(f) > 2 {
+			out = append(out, f[2:])
+		}
+	}
+	return out
+}
+
+func extractForcedIncludes(s string) []string {
+	fields := strings.Fields(s)
+	var out []string
+	for i := 0; i < len(fields); i++ {
+		if fields[i] == "-include" && i+1 < len(fields) {
+			out = append(out, fields[i+1])
+			i++
+		}
+	}
+	return out
+}
+
+func writeWrapperSource(path string, headers []string, sourceAbs string) error {
+	var b strings.Builder
+	for _, h := range headers {
+		fmt.Fprintf(&b, "#include <%s>\n", h)
+	}
+	fmt.Fprintf(&b, "#include %q\n", filepath.ToSlash(sourceAbs))
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 func discoverHostSystemIncludes(cc string) ([]string, error) {

@@ -263,41 +263,6 @@ func (l *Lexer) tokenizeOne(leadingSpace bool, startOfLine bool) (Token, error) 
 			return tok, nil
 		}
 		tok := l.scanIdent()
-		switch tok.Text {
-		case "and":
-			tok.Kind = TokPunct
-			tok.Text = "&&"
-		case "or":
-			tok.Kind = TokPunct
-			tok.Text = "||"
-		case "not":
-			tok.Kind = TokPunct
-			tok.Text = "!"
-		case "bitand":
-			tok.Kind = TokPunct
-			tok.Text = "&"
-		case "bitor":
-			tok.Kind = TokPunct
-			tok.Text = "|"
-		case "xor":
-			tok.Kind = TokPunct
-			tok.Text = "^"
-		case "compl":
-			tok.Kind = TokPunct
-			tok.Text = "~"
-		case "and_eq":
-			tok.Kind = TokPunct
-			tok.Text = "&="
-		case "or_eq":
-			tok.Kind = TokPunct
-			tok.Text = "|="
-		case "xor_eq":
-			tok.Kind = TokPunct
-			tok.Text = "^="
-		case "not_eq":
-			tok.Kind = TokPunct
-			tok.Text = "!="
-		}
 		tok.LeadingSpace = leadingSpace
 		tok.StartOfLine = startOfLine
 		return tok, nil
