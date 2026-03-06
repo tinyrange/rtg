@@ -41,15 +41,41 @@ func normalizeSource(src string) string {
 		i++
 	}
 
-	// Remove escaped newlines (line splices).
-	spliced := make([]byte, 0, len(out))
+	// Translate trigraphs before line splicing so ??/ newline works like backslash newline.
+	trigraphs := map[string]byte{
+		"??=": '#',
+		"??/": '\\',
+		"??'": '^',
+		"??(": '[',
+		"??)": ']',
+		"??!": '|',
+		"??<": '{',
+		"??>": '}',
+		"??-": '~',
+	}
+	translated := make([]byte, 0, len(out))
 	i = 0
 	for i < len(out) {
-		if out[i] == '\\' && i+1 < len(out) && out[i+1] == '\n' {
+		if i+2 < len(out) && out[i] == '?' && out[i+1] == '?' {
+			if repl, ok := trigraphs[string(out[i:i+3])]; ok {
+				translated = append(translated, repl)
+				i += 3
+				continue
+			}
+		}
+		translated = append(translated, out[i])
+		i++
+	}
+
+	// Remove escaped newlines (line splices).
+	spliced := make([]byte, 0, len(translated))
+	i = 0
+	for i < len(translated) {
+		if translated[i] == '\\' && i+1 < len(translated) && translated[i+1] == '\n' {
 			i += 2
 			continue
 		}
-		spliced = append(spliced, out[i])
+		spliced = append(spliced, translated[i])
 		i++
 	}
 	return string(spliced)

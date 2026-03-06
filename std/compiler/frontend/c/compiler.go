@@ -15,53 +15,53 @@ type Unit struct {
 }
 
 type cFuncSig struct {
-	Name          string
-	IRName        string
-	RetCount      int
-	RetByPtr      bool
-	RetKind       cDeclKind
-	RetBase       cScalarType
-	RetPtrDepth   int
-	RetOpaque     bool
-	RetAggKeyword string
-	RetAggTag     string
-	ParamCount    int
+	Name             string
+	IRName           string
+	RetCount         int
+	RetByPtr         bool
+	RetKind          cDeclKind
+	RetBase          cScalarType
+	RetPtrDepth      int
+	RetOpaque        bool
+	RetAggKeyword    string
+	RetAggTag        string
+	ParamCount       int
 	ParamUnspecified bool
-	Variadic      bool
-	ParamNames    []string
-	ParamKinds    []cDeclKind
-	ParamBases    []cScalarType
-	ParamPtrDepth []int
-	ParamOpaque   []bool
-	ParamAggKey   []string
-	ParamAggTag   []string
-	ParamFuncSigs []*cFuncTypeSig
-	Defined       bool
-	Body          *Node
-	File          string
-	Line          int
-	Col           int
+	Variadic         bool
+	ParamNames       []string
+	ParamKinds       []cDeclKind
+	ParamBases       []cScalarType
+	ParamPtrDepth    []int
+	ParamOpaque      []bool
+	ParamAggKey      []string
+	ParamAggTag      []string
+	ParamFuncSigs    []*cFuncTypeSig
+	Defined          bool
+	Body             *Node
+	File             string
+	Line             int
+	Col              int
 }
 
 type cFuncTypeSig struct {
-	RetKind       cDeclKind
-	RetBase       cScalarType
-	RetPtrDepth   int
-	RetIsVoid     bool
-	RetByPtr      bool
-	RetOpaque     bool
-	RetAggKeyword string
-	RetAggTag     string
-	ParamCount    int
+	RetKind          cDeclKind
+	RetBase          cScalarType
+	RetPtrDepth      int
+	RetIsVoid        bool
+	RetByPtr         bool
+	RetOpaque        bool
+	RetAggKeyword    string
+	RetAggTag        string
+	ParamCount       int
 	ParamUnspecified bool
-	Variadic      bool
-	ParamKinds    []cDeclKind
-	ParamBases    []cScalarType
-	ParamPtrDepth []int
-	ParamOpaque   []bool
-	ParamAggKey   []string
-	ParamAggTag   []string
-	ParamFuncSigs []*cFuncTypeSig
+	Variadic         bool
+	ParamKinds       []cDeclKind
+	ParamBases       []cScalarType
+	ParamPtrDepth    []int
+	ParamOpaque      []bool
+	ParamAggKey      []string
+	ParamAggTag      []string
+	ParamFuncSigs    []*cFuncTypeSig
 }
 
 type cDeclItem struct {
@@ -81,17 +81,17 @@ type cDeclItem struct {
 }
 
 type cDeclaratorSuffix struct {
-	IsFunction    bool
-	ArrayLen      int64
-	ParamKinds    []cDeclKind
+	IsFunction       bool
+	ArrayLen         int64
+	ParamKinds       []cDeclKind
 	ParamUnspecified bool
-	ParamBases    []cScalarType
-	ParamPtrDepth []int
-	ParamOpaque   []bool
-	ParamAggKey   []string
-	ParamAggTag   []string
-	ParamFuncSigs []*cFuncTypeSig
-	Variadic      bool
+	ParamBases       []cScalarType
+	ParamPtrDepth    []int
+	ParamOpaque      []bool
+	ParamAggKey      []string
+	ParamAggTag      []string
+	ParamFuncSigs    []*cFuncTypeSig
+	Variadic         bool
 }
 
 type cDeclaratorNode struct {
@@ -111,18 +111,18 @@ const (
 )
 
 type cDeclaratorEntity struct {
-	Kind        cDeclaratorEntityKind
-	Inner       *cDeclaratorEntity
-	ArrayLen    int64
-	ParamKinds  []cDeclKind
+	Kind             cDeclaratorEntityKind
+	Inner            *cDeclaratorEntity
+	ArrayLen         int64
+	ParamKinds       []cDeclKind
 	ParamUnspecified bool
-	ParamBases  []cScalarType
-	ParamPtr    []int
-	ParamOpaque []bool
-	ParamAggKey []string
-	ParamAggTag []string
-	ParamFuncs  []*cFuncTypeSig
-	Variadic    bool
+	ParamBases       []cScalarType
+	ParamPtr         []int
+	ParamOpaque      []bool
+	ParamAggKey      []string
+	ParamAggTag      []string
+	ParamFuncs       []*cFuncTypeSig
+	Variadic         bool
 }
 
 type cGlobalInit struct {
@@ -188,6 +188,8 @@ type cAggregateField struct {
 	Offset int64
 	Size   int64
 	Align  int64
+
+	BitfieldWidth int64
 }
 
 type cAggregateInfo struct {
@@ -654,17 +656,17 @@ func cloneFuncTypeSig(in *cFuncTypeSig) *cFuncTypeSig {
 		return nil
 	}
 	out := &cFuncTypeSig{
-		RetKind:       in.RetKind,
-		RetBase:       in.RetBase,
-		RetPtrDepth:   in.RetPtrDepth,
-		RetIsVoid:     in.RetIsVoid,
-		RetByPtr:      in.RetByPtr,
-		RetOpaque:     in.RetOpaque,
-		RetAggKeyword: in.RetAggKeyword,
-		RetAggTag:     in.RetAggTag,
-		ParamCount:    in.ParamCount,
+		RetKind:          in.RetKind,
+		RetBase:          in.RetBase,
+		RetPtrDepth:      in.RetPtrDepth,
+		RetIsVoid:        in.RetIsVoid,
+		RetByPtr:         in.RetByPtr,
+		RetOpaque:        in.RetOpaque,
+		RetAggKeyword:    in.RetAggKeyword,
+		RetAggTag:        in.RetAggTag,
+		ParamCount:       in.ParamCount,
 		ParamUnspecified: in.ParamUnspecified,
-		Variadic:      in.Variadic,
+		Variadic:         in.Variadic,
 	}
 	out.ParamKinds = append([]cDeclKind{}, in.ParamKinds...)
 	out.ParamBases = append([]cScalarType{}, in.ParamBases...)
@@ -686,17 +688,17 @@ func funcSigToTypeSig(sig *cFuncSig) *cFuncTypeSig {
 		return nil
 	}
 	out := &cFuncTypeSig{
-		RetKind:       sig.RetKind,
-		RetBase:       sig.RetBase,
-		RetPtrDepth:   sig.RetPtrDepth,
-		RetIsVoid:     sig.RetCount == 0 && !sig.RetByPtr,
-		RetByPtr:      sig.RetByPtr,
-		RetOpaque:     sig.RetOpaque,
-		RetAggKeyword: sig.RetAggKeyword,
-		RetAggTag:     sig.RetAggTag,
-		ParamCount:    sig.ParamCount,
+		RetKind:          sig.RetKind,
+		RetBase:          sig.RetBase,
+		RetPtrDepth:      sig.RetPtrDepth,
+		RetIsVoid:        sig.RetCount == 0 && !sig.RetByPtr,
+		RetByPtr:         sig.RetByPtr,
+		RetOpaque:        sig.RetOpaque,
+		RetAggKeyword:    sig.RetAggKeyword,
+		RetAggTag:        sig.RetAggTag,
+		ParamCount:       sig.ParamCount,
 		ParamUnspecified: sig.ParamUnspecified,
-		Variadic:      sig.Variadic,
+		Variadic:         sig.Variadic,
 	}
 	out.ParamKinds = append([]cDeclKind{}, sig.ParamKinds...)
 	out.ParamBases = append([]cScalarType{}, sig.ParamBases...)
@@ -800,6 +802,7 @@ func (c *compiler) collectFunctionDef(file string, n *Node) {
 		c.errorf(file, n.Line, n.Col, "invalid function header: %v", err)
 		return
 	}
+	toks = trimLeadingDeclDecorators(toks)
 	sig, err := parseFunctionSignature(file, n.Line, n.Col, toks)
 	if err != nil {
 		c.errorf(file, n.Line, n.Col, "%v", err)
@@ -853,6 +856,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		c.errorf(file, n.Line, n.Col, "invalid external declaration: %v", err)
 		return
 	}
+	toks = trimLeadingDeclDecorators(toks)
 	if len(toks) == 0 {
 		return
 	}
@@ -868,7 +872,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			break
 		}
 	}
-	if !hasTypedef && fnLPar > 0 && toks[fnLPar-1].Kind == TokIdent && !isDeclarationKeyword(toks[fnLPar-1]) {
+	if !hasTypedef && fnLPar > 0 && toks[fnLPar-1].Kind == TokIdent && !isDeclarationKeyword(toks[fnLPar-1]) && looksLikeStandaloneFunctionDecl(toks, fnLPar) {
 		sig, err := parseFunctionSignature(file, n.Line, n.Col, toks)
 		if err == nil {
 			if _, ok := c.funcs[sig.Name]; !ok {
@@ -937,29 +941,29 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 	for _, it := range items {
 		if it.FuncSig != nil && it.Kind == cDeclScalar && it.PtrDepth == 0 {
 			sig := &cFuncSig{
-				Name:          it.Name,
-				IRName:        "c." + it.Name,
-				RetByPtr:      it.FuncSig.RetByPtr,
-				RetKind:       it.FuncSig.RetKind,
-				RetBase:       it.FuncSig.RetBase,
-				RetPtrDepth:   it.FuncSig.RetPtrDepth,
-				RetOpaque:     it.FuncSig.RetOpaque,
-				RetAggKeyword: it.FuncSig.RetAggKeyword,
-				RetAggTag:     it.FuncSig.RetAggTag,
-				ParamCount:    it.FuncSig.ParamCount,
+				Name:             it.Name,
+				IRName:           "c." + it.Name,
+				RetByPtr:         it.FuncSig.RetByPtr,
+				RetKind:          it.FuncSig.RetKind,
+				RetBase:          it.FuncSig.RetBase,
+				RetPtrDepth:      it.FuncSig.RetPtrDepth,
+				RetOpaque:        it.FuncSig.RetOpaque,
+				RetAggKeyword:    it.FuncSig.RetAggKeyword,
+				RetAggTag:        it.FuncSig.RetAggTag,
+				ParamCount:       it.FuncSig.ParamCount,
 				ParamUnspecified: it.FuncSig.ParamUnspecified,
-				Variadic:      it.FuncSig.Variadic,
-				ParamKinds:    append([]cDeclKind{}, it.FuncSig.ParamKinds...),
-				ParamBases:    append([]cScalarType{}, it.FuncSig.ParamBases...),
-				ParamPtrDepth: append([]int{}, it.FuncSig.ParamPtrDepth...),
-				ParamOpaque:   append([]bool{}, it.FuncSig.ParamOpaque...),
-				ParamAggKey:   append([]string{}, it.FuncSig.ParamAggKey...),
-				ParamAggTag:   append([]string{}, it.FuncSig.ParamAggTag...),
-				ParamFuncSigs: cloneFuncTypeSigs(it.FuncSig.ParamFuncSigs),
-				Defined:       false,
-				File:          file,
-				Line:          n.Line,
-				Col:           n.Col,
+				Variadic:         it.FuncSig.Variadic,
+				ParamKinds:       append([]cDeclKind{}, it.FuncSig.ParamKinds...),
+				ParamBases:       append([]cScalarType{}, it.FuncSig.ParamBases...),
+				ParamPtrDepth:    append([]int{}, it.FuncSig.ParamPtrDepth...),
+				ParamOpaque:      append([]bool{}, it.FuncSig.ParamOpaque...),
+				ParamAggKey:      append([]string{}, it.FuncSig.ParamAggKey...),
+				ParamAggTag:      append([]string{}, it.FuncSig.ParamAggTag...),
+				ParamFuncSigs:    cloneFuncTypeSigs(it.FuncSig.ParamFuncSigs),
+				Defined:          false,
+				File:             file,
+				Line:             n.Line,
+				Col:              n.Col,
 			}
 			if it.FuncSig.RetIsVoid || it.FuncSig.RetByPtr {
 				sig.RetCount = 0
@@ -1160,6 +1164,53 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			})
 		}
 	}
+}
+
+func looksLikeStandaloneFunctionDecl(toks []Token, fnLPar int) bool {
+	if fnLPar <= 0 || fnLPar >= len(toks) {
+		return false
+	}
+	rpar := matchingParenClose(toks, fnLPar)
+	if rpar < 0 {
+		return false
+	}
+	for i := rpar + 1; i < len(toks); i++ {
+		t := toks[i]
+		if t.Kind == TokNewline {
+			continue
+		}
+		if t.Kind != TokPunct {
+			return false
+		}
+		switch t.Text {
+		case ",", "[", "]", "=", "{", "}":
+			return false
+		}
+	}
+	return true
+}
+
+func trimLeadingDeclDecorators(tokens []Token) []Token {
+	work := trimTokens(tokens)
+	for len(work) > 0 {
+		if work[0].Kind != TokIdent {
+			break
+		}
+		switch work[0].Text {
+		case "__attribute__", "__attribute":
+			if len(work) < 2 || work[1].Kind != TokPunct || work[1].Text != "(" {
+				return work
+			}
+			close := matchingParenClose(work, 1)
+			if close < 0 {
+				return work
+			}
+			work = trimTokens(work[close+1:])
+			continue
+		}
+		break
+	}
+	return work
 }
 
 func (c *compiler) emitGlobalInit() {
@@ -1534,7 +1585,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	var paramAggKey []string
 	var paramAggTag []string
 	var paramFuncSigs []*cFuncTypeSig
-	var paramUnspecified bool
+	paramUnspecified := oldStyle
 	var variadic bool
 	paramCount := 0
 	if oldStyle {
@@ -1636,31 +1687,31 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	}
 
 	return &cFuncSig{
-		Name:          name,
-		IRName:        "c." + name,
-		RetCount:      retCount,
-		RetByPtr:      isAggregateObjectType(retInfo),
-		RetKind:       retInfo.Kind,
-		RetBase:       retInfo.Base,
-		RetPtrDepth:   retInfo.PtrDepth,
-		RetOpaque:     retInfo.OpaqueAggregate,
-		RetAggKeyword: retInfo.AggregateKeyword,
-		RetAggTag:     retInfo.AggregateTag,
-		ParamCount:    paramCount,
+		Name:             name,
+		IRName:           "c." + name,
+		RetCount:         retCount,
+		RetByPtr:         isAggregateObjectType(retInfo),
+		RetKind:          retInfo.Kind,
+		RetBase:          retInfo.Base,
+		RetPtrDepth:      retInfo.PtrDepth,
+		RetOpaque:        retInfo.OpaqueAggregate,
+		RetAggKeyword:    retInfo.AggregateKeyword,
+		RetAggTag:        retInfo.AggregateTag,
+		ParamCount:       paramCount,
 		ParamUnspecified: paramUnspecified,
-		Variadic:      variadic,
-		ParamNames:    paramNames,
-		ParamKinds:    paramKinds,
-		ParamBases:    paramBases,
-		ParamPtrDepth: paramPtrDepth,
-		ParamOpaque:   paramOpaque,
-		ParamAggKey:   paramAggKey,
-		ParamAggTag:   paramAggTag,
-		ParamFuncSigs: paramFuncSigs,
-		Defined:       false,
-		File:          file,
-		Line:          line,
-		Col:           col,
+		Variadic:         variadic,
+		ParamNames:       paramNames,
+		ParamKinds:       paramKinds,
+		ParamBases:       paramBases,
+		ParamPtrDepth:    paramPtrDepth,
+		ParamOpaque:      paramOpaque,
+		ParamAggKey:      paramAggKey,
+		ParamAggTag:      paramAggTag,
+		ParamFuncSigs:    paramFuncSigs,
+		Defined:          false,
+		File:             file,
+		Line:             line,
+		Col:              col,
 	}, nil
 }
 
@@ -1965,6 +2016,28 @@ func cTypeLayout(info cTypeInfo) (int64, int64, error) {
 	}
 }
 
+func isSupportedBitfieldType(info cTypeInfo) bool {
+	if info.Kind != cDeclScalar || info.PtrDepth != 0 || info.IsVoid || info.FuncSig != nil {
+		return false
+	}
+	return info.AggregateKeyword == "" && info.AggregateTag == ""
+}
+
+func parseBitfieldWidth(tokens []Token) (int64, error) {
+	tokens = trimTokens(tokens)
+	if len(tokens) == 0 {
+		return 0, fmt.Errorf("bitfield width is empty")
+	}
+	n, err := parseEnumConstExprTokens(tokens, nil)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("bitfield width must not be negative")
+	}
+	return n, nil
+}
+
 func parseAggregateFields(tokens []Token, keyword string, tag string, context string) ([]cAggregateField, int64, int64, error) {
 	decls := splitTopLevel(trimTokens(tokens), ";")
 	fields := make([]cAggregateField, 0, len(decls))
@@ -1972,6 +2045,12 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 	maxAlign := int64(1)
 	maxSize := int64(0)
 	nextOffset := int64(0)
+	bitfieldOpen := false
+	bitfieldBase := cTypeInfo{}
+	bitfieldUnitOffset := int64(0)
+	bitfieldUnitSize := int64(0)
+	bitfieldUnitAlign := int64(1)
+	bitfieldBitsUsed := int64(0)
 	for i, rawDecl := range decls {
 		decl := trimTokens(rawDecl)
 		if len(decl) == 0 {
@@ -1995,62 +2074,163 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 		if len(rest) == 0 {
 			return nil, 0, 0, fmt.Errorf("%s requires at least one declarator", dctx)
 		}
-		items, err := parseDeclItemsWithBase(baseInfo, false, false, rest)
-		if err != nil {
-			return nil, 0, 0, err
-		}
-		for _, it := range items {
-			if len(it.Init) > 0 {
-				return nil, 0, 0, fmt.Errorf("%s member %q cannot have initializer", dctx, it.Name)
+		parts := splitTopLevel(rest, ",")
+		for j, part := range parts {
+			part = trimTokens(part)
+			if len(part) == 0 {
+				continue
 			}
-			if it.Name == "" {
-				return nil, 0, 0, fmt.Errorf("%s has unnamed member", dctx)
+			bctx := fmt.Sprintf("%s member declarator %d", dctx, j+1)
+			eqIdx := topLevelPunctIndex(part, "=")
+			if eqIdx >= 0 {
+				return nil, 0, 0, fmt.Errorf("%s cannot have initializer", bctx)
 			}
-			if used[it.Name] {
-				return nil, 0, 0, fmt.Errorf("%s has duplicate member name %q", dctx, it.Name)
+			colonIdx := topLevelPunctIndex(part, ":")
+			lhs := part
+			var width int64
+			if colonIdx >= 0 {
+				lhs = trimTokens(part[:colonIdx])
+				w, err := parseBitfieldWidth(part[colonIdx+1:])
+				if err != nil {
+					return nil, 0, 0, fmt.Errorf("%s has invalid bitfield width: %v", bctx, err)
+				}
+				width = w
 			}
-			memberType := cTypeInfo{
-				Kind:             it.Kind,
-				PtrDepth:         it.PtrDepth,
-				ArrayLen:         it.ArrayLen,
-				ArrayDims:        cloneInt64s(it.ArrayDims),
-				IsVoid:           it.IsVoid,
-				Base:             it.Base,
-				FuncSig:          cloneFuncTypeSig(it.FuncSig),
-				OpaqueAggregate:  it.OpaqueAggregate,
-				AggregateKeyword: it.AggregateKeyword,
-				AggregateTag:     it.AggregateTag,
+			if len(lhs) == 0 {
+				if colonIdx < 0 {
+					return nil, 0, 0, fmt.Errorf("%s has unnamed member", bctx)
+				}
+				lhs = nil
 			}
-			size, align, err := cTypeLayout(memberType)
-			if err != nil {
-				return nil, 0, 0, fmt.Errorf("%s member %q has unsupported type: %v", dctx, it.Name, err)
-			}
-			if align <= 0 {
-				align = 1
-			}
-			field := cAggregateField{
-				Name:  it.Name,
-				Type:  memberType,
-				Size:  size,
-				Align: align,
-			}
-			if keyword == "union" {
-				field.Offset = 0
-				if size > maxSize {
-					maxSize = size
+			name := ""
+			memberType := cTypeInfo{}
+			field := cAggregateField{}
+			if len(lhs) > 0 {
+				var kind cDeclKind
+				var ptrDepth int
+				var arrayLen int64
+				var arrayDims []int64
+				var fnSig *cFuncTypeSig
+				var directFunc bool
+				name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err = parseDeclarator(lhs, false)
+				if err != nil {
+					return nil, 0, 0, fmt.Errorf("%s: %w (%s)", bctx, err, tokenSliceText(lhs))
+				}
+				memberType, err = combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, false, bctx)
+				if err != nil {
+					return nil, 0, 0, err
+				}
+				applyDeclaratorArrayDims(&memberType, arrayDims)
+				if fnSig != nil {
+					sig := cloneFuncTypeSig(fnSig)
+					applyFuncReturnBase(sig, baseInfo)
+					memberType.FuncSig = sig
+				}
+				if directFunc {
+					memberType.Kind = cDeclPointer
+					if memberType.PtrDepth == 0 {
+						memberType.PtrDepth = 1
+					} else {
+						memberType.PtrDepth++
+					}
 				}
 			} else {
-				nextOffset = alignTo(nextOffset, align)
-				field.Offset = nextOffset
-				nextOffset += size
-				if nextOffset > maxSize {
-					maxSize = nextOffset
+				memberType = baseInfo
+			}
+			if colonIdx >= 0 {
+				if !isSupportedBitfieldType(memberType) {
+					return nil, 0, 0, fmt.Errorf("%s uses unsupported bitfield type", bctx)
+				}
+				size, align, err := cTypeLayout(memberType)
+				if err != nil {
+					return nil, 0, 0, fmt.Errorf("%s has unsupported bitfield type: %v", bctx, err)
+				}
+				if align <= 0 {
+					align = 1
+				}
+				unitBits := size * 8
+				if width > unitBits {
+					return nil, 0, 0, fmt.Errorf("%s bitfield width %d exceeds storage width %d", bctx, width, unitBits)
+				}
+				field = cAggregateField{
+					Name:          name,
+					Type:          memberType,
+					Size:          size,
+					Align:         align,
+					BitfieldWidth: width,
+				}
+				if keyword == "union" {
+					field.Offset = 0
+					if size > maxSize {
+						maxSize = size
+					}
+				} else {
+					if width == 0 || !bitfieldOpen || !cTypeInfoEquivalent(bitfieldBase, memberType) || bitfieldUnitSize != size || bitfieldUnitAlign != align || bitfieldBitsUsed+width > unitBits {
+						nextOffset = alignTo(nextOffset, align)
+						bitfieldUnitOffset = nextOffset
+						bitfieldUnitSize = size
+						bitfieldUnitAlign = align
+						bitfieldBitsUsed = 0
+						bitfieldBase = memberType
+						bitfieldOpen = true
+						nextOffset += size
+						if nextOffset > maxSize {
+							maxSize = nextOffset
+						}
+					}
+					field.Offset = bitfieldUnitOffset
+					bitfieldBitsUsed += width
+					if width == 0 || bitfieldBitsUsed >= unitBits {
+						bitfieldOpen = false
+						bitfieldBitsUsed = 0
+					}
+				}
+				if align > maxAlign {
+					maxAlign = align
+				}
+				if name == "" {
+					continue
+				}
+			} else {
+				if name == "" {
+					return nil, 0, 0, fmt.Errorf("%s has unnamed member", bctx)
+				}
+				size, align, err := cTypeLayout(memberType)
+				if err != nil {
+					return nil, 0, 0, fmt.Errorf("%s member %q has unsupported type: %v", bctx, name, err)
+				}
+				if align <= 0 {
+					align = 1
+				}
+				field = cAggregateField{
+					Name:  name,
+					Type:  memberType,
+					Size:  size,
+					Align: align,
+				}
+				if keyword == "union" {
+					field.Offset = 0
+					if size > maxSize {
+						maxSize = size
+					}
+				} else {
+					bitfieldOpen = false
+					bitfieldBitsUsed = 0
+					nextOffset = alignTo(nextOffset, align)
+					field.Offset = nextOffset
+					nextOffset += size
+					if nextOffset > maxSize {
+						maxSize = nextOffset
+					}
+				}
+				if align > maxAlign {
+					maxAlign = align
 				}
 			}
-			if align > maxAlign {
-				maxAlign = align
+			if used[name] {
+				return nil, 0, 0, fmt.Errorf("%s has duplicate member name %q", bctx, name)
 			}
-			used[it.Name] = true
+			used[name] = true
 			fields = append(fields, field)
 		}
 	}
@@ -4157,7 +4337,7 @@ type funcCompiler struct {
 	breakTargets    []int
 	continueTargets []int
 
-	userLabels map[string]cUserLabel
+	userLabels  map[string]cUserLabel
 	retPtrLocal int
 
 	variadicCount int
@@ -6581,8 +6761,9 @@ func (fc *funcCompiler) checkCallArgsByType(calleeName string, paramCount int, p
 			continue
 		}
 		if gotPtr {
-			fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects scalar value", i+1, calleeName)
-			ok = false
+			// Preserve old C compatibility for pointer-to-integer parameter
+			// calls; later lowering keeps both as plain machine values.
+			continue
 		}
 	}
 	return ok

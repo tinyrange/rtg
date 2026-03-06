@@ -372,18 +372,26 @@ func knrFunctionNameList(tokens []Token) (int, int, bool) {
 	if rpar <= lpar {
 		return -1, -1, false
 	}
+	if rpar == lpar+1 {
+		return -1, -1, false
+	}
 	parts := splitTopLevel(tokens[lpar+1:rpar], ",")
 	if len(parts) == 0 {
 		return -1, -1, false
 	}
+	sawParam := false
 	for _, p := range parts {
 		p = filterNonNewline(p)
 		if len(p) == 0 {
-			continue
+			return -1, -1, false
 		}
 		if len(p) != 1 || p[0].Kind != TokIdent || isDeclarationKeyword(p[0]) {
 			return -1, -1, false
 		}
+		sawParam = true
+	}
+	if !sawParam {
+		return -1, -1, false
 	}
 	return lpar, rpar, true
 }
@@ -397,7 +405,20 @@ func looksLikeKNRFunctionHeadPrefix(tokens []Token) bool {
 	if !ok {
 		return false
 	}
-	return rpar < len(tokens)-1
+	if rpar >= len(tokens)-1 {
+		return false
+	}
+	trailing := filterNonNewline(tokens[rpar+1:])
+	if len(trailing) == 0 {
+		return false
+	}
+	if trailing[0].Kind == TokPunct {
+		switch trailing[0].Text {
+		case ",", "[", "]":
+			return false
+		}
+	}
+	return true
 }
 
 // ParseTranslationUnit parses a whole C translation unit.
