@@ -37,37 +37,24 @@ func BuildSymtabAndStrtab64(irmod *ir.IRModule, textVAddr uint64, textSize int, 
 	startNameOff := len(strtab)
 	strtab = append(strtab, []byte("_start")...)
 	strtab = append(strtab, 0)
+	spans := ir.ComputeNativeFuncSpans(irmod, funcOffsets, textSize)
 
 	var syms []symEntry
 	startSize := uint64(textSize)
-	if len(irmod.Funcs) > 0 {
-		if off, ok := funcOffsets[irmod.Funcs[0].Name]; ok {
-			startSize = uint64(off)
-		}
+	if off, ok := ir.FirstNativeFuncOffset(irmod, funcOffsets, textSize); ok {
+		startSize = uint64(off)
 	}
 	syms = append(syms, symEntry{nameOff: startNameOff, value: textVAddr, size: startSize})
 
-	for i, f := range irmod.Funcs {
-		funcStart, ok := funcOffsets[f.Name]
+	for _, f := range irmod.Funcs {
+		span, ok := spans[f.Name]
 		if !ok {
 			continue
 		}
 		nameOff := len(strtab)
 		strtab = append(strtab, []byte(f.Name)...)
 		strtab = append(strtab, 0)
-
-		funcEnd := textSize
-		for j := i + 1; j < len(irmod.Funcs); j++ {
-			nextStart, ok := funcOffsets[irmod.Funcs[j].Name]
-			if ok {
-				funcEnd = nextStart
-				break
-			}
-		}
-		if funcEnd < funcStart {
-			funcEnd = funcStart
-		}
-		syms = append(syms, symEntry{nameOff: nameOff, value: textVAddr + uint64(funcStart), size: uint64(funcEnd - funcStart)})
+		syms = append(syms, symEntry{nameOff: nameOff, value: textVAddr + uint64(span.Start), size: uint64(span.End - span.Start)})
 	}
 
 	symEntrySize := 24
@@ -97,37 +84,24 @@ func BuildSymtabAndStrtab32(irmod *ir.IRModule, textVAddr uint64, textSize int, 
 	startNameOff := len(strtab)
 	strtab = append(strtab, []byte("_start")...)
 	strtab = append(strtab, 0)
+	spans := ir.ComputeNativeFuncSpans(irmod, funcOffsets, textSize)
 
 	var syms []symEntry
 	startSize := uint32(textSize)
-	if len(irmod.Funcs) > 0 {
-		if off, ok := funcOffsets[irmod.Funcs[0].Name]; ok {
-			startSize = uint32(off)
-		}
+	if off, ok := ir.FirstNativeFuncOffset(irmod, funcOffsets, textSize); ok {
+		startSize = uint32(off)
 	}
 	syms = append(syms, symEntry{nameOff: startNameOff, value: uint32(textVAddr), size: startSize})
 
-	for i, f := range irmod.Funcs {
-		funcStart, ok := funcOffsets[f.Name]
+	for _, f := range irmod.Funcs {
+		span, ok := spans[f.Name]
 		if !ok {
 			continue
 		}
 		nameOff := len(strtab)
 		strtab = append(strtab, []byte(f.Name)...)
 		strtab = append(strtab, 0)
-
-		funcEnd := textSize
-		for j := i + 1; j < len(irmod.Funcs); j++ {
-			nextStart, ok := funcOffsets[irmod.Funcs[j].Name]
-			if ok {
-				funcEnd = nextStart
-				break
-			}
-		}
-		if funcEnd < funcStart {
-			funcEnd = funcStart
-		}
-		syms = append(syms, symEntry{nameOff: nameOff, value: uint32(textVAddr) + uint32(funcStart), size: uint32(funcEnd - funcStart)})
+		syms = append(syms, symEntry{nameOff: nameOff, value: uint32(textVAddr) + uint32(span.Start), size: uint32(span.End - span.Start)})
 	}
 
 	symEntrySize := 16

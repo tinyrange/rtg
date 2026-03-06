@@ -132,6 +132,10 @@ type machoSymEntry struct {
 	ntype   byte
 }
 
+type compiledFuncSignature struct {
+	start int
+}
+
 // NewCodeGen creates an ARM64 code generator with initialized global/data layout.
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64, extraGlobals int, withGOT bool) *CodeGen {
 	g := &CodeGen{
@@ -275,10 +279,46 @@ func (g *CodeGen) traceRestoreForcedInst(prev int) {
 
 // CompileModuleFuncs compiles all IR functions and records deterministic function offsets.
 func (g *CodeGen) CompileModuleFuncs(irmod *ir.IRModule) {
-	for _, f := range irmod.Funcs {
-		g.funcOffsets[f.Name] = len(g.code)
-		g.CompileFuncArm64(f)
+	if g.traceEnabled {
+		for _, f := range irmod.Funcs {
+			g.funcOffsets[f.Name] = len(g.code)
+			g.CompileFuncArm64(f)
+		}
+		return
 	}
+	seen := make(map[string]compiledFuncSignature)
+	for _, f := range irmod.Funcs {
+		start := len(g.code)
+		fixStart := len(g.callFixups)
+		g.funcOffsets[f.Name] = start
+		g.CompileFuncArm64(f)
+		sig := g.compiledFuncBodyKey(start, fixStart)
+		if prior, ok := seen[sig]; ok {
+			g.code = g.code[:start]
+			g.callFixups = g.callFixups[:fixStart]
+			g.funcOffsets[f.Name] = prior.start
+			continue
+		}
+		seen[sig] = compiledFuncSignature{start: start}
+	}
+}
+
+func (g *CodeGen) compiledFuncBodyKey(start int, fixStart int) string {
+	body := g.code[start:]
+	sig := make([]byte, 0, len(body)+(len(g.callFixups)-fixStart)*32)
+	sig = append(sig, body...)
+	sig = append(sig, 0xff)
+	for i := fixStart; i < len(g.callFixups); i++ {
+		fix := g.callFixups[i]
+		rel := fix.CodeOffset - start
+		sig = append(sig, 0, 0, 0, 0)
+		common.PutU32(sig[len(sig)-4:], uint32(rel))
+		sig = append(sig, 0, 0, 0, 0, 0, 0, 0, 0)
+		common.PutU64(sig[len(sig)-8:], fix.Value)
+		sig = append(sig, fix.Target...)
+		sig = append(sig, 0)
+	}
+	return string(sig)
 }
 
 // CollectNativeFuncSizes records final native function sizes into IR metadata.

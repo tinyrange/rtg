@@ -55,36 +55,31 @@ func BuildMachO64(g *aarch64.CodeGen, irmod *ir.IRModule, outputName string) []b
 	var syms []machoSymEntry
 	if !g.Target().StripBinary {
 		strtab = append(strtab, 0) // index 0 = empty string
+		spans := ir.ComputeNativeFuncSpans(irmod, g.FuncOffsets(), textSize)
 
 		// _main entry point (the code before the first compiled function)
 		mainNameOff := len(strtab)
 		strtab = append(strtab, []byte("_main")...)
 		strtab = append(strtab, 0)
 		mainSize := uint64(0)
-		if len(irmod.Funcs) > 0 {
-			if v, ok := g.LookupFuncOffset(irmod.Funcs[0].Name); ok {
-				mainSize = uint64(v)
-			}
+		if v, ok := ir.FirstNativeFuncOffset(irmod, g.FuncOffsets(), textSize); ok {
+			mainSize = uint64(v)
 		} else {
 			mainSize = uint64(textSize)
 		}
 		syms = append(syms, machoSymEntry{mainNameOff, 0, mainSize, 0x0F}) // N_SECT|N_EXT
 
 		// All compiled functions
-		for i, f := range irmod.Funcs {
+		for _, f := range irmod.Funcs {
 			nameOff := len(strtab)
 			strtab = append(strtab, []byte(f.Name)...)
 			strtab = append(strtab, 0)
 
-			funcStart, _ := g.LookupFuncOffset(f.Name)
-			var funcSize int
-			if i+1 < len(irmod.Funcs) {
-				nextStart, _ := g.LookupFuncOffset(irmod.Funcs[i+1].Name)
-				funcSize = nextStart - funcStart
-			} else {
-				funcSize = textSize - funcStart
+			span, ok := spans[f.Name]
+			if !ok {
+				continue
 			}
-			syms = append(syms, machoSymEntry{nameOff, uint64(funcStart), uint64(funcSize), 0x0E}) // N_SECT (local)
+			syms = append(syms, machoSymEntry{nameOff, uint64(span.Start), uint64(span.End - span.Start), 0x0E}) // N_SECT (local)
 		}
 	}
 
