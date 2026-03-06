@@ -49,6 +49,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#36` RV selfhost zerocall crash on nested method/helper calls was actually nested-map assignment mislowering in the compiler frontend.
 - `#37` RV32 `runtime.Now` used the wrong Linux syscall/struct shape under qemu (`clock_gettime64`/time64 layout).
 - `#38` RV32 selfhost comptime evaluation misdecoded ints/composites due 32-bit-hostile formatting and VM word-mask setup.
+- `#39` RISC-V Linux backend entry file used a `*_linux.go` filename, so wasm/selfhost compiler builds dropped `GenerateELF` and broke the web/WASI compiler smoke.
 - Historical DOS map/slice COMEMU failures from logs (`map_literal`, `slice_ops`, `map_comma_ok`, `map_range`, `map_types`, `slice_append`, `slice_nested`, `slice_range`) now PASS.
 ## Work Order
 
