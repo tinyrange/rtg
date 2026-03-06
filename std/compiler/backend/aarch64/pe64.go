@@ -736,8 +736,9 @@ func (g *CodeGen) buildDWARF64(irmod *ir.IRModule, textVA int, textSize int) ([]
 
 	// _start
 	startHighPC := textVA
-	if len(irmod.Funcs) > 0 {
-		startHighPC = textVA + g.funcOffsets[irmod.Funcs[0].Name]
+	spans := ir.ComputeNativeFuncSpans(irmod, g.funcOffsets, textSize)
+	if off, ok := ir.FirstNativeFuncOffset(irmod, g.funcOffsets, textSize); ok {
+		startHighPC = textVA + off
 	} else {
 		startHighPC = textVA + textSize
 	}
@@ -751,11 +752,13 @@ func (g *CodeGen) buildDWARF64(irmod *ir.IRModule, textVA int, textSize int) ([]
 	i := 0
 	for i < len(irmod.Funcs) {
 		f := irmod.Funcs[i]
-		funcStart := textVA + g.funcOffsets[f.Name]
-		funcEnd := textVA + textSize
-		if i+1 < len(irmod.Funcs) {
-			funcEnd = textVA + g.funcOffsets[irmod.Funcs[i+1].Name]
+		span, ok := spans[f.Name]
+		if !ok {
+			i++
+			continue
 		}
+		funcStart := textVA + span.Start
+		funcEnd := textVA + span.End
 
 		info = append(info, 2)
 		info = append(info, []byte(f.Name)...)

@@ -27,22 +27,19 @@ func CollectNativeFuncSizes(irmod *IRModule, funcOffsets map[string]int, codeLen
 	if SizeAnalysisPath == "" {
 		return
 	}
+	spans := ComputeNativeFuncSpans(irmod, funcOffsets, codeLen)
+	seenStarts := make(map[int]bool)
 	// Build ordered list matching irmod.Funcs
-	for i, f := range irmod.Funcs {
-		offset, ok := funcOffsets[f.Name]
+	for _, f := range irmod.Funcs {
+		span, ok := spans[f.Name]
 		if !ok {
 			continue
 		}
-		var size int
-		if i+1 < len(irmod.Funcs) {
-			nextOffset, ok2 := funcOffsets[irmod.Funcs[i+1].Name]
-			if ok2 {
-				size = nextOffset - offset
-			} else {
-				size = codeLen - offset
-			}
+		size := span.End - span.Start
+		if seenStarts[span.Start] {
+			size = 0
 		} else {
-			size = codeLen - offset
+			seenStarts[span.Start] = true
 		}
 		FuncSizes = append(FuncSizes, FuncSize{Name: f.Name, Size: size})
 	}

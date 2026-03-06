@@ -335,30 +335,20 @@ func GetIATInfo64(groups []ImportGroup, idataRVA int) (int, int) {
 
 func BuildDWARFSymbols(irmod *ir.IRModule, textStart int, textEnd int, funcOffsets map[string]int) []DwarfSymbol {
 	symbols := make([]DwarfSymbol, 0, len(irmod.Funcs)+1)
+	spans := ir.ComputeNativeFuncSpans(irmod, funcOffsets, textEnd-textStart)
 
 	startHighPC := textEnd
-	if len(irmod.Funcs) > 0 {
-		if off, ok := funcOffsets[irmod.Funcs[0].Name]; ok {
-			startHighPC = textStart + off
-		}
+	if off, ok := ir.FirstNativeFuncOffset(irmod, funcOffsets, textEnd-textStart); ok {
+		startHighPC = textStart + off
 	}
 	symbols = append(symbols, DwarfSymbol{Name: "_start", LowPC: textStart, HighPC: startHighPC})
 
-	for i, f := range irmod.Funcs {
-		startOff, ok := funcOffsets[f.Name]
+	for _, f := range irmod.Funcs {
+		span, ok := spans[f.Name]
 		if !ok {
 			continue
 		}
-		funcStart := textStart + startOff
-		funcEnd := textEnd
-		for j := i + 1; j < len(irmod.Funcs); j++ {
-			nextOff, ok := funcOffsets[irmod.Funcs[j].Name]
-			if ok {
-				funcEnd = textStart + nextOff
-				break
-			}
-		}
-		symbols = append(symbols, DwarfSymbol{Name: f.Name, LowPC: funcStart, HighPC: funcEnd})
+		symbols = append(symbols, DwarfSymbol{Name: f.Name, LowPC: textStart + span.Start, HighPC: textStart + span.End})
 	}
 
 	return symbols
