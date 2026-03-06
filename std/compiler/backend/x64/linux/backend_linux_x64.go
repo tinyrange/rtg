@@ -171,6 +171,8 @@ func compileCallIntrinsicLinux(g *core.CodeGen, inst ir.Inst) {
 	switch inst.Name {
 	case "Syscall":
 		compileSyscallIntrinsic(g, inst.Arg)
+	case "Alloc":
+		g.CompileAllocIntrinsic()
 	case "Sliceptr":
 		g.CompileSliceptrIntrinsic()
 	case "Makeslice":

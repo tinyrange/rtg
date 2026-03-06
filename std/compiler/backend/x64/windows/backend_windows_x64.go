@@ -129,6 +129,8 @@ func compileCallIntrinsicWin64(g *core.CodeGen, inst ir.Inst) {
 		return
 	}
 	switch inst.Name {
+	case "Alloc":
+		g.CompileAllocIntrinsic()
 	case "Sliceptr":
 		g.CompileSliceptrIntrinsic()
 	case "Makeslice":

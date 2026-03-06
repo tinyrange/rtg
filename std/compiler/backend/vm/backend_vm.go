@@ -2411,6 +2411,9 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.push(vm.vmAsmByteSlice(vm.vmAsmFixupBytes(), "asm-fixups"))
 
 	// Memory intrinsics
+	case "Alloc":
+		vm.push(vm.alloc(vm.localGet(localsAddr, ws, 0), "intrinsic-alloc"))
+
 	case "Sliceptr":
 		a := vm.localGet(localsAddr, ws, 0)
 		if a == 0 {

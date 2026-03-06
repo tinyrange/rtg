@@ -253,6 +253,8 @@ func (g *CodeGen) compileCallIntrinsicArm64Windows(inst ir.Inst) {
 		return
 	}
 	switch inst.Name {
+	case "Alloc":
+		g.compileAllocIntrinsicArm64()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsicArm64()
 	case "Makeslice":

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -18,22 +19,28 @@ type Macro struct {
 
 // Options configures preprocessing behavior.
 type Options struct {
-	IncludePaths       []string
-	SystemIncludePaths []string
-	Defines            []string // NAME or NAME=VALUE
-	Undefs             []string
-	MaxIncludeDepth    int
+	IncludePaths          []string
+	SystemIncludePaths    []string
+	Defines               []string // NAME or NAME=VALUE
+	Undefs                []string
+	MaxIncludeDepth       int
+	TargetOS              string
+	TargetArch            string
+	PtrSize               int
+	Hosted                bool
+	DisableBuiltinHeaders bool
 }
 
 // Preprocessor preprocesses token streams.
 type Preprocessor struct {
-	includePaths       []string
-	systemIncludePaths []string
-	macros             map[string]*Macro
-	once               map[string]bool
-	included           map[string]bool
-	activeFiles        map[string]bool
-	maxIncludeDepth    int
+	includePaths        []string
+	systemIncludePaths  []string
+	builtinIncludePaths []string
+	macros              map[string]*Macro
+	once                map[string]bool
+	included            map[string]bool
+	activeFiles         map[string]bool
+	maxIncludeDepth     int
 }
 
 func NewPreprocessor(opts Options) *Preprocessor {
@@ -41,14 +48,30 @@ func NewPreprocessor(opts Options) *Preprocessor {
 	if maxDepth <= 0 {
 		maxDepth = 64
 	}
+	targetOS := opts.TargetOS
+	if targetOS == "" {
+		targetOS = runtime.GOOS
+	}
+	targetArch := opts.TargetArch
+	if targetArch == "" {
+		targetArch = runtime.GOARCH
+	}
+	ptrSize := opts.PtrSize
+	if ptrSize <= 0 {
+		ptrSize = defaultTargetPtrSize(targetArch)
+	}
 	p := &Preprocessor{
-		includePaths:       append([]string{}, opts.IncludePaths...),
-		systemIncludePaths: append([]string{}, opts.SystemIncludePaths...),
-		macros:             make(map[string]*Macro),
-		once:               make(map[string]bool),
-		included:           make(map[string]bool),
-		activeFiles:        make(map[string]bool),
-		maxIncludeDepth:    maxDepth,
+		includePaths:        append([]string{}, opts.IncludePaths...),
+		systemIncludePaths:  append([]string{}, opts.SystemIncludePaths...),
+		builtinIncludePaths: builtinIncludeSearchPaths(!opts.DisableBuiltinHeaders),
+		macros:              make(map[string]*Macro),
+		once:                make(map[string]bool),
+		included:            make(map[string]bool),
+		activeFiles:         make(map[string]bool),
+		maxIncludeDepth:     maxDepth,
+	}
+	for _, d := range builtinPredefineSpecs(targetOS, targetArch, ptrSize, opts.Hosted) {
+		p.applyCommandLineDefine(d)
 	}
 	for _, d := range opts.Defines {
 		p.applyCommandLineDefine(d)
@@ -66,6 +89,24 @@ func cloneTokens(in []Token) []Token {
 	out := make([]Token, len(in))
 	copy(out, in)
 	return out
+}
+
+func parenBalance(tokens []Token) int {
+	depth := 0
+	for _, t := range tokens {
+		if t.Kind != TokPunct {
+			continue
+		}
+		switch t.Text {
+		case "(":
+			depth++
+		case ")":
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth
 }
 
 func copyDisabled(disabled map[string]bool, name string) map[string]bool {
@@ -127,12 +168,16 @@ func (p *Preprocessor) resolveInclude(include string, quoted bool, currentFile s
 		search = append(search, filepath.Dir(currentFile))
 	}
 	search = append(search, p.includePaths...)
+	search = append(search, p.builtinIncludePaths...)
 	search = append(search, p.systemIncludePaths...)
 	for _, dir := range search {
 		if dir == "" {
 			continue
 		}
 		candidate := cleanPath(filepath.Join(dir, include))
+		if _, ok := readBuiltinInclude(candidate); ok {
+			return candidate, nil
+		}
 		if fileExists(candidate) {
 			abs, err := absPath(candidate)
 			if err != nil {
@@ -150,6 +195,20 @@ func (p *Preprocessor) resolveInclude(include string, quoted bool, currentFile s
 func (p *Preprocessor) processPath(path string, depth int) ([]Token, error) {
 	if depth > p.maxIncludeDepth {
 		return nil, fmt.Errorf("preprocessor: include depth exceeded (%d)", p.maxIncludeDepth)
+	}
+	path = cleanPath(path)
+	if src, ok := readBuiltinInclude(path); ok {
+		if p.once[path] && p.included[path] {
+			return nil, nil
+		}
+		if p.activeFiles[path] {
+			return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", path)
+		}
+		p.activeFiles[path] = true
+		p.included[path] = true
+		out, procErr := p.processSource(path, src, depth)
+		p.activeFiles[path] = false
+		return out, procErr
 	}
 	abs, err := absPath(path)
 	if err != nil {
@@ -237,17 +296,41 @@ func (p *Preprocessor) processSource(file string, src string, depth int) ([]Toke
 			if len(emitted) > 0 {
 				out = append(out, emitted...)
 			}
-		} else if state.active {
-			if len(line) > 0 {
-				expanded, err := p.expandTokens(file, line, nil, 0)
+			if hasNL {
+				i++
+			}
+			continue
+		}
+
+		if state.active {
+			group := cloneTokens(line)
+			newlines := make([]Token, 0, 1)
+			next := i
+			if hasNL {
+				newlines = append(newlines, nlTok)
+				next = i + 1
+			}
+			for parenBalance(group) > 0 && next < len(toks) {
+				lineStart = next
+				for next < len(toks) && toks[next].Kind != TokNewline {
+					next++
+				}
+				group = append(group, toks[lineStart:next]...)
+				if next < len(toks) && toks[next].Kind == TokNewline {
+					newlines = append(newlines, toks[next])
+					next++
+				}
+			}
+			if len(group) > 0 {
+				expanded, err := p.expandTokens(file, group, nil, 0)
 				if err != nil {
 					return nil, err
 				}
 				out = append(out, expanded...)
 			}
-			if hasNL {
-				out = append(out, nlTok)
-			}
+			out = append(out, newlines...)
+			i = next
+			continue
 		}
 
 		if hasNL {
@@ -289,25 +372,32 @@ func (p *Preprocessor) handleDirective(file string, line []Token, state *condSta
 
 	switch name {
 	case "if":
-		cond, err := p.evalIfExpression(args)
-		if err != nil {
-			return nil, err
-		}
 		parent := state.active
+		cond := false
+		if parent {
+			expanded, err := p.expandTokens(file, args, nil, 0)
+			if err != nil {
+				return nil, err
+			}
+			cond, err = p.evalIfExpression(file, expanded)
+			if err != nil {
+				return nil, err
+			}
+		}
 		f := condFrame{parentActive: parent, active: parent && cond, branchTaken: parent && cond}
 		state.frames = append(state.frames, f)
 		state.active = f.active
 		return nil, nil
 	case "ifdef":
-		cond := len(args) > 0 && args[0].Kind == TokIdent && p.isDefined(args[0].Text)
 		parent := state.active
+		cond := parent && len(args) > 0 && args[0].Kind == TokIdent && p.isDefined(args[0].Text)
 		f := condFrame{parentActive: parent, active: parent && cond, branchTaken: parent && cond}
 		state.frames = append(state.frames, f)
 		state.active = f.active
 		return nil, nil
 	case "ifndef":
-		cond := len(args) > 0 && args[0].Kind == TokIdent && !p.isDefined(args[0].Text)
 		parent := state.active
+		cond := parent && len(args) > 0 && args[0].Kind == TokIdent && !p.isDefined(args[0].Text)
 		f := condFrame{parentActive: parent, active: parent && cond, branchTaken: parent && cond}
 		state.frames = append(state.frames, f)
 		state.active = f.active
@@ -321,15 +411,19 @@ func (p *Preprocessor) handleDirective(file string, line []Token, state *condSta
 		if f.sawElse {
 			return nil, fmt.Errorf("%s: #elif after #else", file)
 		}
-		cond, err := p.evalIfExpression(args)
-		if err != nil {
-			return nil, err
-		}
 		if !f.parentActive {
 			f.active = false
 		} else if f.branchTaken {
 			f.active = false
 		} else {
+			expanded, err := p.expandTokens(file, args, nil, 0)
+			if err != nil {
+				return nil, err
+			}
+			cond, err := p.evalIfExpression(file, expanded)
+			if err != nil {
+				return nil, err
+			}
 			f.active = cond
 			if cond {
 				f.branchTaken = true
@@ -759,6 +853,7 @@ type exprParser struct {
 	tokens []Token
 	pos    int
 	pp     *Preprocessor
+	file   string
 }
 
 func (e *exprParser) atEnd() bool {
@@ -794,7 +889,7 @@ func (e *exprParser) matchPunct(op string) bool {
 
 func (e *exprParser) parsePrimary() (int64, error) {
 	if e.matchPunct("(") {
-		v, err := e.parseOr()
+		v, err := e.parseComma()
 		if err != nil {
 			return 0, err
 		}
@@ -807,6 +902,14 @@ func (e *exprParser) parsePrimary() (int64, error) {
 	if t.Kind == TokNumber {
 		e.advance()
 		v, err := parseIntConstant(t.Text)
+		if err != nil {
+			return 0, err
+		}
+		return v, nil
+	}
+	if t.Kind == TokChar {
+		e.advance()
+		v, err := parseCCharLiteral(t.Text)
 		if err != nil {
 			return 0, err
 		}
@@ -877,7 +980,98 @@ func (e *exprParser) parseUnary() (int64, error) {
 		}
 		return 0, nil
 	}
+	if !e.atEnd() && e.peek().Kind == TokIdent {
+		name := e.peek().Text
+		switch name {
+		case "__has_include":
+			e.advance()
+			return e.parseHasInclude()
+		case "__has_include_next", "__has_feature", "__has_extension", "__has_builtin", "__has_attribute", "__has_c_attribute", "__has_warning", "__has_cpp_attribute", "__has_declspec_attribute":
+			name := e.advance().Text
+			if _, err := e.parseFeatureOperand(name); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		}
+		if strings.HasPrefix(name, "__is_") || name == "__building_module" {
+			name = e.advance().Text
+			if _, err := e.parseFeatureOperand(name); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		}
+	}
 	return e.parsePrimary()
+}
+
+func (e *exprParser) parseFeatureOperand(name string) ([]Token, error) {
+	if !e.matchPunct("(") {
+		return nil, fmt.Errorf("%s expects (...)", name)
+	}
+	start := e.pos
+	depth := 1
+	for !e.atEnd() {
+		tok := e.advance()
+		if tok.Kind != TokPunct {
+			continue
+		}
+		switch tok.Text {
+		case "(":
+			depth++
+		case ")":
+			depth--
+			if depth == 0 {
+				return cloneTokens(e.tokens[start : e.pos-1]), nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%s missing closing )", name)
+}
+
+func (e *exprParser) parseHasInclude() (int64, error) {
+	operand, err := e.parseFeatureOperand("__has_include")
+	if err != nil {
+		return 0, err
+	}
+	if len(operand) == 0 {
+		return 0, fmt.Errorf("__has_include expects a header operand")
+	}
+
+	include := ""
+	quoted := false
+	if len(operand) == 1 && operand[0].Kind == TokString {
+		v, err := decodeStringToken(operand[0])
+		if err != nil {
+			return 0, err
+		}
+		include = v
+		quoted = true
+	} else if operand[0].Kind == TokPunct && operand[0].Text == "<" {
+		j := 1
+		var b strings.Builder
+		for j < len(operand) {
+			if operand[j].Kind == TokPunct && operand[j].Text == ">" {
+				break
+			}
+			b.WriteString(operand[j].Text)
+			j++
+		}
+		if j >= len(operand) || j != len(operand)-1 {
+			return 0, fmt.Errorf("invalid __has_include operand")
+		}
+		include = b.String()
+	} else {
+		return 0, fmt.Errorf("invalid __has_include operand")
+	}
+
+	_, err = e.pp.resolveInclude(include, quoted, e.file)
+	if err == nil {
+		return 1, nil
+	}
+	if strings.Contains(err.Error(), "include not found:") {
+		return 0, nil
+	}
+	return 0, nil
 }
 
 func (e *exprParser) parseMul() (int64, error) {
@@ -948,14 +1142,41 @@ func (e *exprParser) parseAdd() (int64, error) {
 	return v, nil
 }
 
-func (e *exprParser) parseRel() (int64, error) {
+func (e *exprParser) parseShift() (int64, error) {
 	v, err := e.parseAdd()
 	if err != nil {
 		return 0, err
 	}
 	for {
-		if e.matchPunct("<") {
+		if e.matchPunct("<<") {
 			r, err := e.parseAdd()
+			if err != nil {
+				return 0, err
+			}
+			v = v << uint(r)
+			continue
+		}
+		if e.matchPunct(">>") {
+			r, err := e.parseAdd()
+			if err != nil {
+				return 0, err
+			}
+			v = v >> uint(r)
+			continue
+		}
+		break
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseRel() (int64, error) {
+	v, err := e.parseShift()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if e.matchPunct("<") {
+			r, err := e.parseShift()
 			if err != nil {
 				return 0, err
 			}
@@ -967,7 +1188,7 @@ func (e *exprParser) parseRel() (int64, error) {
 			continue
 		}
 		if e.matchPunct(">") {
-			r, err := e.parseAdd()
+			r, err := e.parseShift()
 			if err != nil {
 				return 0, err
 			}
@@ -979,7 +1200,7 @@ func (e *exprParser) parseRel() (int64, error) {
 			continue
 		}
 		if e.matchPunct("<=") {
-			r, err := e.parseAdd()
+			r, err := e.parseShift()
 			if err != nil {
 				return 0, err
 			}
@@ -991,7 +1212,7 @@ func (e *exprParser) parseRel() (int64, error) {
 			continue
 		}
 		if e.matchPunct(">=") {
-			r, err := e.parseAdd()
+			r, err := e.parseShift()
 			if err != nil {
 				return 0, err
 			}
@@ -1042,13 +1263,58 @@ func (e *exprParser) parseEq() (int64, error) {
 	return v, nil
 }
 
-func (e *exprParser) parseAnd() (int64, error) {
+func (e *exprParser) parseBitAnd() (int64, error) {
 	v, err := e.parseEq()
 	if err != nil {
 		return 0, err
 	}
-	for e.matchPunct("&&") {
+	for e.matchPunct("&") {
 		r, err := e.parseEq()
+		if err != nil {
+			return 0, err
+		}
+		v = v & r
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseBitXor() (int64, error) {
+	v, err := e.parseBitAnd()
+	if err != nil {
+		return 0, err
+	}
+	for e.matchPunct("^") {
+		r, err := e.parseBitAnd()
+		if err != nil {
+			return 0, err
+		}
+		v = v ^ r
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseBitOr() (int64, error) {
+	v, err := e.parseBitXor()
+	if err != nil {
+		return 0, err
+	}
+	for e.matchPunct("|") {
+		r, err := e.parseBitXor()
+		if err != nil {
+			return 0, err
+		}
+		v = v | r
+	}
+	return v, nil
+}
+
+func (e *exprParser) parseAnd() (int64, error) {
+	v, err := e.parseBitOr()
+	if err != nil {
+		return 0, err
+	}
+	for e.matchPunct("&&") {
+		r, err := e.parseBitOr()
 		if err != nil {
 			return 0, err
 		}
@@ -1080,17 +1346,56 @@ func (e *exprParser) parseOr() (int64, error) {
 	return v, nil
 }
 
-func (p *Preprocessor) evalIfExpression(tokens []Token) (bool, error) {
+func (e *exprParser) parseConditional() (int64, error) {
+	v, err := e.parseOr()
+	if err != nil {
+		return 0, err
+	}
+	if !e.matchPunct("?") {
+		return v, nil
+	}
+	trueVal, err := e.parseComma()
+	if err != nil {
+		return 0, err
+	}
+	if !e.matchPunct(":") {
+		return 0, fmt.Errorf("expected ':' in conditional expression")
+	}
+	falseVal, err := e.parseConditional()
+	if err != nil {
+		return 0, err
+	}
+	if v != 0 {
+		return trueVal, nil
+	}
+	return falseVal, nil
+}
+
+func (e *exprParser) parseComma() (int64, error) {
+	v, err := e.parseConditional()
+	if err != nil {
+		return 0, err
+	}
+	for e.matchPunct(",") {
+		v, err = e.parseConditional()
+		if err != nil {
+			return 0, err
+		}
+	}
+	return v, nil
+}
+
+func (p *Preprocessor) evalIfExpression(file string, tokens []Token) (bool, error) {
 	if len(tokens) == 0 {
 		return false, nil
 	}
-	e := &exprParser{tokens: tokens, pp: p}
-	v, err := e.parseOr()
+	e := &exprParser{tokens: tokens, pp: p, file: file}
+	v, err := e.parseComma()
 	if err != nil {
 		return false, err
 	}
 	if !e.atEnd() {
-		return false, fmt.Errorf("trailing tokens in #if expression")
+		return false, fmt.Errorf("trailing tokens in #if expression (%s)", tokenSliceText(e.tokens[e.pos:]))
 	}
 	return v != 0, nil
 }

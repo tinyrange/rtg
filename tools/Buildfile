@@ -236,6 +236,12 @@ test-compiler-bugs: build
 test-c-frontend: build
   sh go run ./tools/cfronttest
 
+test-c-frontend-ioccc: build
+  sh go run ./tools/iocccscan
+
+test-c-frontend-ioccc-pilot: build
+  sh go run ./tools/iocccscan -years 2024 -limit 10
+
 make-dos-floppy: build
   sh bash tools/make_dos_floppy.sh
 

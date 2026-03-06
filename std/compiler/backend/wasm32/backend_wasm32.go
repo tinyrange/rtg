@@ -2624,6 +2624,8 @@ func (g *WasmGen) compileCallIntrinsic(inst ir.Inst) {
 		g.w.i32WrapI64()
 		g.w.end()
 		g.pushType(WASM_TYPE_I32)
+	case "Alloc":
+		g.compileAllocIntrinsic()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic()
 	case "Makeslice":
@@ -2643,6 +2645,17 @@ func (g *WasmGen) compileCallIntrinsic(inst ir.Inst) {
 	default:
 		g.w.unreachable()
 	}
+}
+
+func (g *WasmGen) compileAllocIntrinsic() {
+	g.w.globalGet(uint32(g.globalSP))
+	g.w.i32Load(2, 0)
+	if idx, ok := g.funcMap["runtime.Alloc"]; ok {
+		g.w.call(uint32(idx))
+		g.pushType(WASM_TYPE_I32)
+		return
+	}
+	g.w.unreachable()
 }
 
 func (g *WasmGen) compileSliceptrIntrinsic() {

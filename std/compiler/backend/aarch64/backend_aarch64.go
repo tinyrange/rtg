@@ -769,6 +769,8 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.ClearOperandCache()
 	case "Syscall":
 		g.compileSyscallIntrinsicArm64(inst.Arg)
+	case "Alloc":
+		g.compileAllocIntrinsicArm64()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsicArm64()
 	case "Makeslice":
@@ -788,6 +790,12 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 	default:
 		panic("ICE: unknown intrinsic '" + inst.Name + "' in compileCallIntrinsicArm64")
 	}
+}
+
+func (g *CodeGen) compileAllocIntrinsicArm64() {
+	g.emitLoadLocalArm64(1*8, REG_X0)
+	g.opPush(REG_X0)
+	g.EmitCallPlaceholderArm64("runtime.Alloc")
 }
 
 func (g *CodeGen) compileSliceptrIntrinsicArm64() {

@@ -127,6 +127,124 @@ func inferSourceLanguage(explicit string, entryFiles []string) (string, error) {
 	return lang, nil
 }
 
+func cModuleNeedsRuntime(irmod *ir.IRModule) bool {
+	if irmod == nil {
+		return false
+	}
+	for _, f := range irmod.Funcs {
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CALL_INTRINSIC && inst.Name == "Alloc" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compileCRuntimeSupportIR(baseDir string, target common.Target) (*ir.IRModule, error) {
+	path := tempDirPath() + pathSep() + "rtg-c-runtime-" + fmt.Sprintf("%d", os.Getpid()) + ".go"
+	defer os.RemoveAll(path)
+	if err := os.WriteFile(path, []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		return nil, err
+	}
+	mod := frontend.ResolveModule(&target, baseDir, []string{path})
+	if errs := frontend.ValidateModule(mod); len(errs) > 0 {
+		return nil, fmt.Errorf("runtime validation failed: %s", strings.Join(errs, "; "))
+	}
+	irmod, errs := frontend.CompileModule(target, mod)
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("runtime compile failed: %s", strings.Join(errs, "; "))
+	}
+	return irmod, nil
+}
+
+func mergeRuntimeSupportIR(dst *ir.IRModule, runtimeIR *ir.IRModule) {
+	if dst == nil || runtimeIR == nil {
+		return
+	}
+	globalMap := make(map[int]int)
+	for _, g := range runtimeIR.Globals {
+		if !strings.HasPrefix(g.Name, "runtime.") {
+			continue
+		}
+		ng := g
+		ng.Index = len(dst.Globals)
+		globalMap[g.Index] = ng.Index
+		dst.Globals = append(dst.Globals, ng)
+	}
+	for _, f := range runtimeIR.Funcs {
+		if !strings.HasPrefix(f.Name, "runtime.") {
+			continue
+		}
+		for i := range f.Code {
+			switch f.Code[i].Op {
+			case ir.OP_GLOBAL_GET, ir.OP_GLOBAL_SET, ir.OP_GLOBAL_ADDR:
+				if newIdx, ok := globalMap[f.Code[i].Arg]; ok {
+					f.Code[i].Arg = newIdx
+				}
+			}
+		}
+		dst.Funcs = append(dst.Funcs, f)
+	}
+	dst.Types = append(dst.Types, runtimeIR.Types...)
+	if len(runtimeIR.LinkStaticFuncs) > 0 {
+		if dst.LinkStaticFuncs == nil {
+			dst.LinkStaticFuncs = make(map[string]string)
+		}
+		for k, v := range runtimeIR.LinkStaticFuncs {
+			dst.LinkStaticFuncs[k] = v
+		}
+	}
+	if len(runtimeIR.ZeroCallFuncs) > 0 {
+		if dst.ZeroCallFuncs == nil {
+			dst.ZeroCallFuncs = make(map[string]bool)
+		}
+		for k, v := range runtimeIR.ZeroCallFuncs {
+			dst.ZeroCallFuncs[k] = v
+		}
+	}
+	if len(runtimeIR.TypeIDs) > 0 {
+		if dst.TypeIDs == nil {
+			dst.TypeIDs = make(map[string]int)
+		}
+		for k, v := range runtimeIR.TypeIDs {
+			dst.TypeIDs[k] = v
+		}
+	}
+	if len(runtimeIR.MethodTable) > 0 {
+		if dst.MethodTable == nil {
+			dst.MethodTable = make(map[string]string)
+		}
+		for k, v := range runtimeIR.MethodTable {
+			dst.MethodTable[k] = v
+		}
+	}
+	if len(runtimeIR.IfaceMethods) > 0 {
+		if dst.IfaceMethods == nil {
+			dst.IfaceMethods = make(map[string][]string)
+		}
+		for k, v := range runtimeIR.IfaceMethods {
+			dst.IfaceMethods[k] = append([]string{}, v...)
+		}
+	}
+	if len(runtimeIR.IfaceMethodRets) > 0 {
+		if dst.IfaceMethodRets == nil {
+			dst.IfaceMethodRets = make(map[string]int)
+		}
+		for k, v := range runtimeIR.IfaceMethodRets {
+			dst.IfaceMethodRets[k] = v
+		}
+	}
+	if len(runtimeIR.CallbackFuncs) > 0 {
+		if dst.CallbackFuncs == nil {
+			dst.CallbackFuncs = make(map[string]bool)
+		}
+		for k, v := range runtimeIR.CallbackFuncs {
+			dst.CallbackFuncs[k] = v
+		}
+	}
+}
+
 func isRecognizedSourceLanguage(lang string) bool {
 	return lang == "go" || lang == "c99"
 }
@@ -803,6 +921,9 @@ func main() {
 				SystemIncludePaths: cSystemIncludePaths,
 				Defines:            rawDefineArgs,
 				Undefs:             cUndefs,
+				TargetOS:           compileTarget.GOOS,
+				TargetArch:         compileTarget.GOARCH,
+				PtrSize:            compileTarget.PtrSize,
 			}
 			var preprocessOut strings.Builder
 			var parseOut strings.Builder
@@ -884,6 +1005,18 @@ func main() {
 				}
 				runCleanup()
 				os.Exit(1)
+			}
+			if cModuleNeedsRuntime(irmod) {
+				if compileTarget.CompilerDebug {
+					fmt.Fprintf(os.Stderr, "debug: merging runtime support into C99 IR\n")
+				}
+				runtimeIR, err := compileCRuntimeSupportIR(baseDir, compileTarget)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error preparing C runtime support: %v\n", err)
+					runCleanup()
+					os.Exit(1)
+				}
+				mergeRuntimeSupportIR(irmod, runtimeIR)
 			}
 			traceExit(20)
 		} else {

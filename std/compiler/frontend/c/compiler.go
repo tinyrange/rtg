@@ -66,6 +66,7 @@ type cDeclItem struct {
 	Kind             cDeclKind
 	PtrDepth         int
 	ArrayLen         int64
+	ArrayDims        []int64
 	IsVoid           bool
 	Base             cScalarType
 	FuncSig          *cFuncTypeSig
@@ -81,6 +82,7 @@ type cGlobalInit struct {
 	PtrDepth         int
 	ArrayBase        int
 	ArrayLen         int64
+	ArrayDims        []int64
 	ObjectBase       int
 	ObjectWords      int64
 	AggregateKeyword string
@@ -101,6 +103,8 @@ const (
 	cDeclArray
 )
 
+const cArrayLenUnspecified int64 = -1
+
 type cScalarType int
 
 const (
@@ -118,6 +122,7 @@ type cTypeInfo struct {
 	Kind             cDeclKind
 	PtrDepth         int
 	ArrayLen         int64
+	ArrayDims        []int64
 	IsVoid           bool
 	Base             cScalarType
 	FuncSig          *cFuncTypeSig
@@ -258,6 +263,7 @@ type cLocalBinding struct {
 	PtrDepth         int
 	ElemStep         int64
 	ArrayLen         int64
+	ArrayDims        []int64
 	Base             cScalarType
 	FuncSig          *cFuncTypeSig
 	OpaqueAggregate  bool
@@ -287,24 +293,25 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 			IfaceMethods:    make(map[string][]string),
 			IfaceMethodRets: make(map[string]int),
 		},
-		funcs:          make(map[string]*cFuncSig),
-		globalIndex:    make(map[string]int),
-		globalKind:     make(map[string]cDeclKind),
-		globalPtrDepth: make(map[string]int),
-		globalElemStep: make(map[string]int64),
-		globalArray:    make(map[string]int64),
-		globalBase:     make(map[string]cScalarType),
-		globalFunc:     make(map[string]*cFuncTypeSig),
-		globalOpaque:   make(map[string]bool),
-		globalAggKey:   make(map[string]string),
-		globalAggTag:   make(map[string]string),
-		aggregateTags:  make(map[string]*cAggregateInfo),
-		enumConsts:     make(map[string]int64),
-		typedefs:       make(map[string]cTypeInfo),
-		funcIDs:        make(map[string]int64),
-		intrinsics:     make(map[string]cIntrinsicWrapper),
-		externFns:      make(map[string]string),
-		nextLabelSeq:   1,
+		funcs:           make(map[string]*cFuncSig),
+		globalIndex:     make(map[string]int),
+		globalKind:      make(map[string]cDeclKind),
+		globalPtrDepth:  make(map[string]int),
+		globalElemStep:  make(map[string]int64),
+		globalArray:     make(map[string]int64),
+		globalArrayDims: make(map[string][]int64),
+		globalBase:      make(map[string]cScalarType),
+		globalFunc:      make(map[string]*cFuncTypeSig),
+		globalOpaque:    make(map[string]bool),
+		globalAggKey:    make(map[string]string),
+		globalAggTag:    make(map[string]string),
+		aggregateTags:   make(map[string]*cAggregateInfo),
+		enumConsts:      make(map[string]int64),
+		typedefs:        make(map[string]cTypeInfo),
+		funcIDs:         make(map[string]int64),
+		intrinsics:      make(map[string]cIntrinsicWrapper),
+		externFns:       make(map[string]string),
+		nextLabelSeq:    1,
 	}
 	prevTypedefLookupCompiler := cTypedefLookupCompiler
 	prevTypedefLookupFunc := cTypedefLookupFunc
@@ -358,21 +365,22 @@ type compiler struct {
 	funcs     map[string]*cFuncSig
 	funcOrder []*cFuncSig
 
-	globalIndex    map[string]int
-	globalKind     map[string]cDeclKind
-	globalPtrDepth map[string]int
-	globalElemStep map[string]int64
-	globalArray    map[string]int64
-	globalBase     map[string]cScalarType
-	globalFunc     map[string]*cFuncTypeSig
-	globalOpaque   map[string]bool
-	globalAggKey   map[string]string
-	globalAggTag   map[string]string
-	aggregateTags  map[string]*cAggregateInfo
-	enumConsts     map[string]int64
-	globalInits    []cGlobalInit
-	typedefs       map[string]cTypeInfo
-	funcIDs        map[string]int64
+	globalIndex     map[string]int
+	globalKind      map[string]cDeclKind
+	globalPtrDepth  map[string]int
+	globalElemStep  map[string]int64
+	globalArray     map[string]int64
+	globalArrayDims map[string][]int64
+	globalBase      map[string]cScalarType
+	globalFunc      map[string]*cFuncTypeSig
+	globalOpaque    map[string]bool
+	globalAggKey    map[string]string
+	globalAggTag    map[string]string
+	aggregateTags   map[string]*cAggregateInfo
+	enumConsts      map[string]int64
+	globalInits     []cGlobalInit
+	typedefs        map[string]cTypeInfo
+	funcIDs         map[string]int64
 
 	intrinsics map[string]cIntrinsicWrapper
 	externFns  map[string]string
@@ -523,8 +531,7 @@ func (c *compiler) pointerElemStep(kind cDeclKind, ptrDepth int, base cScalarTyp
 		}
 		return int64(c.target.PtrSize)
 	}
-	_ = base
-	return int64(c.target.PtrSize)
+	return cScalarSizeForType(base)
 }
 
 func (c *compiler) lookupEnumConst(name string) (int64, bool) {
@@ -842,26 +849,39 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		c.globalOpaque[it.Name] = it.OpaqueAggregate
 		c.globalAggKey[it.Name] = it.AggregateKeyword
 		c.globalAggTag[it.Name] = it.AggregateTag
+		info := cTypeInfo{
+			Kind:             it.Kind,
+			PtrDepth:         it.PtrDepth,
+			ArrayLen:         it.ArrayLen,
+			ArrayDims:        cloneInt64s(it.ArrayDims),
+			IsVoid:           it.IsVoid,
+			Base:             it.Base,
+			FuncSig:          cloneFuncTypeSig(it.FuncSig),
+			OpaqueAggregate:  it.OpaqueAggregate,
+			AggregateKeyword: it.AggregateKeyword,
+			AggregateTag:     it.AggregateTag,
+		}
 		elemStep := c.pointerElemStep(it.Kind, it.PtrDepth, it.Base, it.IsVoid, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag)
+		if it.Kind == cDeclArray {
+			elemSize, _, err := cTypeLayout(arrayElementTypeInfo(info))
+			if err == nil && elemSize > 0 {
+				elemStep = elemSize
+			}
+		}
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
 		}
 		c.globalElemStep[it.Name] = elemStep
 		if it.Kind == cDeclArray {
 			c.globalArray[it.Name] = it.ArrayLen
-			base := len(c.irmod.Globals)
-			for i := int64(0); i < it.ArrayLen; i++ {
-				elemIdx := len(c.irmod.Globals)
-				elemName := fmt.Sprintf("%s$%d", irName, i)
-				c.irmod.Globals = append(c.irmod.Globals, ir.IRGlobal{Name: elemName, Index: elemIdx})
-			}
+			c.globalArrayDims[it.Name] = cloneInt64s(it.ArrayDims)
 			c.globalInits = append(c.globalInits, cGlobalInit{
 				Name:      it.Name,
 				Index:     idx,
 				Kind:      it.Kind,
 				PtrDepth:  it.PtrDepth,
-				ArrayBase: base,
 				ArrayLen:  it.ArrayLen,
+				ArrayDims: cloneInt64s(it.ArrayDims),
 				Base:      it.Base,
 				Init:      append([]Token{}, it.Init...),
 				File:      file,
@@ -915,17 +935,18 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		}
 		if len(it.Init) > 0 {
 			c.globalInits = append(c.globalInits, cGlobalInit{
-				Name:     it.Name,
-				Index:    idx,
-				Kind:     it.Kind,
-				PtrDepth: it.PtrDepth,
-				ArrayLen: it.ArrayLen,
-				Base:     it.Base,
-				Init:     append([]Token{}, it.Init...),
-				File:     file,
-				Line:     n.Line,
-				Col:      n.Col,
-				IRName:   irName,
+				Name:      it.Name,
+				Index:     idx,
+				Kind:      it.Kind,
+				PtrDepth:  it.PtrDepth,
+				ArrayLen:  it.ArrayLen,
+				ArrayDims: cloneInt64s(it.ArrayDims),
+				Base:      it.Base,
+				Init:      append([]Token{}, it.Init...),
+				File:      file,
+				Line:      n.Line,
+				Col:       n.Col,
+				IRName:    irName,
 			})
 		}
 	}
@@ -961,8 +982,39 @@ func (c *compiler) emitGlobalInit() {
 			continue
 		}
 		if g.Kind == cDeclArray {
-			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: g.ArrayBase})
+			arrInfo := cTypeInfo{
+				Kind:             g.Kind,
+				PtrDepth:         g.PtrDepth,
+				ArrayLen:         g.ArrayLen,
+				ArrayDims:        cloneInt64s(g.ArrayDims),
+				Base:             g.Base,
+				AggregateKeyword: g.AggregateKeyword,
+				AggregateTag:     g.AggregateTag,
+			}
+			elemInfo := arrayElementTypeInfo(arrInfo)
+			elemStep := fc.typeByteSize(elemInfo)
+			totalBytes := fc.typeByteSize(arrInfo)
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: totalBytes})
+			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: g.Index})
+			if vals, ok, err := stringArrayInitializerValues(g.Init, g.Base, g.ArrayLen); ok {
+				if err != nil {
+					c.errorf(g.File, g.Line, g.Col, "invalid array initializer for %s: %v", g.Name, err)
+					continue
+				}
+				for i, v := range vals {
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
+					fc.emitCastToType(elemInfo)
+					fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: g.Index})
+					if i > 0 {
+						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
+						fc.emit(ir.Inst{Op: ir.OP_ADD})
+					}
+					fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
+				}
+				continue
+			}
 			initElems, err := parseArrayInitializerExprs(g.Init, g.ArrayLen)
 			if err != nil {
 				c.errorf(g.File, g.Line, g.Col, "invalid array initializer for %s: %v", g.Name, err)
@@ -970,13 +1022,13 @@ func (c *compiler) emitGlobalInit() {
 			}
 			for i, initExpr := range initElems {
 				fc.emitExprTokens(g.File, g.Line, g.Col, initExpr)
-				fc.emitCastToType(cTypeInfo{Kind: cDeclScalar, Base: g.Base})
+				fc.emitCastToType(elemInfo)
 				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: g.Index})
 				if i > 0 {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i * c.target.PtrSize)})
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
 					fc.emit(ir.Inst{Op: ir.OP_ADD})
 				}
-				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.scalarSize(g.Base))})
+				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
 			}
 			continue
 		}
@@ -1056,7 +1108,7 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		if i < len(sig.ParamFuncSigs) {
 			pfunc = sig.ParamFuncSigs[i]
 		}
-		fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, pfunc, opaqueAggregate, aggregateKeyword, aggregateTag, sig.File, sig.Line, sig.Col)
+		fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, nil, pfunc, opaqueAggregate, aggregateKeyword, aggregateTag, sig.File, sig.Line, sig.Col)
 	}
 	if sig.Variadic {
 		fc.variadicCount = fc.addLocalTyped("$va_count", cDeclScalar, cScalarInt, 0, int64(fc.c.target.PtrSize), nil, sig.File, sig.Line, sig.Col)
@@ -1277,7 +1329,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if err != nil {
 		return nil, err
 	}
-	name, retDeclKind, retDeclPtrDepth, _, _, err := parseDeclarator(decl, false)
+	name, retDeclKind, retDeclPtrDepth, _, _, _, err := parseDeclarator(decl, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1317,9 +1369,12 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				if err == nil {
 					baseInfo, _, _, err := parseScalarTypeSpec(spec, "function parameter list", true)
 					if err == nil {
-						_, kind, ptrDepth, arrLen, _, err := parseDeclarator(decl, true)
+						_, kind, ptrDepth, arrLen, arrDims, _, err := parseDeclarator(decl, true)
 						if err == nil {
 							info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, false, "function parameter list")
+							if cerr == nil {
+								info.ArrayDims = cloneInt64s(arrDims)
+							}
 							if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
 								parts = nil
 							}
@@ -1348,7 +1403,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			if err != nil {
 				return nil, err
 			}
-			pname, pdeclKind, pdeclPtrDepth, parrLen, pfnSig, err := parseDeclarator(decl, true)
+			pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, err := parseDeclarator(decl, true)
 			if err != nil {
 				return nil, err
 			}
@@ -1356,6 +1411,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			if err != nil {
 				return nil, err
 			}
+			pinfo.ArrayDims = cloneInt64s(parrDims)
 			if pfnSig != nil {
 				fnSig := cloneFuncTypeSig(pfnSig)
 				fnSig.RetKind = pbaseInfo.Kind
@@ -1372,10 +1428,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 			}
 			if pinfo.Kind == cDeclArray {
 				// Arrays in parameter lists decay to pointers.
-				pinfo.Kind = cDeclPointer
-				if pinfo.PtrDepth == 0 {
-					pinfo.PtrDepth = 1
-				}
+				pinfo = decayArrayTypeInfo(pinfo)
 			}
 			if pinfo.IsVoid && pinfo.Kind == cDeclScalar {
 				return nil, fmt.Errorf("function parameter %q cannot have type void", pname)
@@ -1567,9 +1620,7 @@ func cTypeLayout(info cTypeInfo) (int64, int64, error) {
 		ps := currentCTargetPtrSize()
 		return ps, ps, nil
 	case cDeclArray:
-		elem := info
-		elem.Kind = cDeclScalar
-		elem.ArrayLen = 0
+		elem := arrayElementTypeInfo(info)
 		elemSize, elemAlign, err := cTypeLayout(elem)
 		if err != nil {
 			return 0, 0, err
@@ -1634,7 +1685,7 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 		if len(rest) == 0 {
 			return nil, 0, 0, fmt.Errorf("%s requires at least one declarator", dctx)
 		}
-		items, err := parseDeclItemsWithBase(baseInfo, false, rest)
+		items, err := parseDeclItemsWithBase(baseInfo, false, false, rest)
 		if err != nil {
 			return nil, 0, 0, err
 		}
@@ -1655,6 +1706,7 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 				Kind:             it.Kind,
 				PtrDepth:         it.PtrDepth,
 				ArrayLen:         it.ArrayLen,
+				ArrayDims:        cloneInt64s(it.ArrayDims),
 				IsVoid:           it.IsVoid,
 				Base:             it.Base,
 				FuncSig:          cloneFuncTypeSig(it.FuncSig),
@@ -2013,12 +2065,13 @@ func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth i
 	}
 	switch declKind {
 	case cDeclArray:
-		if base.Kind == cDeclPointer {
-			return cTypeInfo{}, fmt.Errorf("%s does not support array declarators over pointer typedef bases", context)
-		}
 		out.Kind = cDeclArray
 		out.ArrayLen = declArrayLen
-		out.PtrDepth = 0
+		if base.Kind == cDeclPointer {
+			out.PtrDepth = base.PtrDepth + declPtrDepth
+		} else {
+			out.PtrDepth = declPtrDepth
+		}
 	case cDeclPointer:
 		if base.Kind == cDeclPointer {
 			out.Kind = cDeclPointer
@@ -2041,6 +2094,45 @@ func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth i
 		out.AggregateTag = base.AggregateTag
 	}
 	return out, nil
+}
+
+func arrayElementTypeInfo(info cTypeInfo) cTypeInfo {
+	elem := info
+	if len(elem.ArrayDims) > 0 {
+		elem.Kind = cDeclArray
+		elem.ArrayLen = elem.ArrayDims[0]
+		elem.ArrayDims = append([]int64{}, elem.ArrayDims[1:]...)
+		return elem
+	}
+	elem.ArrayLen = 0
+	elem.ArrayDims = nil
+	if elem.PtrDepth > 0 {
+		elem.Kind = cDeclPointer
+	} else {
+		elem.Kind = cDeclScalar
+	}
+	return elem
+}
+
+func decayArrayTypeInfo(info cTypeInfo) cTypeInfo {
+	out := info
+	out.Kind = cDeclPointer
+	out.ArrayLen = 0
+	if out.PtrDepth == 0 {
+		out.PtrDepth = 1
+	} else {
+		out.PtrDepth++
+	}
+	return out
+}
+
+func cloneInt64s(src []int64) []int64 {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]int64, len(src))
+	copy(out, src)
+	return out
 }
 
 func matchingParenClose(tokens []Token, open int) int {
@@ -2177,9 +2269,12 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 			if err == nil {
 				baseInfo, _, _, err := parseScalarTypeSpec(spec, context, true)
 				if err == nil {
-					_, kind, ptrDepth, arrLen, _, err := parseDeclarator(decl, true)
+					_, kind, ptrDepth, arrLen, arrDims, _, err := parseDeclarator(decl, true)
 					if err == nil {
 						info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, false, context)
+						if cerr == nil {
+							info.ArrayDims = cloneInt64s(arrDims)
+						}
 						if cerr == nil && info.IsVoid && info.Kind == cDeclScalar {
 							parts = nil
 						}
@@ -2218,7 +2313,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
-		pname, pdeclKind, pdeclPtrDepth, parrLen, pfnSig, err := parseDeclarator(decl, true)
+		pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, err := parseDeclarator(decl, true)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
@@ -2226,12 +2321,10 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, err
 		}
+		pinfo.ArrayDims = cloneInt64s(parrDims)
 		if pinfo.Kind == cDeclArray {
 			// Arrays in parameter lists decay to pointers.
-			pinfo.Kind = cDeclPointer
-			if pinfo.PtrDepth == 0 {
-				pinfo.PtrDepth = 1
-			}
+			pinfo = decayArrayTypeInfo(pinfo)
 		}
 		if pinfo.IsVoid && pinfo.Kind == cDeclScalar {
 			if pname == "" && i == 0 && len(parts) == 1 {
@@ -2265,31 +2358,49 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 	return paramKinds, paramBases, paramPtrDepth, paramOpaque, paramAggKey, paramAggTag, paramFuncSigs, variadic, nil
 }
 
-func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, *cFuncTypeSig, error) {
+func parseTrailingArraySuffixes(tokens []Token) ([]Token, []int64, error) {
+	work := trimTokens(tokens)
+	var lens []int64
+	for {
+		arrOpen := trailingArraySuffixOpen(work)
+		if arrOpen < 0 {
+			break
+		}
+		n, err := parseArrayLength(work[arrOpen+1 : len(work)-1])
+		if err != nil {
+			return nil, nil, err
+		}
+		lens = append([]int64{n}, lens...)
+		work = trimTokens(work[:arrOpen])
+	}
+	return work, lens, nil
+}
+
+func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, []int64, *cFuncTypeSig, error) {
 	tokens = trimTokens(tokens)
 	if len(tokens) == 0 {
 		if allowAbstract {
-			return "", cDeclScalar, 0, 0, nil, nil
+			return "", cDeclScalar, 0, 0, nil, nil, nil
 		}
-		return "", cDeclScalar, 0, 0, nil, fmt.Errorf("missing declarator")
+		return "", cDeclScalar, 0, 0, nil, nil, fmt.Errorf("missing declarator")
 	}
 
 	// Support function-pointer declarators like `(*fp)(int)` and `(*)(int)`.
 	if fnOpen := trailingFunctionSuffixOpen(tokens); fnOpen >= 0 {
 		core := trimTokens(tokens[:fnOpen])
 		if len(core) == 0 {
-			return "", cDeclScalar, 0, 0, nil, fmt.Errorf("function declarator is missing pointer core")
+			return "", cDeclScalar, 0, 0, nil, nil, fmt.Errorf("function declarator is missing pointer core")
 		}
 		name, ptrDepth, err := parseSimplePointerCore(core, allowAbstract)
 		if err != nil {
-			return "", cDeclScalar, 0, 0, nil, err
+			return "", cDeclScalar, 0, 0, nil, nil, err
 		}
 		if ptrDepth == 0 {
-			return "", cDeclScalar, 0, 0, nil, fmt.Errorf("function declarators are only supported through pointers")
+			return "", cDeclScalar, 0, 0, nil, nil, fmt.Errorf("function declarators are only supported through pointers")
 		}
 		paramKinds, paramBases, paramPtrDepth, paramOpaque, paramAggKey, paramAggTag, paramFuncSigs, variadic, err := parseFunctionParamList(tokens[fnOpen+1:len(tokens)-1], "function declarator")
 		if err != nil {
-			return "", cDeclScalar, 0, 0, nil, err
+			return "", cDeclScalar, 0, 0, nil, nil, err
 		}
 		fnSig := &cFuncTypeSig{
 			ParamCount:    len(paramKinds),
@@ -2302,41 +2413,42 @@ func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int
 			ParamAggTag:   paramAggTag,
 			ParamFuncSigs: paramFuncSigs,
 		}
-		return name, cDeclPointer, ptrDepth, 0, fnSig, nil
+		return name, cDeclPointer, ptrDepth, 0, nil, fnSig, nil
 	}
 
-	if arrOpen := trailingArraySuffixOpen(tokens); arrOpen >= 0 {
-		core := trimTokens(tokens[:arrOpen])
+	if core, lens, err := parseTrailingArraySuffixes(tokens); err != nil {
+		return "", cDeclScalar, 0, 0, nil, nil, err
+	} else if len(lens) > 0 {
+		if len(core) > 0 && core[0].Kind == TokPunct && core[0].Text == "(" {
+			if close := matchingParenClose(core, 0); close == len(core)-1 {
+				if _, innerPtrDepth, err := parseSimplePointerCore(core[1:close], allowAbstract); err == nil && innerPtrDepth > 0 {
+					return "", cDeclScalar, 0, 0, nil, nil, fmt.Errorf("pointer-to-array declarators are not yet supported")
+				}
+			}
+		}
 		name, ptrDepth, err := parseSimplePointerCore(core, allowAbstract)
 		if err != nil {
-			return "", cDeclScalar, 0, 0, nil, err
+			return "", cDeclScalar, 0, 0, nil, nil, err
 		}
-		if ptrDepth > 0 {
-			return "", cDeclScalar, 0, 0, nil, fmt.Errorf("pointer-to-array declarators are not yet supported")
-		}
-		n, err := parseArrayLength(tokens[arrOpen+1 : len(tokens)-1])
-		if err != nil {
-			return "", cDeclScalar, 0, 0, nil, err
-		}
-		return name, cDeclArray, 0, n, nil, nil
+		return name, cDeclArray, ptrDepth, lens[0], lens[1:], nil, nil
 	}
 
 	name, ptrDepth, err := parseSimplePointerCore(tokens, allowAbstract)
 	if err != nil {
-		return "", cDeclScalar, 0, 0, nil, err
+		return "", cDeclScalar, 0, 0, nil, nil, err
 	}
 	if ptrDepth > 0 {
-		return name, cDeclPointer, ptrDepth, 0, nil, nil
+		return name, cDeclPointer, ptrDepth, 0, nil, nil, nil
 	}
-	return name, cDeclScalar, 0, 0, nil, nil
+	return name, cDeclScalar, 0, 0, nil, nil, nil
 }
 
 func parseArrayLength(tokens []Token) (int64, error) {
 	tokens = trimTokens(tokens)
-	if len(tokens) != 1 || tokens[0].Kind != TokNumber {
-		return 0, fmt.Errorf("array bounds must be integer literals")
+	if len(tokens) == 0 {
+		return cArrayLenUnspecified, nil
 	}
-	n, err := parseCIntLiteral(tokens[0].Text)
+	n, err := parseEnumConstExprTokens(tokens, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -2383,6 +2495,57 @@ func (p *enumConstParser) matchPunct(op string) bool {
 	return false
 }
 
+func isEnumConstCastToken(t Token) bool {
+	if t.Kind != TokIdent {
+		return false
+	}
+	switch t.Text {
+	case "char", "short", "int", "long", "signed", "unsigned", "const", "volatile", "restrict":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *enumConstParser) consumeSimpleCast() bool {
+	if p.atEnd() || p.peek().Kind != TokPunct || p.peek().Text != "(" {
+		return false
+	}
+	depth := 0
+	close := -1
+	for i := p.pos; i < len(p.toks); i++ {
+		t := p.toks[i]
+		if t.Kind != TokPunct {
+			continue
+		}
+		if t.Text == "(" {
+			depth++
+			continue
+		}
+		if t.Text == ")" {
+			depth--
+			if depth == 0 {
+				close = i
+				break
+			}
+		}
+	}
+	if close < 0 {
+		return false
+	}
+	inner := trimTokens(p.toks[p.pos+1 : close])
+	if len(inner) == 0 {
+		return false
+	}
+	for _, t := range inner {
+		if !isEnumConstCastToken(t) {
+			return false
+		}
+	}
+	p.pos = close + 1
+	return true
+}
+
 func (p *enumConstParser) parsePrimary() (int64, error) {
 	if p.atEnd() {
 		return 0, fmt.Errorf("unexpected end of enum constant expression")
@@ -2422,6 +2585,9 @@ func (p *enumConstParser) parsePrimary() (int64, error) {
 }
 
 func (p *enumConstParser) parseUnary() (int64, error) {
+	if p.consumeSimpleCast() {
+		return p.parseUnary()
+	}
 	if p.matchPunct("+") {
 		return p.parseUnary()
 	}
@@ -2691,7 +2857,7 @@ func parseEnumSpecifierAndConstants(toks []Token, enumLookup map[string]int64) (
 	return j + 1, vals, nil
 }
 
-func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, rest []Token) ([]cDeclItem, error) {
+func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncompleteArray bool, rest []Token) ([]cDeclItem, error) {
 	parts := splitTopLevel(rest, ",")
 	items := make([]cDeclItem, 0, len(parts))
 	for _, part := range parts {
@@ -2737,7 +2903,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, rest []Token) (
 			return nil, fmt.Errorf("missing declarator in declaration")
 		}
 
-		name, kind, ptrDepth, arrayLen, fnSig, err := parseDeclarator(lhs, false)
+		name, kind, ptrDepth, arrayLen, arrayDims, fnSig, err := parseDeclarator(lhs, false)
 		if err != nil {
 			return nil, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
 		}
@@ -2745,6 +2911,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, rest []Token) (
 		if err != nil {
 			return nil, err
 		}
+		info.ArrayDims = cloneInt64s(arrayDims)
 		if fnSig != nil {
 			if isAggregateObjectType(baseInfo) {
 				return nil, fmt.Errorf("declaration of %q uses function type returning %s %q by value, which is not yet supported", name, baseInfo.AggregateKeyword, baseInfo.AggregateTag)
@@ -2756,6 +2923,24 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, rest []Token) (
 			sig.RetIsVoid = baseInfo.IsVoid
 			info.FuncSig = sig
 		}
+		if info.Kind == cDeclArray {
+			for _, n := range info.ArrayDims {
+				if n == cArrayLenUnspecified {
+					return nil, fmt.Errorf("only the first array bound may be empty")
+				}
+			}
+		}
+		if info.Kind == cDeclArray && info.ArrayLen == cArrayLenUnspecified {
+			n, ok, err := inferArrayLengthFromInit(info.Base, init)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				info.ArrayLen = n
+			} else if !allowIncompleteArray {
+				return nil, fmt.Errorf("array bounds must not be empty")
+			}
+		}
 		if !hasTypedef && info.IsVoid && info.Kind != cDeclPointer {
 			return nil, fmt.Errorf("declaration of %q cannot use void object type", name)
 		}
@@ -2765,6 +2950,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, rest []Token) (
 			Kind:             info.Kind,
 			PtrDepth:         info.PtrDepth,
 			ArrayLen:         info.ArrayLen,
+			ArrayDims:        cloneInt64s(info.ArrayDims),
 			IsVoid:           info.IsVoid,
 			Base:             info.Base,
 			FuncSig:          cloneFuncTypeSig(info.FuncSig),
@@ -2819,7 +3005,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64) ([]cDeclItem, map
 		if len(rest) == 0 {
 			return nil, enumConsts, hasExtern, hasTypedef, nil
 		}
-		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasTypedef, rest)
+		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasTypedef, hasTypedef || hasExtern, rest)
 		if err != nil {
 			return nil, nil, false, false, err
 		}
@@ -2843,7 +3029,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64) ([]cDeclItem, map
 		}
 		return nil, nil, false, false, fmt.Errorf("missing declarator in declaration")
 	}
-	items, err := parseDeclItemsWithBase(baseInfo, hasTypedef, rest)
+	items, err := parseDeclItemsWithBase(baseInfo, hasTypedef, hasTypedef || hasExtern, rest)
 	if err != nil {
 		return nil, nil, false, false, err
 	}
@@ -2875,7 +3061,7 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if err != nil {
 		return cTypeInfo{}, err
 	}
-	name, kind, ptrDepth, arrayLen, fnSig, err := parseDeclarator(decl, true)
+	name, kind, ptrDepth, arrayLen, arrayDims, fnSig, err := parseDeclarator(decl, true)
 	if err != nil {
 		return cTypeInfo{}, err
 	}
@@ -2886,6 +3072,7 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if err != nil {
 		return cTypeInfo{}, err
 	}
+	info.ArrayDims = cloneInt64s(arrayDims)
 	if fnSig != nil {
 		sig := cloneFuncTypeSig(fnSig)
 		sig.RetKind = baseInfo.Kind
@@ -2909,6 +3096,69 @@ func parseArrayInitializerExprs(init []Token, arrayLen int64) ([][]Token, error)
 		return nil, fmt.Errorf("too many initializer elements (%d > %d)", len(out), arrayLen)
 	}
 	return out, nil
+}
+
+func decodeStringLiteralSequence(tokens []Token) (string, error) {
+	tokens = trimTokens(tokens)
+	if len(tokens) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	for _, t := range tokens {
+		if t.Kind != TokString {
+			return "", fmt.Errorf("expected string literal sequence")
+		}
+		part, err := decodeStringToken(t)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(part)
+	}
+	return b.String(), nil
+}
+
+func inferArrayLengthFromInit(base cScalarType, init []Token) (int64, bool, error) {
+	init = trimTokens(init)
+	if len(init) == 0 {
+		return 0, false, nil
+	}
+	if isStringLiteralExpr(init) {
+		if base != cScalarChar && base != cScalarUChar {
+			return 0, false, fmt.Errorf("string literal initializer requires char array element type")
+		}
+		s, err := decodeStringLiteralSequence(init)
+		if err != nil {
+			return 0, false, err
+		}
+		return int64(len(s) + 1), true, nil
+	}
+	elems, err := parseBraceInitializerExprs(init)
+	if err == nil {
+		return int64(len(elems)), true, nil
+	}
+	return 0, false, fmt.Errorf("array bounds may only be omitted with brace or string initializers")
+}
+
+func stringArrayInitializerValues(init []Token, base cScalarType, arrayLen int64) ([]int64, bool, error) {
+	if !isStringLiteralExpr(init) {
+		return nil, false, nil
+	}
+	if base != cScalarChar && base != cScalarUChar {
+		return nil, false, fmt.Errorf("string literal initializer requires char array element type")
+	}
+	s, err := decodeStringLiteralSequence(init)
+	if err != nil {
+		return nil, true, err
+	}
+	vals := make([]int64, 0, len(s)+1)
+	for i := 0; i < len(s); i++ {
+		vals = append(vals, int64(uint8(s[i])))
+	}
+	vals = append(vals, 0)
+	if int64(len(vals)) > arrayLen {
+		return nil, true, fmt.Errorf("string initializer is too long (%d > %d)", len(vals), arrayLen)
+	}
+	return vals, true, nil
 }
 
 func parseBraceInitializerExprs(init []Token) ([][]Token, error) {
@@ -3121,9 +3371,7 @@ func (fc *funcCompiler) typeInfoSizeAlign(info cTypeInfo) (int64, int64, bool) {
 		ps := int64(fc.c.target.PtrSize)
 		return ps, ps, true
 	case cDeclArray:
-		elem := info
-		elem.Kind = cDeclScalar
-		elem.ArrayLen = 0
+		elem := arrayElementTypeInfo(info)
 		elemSize, elemAlign, ok := fc.typeInfoSizeAlign(elem)
 		if !ok {
 			return 0, 0, false
@@ -3174,8 +3422,7 @@ func (fc *funcCompiler) pointerElemStep(kind cDeclKind, ptrDepth int, base cScal
 		}
 		return int64(fc.c.target.PtrSize)
 	}
-	_ = base
-	return int64(fc.c.target.PtrSize)
+	return fc.scalarSize(base)
 }
 
 func (fc *funcCompiler) resolveMemberField(ex *expr, diag bool) (cAggregateField, bool) {
@@ -3272,7 +3519,7 @@ func (fc *funcCompiler) lookupTypedef(name string) (cTypeInfo, bool) {
 }
 
 func (fc *funcCompiler) addLocal(name string, file string, line int, col int) int {
-	return fc.addLocalDecl(name, cDeclScalar, cScalarInt, 0, int64(fc.c.target.PtrSize), 0, nil, false, "", "", file, line, col)
+	return fc.addLocalDecl(name, cDeclScalar, cScalarInt, 0, int64(fc.c.target.PtrSize), 0, nil, nil, false, "", "", file, line, col)
 }
 
 func (fc *funcCompiler) addLocalKind(name string, kind cDeclKind, file string, line int, col int) int {
@@ -3280,14 +3527,14 @@ func (fc *funcCompiler) addLocalKind(name string, kind cDeclKind, file string, l
 	if kind == cDeclPointer {
 		ptrDepth = 1
 	}
-	return fc.addLocalDecl(name, kind, cScalarInt, ptrDepth, int64(fc.c.target.PtrSize), 0, nil, false, "", "", file, line, col)
+	return fc.addLocalDecl(name, kind, cScalarInt, ptrDepth, int64(fc.c.target.PtrSize), 0, nil, nil, false, "", "", file, line, col)
 }
 
 func (fc *funcCompiler) addLocalTyped(name string, kind cDeclKind, base cScalarType, ptrDepth int, elemStep int64, funcSig *cFuncTypeSig, file string, line int, col int) int {
-	return fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, funcSig, false, "", "", file, line, col)
+	return fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, nil, funcSig, false, "", "", file, line, col)
 }
 
-func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarType, ptrDepth int, elemStep int64, arrayLen int64, funcSig *cFuncTypeSig, opaqueAggregate bool, aggregateKeyword string, aggregateTag string, file string, line int, col int) int {
+func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarType, ptrDepth int, elemStep int64, arrayLen int64, arrayDims []int64, funcSig *cFuncTypeSig, opaqueAggregate bool, aggregateKeyword string, aggregateTag string, file string, line int, col int) int {
 	if len(fc.scopes) == 0 {
 		fc.pushScope()
 	}
@@ -3314,6 +3561,7 @@ func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarTy
 		PtrDepth:         ptrDepth,
 		ElemStep:         elemStep,
 		ArrayLen:         arrayLen,
+		ArrayDims:        cloneInt64s(arrayDims),
 		Base:             base,
 		FuncSig:          cloneFuncTypeSig(funcSig),
 		OpaqueAggregate:  opaqueAggregate,
@@ -3396,6 +3644,14 @@ func (fc *funcCompiler) lookupGlobalKind(name string) (cDeclKind, bool) {
 func (fc *funcCompiler) lookupGlobalArrayLen(name string) (int64, bool) {
 	n, ok := fc.c.globalArray[name]
 	return n, ok
+}
+
+func (fc *funcCompiler) lookupGlobalArrayDims(name string) ([]int64, bool) {
+	dims, ok := fc.c.globalArrayDims[name]
+	if !ok {
+		return nil, false
+	}
+	return cloneInt64s(dims), true
 }
 
 func (fc *funcCompiler) lookupGlobalBase(name string) (cScalarType, bool) {
@@ -3778,11 +4034,26 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 		return
 	}
 	for _, it := range items {
+		info := cTypeInfo{
+			Kind:             it.Kind,
+			PtrDepth:         it.PtrDepth,
+			ArrayLen:         it.ArrayLen,
+			ArrayDims:        cloneInt64s(it.ArrayDims),
+			IsVoid:           it.IsVoid,
+			Base:             it.Base,
+			FuncSig:          cloneFuncTypeSig(it.FuncSig),
+			OpaqueAggregate:  it.OpaqueAggregate,
+			AggregateKeyword: it.AggregateKeyword,
+			AggregateTag:     it.AggregateTag,
+		}
 		elemStep := fc.pointerElemStep(it.Kind, it.PtrDepth, it.Base, it.IsVoid, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag)
+		if it.Kind == cDeclArray {
+			elemStep = fc.typeByteSize(arrayElementTypeInfo(info))
+		}
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
 		}
-		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.FuncSig, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag, fc.sig.File, n.Line, n.Col)
+		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.ArrayDims, it.FuncSig, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag, fc.sig.File, n.Line, n.Col)
 		if isAggregateObjectDecl(it.Kind, it.PtrDepth, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag) {
 			fc.initLocalAggregateObject(it.Name, idx, cTypeInfo{
 				Kind:             it.Kind,
@@ -3795,24 +4066,42 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 			continue
 		}
 		if it.Kind == cDeclArray {
-			firstElem := -1
-			for i := int64(0); i < it.ArrayLen; i++ {
-				elemName := fmt.Sprintf("$%s$elem$%d$%d", it.Name, idx, i)
-				elemIdx := fc.addLocal(elemName, fc.sig.File, n.Line, n.Col)
-				// Locals are laid out at decreasing stack addresses.
-				// Keep base at the last-created slot so +index addressing stays in-bounds.
-				firstElem = elemIdx
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: elemIdx})
+			arrInfo := cTypeInfo{
+				Kind:             it.Kind,
+				PtrDepth:         it.PtrDepth,
+				ArrayLen:         it.ArrayLen,
+				ArrayDims:        cloneInt64s(it.ArrayDims),
+				Base:             it.Base,
+				IsVoid:           it.IsVoid,
+				FuncSig:          cloneFuncTypeSig(it.FuncSig),
+				OpaqueAggregate:  it.OpaqueAggregate,
+				AggregateKeyword: it.AggregateKeyword,
+				AggregateTag:     it.AggregateTag,
 			}
-			if firstElem < 0 {
-				fc.errorf(fc.sig.File, n.Line, n.Col, "array declaration requires positive bounds: %s", it.Name)
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			elemInfo := arrayElementTypeInfo(arrInfo)
+			elemStep := fc.typeByteSize(elemInfo)
+			totalBytes := fc.typeByteSize(arrInfo)
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: totalBytes})
+			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			if vals, ok, err := stringArrayInitializerValues(it.Init, it.Base, it.ArrayLen); ok {
+				if err != nil {
+					fc.errorf(fc.sig.File, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
+					continue
+				}
+				for i, v := range vals {
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
+					fc.emitCastToType(elemInfo)
+					fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+					if i > 0 {
+						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
+						fc.emit(ir.Inst{Op: ir.OP_ADD})
+					}
+					fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
+				}
 				continue
 			}
-			fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
-			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 			initElems, err := parseArrayInitializerExprs(it.Init, it.ArrayLen)
 			if err != nil {
 				fc.errorf(fc.sig.File, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
@@ -3820,13 +4109,13 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 			}
 			for i, initExpr := range initElems {
 				fc.emitExprTokens(fc.sig.File, n.Line, n.Col, initExpr)
-				fc.emitCastToType(cTypeInfo{Kind: cDeclScalar, Base: it.Base})
+				fc.emitCastToType(elemInfo)
 				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
 				if i > 0 {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i * fc.c.target.PtrSize)})
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
 					fc.emit(ir.Inst{Op: ir.OP_ADD})
 				}
-				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.scalarSize(it.Base))})
+				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
 			}
 			continue
 		}
@@ -4020,11 +4309,26 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 		return
 	}
 	for _, it := range items {
+		info := cTypeInfo{
+			Kind:             it.Kind,
+			PtrDepth:         it.PtrDepth,
+			ArrayLen:         it.ArrayLen,
+			ArrayDims:        cloneInt64s(it.ArrayDims),
+			IsVoid:           it.IsVoid,
+			Base:             it.Base,
+			FuncSig:          cloneFuncTypeSig(it.FuncSig),
+			OpaqueAggregate:  it.OpaqueAggregate,
+			AggregateKeyword: it.AggregateKeyword,
+			AggregateTag:     it.AggregateTag,
+		}
 		elemStep := fc.pointerElemStep(it.Kind, it.PtrDepth, it.Base, it.IsVoid, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag)
+		if it.Kind == cDeclArray {
+			elemStep = fc.typeByteSize(arrayElementTypeInfo(info))
+		}
 		if it.Kind == cDeclPointer && it.PtrDepth == 1 && isStringLiteralExpr(it.Init) {
 			elemStep = 1
 		}
-		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.FuncSig, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag, file, n.Line, n.Col)
+		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.ArrayDims, it.FuncSig, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag, file, n.Line, n.Col)
 		if isAggregateObjectDecl(it.Kind, it.PtrDepth, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag) {
 			fc.initLocalAggregateObject(it.Name, idx, cTypeInfo{
 				Kind:             it.Kind,
@@ -4037,24 +4341,42 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 			continue
 		}
 		if it.Kind == cDeclArray {
-			firstElem := -1
-			for i := int64(0); i < it.ArrayLen; i++ {
-				elemName := fmt.Sprintf("$%s$elem$%d$%d", it.Name, idx, i)
-				elemIdx := fc.addLocal(elemName, file, n.Line, n.Col)
-				// Locals are laid out at decreasing stack addresses.
-				// Keep base at the last-created slot so +index addressing stays in-bounds.
-				firstElem = elemIdx
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: elemIdx})
+			arrInfo := cTypeInfo{
+				Kind:             it.Kind,
+				PtrDepth:         it.PtrDepth,
+				ArrayLen:         it.ArrayLen,
+				ArrayDims:        cloneInt64s(it.ArrayDims),
+				Base:             it.Base,
+				IsVoid:           it.IsVoid,
+				FuncSig:          cloneFuncTypeSig(it.FuncSig),
+				OpaqueAggregate:  it.OpaqueAggregate,
+				AggregateKeyword: it.AggregateKeyword,
+				AggregateTag:     it.AggregateTag,
 			}
-			if firstElem < 0 {
-				fc.errorf(file, n.Line, n.Col, "array declaration requires positive bounds: %s", it.Name)
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			elemInfo := arrayElementTypeInfo(arrInfo)
+			elemStep := fc.typeByteSize(elemInfo)
+			totalBytes := fc.typeByteSize(arrInfo)
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: totalBytes})
+			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			if vals, ok, err := stringArrayInitializerValues(it.Init, it.Base, it.ArrayLen); ok {
+				if err != nil {
+					fc.errorf(file, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
+					continue
+				}
+				for i, v := range vals {
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
+					fc.emitCastToType(elemInfo)
+					fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
+					if i > 0 {
+						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
+						fc.emit(ir.Inst{Op: ir.OP_ADD})
+					}
+					fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
+				}
 				continue
 			}
-			fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
-			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 			initElems, err := parseArrayInitializerExprs(it.Init, it.ArrayLen)
 			if err != nil {
 				fc.errorf(file, n.Line, n.Col, "invalid array initializer for %s: %v", it.Name, err)
@@ -4062,13 +4384,13 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 			}
 			for i, initExpr := range initElems {
 				fc.emitExprTokens(file, n.Line, n.Col, initExpr)
-				fc.emitCastToType(cTypeInfo{Kind: cDeclScalar, Base: it.Base})
+				fc.emitCastToType(elemInfo)
 				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
 				if i > 0 {
-					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i * fc.c.target.PtrSize)})
+					fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(i) * elemStep})
 					fc.emit(ir.Inst{Op: ir.OP_ADD})
 				}
-				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.scalarSize(it.Base))})
+				fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
 			}
 			continue
 		}
@@ -4143,7 +4465,7 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 	switch ex.kind {
 	case exprVar:
 		if b, ok := fc.lookupLocalBinding(ex.name); ok {
-			if isAggregateObjectDecl(b.Kind, b.PtrDepth, b.OpaqueAggregate, b.AggregateKeyword, b.AggregateTag) {
+			if b.Kind == cDeclArray || isAggregateObjectDecl(b.Kind, b.PtrDepth, b.OpaqueAggregate, b.AggregateKeyword, b.AggregateTag) {
 				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: b.Index})
 			} else {
 				fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: b.Index})
@@ -4154,7 +4476,7 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 			kind, _ := fc.lookupGlobalKind(ex.name)
 			ptrDepth, _ := fc.lookupGlobalPtrDepth(ex.name)
 			opaque, aggKey, aggTag := fc.lookupGlobalOpaqueAggregate(ex.name)
-			if isAggregateObjectDecl(kind, ptrDepth, opaque, aggKey, aggTag) {
+			if kind == cDeclArray || isAggregateObjectDecl(kind, ptrDepth, opaque, aggKey, aggTag) {
 				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: idx})
 			} else {
 				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_ADDR, Arg: idx})
@@ -4227,13 +4549,34 @@ func (fc *funcCompiler) typeByteSize(info cTypeInfo) int64 {
 	case cDeclPointer:
 		return int64(fc.c.target.PtrSize)
 	case cDeclArray:
-		return info.ArrayLen * fc.typeScalarWidth(info)
+		return info.ArrayLen * fc.typeByteSize(arrayElementTypeInfo(info))
 	default:
 		if info.IsVoid {
 			return 1
 		}
 		return fc.typeScalarWidth(info)
 	}
+}
+
+func (fc *funcCompiler) pointerStepForType(info cTypeInfo) int64 {
+	if info.Kind == cDeclArray {
+		return fc.typeByteSize(arrayElementTypeInfo(info))
+	}
+	if info.Kind != cDeclPointer {
+		return int64(fc.c.target.PtrSize)
+	}
+	if info.PtrDepth > 1 {
+		return int64(fc.c.target.PtrSize)
+	}
+	if info.IsVoid {
+		return 1
+	}
+	if info.AggregateKeyword != "" && info.AggregateTag != "" && !info.OpaqueAggregate {
+		if agg, ok := fc.lookupAggregate(info.AggregateKeyword, info.AggregateTag); ok && len(agg.Fields) > 0 {
+			return agg.Size
+		}
+	}
+	return fc.scalarSize(info.Base)
 }
 
 func (fc *funcCompiler) convertNameForScalar(base cScalarType) string {
@@ -4289,6 +4632,7 @@ func (fc *funcCompiler) varTypeInfo(name string) (cTypeInfo, bool) {
 			Kind:             b.Kind,
 			PtrDepth:         b.PtrDepth,
 			ArrayLen:         b.ArrayLen,
+			ArrayDims:        cloneInt64s(b.ArrayDims),
 			Base:             b.Base,
 			FuncSig:          cloneFuncTypeSig(b.FuncSig),
 			OpaqueAggregate:  b.OpaqueAggregate,
@@ -4300,12 +4644,14 @@ func (fc *funcCompiler) varTypeInfo(name string) (cTypeInfo, bool) {
 		base, _ := fc.lookupGlobalBase(name)
 		ptrDepth, _ := fc.lookupGlobalPtrDepth(name)
 		n, _ := fc.lookupGlobalArrayLen(name)
+		dims, _ := fc.lookupGlobalArrayDims(name)
 		fsig, _ := fc.lookupGlobalFuncSig(name)
 		opaque, aggKey, aggTag := fc.lookupGlobalOpaqueAggregate(name)
 		return cTypeInfo{
 			Kind:             kind,
 			PtrDepth:         ptrDepth,
 			ArrayLen:         n,
+			ArrayDims:        cloneInt64s(dims),
 			Base:             base,
 			FuncSig:          fsig,
 			OpaqueAggregate:  opaque,
@@ -4520,9 +4866,7 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 				if t.Kind == cDeclPointer {
 					t.PtrDepth++
 				} else if t.Kind == cDeclArray {
-					t.Kind = cDeclPointer
-					t.PtrDepth = 1
-					t.ArrayLen = 0
+					t = decayArrayTypeInfo(t)
 				} else {
 					t.Kind = cDeclPointer
 					t.PtrDepth = 1
@@ -4533,11 +4877,7 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		case "*":
 			if t, ok := fc.exprTypeInfo(ex.left); ok {
 				if t.Kind == cDeclArray {
-					t.Kind = cDeclScalar
-					t.PtrDepth = 0
-					t.ArrayLen = 0
-					t.FuncSig = nil
-					return t, true
+					return arrayElementTypeInfo(t), true
 				}
 				if t.Kind == cDeclPointer && t.PtrDepth > 1 {
 					t.PtrDepth--
@@ -4569,19 +4909,13 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		if ex.op == "+" || ex.op == "-" {
 			if t, ok := fc.exprTypeInfo(ex.left); ok && (t.Kind == cDeclPointer || t.Kind == cDeclArray) {
 				if t.Kind == cDeclArray {
-					t.Kind = cDeclPointer
-					if t.PtrDepth == 0 {
-						t.PtrDepth = 1
-					}
+					t = decayArrayTypeInfo(t)
 				}
 				return t, true
 			}
 			if t, ok := fc.exprTypeInfo(ex.right); ok && (t.Kind == cDeclPointer || t.Kind == cDeclArray) {
 				if t.Kind == cDeclArray {
-					t.Kind = cDeclPointer
-					if t.PtrDepth == 0 {
-						t.PtrDepth = 1
-					}
+					t = decayArrayTypeInfo(t)
 				}
 				return t, true
 			}
@@ -4593,7 +4927,10 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 				t.PtrDepth--
 				return t, true
 			}
-			if t.Kind == cDeclPointer || t.Kind == cDeclArray {
+			if t.Kind == cDeclArray {
+				return arrayElementTypeInfo(t), true
+			}
+			if t.Kind == cDeclPointer {
 				t.Kind = cDeclScalar
 				t.PtrDepth = 0
 				t.ArrayLen = 0
@@ -4692,50 +5029,38 @@ func (fc *funcCompiler) exprPointerStep(ex *expr) int64 {
 		}
 	case exprCast:
 		if ex.typeInfo.Kind == cDeclPointer {
-			if ex.typeInfo.PtrDepth > 1 {
-				return int64(fc.c.target.PtrSize)
-			}
-			if ex.typeInfo.IsVoid {
-				return 1
-			}
-			if ex.typeInfo.AggregateKeyword != "" && ex.typeInfo.AggregateTag != "" && !ex.typeInfo.OpaqueAggregate {
-				if agg, ok := fc.lookupAggregate(ex.typeInfo.AggregateKeyword, ex.typeInfo.AggregateTag); ok && len(agg.Fields) > 0 {
-					return agg.Size
-				}
-			}
-			return fc.scalarSize(ex.typeInfo.Base)
+			return fc.pointerStepForType(ex.typeInfo)
 		}
 	case exprCall:
 		if sig, ok := fc.resolveDirectCallSig(ex); ok && sig.RetKind == cDeclPointer {
-			if sig.RetPtrDepth > 1 {
-				return int64(fc.c.target.PtrSize)
-			}
-			return fc.scalarSize(sig.RetBase)
+			return fc.pointerStepForType(cTypeInfo{
+				Kind:             sig.RetKind,
+				PtrDepth:         sig.RetPtrDepth,
+				Base:             sig.RetBase,
+				IsVoid:           sig.RetCount == 0,
+				OpaqueAggregate:  sig.RetOpaque,
+				AggregateKeyword: sig.RetAggKeyword,
+				AggregateTag:     sig.RetAggTag,
+			})
 		}
 		if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 && t.FuncSig != nil && t.FuncSig.RetKind == cDeclPointer {
-			if t.FuncSig.RetPtrDepth > 1 {
-				return int64(fc.c.target.PtrSize)
-			}
-			if t.FuncSig.RetIsVoid {
-				return 1
-			}
-			return fc.scalarSize(t.FuncSig.RetBase)
+			return fc.pointerStepForType(cTypeInfo{
+				Kind:             t.FuncSig.RetKind,
+				PtrDepth:         t.FuncSig.RetPtrDepth,
+				Base:             t.FuncSig.RetBase,
+				IsVoid:           t.FuncSig.RetIsVoid,
+				OpaqueAggregate:  t.FuncSig.RetOpaque,
+				AggregateKeyword: t.FuncSig.RetAggKeyword,
+				AggregateTag:     t.FuncSig.RetAggTag,
+			})
 		}
 	case exprMember:
 		if field, ok := fc.resolveMemberField(ex, false); ok && field.Type.Kind == cDeclPointer {
-			if field.Type.PtrDepth > 1 {
-				return int64(fc.c.target.PtrSize)
-			}
-			if field.Type.IsVoid {
-				return 1
-			}
-			if field.Type.AggregateKeyword != "" && field.Type.AggregateTag != "" && !field.Type.OpaqueAggregate {
-				if agg, ok := fc.lookupAggregate(field.Type.AggregateKeyword, field.Type.AggregateTag); ok && len(agg.Fields) > 0 {
-					return agg.Size
-				}
-			}
-			return fc.scalarSize(field.Type.Base)
+			return fc.pointerStepForType(field.Type)
 		}
+	}
+	if t, ok := fc.exprTypeInfo(ex); ok && (t.Kind == cDeclPointer || t.Kind == cDeclArray) {
+		return fc.pointerStepForType(t)
 	}
 	return int64(fc.c.target.PtrSize)
 }
@@ -4753,7 +5078,7 @@ func (fc *funcCompiler) exprDerefWidth(ex *expr) int {
 			fc.errorf(fc.sig.File, 0, 0, "cannot dereference void array")
 			return 1
 		}
-		return int(fc.scalarSize(t.Base))
+		return int(fc.typeByteSize(arrayElementTypeInfo(t)))
 	}
 	if t.Kind != cDeclPointer {
 		return fc.c.target.PtrSize
@@ -5287,6 +5612,9 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		}
 	case exprIndex:
 		fc.emitIndexAddr(ex.left, ex.right)
+		if t, ok := fc.exprTypeInfo(ex); ok && t.Kind == cDeclArray {
+			return
+		}
 		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprDerefWidth(ex.left)})
 	case exprMember:
 		field, ok := fc.resolveMemberField(ex, true)

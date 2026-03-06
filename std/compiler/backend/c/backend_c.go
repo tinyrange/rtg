@@ -583,6 +583,8 @@ const cRuntimeIntrinsicMakeString = `  {
 
 func cEmitRuntimeIntrinsicCall(bp *strings.Builder, name string, retCount int, paramCount int) bool {
 	switch name {
+	case "Alloc":
+		bp.WriteString("  rtg_push(rtg_alloc(locals[0]));\n")
 	case "Sliceptr", "Stringptr":
 		bp.WriteString(cRuntimeIntrinsicPtr)
 	case "Makeslice":

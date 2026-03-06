@@ -497,6 +497,8 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	case "Syscall":
 		// Linux i386 syscall lowering.
 		g.compileSyscallIntrinsic_linux386(inst.Arg)
+	case "Alloc":
+		g.compileAllocIntrinsic_i386()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic_i386()
 	case "Makeslice":
@@ -516,6 +518,12 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	default:
 		panic("ICE: unknown intrinsic '" + inst.Name + "' in compileCallIntrinsic_i386")
 	}
+}
+
+func (g *CodeGen) compileAllocIntrinsic_i386() {
+	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
+	g.opPush(REG32_EAX)
+	g.emitCallPlaceholder("runtime.Alloc")
 }
 
 func (g *CodeGen) compileSliceptrIntrinsic_i386() {

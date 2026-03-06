@@ -616,6 +616,12 @@ func (g *CodeGen) CompileSliceptrIntrinsic() {
 	g.OpPush(REG_RAX)
 }
 
+func (g *CodeGen) CompileAllocIntrinsic() {
+	g.EmitLoadLocal(1*8, REG_RAX)
+	g.OpPush(REG_RAX)
+	g.EmitCallPlaceholder("runtime.Alloc")
+}
+
 func (g *CodeGen) CompileMakesliceIntrinsic() {
 	// Params: ptr (local 0), len (local 1), cap (local 2)
 	// Allocate 32 bytes for header, fill {ptr, len, cap, elem_size=1}, push header addr
