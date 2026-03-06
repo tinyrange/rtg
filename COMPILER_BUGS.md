@@ -24,11 +24,32 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#30` Non-void shared-return tail merge currently breaks wasm validation (`values remaining on stack at end of block`).
 - `#31` Panic-unwind slow-path outlining currently breaks wasm validation (`not enough arguments on the stack for drop`).
 - `#32` x64 Windows backend is missing lowering for runtime syscall intrinsics such as `SysRead`/`SysWrite`/`SysOpen`/`SysClose` (`ICE: unknown intrinsic 'SysRead' on GOOS=windows` when compiling stdlib-using Windows targets).
+- `#35` Struct values are lowered with pointer-aliasing semantics instead of copy semantics in RTG-compiled programs.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
 - `#7` package-level `log` state runtime crash paths.
 
+### Resolved / Not Reproduced
+- `#2` interface method calls on chained struct fields.
+- `#3` chained receiver-field interface call in custom wrapper types.
+- `#4` type-asserted interface method dispatch.
+- `#5` chained temporary method call degrading to unresolved `unknown`.
+- `#6` bool-pointer deref typing in conditions/comparisons.
+- `#8` top-level function values unresolved in synthetic init wiring.
+- `#9` prior stdlib fixture callback-unresolved path.
+- `#10` `log.Logger.SetOutput` + write runtime crash.
+- `#11` deferred `testing.FinishTest`/`FinishBenchmark` panic-sentinel recovery.
+- `#12` WASM validator/semantic failures in extended stdlib fixtures (`54`/`55`).
+- `#13` DOS/8086 COMEMU OOM for `54_stdlib_cli_core`.
+- `#27` ARM64 operand-cache branch-edge desync (`OP_JMP_IF*`/`OP_JMP_*` could skip cache materialization and corrupt x28).
+- `#32` RISC-V `Syscall` intrinsic branch shape over-pushed/under-pushed return values and broke qemu selfhost (`stage1_rv64/rv32`).
+- `#33` RV frontend string-type tracking missed some local/map string paths and broke qemu `54_stdlib_cli_core`.
+- `#34` RISC-V selfhost `compileas` target cloning depended on host-Go struct copy semantics and corrupted the outer target on `56_compileas_embed`.
+- `#36` RV selfhost zerocall crash on nested method/helper calls was actually nested-map assignment mislowering in the compiler frontend.
+- `#37` RV32 `runtime.Now` used the wrong Linux syscall/struct shape under qemu (`clock_gettime64`/time64 layout).
+- `#38` RV32 selfhost comptime evaluation misdecoded ints/composites due 32-bit-hostile formatting and VM word-mask setup.
+- Historical DOS map/slice COMEMU failures from logs (`map_literal`, `slice_ops`, `map_comma_ok`, `map_range`, `map_types`, `slice_append`, `slice_nested`, `slice_range`) now PASS.
 ## Work Order
 
 1. `#17` Fix indirect/function-value call lowering (`fn` unresolved family).
@@ -45,6 +66,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 12. `#27` Revisit non-nil memory-base optimization expansion (`LEN/CAP`, `GLOBAL_ADDR`, C backend direct-load path) with proof/validation coverage.
 13. `#30` Make wasm stackification tolerant of shared non-void return epilogues.
 14. `#31` Make wasm stackification tolerate outlined panic-unwind slow paths (or preserve the inline form there).
+15. `#35` Fix struct-value copy semantics in RTG-compiled programs (current lowering aliases heap-backed struct objects).
 
 ### 23) Struct field tags are not accepted by parser in selfhost path
 
@@ -190,6 +212,188 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - Preserve the original inline `JMP_IF_NOT + DROP* + JMP` panic-unwind sequence for `wasi/wasm32`; use the outlined slow-path labels only on non-wasm targets.
+
+### 32) RISC-V `Syscall` intrinsic branch shape broke qemu selfhost (resolved)
+
+**Symptom**
+- `linux/rv64` and `linux/rv32` stage1 compiler binaries started and handled `-h`, but qemu selfhost crashed while compiling real programs.
+- An operand-stack delta check added to RV epilogues showed the first mismatch in `runtime[Syscall]`.
+
+**Root cause**
+- `std/compiler/backend/riscv/backend.go` emitted the `Syscall` intrinsic success/error control flow incorrectly.
+- The original lowering fell through into both push sequences, and the first attempted fix still used a branch offset that landed on the unconditional jump instead of the error block.
+- That made `runtime[Syscall]` return the wrong number of operand-stack values, which later surfaced as corrupted preserved values during compiler recursion.
+
+**Resolution**
+- Fixed the RV `Syscall` intrinsic lowering so:
+  - success pushes exactly `{r1, r2, err=0}`
+  - error pushes exactly `{0, 0, -errno}`
+  - branch distances land on the real error block
+- Validated with qemu:
+  - `stage1_rv64` and `stage1_rv32` compile `./std/compiler/`
+  - resulting `stage2_rv64` and `stage2_rv32` compile representative tests successfully
+
+**Current mitigation**
+- None. RV stage1 and stage2 qemu selfhost compilation is now working with the corrected intrinsic lowering.
+
+### 33) RV frontend string-type tracking missed local/map string paths (resolved)
+
+**Symptom**
+- RV64/RV32 qemu selfhost crashed compiling `tests/54_stdlib_cli_core.go`.
+- The reduced repro became:
+  - `m := map[string]string{"x": "bytes.Writer"}`
+  - `ct := m["x"]`
+  - `t := ct[6:12]`
+- Host-built RV binaries and selfhosted RV binaries both produced bad substring headers from that pattern.
+
+**Root cause**
+- Frontend string typing relied too heavily on `localStringVars`.
+- Some locals already had `localConcreteTypes[name] == "string"` but were not marked in `localStringVars`, especially through map-index and inferred-local paths.
+- Those values could then be lowered through slice-style handling instead of string-specific handling, which surfaced as bad substring headers and later crashes in `runtime[StringConcat]` / `runtime[readByte]`.
+
+**Resolution**
+- Updated [compiler.go](/home/joshua/dev/projects/rtg/std/compiler/frontend/go/compiler.go) so:
+  - `isStringTypedExpr` recognizes `map[string]string` index results
+  - inferred locals also record string-typed status when their concrete type is `"string"`
+  - `isStringTypedExpr` treats locals with concrete type `"string"` as string-typed even if `localStringVars` was not set earlier
+- Validated with qemu:
+  - reduced `map[string]string` substring repro now passes on RV64 and RV32
+  - `stage2_rv64` and `stage2_rv32` now compile and run `tests/54_stdlib_cli_core.go`
+
+### 34) RISC-V selfhost `compileas` target cloning depended on host-Go struct copy semantics (resolved)
+
+**Symptom**
+- After fixing the `54_stdlib_cli_core` crash, a qemu-backed RV64 fullcompiler continuation reached:
+  - `tests/56_compileas_embed.go`
+- Compiling without `-strict` failed with:
+  - `ICE: Syscall intrinsic unsupported for GOOS=windows`
+
+**Root cause**
+- The failure was not RISC-V-specific codegen.
+- `buildCompileAsArtifacts` cloned `common.Target` with normal Go value-copy patterns:
+  - pass-by-value parameter
+  - `out := base`
+- In RTG-compiled programs, struct values are currently heap-backed and assignment/pass-by-value copies the pointer, not the struct contents.
+- That meant the inner `compileas` target mutated the outer compiler target in place, so after compiling the `windows/amd64` artifact the outer RV compile tried to codegen the main module as `windows/amd64` and hit the x64 `Syscall` ICE.
+
+**Resolution**
+- Updated [main.go](/home/joshua/dev/projects/rtg/std/compiler/main.go) so `compileas` target cloning now:
+  - takes `*common.Target`
+  - allocates a fresh target object
+  - copies fields explicitly
+  - avoids struct-by-value cloning in the `compileas` path
+- Validated with qemu:
+  - `stage2_rv64` now compiles `tests/56_compileas_embed.go`
+  - resulting RV64 binary passes under `qemu-riscv64`
+  - `stage2_rv32` now compiles `tests/56_compileas_embed.go`
+  - resulting RV32 binary passes under `qemu-riscv32`
+
+**Current mitigation**
+- `compileas` no longer depends on host-Go struct copy semantics.
+
+### 35) Struct values are lowered with pointer-aliasing semantics instead of copy semantics in RTG-compiled programs
+
+**Symptom**
+- In RTG-compiled programs, assigning or passing a struct value can alias the same heap-backed object instead of copying the fields.
+- Reduced repro:
+  - `out := base`
+  - mutate `out.GOOS`
+  - observe `base.GOOS` changed too
+- Host-Go builds behave correctly; RTG selfhosted builds expose the bug.
+
+**Impact**
+- Any compiler/runtime code that assumes Go struct value-copy semantics can silently corrupt state under selfhost.
+- `compileas` hit this first because `common.Target` is mutated heavily during nested target selection, but the limitation is broader than RISC-V.
+
+**Current mitigation**
+- Avoid struct-by-value cloning in selfhost-critical paths.
+- Prefer explicit allocation plus field-wise copy when a distinct struct object is required.
+
+### 36) RISC-V selfhost crashes compiling nested zerocall method/helper calls (resolved)
+
+**Symptom**
+- After fixing `56_compileas_embed`, a qemu-backed RV64 fullcompiler-style continuation next fails compiling:
+  - `tests/zerocall_type_methods.go`
+- RV32 reproduces the same failure.
+- Exit status is `139` during compilation by `stage2_rv64` / `stage2_rv32`.
+
+**Root cause**
+- The zerocall validator builds a nested edge map:
+  - `edges[name][inst.Name] = true`
+- In selfhosted RV builds, the frontend did not recognize `map`-of-`map` index results as map expressions.
+- That made nested map assignment lower as:
+  - `MapGet`
+  - `index_addr`
+  - raw `store`
+  instead of a second `runtime.MapSet`
+- Under qemu RV selfhost, that corrupted the zerocall validation pass and crashed compilation of:
+  - `tests/zerocall_type_methods.go`
+
+**Resolution**
+- Updated [compiler.go](/home/joshua/dev/projects/rtg/std/compiler/frontend/go/compiler.go) so nested map expressions are recognized from resolved type information:
+  - `isMapExpr`
+  - `mapExprKeyKind`
+  - `resolveMapValueType`
+- Also kept zerocall IR rewriting on direct indexed field access instead of struct-range copies in [zerocall.go](/home/joshua/dev/projects/rtg/std/compiler/ir/zerocall.go), which is safer under current selfhost struct semantics.
+
+**Validation**
+- `qemu-riscv64 build/stage2_rv64 -T linux/rv64 -o ... tests/zerocall_type_methods.go && qemu-riscv64 ...` PASS
+- `qemu-riscv32 build/stage2_rv32 -T linux/rv32 -o ... tests/zerocall_type_methods.go && qemu-riscv32 ...` PASS
+- qemu-backed fullcompiler-style sweeps for both RV64 and RV32 now pass the fixture.
+
+### 37) RV32 `runtime.Now` used the wrong Linux syscall/time layout under qemu (resolved)
+
+**Symptom**
+- RV32 fullcompiler-style sweep failed at:
+  - `tests/53_runtime_now.go`
+- Output:
+  - `runtime.Now did not increase`
+
+**Root cause**
+- `std/runtime/runtime_now_linux_rv32.go` used:
+  - syscall `113`
+  - an 8-byte `{sec,nsec}` buffer
+- Under `qemu-riscv32`, the working path is `clock_gettime64`:
+  - syscall `403`
+  - 16-byte time64 timespec layout
+
+**Resolution**
+- Updated [runtime_now_linux_rv32.go](/home/joshua/dev/projects/rtg/std/runtime/runtime_now_linux_rv32.go) to:
+  - allocate 16 bytes
+  - read 64-bit `sec` and `nsec`
+  - call syscall `403`
+
+**Validation**
+- direct probe under `qemu-riscv32 -strace` now shows `clock_gettime64(...) = 0`
+- `tests/53_runtime_now.go` PASS on RV32
+
+### 38) RV32 selfhost comptime evaluation misdecoded ints and composite literals (resolved)
+
+**Symptom**
+- After fixing `runtime.Now`, RV32 fullcompiler-style sweep next failed at:
+  - `tests/comptime_method.go`
+- Reduced repros showed:
+  - `//rtg:comptime func F() int { return 23 }` folded to `0`
+  - `//rtg:comptime func G() B { return B{Base:7} }` folded to zeroed struct fields
+
+**Root cause**
+- Two RV32-hostile paths were involved:
+  - compiler comptime integer decoding relied on dynamic 64-bit shift helpers and `fmt.Sprintf("%d", int64)`, which misbehaved in selfhosted RV32
+  - VM word-mask/sign-bit setup in [backend_vm.go](/home/joshua/dev/projects/rtg/std/compiler/backend/vm/backend_vm.go) also relied on dynamic 64-bit shifts, so `WordMask` for 32-bit mode collapsed and `storeWord` zeroed composite fields
+
+**Resolution**
+- Updated [compiler.go](/home/joshua/dev/projects/rtg/std/compiler/frontend/go/compiler.go):
+  - `intNode` now uses a local decimal encoder instead of `fmt.Sprintf`
+  - `signExtendBits` / `maskBits` now use fixed-width `8/16/32/64` paths
+- Updated [backend_vm.go](/home/joshua/dev/projects/rtg/std/compiler/backend/vm/backend_vm.go):
+  - `newVMConfig` now uses explicit constants for 8/16/32/64-bit masks and sign bits
+  - `builtinComposite` writes fields directly from the VM stack
+
+**Validation**
+- standalone RV32 VM probe for `builtin.composite.*` now stores `7 0 0 0` instead of zeroes
+- reduced comptime integer and struct repros now PASS under `qemu-riscv32`
+- `tests/comptime_method.go` PASS under `qemu-riscv32`
+- full qemu-backed RV32 fullcompiler-style sweep now passes
 
 ## Active / Watch Details
 

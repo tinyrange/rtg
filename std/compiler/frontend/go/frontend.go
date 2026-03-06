@@ -529,7 +529,7 @@ func isKnownOS(s string) bool {
 
 // isKnownArch returns true if s is a known GOARCH value.
 func isKnownArch(s string) bool {
-	return s == "amd64" || s == "386" || s == "arm64" || s == "arm" || s == "wasm32" || s == "dos16" || s == "c8" || s == "c16" || s == "c32" || s == "c64"
+	return s == "amd64" || s == "386" || s == "arm64" || s == "arm" || s == "rv64" || s == "rv32" || s == "wasm32" || s == "dos16" || s == "c8" || s == "c16" || s == "c32" || s == "c64"
 }
 
 type Preprocessor struct {

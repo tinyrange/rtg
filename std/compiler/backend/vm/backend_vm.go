@@ -32,17 +32,23 @@ func newVMConfig(wordSize int) VMConfig {
 		ptrSize = 2
 	}
 	bits := wordSize * 8
-	var wordMask uint64
-	if bits >= 64 {
-		wordMask = 0xFFFFFFFFFFFFFFFF
-	} else {
-		wordMask = (1 << uint(bits)) - 1
+	wordMask := uint64(0xFFFFFFFFFFFFFFFF)
+	signBit := uint64(0x8000000000000000)
+	if bits <= 8 {
+		wordMask = 0xFF
+		signBit = 0x80
+	} else if bits <= 16 {
+		wordMask = 0xFFFF
+		signBit = 0x8000
+	} else if bits <= 32 {
+		wordMask = 0xFFFFFFFF
+		signBit = 0x80000000
 	}
 	return VMConfig{
 		WordSize:  wordSize,
 		PtrSize:   ptrSize,
 		WordMask:  wordMask,
-		SignBit:   1 << uint(bits-1),
+		SignBit:   signBit,
 		ShiftMask: uint64(bits - 1),
 	}
 }
@@ -1772,17 +1778,11 @@ func (vm *VM) builtinComposite(fieldCount int) {
 		vm.push(0)
 		return
 	}
-	tmp := make([]uint64, fieldCount)
-	i := 0
-	for i < fieldCount {
-		tmp[i] = vm.pop()
-		i = i + 1
-	}
 	p := vm.alloc(uint64(fieldCount)*ws, "composite")
-	i = 0
-	for i < fieldCount {
-		vm.storeWord(p+uint64(i)*ws, tmp[fieldCount-1-i])
-		i = i + 1
+	i := fieldCount - 1
+	for i >= 0 {
+		vm.storeWord(p+uint64(i)*ws, vm.pop())
+		i = i - 1
 	}
 	vm.push(p)
 }

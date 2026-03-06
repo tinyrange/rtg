@@ -735,6 +735,9 @@ func (c *Compiler) resolveMapValueType(mapExpr *Node) string {
 		}
 		return c.resolveFieldMapValueType(recvType, mapExpr.Name)
 	}
+	if vt := qualifiedMapValueTypeName(c.resolveExprType(mapExpr)); vt != "" {
+		return vt
+	}
 	return ""
 }
 
@@ -745,6 +748,50 @@ func (c *Compiler) resolveFieldMapValueType(qualifiedType string, fieldName stri
 		return ""
 	}
 	return nodeTypeName(field.Type.Y)
+}
+
+func qualifiedMapKeyTypeName(t string) string {
+	if len(t) <= 4 || t[0] != 'm' || t[1] != 'a' || t[2] != 'p' || t[3] != '[' {
+		return ""
+	}
+	depth := 1
+	i := 4
+	for i < len(t) && depth > 0 {
+		if t[i] == '[' {
+			depth = depth + 1
+		}
+		if t[i] == ']' {
+			depth = depth - 1
+		}
+		if depth > 0 {
+			i = i + 1
+		}
+	}
+	if depth != 0 || i > len(t) {
+		return ""
+	}
+	return t[4:i]
+}
+
+func qualifiedMapValueTypeName(t string) string {
+	if len(t) <= 4 || t[0] != 'm' || t[1] != 'a' || t[2] != 'p' || t[3] != '[' {
+		return ""
+	}
+	depth := 1
+	i := 4
+	for i < len(t) && depth > 0 {
+		if t[i] == '[' {
+			depth = depth + 1
+		}
+		if t[i] == ']' {
+			depth = depth - 1
+		}
+		i = i + 1
+	}
+	if depth != 0 || i > len(t) {
+		return ""
+	}
+	return t[i:len(t)]
 }
 
 // resolveFieldSliceElemType returns the qualified element type of a struct field that is a slice or array.
@@ -3856,6 +3903,9 @@ func (c *Compiler) compileVarDecl(node *Node) {
 		if node.Type == nil {
 			if ct := c.exprConcreteType(node.X); ct != "" {
 				c.localConcreteTypes[node.Name] = ct
+				if ct == "string" {
+					c.localStringVars[node.Name] = true
+				}
 				if elemType, ok := splitBracketType(ct); ok {
 					c.localElemSizes[node.Name] = c.typeElemSize(elemType)
 				}
@@ -4109,6 +4159,9 @@ func (c *Compiler) compileAssign(node *Node) {
 		// Track concrete type and elem size for method resolution and indexing
 		if ct := c.exprConcreteType(node.Y); ct != "" {
 			c.localConcreteTypes[node.X.Name] = ct
+			if ct == "string" {
+				c.localStringVars[node.X.Name] = true
+			}
 			if c.isInterfaceTypeName(ct) {
 				c.localTypes[node.X.Name] = ct
 			}
@@ -6368,6 +6421,9 @@ func (c *Compiler) isStringTypedExpr(node *Node) bool {
 		if c.localStringVars[node.Name] {
 			return true
 		}
+		if c.localConcreteTypes[node.Name] == "string" {
+			return true
+		}
 		// Check string constants
 		qname := c.curPkg.QualName(node.Name)
 		if _, ok := c.constStringValues[qname]; ok {
@@ -6409,6 +6465,9 @@ func (c *Compiler) isStringTypedExpr(node *Node) bool {
 		// String slice expression s[lo:hi] — string if target is string
 		return c.isStringTypedExpr(node.X)
 	case NIndexExpr:
+		if c.isMapExpr(node.X) {
+			return c.qualifyTypeName(c.resolveMapValueType(node.X), "") == "string"
+		}
 		// Index into []string → string
 		if node.X != nil {
 			ct := ""
@@ -8844,24 +8903,62 @@ func signExtendBits(raw uint64, bits int) int64 {
 	if bits >= 64 {
 		return int64(raw)
 	}
-	mask := (uint64(1) << uint(bits)) - 1
-	v := raw & mask
-	sign := uint64(1) << uint(bits-1)
-	if v&sign != 0 {
-		v = v | ^mask
+	if bits <= 8 {
+		return int64(int8(raw))
 	}
-	return int64(v)
+	if bits <= 16 {
+		return int64(int16(raw))
+	}
+	if bits <= 32 {
+		return int64(int32(raw))
+	}
+	return int64(raw)
 }
 
 func maskBits(raw uint64, bits int) uint64 {
 	if bits <= 0 || bits >= 64 {
 		return raw
 	}
-	return raw & ((uint64(1) << uint(bits)) - 1)
+	if bits <= 8 {
+		return uint64(uint8(raw))
+	}
+	if bits <= 16 {
+		return uint64(uint16(raw))
+	}
+	if bits <= 32 {
+		return uint64(uint32(raw))
+	}
+	return raw
+}
+
+func decimalI64(v int64) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	var u uint64
+	if neg {
+		u = uint64(-(v + 1))
+		u = u + 1
+	} else {
+		u = uint64(v)
+	}
+	var buf [32]byte
+	i := len(buf)
+	for u != 0 {
+		i--
+		buf[i] = byte('0' + (u % 10))
+		u = u / 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:len(buf)])
 }
 
 func intNode(v int64) *Node {
-	return &Node{Kind: NIntLit, Name: fmt.Sprintf("%d", v)}
+	return &Node{Kind: NIntLit, Name: decimalI64(v)}
 }
 
 func (c *Compiler) decodeComptimeValue(raw uint64, typeNode *Node, eval *vm.EvalState, depth int) (*Node, error) {
@@ -9825,6 +9922,12 @@ func (c *Compiler) mapExprKeyKind(node *Node) int {
 	if node == nil {
 		return -1
 	}
+	if keyType := qualifiedMapKeyTypeName(c.resolveExprType(node)); keyType != "" {
+		if keyType == "string" {
+			return 1
+		}
+		return 0
+	}
 	if node.Kind == NIdent {
 		if kk, ok := c.localMapVars[node.Name]; ok {
 			return kk
@@ -9884,6 +9987,9 @@ func (c *Compiler) mapExprKeyKind(node *Node) int {
 func (c *Compiler) isMapExpr(node *Node) bool {
 	if node == nil {
 		return false
+	}
+	if qualifiedMapValueTypeName(c.resolveExprType(node)) != "" {
+		return true
 	}
 	if node.Kind == NIdent {
 		_, ok := c.localMapVars[node.Name]

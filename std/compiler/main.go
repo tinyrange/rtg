@@ -40,7 +40,7 @@ var compileTarget = common.Target{
 }
 
 func defaultPtrSize() int {
-	if runtime.GOARCH == "386" || runtime.GOARCH == "wasm32" || runtime.GOARCH == "armv8m" {
+	if runtime.GOARCH == "386" || runtime.GOARCH == "rv32" || runtime.GOARCH == "wasm32" || runtime.GOARCH == "armv8m" {
 		return 4
 	}
 	return 8
@@ -843,27 +843,29 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func cloneTargetForCompileAs(base *common.Target) common.Target {
-	var out common.Target
-	if base != nil {
-		out.Triple = base.Triple
-		out.GOOS = base.GOOS
-		out.GOARCH = base.GOARCH
-		out.PtrSize = base.PtrSize
-		out.Backend = base.Backend
-		out.CModel = base.CModel
-		out.WordSize = base.WordSize
-		out.Defines = cloneStringMap(base.Defines)
-		out.Strict = base.Strict
-		out.CompilerDebug = base.CompilerDebug
-		out.EmitIRAndBinaryPath = base.EmitIRAndBinaryPath
-		out.StripBinary = base.StripBinary
-		if len(base.StdlibIncludePaths) > 0 {
-			out.StdlibIncludePaths = append([]string{}, base.StdlibIncludePaths...)
-		}
-		out.StdlibIncludeExplicit = base.StdlibIncludeExplicit
-		out.StdlibIncludeEmbedded = base.StdlibIncludeEmbedded
+func cloneTargetForCompileAs(base *common.Target) *common.Target {
+	out := &common.Target{}
+	if base == nil {
+		return out
 	}
+	out.Triple = base.Triple
+	out.GOOS = base.GOOS
+	out.GOARCH = base.GOARCH
+	out.PtrSize = base.PtrSize
+	out.Backend = base.Backend
+	out.CModel = base.CModel
+	out.WordSize = base.WordSize
+	out.Defines = cloneStringMap(base.Defines)
+	out.Strict = base.Strict
+	out.CompilerDebug = base.CompilerDebug
+	out.EmitIRAndBinaryPath = base.EmitIRAndBinaryPath
+	out.StripBinary = base.StripBinary
+	if len(base.StdlibIncludePaths) > 0 {
+		out.StdlibIncludePaths = append([]string{}, base.StdlibIncludePaths...)
+	}
+	out.StdlibIncludeExplicit = base.StdlibIncludeExplicit
+	out.StdlibIncludeEmbedded = base.StdlibIncludeEmbedded
+	out.EntryFunc = base.EntryFunc
 	out.BuildTags = nil
 	out.Profile = false
 	out.TestMode = false
@@ -975,7 +977,7 @@ func applyTargetSelection(targetName string, cfg *common.Target) error {
 	cfg.GOOS = targetName[0:slashIdx]
 	cfg.GOARCH = targetName[slashIdx+1:]
 	cfg.Triple = targetName
-	if cfg.GOARCH == "386" || cfg.GOARCH == "wasm32" || cfg.GOARCH == "armv8m" {
+	if cfg.GOARCH == "386" || cfg.GOARCH == "rv32" || cfg.GOARCH == "wasm32" || cfg.GOARCH == "armv8m" {
 		cfg.PtrSize = 4
 	} else {
 		cfg.PtrSize = 8
@@ -1066,7 +1068,7 @@ func buildCompileAsArtifacts(baseTarget *common.Target, baseDir string, entryFil
 	for i, spec := range specs {
 		innerTarget := cloneTargetForCompileAs(baseTarget)
 		innerTarget.EntryFunc = spec.EntryFunc
-		if err := applyTargetSelection(spec.Target, &innerTarget); err != nil {
+		if err := applyTargetSelection(spec.Target, innerTarget); err != nil {
 			return nil, fmt.Errorf("id=%s target=%s: %v", spec.ID, spec.Target, err)
 		}
 		if innerTarget.Backend == "vm" {
@@ -1075,20 +1077,21 @@ func buildCompileAsArtifacts(baseTarget *common.Target, baseDir string, entryFil
 		if innerTarget.Backend == "c" {
 			return nil, fmt.Errorf("id=%s target=%s: c backend is not supported by //rtg:compileas", spec.ID, spec.Target)
 		}
-		applyBuildTags(&innerTarget, extraTags)
+		applyBuildTags(innerTarget, extraTags)
 
 		frontend.ResetDiscoveredBuildTags()
-		innerMod := frontend.ResolveModule(&innerTarget, baseDir, entryFiles)
+		innerMod := frontend.ResolveModule(innerTarget, baseDir, entryFiles)
 		if valErrs := frontend.ValidateModule(innerMod); len(valErrs) > 0 {
 			return nil, fmt.Errorf("id=%s target=%s validation failed: %s", spec.ID, spec.Target, summarizeErrors(valErrs))
 		}
-		innerIR, compileErrs := frontend.CompileModule(innerTarget, innerMod)
+		innerIR, compileErrs := frontend.CompileModule(*innerTarget, innerMod)
 		if len(compileErrs) > 0 {
 			return nil, fmt.Errorf("id=%s target=%s compile failed: %s", spec.ID, spec.Target, summarizeErrors(compileErrs))
 		}
-		ir.EliminateDeadFunctions(innerIR, common.EntryFuncName(&innerTarget))
-		outPath := fmt.Sprintf("%s/%03d_%s%s", tmpDir, i, sanitizeCompileAsName(spec.ID), compileAsOutputExt(&innerTarget))
-		if err := backend.Generate(&innerTarget, innerIR, outPath); err != nil {
+		ir.EliminateDeadFunctions(innerIR, common.EntryFuncName(innerTarget))
+
+		outPath := fmt.Sprintf("%s/%03d_%s%s", tmpDir, i, sanitizeCompileAsName(spec.ID), compileAsOutputExt(innerTarget))
+		if err := backend.Generate(innerTarget, innerIR, outPath); err != nil {
 			return nil, fmt.Errorf("id=%s target=%s codegen failed: %v", spec.ID, spec.Target, err)
 		}
 		payload, err := readCompileAsArtifact(outPath)
@@ -1581,6 +1584,8 @@ func possibleTargets() []string {
 	targets = common.AppendUnique(targets, "linux/amd64")
 	targets = common.AppendUnique(targets, "linux/386")
 	targets = common.AppendUnique(targets, "linux/arm64")
+	targets = common.AppendUnique(targets, "linux/rv64")
+	targets = common.AppendUnique(targets, "linux/rv32")
 	targets = common.AppendUnique(targets, "darwin/amd64")
 	targets = common.AppendUnique(targets, "darwin/arm64")
 	targets = common.AppendUnique(targets, "windows/amd64")
