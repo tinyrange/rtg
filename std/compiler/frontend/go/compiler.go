@@ -4372,14 +4372,15 @@ func (c *Compiler) compileVarDecl(node *Node) {
 			c.maybeCloneArrayForTypeName(nodeTypeName(node.Type))
 		}
 		if node.Type == nil {
-			if ct := c.exprConcreteType(node.X); ct != "" {
-				c.localConcreteTypes[node.Name] = ct
-				if ct == "string" {
-					c.localStringVars[node.Name] = true
-				if isFloatTypeName(ct) {
-					c.setLocalTypeFlags(idx, "float64")
-				}
-				if elemType, ok := splitBracketType(ct); ok {
+				if ct := c.exprConcreteType(node.X); ct != "" {
+					c.localConcreteTypes[node.Name] = ct
+					if ct == "string" {
+						c.localStringVars[node.Name] = true
+					}
+					if isFloatTypeName(ct) {
+						c.setLocalTypeFlags(idx, "float64")
+					}
+					if elemType, ok := splitBracketType(ct); ok {
 					c.localElemSizes[node.Name] = c.typeElemSize(elemType)
 				}
 				c.maybeCloneArrayForTypeName(ct)
@@ -6024,7 +6025,7 @@ func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
 	inst := ir.Inst{Op: irOp, Arg: targetLabel, Width: c.exprWidth(node)}
 	if isFloat {
 		inst.Name = "float64"
-	} else if (op == "<" || op == ">" || op == "<=" || op == ">=") && c.isUnsignedComparison(node) {
+	} else if c.isUnsignedComparison(node) {
 		inst.Name = "unsigned"
 	}
 	c.emit(inst)
@@ -7395,12 +7396,16 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 		inst := ir.Inst{Op: ir.OP_EQ, Width: w}
 		if isFloat {
 			inst.Name = "float64"
+		} else if c.isUnsignedComparison(node) {
+			inst.Name = "unsigned"
 		}
 		c.emit(inst)
 	case "!=":
 		inst := ir.Inst{Op: ir.OP_NEQ, Width: w}
 		if isFloat {
 			inst.Name = "float64"
+		} else if c.isUnsignedComparison(node) {
+			inst.Name = "unsigned"
 		}
 		c.emit(inst)
 	case "<":
