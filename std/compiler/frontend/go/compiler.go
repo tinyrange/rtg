@@ -149,6 +149,8 @@ type Compiler struct {
 	assembleFuncs        map[string]assembleInfo
 	inAssembleBuilder    bool
 	entryFunc            string
+	panicCheckSlowLabels  map[int]int
+	panicCheckSlowDepths  []int
 	deferRecoverWrapFuncs map[string]bool // function name → keep DeferRecoverBefore/AfterCall wrappers
 }
 
@@ -2275,6 +2277,8 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	// Create a synthetic init function for global var initialization
 	f := &ir.IRFunc{Name: pkg.Path + ".init$globals"}
 	savedPanicUnwindLabel := c.panicUnwindLabel
+	savedPanicCheckSlowLabels := c.panicCheckSlowLabels
+	savedPanicCheckSlowDepths := c.panicCheckSlowDepths
 	savedNamedResultNames := c.namedResultNames
 	c.curFunc = f
 	c.scopes = nil
@@ -2287,6 +2291,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.stackDepth = 0
 	c.namedResultNames = nil
 	c.panicUnwindLabel = c.newLabel()
+	c.resetPanicPropagationOutlineState()
 	c.pushScope()
 	for _, node := range inits {
 		qname := pkg.QualName(node.Name)
@@ -2360,6 +2365,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 	if c.panicUnwindLabel >= 0 {
+		c.emitPanicPropagationSlowPaths()
 		// Panic-unwind path shared by call-site panic propagation checks.
 		c.emitLabel(c.panicUnwindLabel)
 		recoveredLabel := c.newLabel()
@@ -2376,6 +2382,8 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.irmod.Funcs = append(c.irmod.Funcs, f)
 	c.curFunc = nil
 	c.panicUnwindLabel = savedPanicUnwindLabel
+	c.panicCheckSlowLabels = savedPanicCheckSlowLabels
+	c.panicCheckSlowDepths = savedPanicCheckSlowDepths
 	c.namedResultNames = savedNamedResultNames
 }
 
@@ -2902,6 +2910,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	} else {
 		c.panicUnwindLabel = c.newLabel()
 	}
+	c.resetPanicPropagationOutlineState()
 	if c.funcIsProfiled[f.Name] {
 		c.profileMethodHash = c.currentMethodHash
 		if c.profileMethodHash == 0 {
@@ -2965,6 +2974,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	}
 
 	if c.panicUnwindLabel >= 0 {
+		c.emitPanicPropagationSlowPaths()
 		// Panic-unwind path shared by call-site panic propagation checks.
 		c.emitLabel(c.panicUnwindLabel)
 		if len(c.deferSites) > 0 {
@@ -4327,6 +4337,8 @@ func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureC
 	savedDeferSites := c.deferSites
 	savedDeferHeadLocal := c.deferHeadLocal
 	savedPanicUnwindLabel := c.panicUnwindLabel
+	savedPanicCheckSlowLabels := c.panicCheckSlowLabels
+	savedPanicCheckSlowDepths := c.panicCheckSlowDepths
 	savedNamed := c.namedResultNames
 	savedPendingStmtLabels := c.pendingStmtLabels
 	savedLabelIDs := c.labelIDs
@@ -4367,6 +4379,8 @@ func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureC
 	c.deferSites = savedDeferSites
 	c.deferHeadLocal = savedDeferHeadLocal
 	c.panicUnwindLabel = savedPanicUnwindLabel
+	c.panicCheckSlowLabels = savedPanicCheckSlowLabels
+	c.panicCheckSlowDepths = savedPanicCheckSlowDepths
 	c.namedResultNames = savedNamed
 	c.pendingStmtLabels = savedPendingStmtLabels
 	c.labelIDs = savedLabelIDs
@@ -4777,6 +4791,45 @@ func profileHash32FNV(name string) uint32 {
 	return h
 }
 
+func (c *Compiler) resetPanicPropagationOutlineState() {
+	c.panicCheckSlowLabels = nil
+	c.panicCheckSlowDepths = nil
+}
+
+func (c *Compiler) panicPropagationSlowLabel(depth int) int {
+	if c.panicCheckSlowLabels == nil {
+		c.panicCheckSlowLabels = make(map[int]int)
+	}
+	if label, ok := c.panicCheckSlowLabels[depth]; ok {
+		return label
+	}
+	label := c.newLabel()
+	c.panicCheckSlowLabels[depth] = label
+	c.panicCheckSlowDepths = append(c.panicCheckSlowDepths, depth)
+	return label
+}
+
+func (c *Compiler) emitPanicPropagationSlowPaths() {
+	if c.panicUnwindLabel < 0 || len(c.panicCheckSlowDepths) == 0 {
+		return
+	}
+	for _, depth := range c.panicCheckSlowDepths {
+		label, ok := c.panicCheckSlowLabels[depth]
+		if !ok {
+			continue
+		}
+		c.stackDepth = depth
+		c.emitLabel(label)
+		dropCount := depth
+		for dropCount > 0 {
+			c.emit(ir.Inst{Op: ir.OP_DROP})
+			dropCount--
+		}
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.panicUnwindLabel})
+	}
+	c.stackDepth = 0
+}
+
 func (c *Compiler) emitProfileFinalize() {
 	if !c.profileFlushOnExit {
 		return
@@ -4804,24 +4857,19 @@ func (c *Compiler) emitRecoveredPanicReturn() {
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
 }
 
-func (c *Compiler) emitPanicPropagationCheck(retCount int) {
+func (c *Compiler) emitPanicPropagationCheck(_ int) {
 	if c.panicUnwindLabel < 0 {
 		return
 	}
-	continueLabel := c.newLabel()
 	savedDepth := c.stackDepth
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicShouldUnwind", Arg: 0})
-	c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: continueLabel})
-	// We can be in the middle of a larger expression when a callee panics.
-	// Jumping to the shared unwind label must not carry any transient operands.
-	dropCount := savedDepth
-	for dropCount > 0 {
-		c.emit(ir.Inst{Op: ir.OP_DROP})
-		dropCount--
+	slowLabel := c.panicUnwindLabel
+	if savedDepth > 0 {
+		// Reuse one outlined slow path per transient stack depth so callsites
+		// only need a single conditional branch on the unwind result.
+		slowLabel = c.panicPropagationSlowLabel(savedDepth)
 	}
-	c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.panicUnwindLabel})
-	c.stackDepth = savedDepth
-	c.emitLabel(continueLabel)
+	c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: slowLabel})
 }
 
 func (c *Compiler) emitCallWithPanicCheck(callName string, argCount int) {
@@ -7334,7 +7382,7 @@ func (c *Compiler) prunePanicPropagationChecks() {
 	}
 	mayPanic := c.buildPanicReachability()
 	for _, f := range c.irmod.Funcs {
-		if f == nil || len(f.Code) < 4 {
+		if f == nil || len(f.Code) < 3 {
 			continue
 		}
 		out := make([]ir.Inst, 0, len(f.Code))
@@ -7344,8 +7392,17 @@ func (c *Compiler) prunePanicPropagationChecks() {
 				(f.Code[i].Op == ir.OP_CALL || f.Code[i].Op == ir.OP_IFACE_CALL) &&
 				f.Code[i+1].Op == ir.OP_CALL &&
 				f.Code[i+1].Name == "runtime.PanicShouldUnwind" &&
-				f.Code[i+2].Op == ir.OP_JMP_IF_NOT {
+				(f.Code[i+2].Op == ir.OP_JMP_IF_NOT || f.Code[i+2].Op == ir.OP_JMP_IF) {
 				callInst := f.Code[i]
+				if f.Code[i+2].Op == ir.OP_JMP_IF {
+					if c.callMayTriggerPanic(callInst, mayPanic) {
+						out = append(out, f.Code[i:i+3]...)
+					} else {
+						out = append(out, callInst)
+					}
+					i = i + 3
+					continue
+				}
 				continueLabel := f.Code[i+2].Arg
 				j := i + 3
 				for j < len(f.Code) && f.Code[j].Op == ir.OP_DROP {
@@ -7390,7 +7447,7 @@ func (c *Compiler) insertDeferRecoverCallWrappers() {
 				(f.Code[i].Op == ir.OP_CALL || f.Code[i].Op == ir.OP_IFACE_CALL) &&
 				f.Code[i+1].Op == ir.OP_CALL &&
 				f.Code[i+1].Name == "runtime.PanicShouldUnwind" &&
-				f.Code[i+2].Op == ir.OP_JMP_IF_NOT &&
+				(f.Code[i+2].Op == ir.OP_JMP_IF_NOT || f.Code[i+2].Op == ir.OP_JMP_IF) &&
 				c.callMayReachRecover(f.Code[i], mayRecover) {
 				out = append(out, ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
 				out = append(out, f.Code[i])
@@ -8415,6 +8472,8 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedDeferSites := c.deferSites
 	savedDeferHeadLocal := c.deferHeadLocal
 	savedPanicUnwindLabel := c.panicUnwindLabel
+	savedPanicCheckSlowLabels := c.panicCheckSlowLabels
+	savedPanicCheckSlowDepths := c.panicCheckSlowDepths
 	savedNamedResultNames := c.namedResultNames
 	savedPendingStmtLabels := c.pendingStmtLabels
 	savedLabelIDs := c.labelIDs
@@ -8443,6 +8502,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.deferSites = nil
 	c.deferHeadLocal = -1
 	c.panicUnwindLabel = -1
+	c.resetPanicPropagationOutlineState()
 	c.namedResultNames = nil
 	c.fallthroughs = nil
 	c.pendingStmtLabels = nil
@@ -8476,6 +8536,8 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.deferSites = savedDeferSites
 	c.deferHeadLocal = savedDeferHeadLocal
 	c.panicUnwindLabel = savedPanicUnwindLabel
+	c.panicCheckSlowLabels = savedPanicCheckSlowLabels
+	c.panicCheckSlowDepths = savedPanicCheckSlowDepths
 	c.namedResultNames = savedNamedResultNames
 	c.pendingStmtLabels = savedPendingStmtLabels
 	c.labelIDs = savedLabelIDs
