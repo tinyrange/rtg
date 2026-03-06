@@ -219,7 +219,14 @@ jobs:
           go-version-file: go.mod
 
       - name: Install Wasmtime
-        uses: bytecodealliance/actions/wasmtime/setup@v1
+        run: |
+          set -euo pipefail
+          WASMTIME_VERSION=v42.0.1
+          WASMTIME_DIR="$HOME/.local/wasmtime"
+          mkdir -p "$WASMTIME_DIR"
+          curl -fsSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz" \
+            | tar -xJ --strip-components=1 -C "$WASMTIME_DIR"
+          echo "$WASMTIME_DIR" >> "$GITHUB_PATH"
 
       - name: Build bootstrap compiler
         run: go build -o build/rtg ./std/compiler/
