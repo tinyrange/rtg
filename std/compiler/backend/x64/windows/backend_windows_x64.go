@@ -26,7 +26,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	g.Data = append(g.Data, 0, 0, 0, 0, 0, 0, 0, 0)
 
 	// Emit entry point
-	emitStart(g, irmod)
+	emitStart(g, irmod, common.EntryFuncName(target))
 
 	g.EmitAllFunctions(irmod)
 
@@ -73,7 +73,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 }
 
 // emitStart generates the Windows x64 entry point.
-func emitStart(g *core.CodeGen, irmod *ir.IRModule) {
+func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// Windows x64 entry point. RSP is 16-byte aligned + 8 on entry
 	// (the loader calls us via `call`, pushing a return address).
 	// We use R15 as the operand stack pointer (callee-saved, preserved by kernel32).
@@ -105,8 +105,8 @@ func emitStart(g *core.CodeGen, irmod *ir.IRModule) {
 		}
 	}
 
-	// Call main.main
-	g.EmitCallPlaceholder("main.main")
+	// Call entry function.
+	g.EmitCallPlaceholder(entryFunc)
 
 	// ExitProcess(0)
 	g.XorRR(core.REG_RCX, core.REG_RCX) // uExitCode = 0

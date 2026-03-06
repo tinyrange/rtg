@@ -23,7 +23,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	ediSaveSlot = len(g.Data)
 	g.Data = append(g.Data, 0, 0, 0, 0)
 
-	emitStartWin386(g, irmod)
+	emitStartWin386(g, irmod, common.EntryFuncName(target))
 	g.CompileModuleFuncs(irmod)
 	g.CollectNativeFuncSizes(irmod)
 	if g.NeedTostringHelper {
@@ -75,7 +75,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 }
 
 // emitStartWin386 generates the Windows entry point.
-func emitStartWin386(g *core.CodeGen, irmod *ir.IRModule) {
+func emitStartWin386(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// Windows entry point: no arguments passed, we use stdcall.
 	// EDI = operand stack pointer (callee-saved)
 	// EBP = frame pointer (callee-saved)
@@ -107,7 +107,7 @@ func emitStartWin386(g *core.CodeGen, irmod *ir.IRModule) {
 		}
 	}
 
-	g.EmitCallPlaceholder("main.main")
+	g.EmitCallPlaceholder(entryFunc)
 
 	pushImm32(g, 0)
 	g.EmitCallIAT("ExitProcess")

@@ -15,7 +15,7 @@ import (
 func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := core.NewCodeGen(target, irmod, 0x08048000)
 
-	EmitStart(g, irmod)
+	EmitStart(g, irmod, common.EntryFuncName(target))
 	g.CompileModuleFuncs(irmod)
 	g.CollectNativeFuncSizes(irmod)
 	if g.NeedTostringHelper {

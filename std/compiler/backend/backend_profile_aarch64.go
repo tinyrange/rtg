@@ -68,7 +68,7 @@ func parseBuiltinAArch64MachoABI(abi targetcfg.ABIProvider) (builtinAArch64Macho
 	return cfg, nil
 }
 
-func emitBuiltinAArch64MachoStart(g *aarch64.CodeGen, irmod *ir.IRModule, abi builtinAArch64MachoABI) {
+func emitBuiltinAArch64MachoStart(g *aarch64.CodeGen, irmod *ir.IRModule, abi builtinAArch64MachoABI, entryFunc string) {
 	g.EmitStp(aarch64.REG_FP, aarch64.REG_LR, aarch64.REG_SP, -16)
 	g.EmitMovRRArm64(aarch64.REG_FP, aarch64.REG_SP)
 
@@ -99,7 +99,7 @@ func emitBuiltinAArch64MachoStart(g *aarch64.CodeGen, irmod *ir.IRModule, abi bu
 			g.EmitCallPlaceholderArm64(f.Name)
 		}
 	}
-	g.EmitCallPlaceholderArm64("main.main")
+	g.EmitCallPlaceholderArm64(entryFunc)
 
 	g.EmitMovZ(aarch64.REG_X0, uint16(abi.ExitCode), 0)
 	g.EmitCallGOT(abi.ExitSymbol)
@@ -116,7 +116,7 @@ func generateBuiltinAArch64Macho(tgt *common.Target, irmod *ir.IRModule, outputP
 	}
 	g := aarch64.NewCodeGen(tgt, irmod, cfg.ImageBase, cfg.ExtraGlobals, cfg.WithGOT)
 
-	emitBuiltinAArch64MachoStart(g, irmod, cfg)
+	emitBuiltinAArch64MachoStart(g, irmod, cfg, common.EntryFuncName(tgt))
 	g.CompileModuleFuncs(irmod)
 	g.CollectNativeFuncSizes(irmod)
 	if g.NeedTostringHelper() {

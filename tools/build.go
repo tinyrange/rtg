@@ -717,6 +717,9 @@ func fullCompilerSkipReason(backend string, targetOS string, targetArch string, 
 	if backend == "rtg" && name == "55_stdlib_additions_extended" && targetArch == "amd64" {
 		return "known x64 runtime instability in extended stdlib fixture"
 	}
+	if backend == "rtg" && name == "56_compileas_embed" && targetArch == "armv8m" {
+		return "compileas nested cross-compilation is too heavy for constrained armv8m fullcompiler targets"
+	}
 	return ""
 }
 

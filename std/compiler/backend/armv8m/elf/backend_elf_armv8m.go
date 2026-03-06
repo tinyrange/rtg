@@ -32,7 +32,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			g.EmitCallPlaceholder(f.Name)
 		}
 	}
-	g.EmitCallPlaceholder("main.main")
+	g.EmitCallPlaceholder(common.EntryFuncName(target))
 	g.EmitMovsImm(0, 0x18)
 	g.LoadImm32(1, 0x00020026)
 	g.EmitBkpt(0xAB)
@@ -105,10 +105,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				continue
 			}
 			symbols = append(symbols, Symbol{
-				Name: ".L" + fn.name + "." + fmt.Sprintf("%d", id),
-				Addr: codeBaseAddr + uint32(off),
-				Size: 0,
-				Info: 0x00, // STT_NOTYPE
+				Name:  ".L" + fn.name + "." + fmt.Sprintf("%d", id),
+				Addr:  codeBaseAddr + uint32(off),
+				Size:  0,
+				Info:  0x00, // STT_NOTYPE
 				Local: true,
 			})
 		}

@@ -21,7 +21,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 	g := aarch64.NewCodeGen(target, irmod, 0x140000000, 0, false)
 
 	// Emit entry point
-	emitStartArm64Windows(g, irmod)
+	emitStartArm64Windows(g, irmod, common.EntryFuncName(target))
 
 	// Compile all functions
 	g.CompileModuleFuncs(irmod)
@@ -61,7 +61,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 }
 
 // emitStartArm64Windows generates the Windows ARM64 entry point.
-func emitStartArm64Windows(g *aarch64.CodeGen, irmod *ir.IRModule) {
+func emitStartArm64Windows(g *aarch64.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// Save LR (entry is called by Windows loader)
 	g.EmitStp(aarch64.REG_FP, aarch64.REG_LR, aarch64.REG_SP, -16)
 	g.EmitMovRRArm64(aarch64.REG_FP, aarch64.REG_SP)
@@ -82,7 +82,7 @@ func emitStartArm64Windows(g *aarch64.CodeGen, irmod *ir.IRModule) {
 		}
 	}
 
-	g.EmitCallPlaceholderArm64("main.main")
+	g.EmitCallPlaceholderArm64(entryFunc)
 
 	g.EmitMovZ(aarch64.REG_X0, 0, 0)
 	emitCallIATArm64(g, "ExitProcess")

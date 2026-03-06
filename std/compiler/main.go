@@ -36,6 +36,7 @@ var compileTarget = common.Target{
 	StdlibIncludePaths:    []string{},
 	StdlibIncludeExplicit: false,
 	StdlibIncludeEmbedded: false,
+	EntryFunc:             "main.main",
 }
 
 func defaultPtrSize() int {
@@ -228,90 +229,10 @@ func main() {
 					i = i + 2
 					continue
 				}
-				if target == "c" || strings.HasPrefix(target, "c/") {
-					compileTarget.Triple = target
-					compileTarget.Backend = "c"
-					compileTarget.CModel = 64
-					if strings.HasPrefix(target, "c/") {
-						model := target[2:]
-						if model == "16" {
-							compileTarget.CModel = 16
-						} else if model == "32" {
-							compileTarget.CModel = 32
-						} else if model == "64" {
-							compileTarget.CModel = 64
-						} else {
-							fmt.Fprintf(os.Stderr, "invalid target %q: expected c, c/16, c/32, or c/64\n", target)
-							os.Exit(1)
-						}
-					}
-					if compileTarget.CModel == 16 {
-						compileTarget.PtrSize = 2
-					} else if compileTarget.CModel == 32 {
-						compileTarget.PtrSize = 4
-					} else {
-						compileTarget.PtrSize = 8
-					}
-					compileTarget.WordSize = compileTarget.PtrSize
-					compileTarget.GOOS = "c"
-					compileTarget.GOARCH = fmt.Sprintf("c%d", compileTarget.CModel)
-				} else if strings.HasPrefix(target, "vm/") {
-					compileTarget.Triple = target
-					compileTarget.Backend = "vm"
-					model := target[3:]
-					if model == "8" {
-						compileTarget.WordSize = 1
-						compileTarget.PtrSize = 2
-					} else if model == "16" {
-						compileTarget.WordSize = 2
-						compileTarget.PtrSize = 2
-					} else if model == "32" {
-						compileTarget.WordSize = 4
-						compileTarget.PtrSize = 4
-					} else if model == "64" {
-						compileTarget.WordSize = 8
-						compileTarget.PtrSize = 8
-					} else {
-						fmt.Fprintf(os.Stderr, "invalid target %q: expected vm/8, vm/16, vm/32, or vm/64\n", target)
-						os.Exit(1)
-					}
-					compileTarget.GOOS = "c"
-					bits := compileTarget.WordSize * 8
-					compileTarget.GOARCH = fmt.Sprintf("c%d", bits)
-				} else {
-					_, handledByTargetPkg, err := targetcfg.Apply(target, &compileTarget)
-					if handledByTargetPkg {
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "invalid target %q: %v\n", target, err)
-							os.Exit(1)
-						}
-						compileTarget.Triple = target
-						i = i + 2
-						continue
-					}
-					if target == "dos/8086" {
-						compileTarget.Triple = target
-						compileTarget.GOOS = "dos"
-						compileTarget.GOARCH = "dos16"
-						compileTarget.PtrSize = 2
-						compileTarget.WordSize = 2
-						i = i + 2
-						continue
-					}
-					slashIdx := strings.Index(target, "/")
-					if slashIdx < 0 {
-						fmt.Fprintf(os.Stderr, "invalid target %q: expected os/arch, dos/8086, c[/16|32|64], or vm/<8|16|32|64>\n", target)
-						os.Exit(1)
-					}
-					compileTarget.GOOS = target[0:slashIdx]
-					compileTarget.GOARCH = target[slashIdx+1:]
-					compileTarget.Triple = target
-					if compileTarget.GOARCH == "386" || compileTarget.GOARCH == "wasm32" || compileTarget.GOARCH == "armv8m" {
-						compileTarget.PtrSize = 4
-					} else {
-						compileTarget.PtrSize = 8
-					}
-					compileTarget.WordSize = compileTarget.PtrSize
+				if err := applyTargetSelection(target, &compileTarget); err != nil {
+					fmt.Fprintf(os.Stderr, "invalid target %q: %v\n", target, err)
+					runCleanup()
+					os.Exit(1)
 				}
 				i = i + 2
 				continue
@@ -597,25 +518,7 @@ func main() {
 	}
 
 	// Build active tag set from target + explicit tags
-	if compileTarget.Backend == "c" {
-		compileTarget.BuildTags = append(compileTarget.BuildTags, "c")
-		compileTarget.BuildTags = append(compileTarget.BuildTags, fmt.Sprintf("c%d", compileTarget.CModel))
-	} else if compileTarget.GOOS == "wasi" && compileTarget.GOARCH == "wasm32" {
-		compileTarget.BuildTags = append(compileTarget.BuildTags, "wasi")
-		compileTarget.BuildTags = append(compileTarget.BuildTags, "wasm32")
-	} else {
-		compileTarget.BuildTags = append(compileTarget.BuildTags, compileTarget.GOOS)
-		compileTarget.BuildTags = append(compileTarget.BuildTags, compileTarget.GOARCH)
-	}
-	if extraTags != "" {
-		parts := strings.Split(extraTags, ",")
-		for _, t := range parts {
-			if t != "" {
-				compileTarget.BuildTags = append(compileTarget.BuildTags, t)
-			}
-		}
-	}
-	compileTarget.BuildTags = append(compileTarget.BuildTags, "rtg")
+	applyBuildTags(&compileTarget, extraTags)
 	if ir.SizeAnalysisPath != "" {
 		compileTarget.StripBinary = true
 	}
@@ -780,6 +683,24 @@ func main() {
 			runCleanup()
 			os.Exit(1)
 		}
+		compileAsSpecs, compileAsErrs := frontend.CollectCompileAsSpecs(mod)
+		if len(compileAsErrs) > 0 {
+			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(compileAsErrs))
+			for _, e := range compileAsErrs {
+				fmt.Fprintf(os.Stderr, "  %s\n", e)
+			}
+			runCleanup()
+			os.Exit(1)
+		}
+		if len(compileAsSpecs) > 0 {
+			artifacts, err := buildCompileAsArtifacts(compileTarget, baseDir, entryFiles, extraTags, compileAsSpecs)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "compileas error: %v\n", err)
+				runCleanup()
+				os.Exit(1)
+			}
+			compileTarget.CompileAsArtifacts = artifacts
+		}
 
 		// Compile to IR
 		if compileTarget.CompilerDebug {
@@ -801,7 +722,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 		traceExit(30)
-		ir.EliminateDeadFunctions(irmod)
+		ir.EliminateDeadFunctions(irmod, common.EntryFuncName(&compileTarget))
 		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
 		}
@@ -909,6 +830,238 @@ func main() {
 	}
 
 	runCleanup()
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneTargetForCompileAs(base common.Target) common.Target {
+	out := base
+	out.BuildTags = nil
+	out.Defines = cloneStringMap(base.Defines)
+	out.CompileAsArtifacts = nil
+	return out
+}
+
+func applyBuildTags(tgt *common.Target, extraTags string) {
+	tgt.BuildTags = nil
+	if tgt.Backend == "c" {
+		tgt.BuildTags = append(tgt.BuildTags, "c")
+		tgt.BuildTags = append(tgt.BuildTags, fmt.Sprintf("c%d", tgt.CModel))
+	} else if tgt.GOOS == "wasi" && tgt.GOARCH == "wasm32" {
+		tgt.BuildTags = append(tgt.BuildTags, "wasi")
+		tgt.BuildTags = append(tgt.BuildTags, "wasm32")
+	} else {
+		tgt.BuildTags = append(tgt.BuildTags, tgt.GOOS)
+		tgt.BuildTags = append(tgt.BuildTags, tgt.GOARCH)
+	}
+	if extraTags != "" {
+		parts := strings.Split(extraTags, ",")
+		for _, t := range parts {
+			if t != "" {
+				tgt.BuildTags = append(tgt.BuildTags, t)
+			}
+		}
+	}
+	tgt.BuildTags = append(tgt.BuildTags, "rtg")
+}
+
+func applyTargetSelection(targetName string, cfg *common.Target) error {
+	if targetName == "c" || strings.HasPrefix(targetName, "c/") {
+		cfg.Triple = targetName
+		cfg.Backend = "c"
+		cfg.CModel = 64
+		if strings.HasPrefix(targetName, "c/") {
+			model := targetName[2:]
+			if model == "16" {
+				cfg.CModel = 16
+			} else if model == "32" {
+				cfg.CModel = 32
+			} else if model == "64" {
+				cfg.CModel = 64
+			} else {
+				return fmt.Errorf("expected c, c/16, c/32, or c/64")
+			}
+		}
+		if cfg.CModel == 16 {
+			cfg.PtrSize = 2
+		} else if cfg.CModel == 32 {
+			cfg.PtrSize = 4
+		} else {
+			cfg.PtrSize = 8
+		}
+		cfg.WordSize = cfg.PtrSize
+		cfg.GOOS = "c"
+		cfg.GOARCH = fmt.Sprintf("c%d", cfg.CModel)
+		return nil
+	}
+	if targetName == "ir" {
+		return fmt.Errorf("target %q is no longer supported; use -emit-ir <path> with a concrete -T <target>", targetName)
+	}
+	if strings.HasPrefix(targetName, "vm/") {
+		cfg.Triple = targetName
+		cfg.Backend = "vm"
+		model := targetName[3:]
+		if model == "8" {
+			cfg.WordSize = 1
+			cfg.PtrSize = 2
+		} else if model == "16" {
+			cfg.WordSize = 2
+			cfg.PtrSize = 2
+		} else if model == "32" {
+			cfg.WordSize = 4
+			cfg.PtrSize = 4
+		} else if model == "64" {
+			cfg.WordSize = 8
+			cfg.PtrSize = 8
+		} else {
+			return fmt.Errorf("expected vm/8, vm/16, vm/32, or vm/64")
+		}
+		cfg.GOOS = "c"
+		bits := cfg.WordSize * 8
+		cfg.GOARCH = fmt.Sprintf("c%d", bits)
+		return nil
+	}
+	_, handledByTargetPkg, err := targetcfg.Apply(targetName, cfg)
+	if handledByTargetPkg {
+		if err != nil {
+			return err
+		}
+		cfg.Triple = targetName
+		return nil
+	}
+	if targetName == "dos/8086" {
+		cfg.Triple = targetName
+		cfg.Backend = "native"
+		cfg.GOOS = "dos"
+		cfg.GOARCH = "dos16"
+		cfg.PtrSize = 2
+		cfg.WordSize = 2
+		return nil
+	}
+	slashIdx := strings.Index(targetName, "/")
+	if slashIdx < 0 {
+		return fmt.Errorf("expected os/arch, dos/8086, c[/16|32|64], or vm/<8|16|32|64>")
+	}
+	cfg.Backend = "native"
+	cfg.GOOS = targetName[0:slashIdx]
+	cfg.GOARCH = targetName[slashIdx+1:]
+	cfg.Triple = targetName
+	if cfg.GOARCH == "386" || cfg.GOARCH == "wasm32" || cfg.GOARCH == "armv8m" {
+		cfg.PtrSize = 4
+	} else {
+		cfg.PtrSize = 8
+	}
+	cfg.WordSize = cfg.PtrSize
+	return nil
+}
+
+func compileAsOutputExt(tgt *common.Target) string {
+	if tgt == nil {
+		return ""
+	}
+	if tgt.Backend == "c" {
+		return ".c"
+	}
+	if tgt.GOOS == "windows" {
+		return ".exe"
+	}
+	if tgt.GOOS == "wasi" && tgt.GOARCH == "wasm32" {
+		return ".wasm"
+	}
+	return ""
+}
+
+func sanitizeCompileAsName(name string) string {
+	if name == "" {
+		return "compileas"
+	}
+	var out []byte
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-' {
+			out = append(out, ch)
+		} else {
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
+func summarizeErrors(errs []string) string {
+	if len(errs) == 0 {
+		return ""
+	}
+	limit := 3
+	if len(errs) < limit {
+		limit = len(errs)
+	}
+	out := ""
+	for i := 0; i < limit; i++ {
+		if i > 0 {
+			out = out + "; "
+		}
+		out = out + errs[i]
+	}
+	if len(errs) > limit {
+		out = out + fmt.Sprintf("; ... (%d more)", len(errs)-limit)
+	}
+	return out
+}
+
+func buildCompileAsArtifacts(baseTarget common.Target, baseDir string, entryFiles []string, extraTags string, specs []frontend.CompileAsSpec) (map[string]string, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	tmpDir := tempDirPath() + pathSep() + "rtg-compileas-" + fmt.Sprintf("%d", os.Getpid())
+	_ = os.RemoveAll(tmpDir)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	artifacts := make(map[string]string, len(specs))
+	for i, spec := range specs {
+		innerTarget := cloneTargetForCompileAs(baseTarget)
+		innerTarget.EntryFunc = spec.EntryFunc
+		if err := applyTargetSelection(spec.Target, &innerTarget); err != nil {
+			return nil, fmt.Errorf("id=%s target=%s: %v", spec.ID, spec.Target, err)
+		}
+		if innerTarget.Backend == "vm" {
+			return nil, fmt.Errorf("id=%s target=%s: vm backend is not supported by //rtg:compileas", spec.ID, spec.Target)
+		}
+		applyBuildTags(&innerTarget, extraTags)
+
+		frontend.ResetDiscoveredBuildTags()
+		innerMod := frontend.ResolveModule(&innerTarget, baseDir, entryFiles)
+		if valErrs := frontend.ValidateModule(innerMod); len(valErrs) > 0 {
+			return nil, fmt.Errorf("id=%s target=%s validation failed: %s", spec.ID, spec.Target, summarizeErrors(valErrs))
+		}
+		innerIR, compileErrs := frontend.CompileModule(innerTarget, innerMod)
+		if len(compileErrs) > 0 {
+			return nil, fmt.Errorf("id=%s target=%s compile failed: %s", spec.ID, spec.Target, summarizeErrors(compileErrs))
+		}
+		ir.EliminateDeadFunctions(innerIR, common.EntryFuncName(&innerTarget))
+
+		outPath := fmt.Sprintf("%s/%03d_%s%s", tmpDir, i, sanitizeCompileAsName(spec.ID), compileAsOutputExt(&innerTarget))
+		if err := backend.Generate(&innerTarget, innerIR, outPath); err != nil {
+			return nil, fmt.Errorf("id=%s target=%s codegen failed: %v", spec.ID, spec.Target, err)
+		}
+		payload, err := os.ReadFile(outPath)
+		if err != nil {
+			return nil, fmt.Errorf("id=%s target=%s read artifact: %v", spec.ID, spec.Target, err)
+		}
+		artifacts[spec.ArtifactVar] = string(payload)
+	}
+	return artifacts, nil
 }
 
 func printHelp(program string, out *os.File) {

@@ -148,6 +148,7 @@ type Compiler struct {
 	ifInitLeakedNames    map[string]bool
 	assembleFuncs        map[string]assembleInfo
 	inAssembleBuilder    bool
+	entryFunc            string
 }
 
 func (c *Compiler) dotJoin(a string, b string) string {
@@ -167,6 +168,10 @@ func (c *Compiler) dotJoin(a string, b string) string {
 
 // CompileModule compiles an entire resolved module to IR.
 func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
+	entryFunc := target.EntryFunc
+	if entryFunc == "" {
+		entryFunc = "main.main"
+	}
 	c := &Compiler{
 		target:               &target,
 		mod:                  mod,
@@ -206,6 +211,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		qualifyTypeCache:     make(map[string]string),
 		structTypeLookup:     make(map[string]structTypeLookupResult),
 		assembleFuncs:        make(map[string]assembleInfo),
+		entryFunc:            entryFunc,
 	}
 	c.initBuiltinTypes()
 
@@ -1754,8 +1760,8 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 					// init functions are invoked indirectly by runtime init machinery.
 					// Keep ABI zero-arg for compatibility.
 					profileParentABI = false
-				} else if !(pkg.Path == "main" && fn.Name == "main") {
-					// Entry point main.main ABI must stay zero-arg for startup.
+				} else if qname != c.entryFunc {
+					// Entry point ABI must stay zero-arg for startup.
 					// All other callables receive caller hash in profiling mode.
 					profileParentABI = true
 				}
@@ -2007,6 +2013,11 @@ type directiveInit struct {
 	registry string
 }
 
+type artifactInit struct {
+	id    string
+	qname string
+}
+
 func sortDirectiveInits(inits []directiveInit) {
 	i := 1
 	for i < len(inits) {
@@ -2183,6 +2194,34 @@ func (c *Compiler) collectTargetDirectiveInits(pkg *Package) ([]directiveInit, [
 	return targetInits, abiInits, asmInits, fmtInits
 }
 
+func (c *Compiler) collectArtifactDirectiveInits(pkg *Package) []artifactInit {
+	var out []artifactInit
+	seenByID := make(map[string]string)
+	for _, file := range pkg.Files {
+		for _, node := range file.Nodes {
+			base, directives := unwrapDirectiveNode(node)
+			directives = c.filterDirectivesForStrict(pkg, node, directives, false)
+			if base == nil || base.Kind != NVarDecl || base.Name == "" || len(base.Nodes) != 0 {
+				continue
+			}
+			qname := pkg.QualName(base.Name)
+			for _, d := range directives {
+				id, ok := parseArtifactDirective(d)
+				if !ok {
+					continue
+				}
+				if prev, exists := seenByID[id]; exists && prev != qname {
+					c.errorf("%s: duplicate //rtg:artifact id=%s (already declared by %s)", qname, id, prev)
+					continue
+				}
+				seenByID[id] = qname
+				out = append(out, artifactInit{id: id, qname: qname})
+			}
+		}
+	}
+	return out
+}
+
 func (c *Compiler) compileGlobalInits(pkg *Package) {
 	// Collect all global var decls with initializers
 	var inits []*Node
@@ -2224,8 +2263,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	}
 	sortEmbeds(embeds)
 	targetInits, abiInits, asmInits, fmtInits := c.collectTargetDirectiveInits(pkg)
+	artifactInits := c.collectArtifactDirectiveInits(pkg)
 
-	if len(inits) == 0 && len(embeds) == 0 && len(targetInits) == 0 && len(abiInits) == 0 && len(asmInits) == 0 && len(fmtInits) == 0 {
+	if len(inits) == 0 && len(embeds) == 0 && len(targetInits) == 0 && len(abiInits) == 0 && len(asmInits) == 0 && len(fmtInits) == 0 && len(artifactInits) == 0 {
 		return
 	}
 	// Create a synthetic init function for global var initialization
@@ -2272,6 +2312,22 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 			continue
 		}
 		c.compileEmbedInit(pkg, gidx, emb.pattern)
+	}
+
+	if c.target != nil && c.target.CompileAsArtifacts != nil {
+		for _, art := range artifactInits {
+			payload, ok := c.target.CompileAsArtifacts[art.qname]
+			if !ok {
+				continue
+			}
+			gidx, exists := c.globals[art.qname]
+			if !exists {
+				continue
+			}
+			c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeStringLiteral(payload)})
+			c.emit(ir.Inst{Op: ir.OP_CONVERT, Name: "[]byte"})
+			c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
+		}
 	}
 
 	for _, reg := range targetInits {
@@ -2863,7 +2919,7 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: qname})
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.ArenaEnter", Arg: 3})
 	}
-	if c.target != nil && c.target.Profile && c.curPkg != nil && c.curPkg.Path == "main" && node.X == nil && node.Name == "main" {
+	if c.target != nil && c.target.Profile && f.Name == c.entryFunc {
 		c.profileFlushOnExit = true
 	}
 
@@ -2913,7 +2969,7 @@ func (c *Compiler) compileFunc(node *Node) {
 		recoveredLabel := c.newLabel()
 		c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicWasRecovered", Arg: 0})
 		c.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: recoveredLabel})
-		if f.Name == "main.main" {
+		if f.Name == c.entryFunc {
 			c.emitProfileExit()
 			c.emitProfileFinalize()
 			c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicValueToString", Arg: 0})

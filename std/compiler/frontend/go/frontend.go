@@ -1455,6 +1455,231 @@ func parseBinFormatDirective(val string) (string, bool) {
 	return name, true
 }
 
+type CompileAsDirective struct {
+	ID     string
+	Target string
+}
+
+func parseDirectiveKVArgs(rest string) map[string]string {
+	parts := strings.Fields(strings.TrimSpace(rest))
+	values := make(map[string]string)
+	for _, part := range parts {
+		eq := strings.Index(part, "=")
+		if eq <= 0 || eq >= len(part)-1 {
+			continue
+		}
+		key := strings.TrimSpace(part[0:eq])
+		val := strings.TrimSpace(part[eq+1:])
+		if key == "" || val == "" {
+			continue
+		}
+		values[key] = val
+	}
+	return values
+}
+
+func parseCompileAsDirective(val string) (CompileAsDirective, bool) {
+	prefix := "compileas "
+	trimmed := strings.TrimSpace(val)
+	if len(trimmed) <= len(prefix) || trimmed[0:len(prefix)] != prefix {
+		return CompileAsDirective{}, false
+	}
+	rest := strings.TrimSpace(trimmed[len(prefix):len(trimmed)])
+	if rest == "" {
+		return CompileAsDirective{}, false
+	}
+	kv := parseDirectiveKVArgs(rest)
+	id := kv["id"]
+	target := kv["target"]
+	if id == "" || target == "" {
+		return CompileAsDirective{}, false
+	}
+	if strings.Index(target, "/") < 0 {
+		return CompileAsDirective{}, false
+	}
+	return CompileAsDirective{ID: id, Target: target}, true
+}
+
+func parseArtifactDirective(val string) (string, bool) {
+	prefix := "artifact "
+	trimmed := strings.TrimSpace(val)
+	if len(trimmed) <= len(prefix) || trimmed[0:len(prefix)] != prefix {
+		return "", false
+	}
+	rest := strings.TrimSpace(trimmed[len(prefix):len(trimmed)])
+	if rest == "" {
+		return "", false
+	}
+	kv := parseDirectiveKVArgs(rest)
+	id := kv["id"]
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
+func funcReturnCount(node *Node) int {
+	if node == nil || node.Type == nil {
+		return 0
+	}
+	if node.Type.Kind == NFuncType {
+		return len(node.Type.Nodes)
+	}
+	return 1
+}
+
+func isByteSliceType(node *Node) bool {
+	if node == nil || node.Kind != NSliceType || node.X == nil {
+		return false
+	}
+	return node.X.Kind == NIdent && node.X.Name == "byte"
+}
+
+type CompileAsSpec struct {
+	ID          string
+	Target      string
+	EntryFunc   string
+	ArtifactVar string
+}
+
+func collectCompileAsDirectives(pkg *Package) ([]CompileAsSpec, []CompileAsSpec, []string) {
+	var compileSpecs []CompileAsSpec
+	var artifactSpecs []CompileAsSpec
+	var errs []string
+
+	for _, file := range pkg.Files {
+		for _, node := range file.Nodes {
+			base, directives := unwrapDirectiveNode(node)
+			if base == nil {
+				continue
+			}
+			for _, d := range directives {
+				if spec, ok := parseCompileAsDirective(d); ok {
+					if base.Kind != NFunc {
+						errs = append(errs, fmt.Sprintf("%s: line %d: //rtg:compileas must annotate a function", pkg.Path, node.Pos))
+						continue
+					}
+					if base.X != nil {
+						errs = append(errs, fmt.Sprintf("%s.%s: //rtg:compileas cannot annotate methods", pkg.Path, base.Name))
+						continue
+					}
+					if len(base.Nodes) != 0 {
+						errs = append(errs, fmt.Sprintf("%s.%s: //rtg:compileas requires zero parameters", pkg.Path, base.Name))
+						continue
+					}
+					if funcReturnCount(base) != 0 {
+						errs = append(errs, fmt.Sprintf("%s.%s: //rtg:compileas requires zero return values", pkg.Path, base.Name))
+						continue
+					}
+					compileSpecs = append(compileSpecs, CompileAsSpec{
+						ID:        spec.ID,
+						Target:    spec.Target,
+						EntryFunc: pkg.QualName(base.Name),
+					})
+				}
+				if id, ok := parseArtifactDirective(d); ok {
+					if base.Kind != NVarDecl {
+						errs = append(errs, fmt.Sprintf("%s: line %d: //rtg:artifact must annotate a variable", pkg.Path, node.Pos))
+						continue
+					}
+					if len(base.Nodes) != 0 || base.Name == "" {
+						errs = append(errs, fmt.Sprintf("%s: line %d: //rtg:artifact must annotate a single variable declaration", pkg.Path, node.Pos))
+						continue
+					}
+					if base.X != nil {
+						errs = append(errs, fmt.Sprintf("%s.%s: //rtg:artifact variable cannot have an initializer", pkg.Path, base.Name))
+						continue
+					}
+					if !isByteSliceType(base.Type) {
+						errs = append(errs, fmt.Sprintf("%s.%s: //rtg:artifact requires type []byte", pkg.Path, base.Name))
+						continue
+					}
+					artifactSpecs = append(artifactSpecs, CompileAsSpec{
+						ID:          id,
+						ArtifactVar: pkg.QualName(base.Name),
+					})
+				}
+			}
+		}
+	}
+	return compileSpecs, artifactSpecs, errs
+}
+
+func sortCompileAsSpecs(specs []CompileAsSpec) {
+	i := 1
+	for i < len(specs) {
+		j := i
+		for j > 0 {
+			if specs[j-1].ID < specs[j].ID {
+				break
+			}
+			if specs[j-1].ID == specs[j].ID && specs[j-1].EntryFunc <= specs[j].EntryFunc {
+				break
+			}
+			specs[j-1], specs[j] = specs[j], specs[j-1]
+			j--
+		}
+		i++
+	}
+}
+
+func CollectCompileAsSpecs(mod *Module) ([]CompileAsSpec, []string) {
+	if mod == nil {
+		return nil, nil
+	}
+
+	compileByID := make(map[string]CompileAsSpec)
+	artifactByID := make(map[string]CompileAsSpec)
+	var errs []string
+
+	for _, pkgPath := range mod.Order {
+		pkg, ok := mod.Packages[pkgPath]
+		if !ok {
+			continue
+		}
+		compileSpecs, artifactSpecs, pkgErrs := collectCompileAsDirectives(pkg)
+		if len(pkgErrs) > 0 {
+			errs = append(errs, pkgErrs...)
+		}
+		for _, spec := range compileSpecs {
+			if prev, exists := compileByID[spec.ID]; exists {
+				errs = append(errs, fmt.Sprintf("duplicate //rtg:compileas id=%s (%s, %s)", spec.ID, prev.EntryFunc, spec.EntryFunc))
+				continue
+			}
+			compileByID[spec.ID] = spec
+		}
+		for _, spec := range artifactSpecs {
+			if prev, exists := artifactByID[spec.ID]; exists {
+				errs = append(errs, fmt.Sprintf("duplicate //rtg:artifact id=%s (%s, %s)", spec.ID, prev.ArtifactVar, spec.ArtifactVar))
+				continue
+			}
+			artifactByID[spec.ID] = spec
+		}
+	}
+
+	var out []CompileAsSpec
+	for id, compileSpec := range compileByID {
+		artifactSpec, ok := artifactByID[id]
+		if !ok {
+			errs = append(errs, fmt.Sprintf("//rtg:compileas id=%s is missing matching //rtg:artifact", id))
+			continue
+		}
+		out = append(out, CompileAsSpec{
+			ID:          id,
+			Target:      compileSpec.Target,
+			EntryFunc:   compileSpec.EntryFunc,
+			ArtifactVar: artifactSpec.ArtifactVar,
+		})
+	}
+	for id := range artifactByID {
+		if _, ok := compileByID[id]; !ok {
+			errs = append(errs, fmt.Sprintf("//rtg:artifact id=%s is missing matching //rtg:compileas", id))
+		}
+	}
+	sortCompileAsSpecs(out)
+	return out, errs
+}
+
 // LinkStaticDirective describes a static-link external symbol target.
 type LinkStaticDirective struct {
 	Library string

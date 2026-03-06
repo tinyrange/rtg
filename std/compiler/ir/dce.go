@@ -52,9 +52,12 @@ func dceMethodName(name string) string {
 }
 
 // eliminateDeadFunctions removes unreachable functions from the IR module
-// using a mark-and-sweep reachability analysis starting from main.main,
-// init functions, and backend-implicit roots.
-func EliminateDeadFunctions(irmod *IRModule) {
+// using a mark-and-sweep reachability analysis starting from the selected
+// entry function, init functions, and backend-implicit roots.
+func EliminateDeadFunctions(irmod *IRModule, entryFunc string) {
+	if entryFunc == "" {
+		entryFunc = "main.main"
+	}
 	// Build name→index for fast lookup
 	funcIndex := make(map[string]int)
 	for i, f := range irmod.Funcs {
@@ -65,8 +68,8 @@ func EliminateDeadFunctions(irmod *IRModule) {
 	reachable := make(map[string]bool)
 	var worklist []string
 
-	// Root set: main.main
-	worklist = dceAddRoot("main.main", funcIndex, reachable, worklist)
+	// Root set: selected entry function.
+	worklist = dceAddRoot(entryFunc, funcIndex, reachable, worklist)
 
 	// Root set: init functions
 	for _, f := range irmod.Funcs {
