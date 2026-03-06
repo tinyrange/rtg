@@ -32,15 +32,19 @@ func zeroCallIsLabelOp(op Opcode) bool {
 		op == OP_JMP_GEQ
 }
 
+func zeroCallIsCompositeHelper(name string) bool {
+	return len(name) > 18 && name[0:18] == "builtin.composite."
+}
+
 func nextIRLabelID(code []Inst) int {
 	maxLabel := 0
 	seen := false
-	for _, inst := range code {
-		if !zeroCallIsLabelOp(inst.Op) {
+	for i := 0; i < len(code); i++ {
+		if !zeroCallIsLabelOp(code[i].Op) {
 			continue
 		}
-		if !seen || inst.Arg > maxLabel {
-			maxLabel = inst.Arg
+		if !seen || code[i].Arg > maxLabel {
+			maxLabel = code[i].Arg
 			seen = true
 		}
 	}
@@ -50,18 +54,9 @@ func nextIRLabelID(code []Inst) int {
 	return maxLabel + 1
 }
 
-func appendUniqueString(list []string, value string) []string {
-	for i := 0; i < len(list); i++ {
-		if list[i] == value {
-			return list
-		}
-	}
-	return append(list, value)
-}
-
 func detectZeroCallCyclesVisit(
 	name string,
-	edges map[string][]string,
+	edges map[string]map[string]bool,
 	zeroCall map[string]bool,
 	state map[string]int,
 	stack *[]string,
@@ -74,8 +69,11 @@ func detectZeroCallCyclesVisit(
 	state[name] = 1
 	stackPos[name] = len(*stack)
 	*stack = append(*stack, name)
-	if nexts := edges[name]; len(nexts) > 0 {
-		nextNames := append([]string{}, nexts...)
+	if nexts := edges[name]; nexts != nil {
+		nextNames := make([]string, 0, len(nexts))
+		for next := range nexts {
+			nextNames = append(nextNames, next)
+		}
 		sort.Strings(nextNames)
 		for _, next := range nextNames {
 			if !zeroCall[next] {
@@ -102,7 +100,7 @@ func detectZeroCallCyclesVisit(
 	state[name] = 2
 }
 
-func detectZeroCallCycles(edges map[string][]string, zeroCall map[string]bool) []string {
+func detectZeroCallCycles(edges map[string]map[string]bool, zeroCall map[string]bool) []string {
 	state := make(map[string]int) // 0=unvisited, 1=visiting, 2=done
 	stack := []string{}
 	stackPos := make(map[string]int)
@@ -118,8 +116,8 @@ func detectZeroCallCycles(edges map[string][]string, zeroCall map[string]bool) [
 	return nil
 }
 
-func validateZeroCallFuncs(irmod *IRModule, funcIndex map[string]*IRFunc) (map[string][]string, []string) {
-	edges := make(map[string][]string)
+func validateZeroCallFuncs(irmod *IRModule, funcIndex map[string]*IRFunc) (map[string]map[string]bool, []string) {
+	edges := make(map[string]map[string]bool)
 	var errs []string
 
 	for _, name := range sortedStringKeys(irmod.ZeroCallFuncs) {
@@ -132,22 +130,25 @@ func validateZeroCallFuncs(irmod *IRModule, funcIndex map[string]*IRFunc) (map[s
 			errs = append(errs, fmt.Sprintf("zerocall function %s is native and cannot be inlined", name))
 			continue
 		}
-		for _, inst := range f.Code {
-			switch inst.Op {
+		for i := 0; i < len(f.Code); i++ {
+			switch f.Code[i].Op {
 			case OP_CALL_INTRINSIC:
-				errs = append(errs, fmt.Sprintf("zerocall function %s uses intrinsic call %s (unsupported)", name, inst.Name))
+				errs = append(errs, fmt.Sprintf("zerocall function %s uses intrinsic call %s (unsupported)", name, f.Code[i].Name))
 			case OP_IFACE_CALL:
-				errs = append(errs, fmt.Sprintf("zerocall function %s uses interface dispatch %s (unsupported)", name, inst.Name))
+				errs = append(errs, fmt.Sprintf("zerocall function %s uses interface dispatch %s (unsupported)", name, f.Code[i].Name))
 			case OP_CALL:
-				if strings.HasPrefix(inst.Name, "builtin.composite.") {
-					errs = append(errs, fmt.Sprintf("zerocall function %s uses composite helper call %s (unsupported)", name, inst.Name))
+				if zeroCallIsCompositeHelper(f.Code[i].Name) {
+					errs = append(errs, fmt.Sprintf("zerocall function %s uses composite helper call %s (unsupported)", name, f.Code[i].Name))
 					continue
 				}
-				if !irmod.ZeroCallFuncs[inst.Name] {
-					errs = append(errs, fmt.Sprintf("zerocall function %s calls non-zerocall function %s", name, inst.Name))
+				if !irmod.ZeroCallFuncs[f.Code[i].Name] {
+					errs = append(errs, fmt.Sprintf("zerocall function %s calls non-zerocall function %s", name, f.Code[i].Name))
 					continue
 				}
-				edges[name] = appendUniqueString(edges[name], inst.Name)
+				if edges[name] == nil {
+					edges[name] = make(map[string]bool)
+				}
+				edges[name][f.Code[i].Name] = true
 			}
 		}
 	}
@@ -156,6 +157,17 @@ func validateZeroCallFuncs(irmod *IRModule, funcIndex map[string]*IRFunc) (map[s
 	}
 	errs = append(errs, detectZeroCallCycles(edges, irmod.ZeroCallFuncs)...)
 	return edges, errs
+}
+
+func appendZeroCallInst(out []Inst, op Opcode, arg int, width int, val int64, name string) []Inst {
+	out = append(out, Inst{})
+	idx := len(out) - 1
+	out[idx].Op = op
+	out[idx].Arg = arg
+	out[idx].Width = width
+	out[idx].Val = val
+	out[idx].Name = name
+	return out
 }
 
 func inlineZeroCallsInFunc(caller *IRFunc, funcIndex map[string]*IRFunc, zeroCall map[string]bool) ([]Inst, []IRLocal, bool, []string) {
@@ -169,20 +181,20 @@ func inlineZeroCallsInFunc(caller *IRFunc, funcIndex map[string]*IRFunc, zeroCal
 	callSite := 0
 	var errs []string
 
-	for _, inst := range caller.Code {
-		if inst.Op != OP_CALL || !zeroCall[inst.Name] {
-			out = append(out, inst)
+	for callIdx := 0; callIdx < len(caller.Code); callIdx++ {
+		if caller.Code[callIdx].Op != OP_CALL || !zeroCall[caller.Code[callIdx].Name] {
+			out = appendZeroCallInst(out, caller.Code[callIdx].Op, caller.Code[callIdx].Arg, caller.Code[callIdx].Width, caller.Code[callIdx].Val, caller.Code[callIdx].Name)
 			continue
 		}
-		callee, ok := funcIndex[inst.Name]
+		callee, ok := funcIndex[caller.Code[callIdx].Name]
 		if !ok {
-			errs = append(errs, fmt.Sprintf("%s: zerocall target missing: %s", caller.Name, inst.Name))
-			out = append(out, inst)
+			errs = append(errs, fmt.Sprintf("%s: zerocall target missing: %s", caller.Name, caller.Code[callIdx].Name))
+			out = appendZeroCallInst(out, caller.Code[callIdx].Op, caller.Code[callIdx].Arg, caller.Code[callIdx].Width, caller.Code[callIdx].Val, caller.Code[callIdx].Name)
 			continue
 		}
 		if callee.Native != nil {
-			errs = append(errs, fmt.Sprintf("%s: zerocall target is native and cannot be inlined: %s", caller.Name, inst.Name))
-			out = append(out, inst)
+			errs = append(errs, fmt.Sprintf("%s: zerocall target is native and cannot be inlined: %s", caller.Name, caller.Code[callIdx].Name))
+			out = appendZeroCallInst(out, caller.Code[callIdx].Op, caller.Code[callIdx].Arg, caller.Code[callIdx].Width, caller.Code[callIdx].Val, caller.Code[callIdx].Name)
 			continue
 		}
 
@@ -191,28 +203,28 @@ func inlineZeroCallsInFunc(caller *IRFunc, funcIndex map[string]*IRFunc, zeroCal
 		if callee.Params > frameSlots {
 			frameSlots = callee.Params
 		}
-		for i := 0; i < frameSlots; i++ {
+		for localIdx := 0; localIdx < frameSlots; localIdx++ {
 			local := IRLocal{
-				Name:  "$zerocall",
-				Index: base + i,
+				Name:  fmt.Sprintf("$zerocall.%s.%d.%d", caller.Code[callIdx].Name, callSite, localIdx),
+				Index: base + localIdx,
 			}
-			if i < len(callee.Locals) {
-				local.Type = callee.Locals[i].Type
-				local.Is64 = callee.Locals[i].Is64
-				local.Width = callee.Locals[i].Width
+			if localIdx < len(callee.Locals) {
+				local.Type = callee.Locals[localIdx].Type
+				local.Is64 = callee.Locals[localIdx].Is64
+				local.Width = callee.Locals[localIdx].Width
 			}
 			newLocals = append(newLocals, local)
 		}
 
 		for p := callee.Params - 1; p >= 0; p-- {
-			out = append(out, Inst{Op: OP_LOCAL_SET, Arg: base + p})
+			out = appendZeroCallInst(out, OP_LOCAL_SET, base+p, 0, 0, "")
 		}
 
 		labelMap := make(map[int]int)
-		for _, cinst := range callee.Code {
-			if zeroCallIsLabelOp(cinst.Op) {
-				if _, exists := labelMap[cinst.Arg]; !exists {
-					labelMap[cinst.Arg] = nextLabel
+		for j := 0; j < len(callee.Code); j++ {
+			if zeroCallIsLabelOp(callee.Code[j].Op) {
+				if _, exists := labelMap[callee.Code[j].Arg]; !exists {
+					labelMap[callee.Code[j].Arg] = nextLabel
 					nextLabel++
 				}
 			}
@@ -220,27 +232,31 @@ func inlineZeroCallsInFunc(caller *IRFunc, funcIndex map[string]*IRFunc, zeroCal
 		exitLabel := nextLabel
 		nextLabel++
 
-		for _, cinst := range callee.Code {
-			if cinst.Op == OP_RETURN {
-				out = append(out, Inst{Op: OP_JMP, Arg: exitLabel})
+		for j := 0; j < len(callee.Code); j++ {
+			if callee.Code[j].Op == OP_RETURN {
+				out = appendZeroCallInst(out, OP_JMP, exitLabel, 0, 0, "")
 				continue
 			}
-			cloned := cinst
-			if zeroCallIsLocalOp(cloned.Op) {
-				cloned.Arg = base + cloned.Arg
+			op := callee.Code[j].Op
+			arg := callee.Code[j].Arg
+			width := callee.Code[j].Width
+			val := callee.Code[j].Val
+			name := callee.Code[j].Name
+			if zeroCallIsLocalOp(op) {
+				arg = base + arg
 			}
-			if zeroCallIsLabelOp(cloned.Op) {
-				mapped, ok := labelMap[cloned.Arg]
+			if zeroCallIsLabelOp(op) {
+				mapped, ok := labelMap[arg]
 				if !ok {
 					mapped = nextLabel
 					nextLabel++
-					labelMap[cloned.Arg] = mapped
+					labelMap[arg] = mapped
 				}
-				cloned.Arg = mapped
+				arg = mapped
 			}
-			out = append(out, cloned)
+			out = appendZeroCallInst(out, op, arg, width, val, name)
 		}
-		out = append(out, Inst{Op: OP_LABEL, Arg: exitLabel})
+		out = appendZeroCallInst(out, OP_LABEL, exitLabel, 0, 0, "")
 		changed = true
 		callSite++
 	}
@@ -281,9 +297,9 @@ func inlineZeroCallFuncs(irmod *IRModule) []string {
 	}
 
 	for _, f := range irmod.Funcs {
-		for _, inst := range f.Code {
-			if inst.Op == OP_CALL && irmod.ZeroCallFuncs[inst.Name] {
-				errs = append(errs, fmt.Sprintf("%s: zerocall call was not inlined: %s", f.Name, inst.Name))
+		for i := 0; i < len(f.Code); i++ {
+			if f.Code[i].Op == OP_CALL && irmod.ZeroCallFuncs[f.Code[i].Name] {
+				errs = append(errs, fmt.Sprintf("%s: zerocall call was not inlined: %s", f.Name, f.Code[i].Name))
 			}
 		}
 	}

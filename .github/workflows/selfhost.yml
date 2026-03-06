@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      compile_web:
+        description: Build web playground assets into web/
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -137,6 +144,72 @@ jobs:
         if: matrix.suffix != '.exe'
         run: ./build/build${{ matrix.suffix }} test-fullcompiler-c
 
+  selfhost-riscv:
+    name: RISC-V self-hosting (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux/rv64
+            target_id: linux-rv64
+            qemu: qemu-riscv64
+          - target: linux/rv32
+            target_id: linux-rv32
+            qemu: qemu-riscv32
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install QEMU user emulators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+
+      - name: Build bootstrap compiler
+        run: go build -o build/rtg ./std/compiler/
+
+      - name: Build Buildfile runner
+        run: go build -o build/build ./tools/build.go
+
+      - name: Native self-hosting (3-stage)
+        run: |
+          set -euo pipefail
+          ./build/rtg -strict -T ${{ matrix.target }} -o build/stage1 ./std/compiler/
+          ${{ matrix.qemu }} build/stage1 -strict -T ${{ matrix.target }} -o build/stage2 ./std/compiler/
+          ${{ matrix.qemu }} build/stage2 -strict -T ${{ matrix.target }} -o build/stage3 ./std/compiler/
+          cmp build/stage2 build/stage3
+
+      - name: Text IR fixed-point self-hosting
+        run: |
+          set -euo pipefail
+          rm -f build/stage2_compiler_a.irt build/stage2_compiler_b.irt build/stage3_compiler.irt build/stage3_from_ir build/stage3_from_ir.ref
+          ${{ matrix.qemu }} build/stage2 -strict -T ${{ matrix.target }} -T ir -o - ./std/compiler/ > build/stage2_compiler_a.irt
+          ${{ matrix.qemu }} build/stage2 -strict -T ${{ matrix.target }} -T ir -o build/stage2_compiler_b.irt ./std/compiler/
+          cmp build/stage2_compiler_a.irt build/stage2_compiler_b.irt
+          ${{ matrix.qemu }} build/stage2 -strict -T ${{ matrix.target }} -F ir -o build/stage3_from_ir - < build/stage2_compiler_a.irt
+          ${{ matrix.qemu }} build/stage3_from_ir -strict -T ${{ matrix.target }} -T ir -o - ./std/compiler/ > build/stage3_compiler.irt
+          cmp build/stage2_compiler_a.irt build/stage3_compiler.irt
+          cp build/stage3_from_ir build/stage3_from_ir.ref
+          ${{ matrix.qemu }} build/stage3_from_ir.ref -strict -T ${{ matrix.target }} -F ir -o build/stage3_from_ir - < build/stage3_compiler.irt
+          cmp build/stage3_from_ir.ref build/stage3_from_ir
+
+      - name: Fullcompiler suite (RTG backend)
+        run: |
+          set -euo pipefail
+          cat > build/rtg-qemu <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec ${{ matrix.qemu }} "$(dirname "$0")/stage2" "$@"
+          EOF
+          chmod +x build/rtg-qemu
+          RTG_COMPILER=./build/rtg-qemu RTG_TARGET=${{ matrix.target }} ./build/build test-fullcompiler-rtg
+
   selfhost-wasm:
     runs-on: ubuntu-latest
     steps:
@@ -146,7 +219,14 @@ jobs:
           go-version-file: go.mod
 
       - name: Install Wasmtime
-        uses: bytecodealliance/actions/wasmtime/setup@v1
+        run: |
+          set -euo pipefail
+          WASMTIME_VERSION=v42.0.1
+          WASMTIME_DIR="$HOME/.local/wasmtime"
+          mkdir -p "$WASMTIME_DIR"
+          curl -fsSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz" \
+            | tar -xJ --strip-components=1 -C "$WASMTIME_DIR"
+          echo "$WASMTIME_DIR" >> "$GITHUB_PATH"
 
       - name: Build bootstrap compiler
         run: go build -o build/rtg ./std/compiler/
@@ -166,6 +246,39 @@ jobs:
 
       - name: Fullcompiler suite (WASM backend)
         run: ./build/build test-fullcompiler-wasm
+
+  compile-web:
+    name: Compile Web Assets
+    if: github.event_name == 'workflow_dispatch' && inputs.compile_web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build bootstrap compiler
+        run: go build -o build/rtg ./std/compiler/
+
+      - name: Compile web playground assets
+        run: |
+          ./build/rtg -T wasi/wasm32 -tags no_embed_std -o web/compiler.wasm ./std/compiler/
+          node web/bundle.js
+
+      - name: Upload web assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-assets
+          if-no-files-found: error
+          path: |
+            web/compiler.wasm
+            web/playground.html
+            web/playground.js
+            web/std-library.js
+            web/wasi.js
 
   fullcompiler-armv8m:
     name: Fullcompiler suite (armv8m)
@@ -368,6 +481,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - selfhost
+      - selfhost-riscv
       - selfhost-wasm
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:

@@ -16,6 +16,7 @@ import (
 	"j5.nz/rtg/std/compiler/backend/wasm32"
 	x64linux "j5.nz/rtg/std/compiler/backend/x64/linux"
 	x64windows "j5.nz/rtg/std/compiler/backend/x64/windows"
+	riscvlinux "j5.nz/rtg/std/compiler/backend/riscv/linux"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
 	targetcfg "j5.nz/rtg/std/target"
@@ -110,6 +111,11 @@ func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 			return aarch64windows.Generate(tgt, irmod, outputPath)
 		}
 		return fmt.Errorf("unsupported OS for arm64: %s", tgt.GOOS)
+	case "rv64", "rv32":
+		if tgt.GOOS == "linux" {
+			return riscvlinux.GenerateELF(tgt, irmod, outputPath)
+		}
+		return fmt.Errorf("unsupported OS for %s: %s", tgt.GOARCH, tgt.GOOS)
 	case "armv8m":
 		if tgt.Triple == "elf/armv8m" || tgt.GOOS == "elf" || tgt.GOOS == "semihost" || tgt.GOOS == "bare" {
 			return armv8melf.Generate(tgt, irmod, outputPath)
