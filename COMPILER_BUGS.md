@@ -22,6 +22,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#28` Panic-propagation-check pruning is currently unsafe on `wasi/wasm32` selfhost (stage1 hits `map hash table full`).
 - `#29` `OFFSET+LOAD/STORE` folding currently causes wasm one-stage selfhost lag (`stage2 != stage3`, `stage3 == stage4`) without a wasm guard.
 - `#30` Non-void shared-return tail merge currently breaks wasm validation (`values remaining on stack at end of block`).
+- `#31` Panic-unwind slow-path outlining currently breaks wasm validation (`not enough arguments on the stack for drop`).
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -57,6 +58,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 11. `#26` Make WASM stackifier robust to equivalent CFG forms (or formalize and enforce IR shape constraints in one place).
 12. `#27` Revisit non-nil memory-base optimization expansion (`LEN/CAP`, `GLOBAL_ADDR`, C backend direct-load path) with proof/validation coverage.
 13. `#30` Make wasm stackification tolerant of shared non-void return epilogues.
+14. `#31` Make wasm stackification tolerate outlined panic-unwind slow paths (or preserve the inline form there).
 
 ### 23) Struct field tags are not accepted by parser in selfhost path
 
@@ -189,6 +191,19 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - In `ir/opt_ir.go`, allow non-void return tail merge for non-wasm targets, but skip it for `wasi/wasm32` until wasm stackification handles the transformed CFG shape.
+
+### 31) Panic-unwind slow-path outlining currently requires a wasm guard
+
+**Symptom**
+- Outlining panic-unwind slow paths after `runtime.PanicShouldUnwind` checks causes wasm validation to fail during selfhost/web compiler builds:
+  - `WebAssembly.compile(): ... not enough arguments on the stack for drop`
+  - `wasmtime`: `type mismatch: expected a type but nothing on stack`.
+
+**Impact**
+- Prevents using the smaller outlined panic-propagation CFG shape for `wasi/wasm32` compiler builds today.
+
+**Current mitigation**
+- Preserve the original inline `JMP_IF_NOT + DROP* + JMP` panic-unwind sequence for `wasi/wasm32`; use the outlined slow-path labels only on non-wasm targets.
 
 ## Active / Watch Details
 
