@@ -11,6 +11,7 @@ const (
 	TY_BYTE
 	TY_INT32
 	TY_INT
+	TY_FLOAT64
 	TY_UINTPTR
 	TY_STRING
 	TY_POINTER
@@ -49,6 +50,7 @@ type Opcode int
 
 const (
 	OP_CONST_I64 Opcode = iota
+	OP_CONST_F64
 	OP_CONST_STR
 	OP_CONST_BOOL
 	OP_CONST_NIL
@@ -138,28 +140,42 @@ func IsNonNilMemoryBase(name string) bool {
 type Inst struct {
 	Op    Opcode
 	Arg   int
-	Width int // operand width in bytes: 0=word, 1=byte, 2=int16, 4=int32, 8=int64
+	Width int // operand width in bytes: 0=word, 1=byte, 2=int16, 4=int32, 8=int64/float64
 	Val   int64
 	Name  string
 }
 
+// makeInst avoids keyed composite literal field corruption in selfhosted builds.
+func makeInst(op Opcode, arg int, width int, val int64, name string) Inst {
+	var inst Inst
+	inst.Op = op
+	inst.Arg = arg
+	inst.Width = width
+	inst.Val = val
+	inst.Name = name
+	return inst
+}
+
 // IRLocal represents a local variable in a function.
 type IRLocal struct {
-	Name  string
-	Type  *TypeInfo
-	Index int
-	Is64  bool // true for uint64/int64 locals (need i64 on wasm32)
-	Width int  // storage width: 0=word, 1=byte, 2=int16, 4=int32, 8=int64
+	Name      string
+	Type      *TypeInfo
+	Index     int
+	Is64      bool // true for uint64/int64 locals (need i64 on wasm32)
+	IsFloat64 bool // true for float64 locals (need f64 on wasm32)
+	Width     int  // storage width: 0=word, 1=byte, 2=int16, 4=int32, 8=int64/float64
 }
 
 // IRFunc represents a compiled function.
 type IRFunc struct {
-	Name     string
-	Params   int
-	Locals   []IRLocal
-	RetCount int
-	Code     []Inst
-	Native   *NativeFunc
+	Name        string
+	Params      int
+	Locals      []IRLocal
+	RetCount    int
+	ResultKinds []TypeKind
+	ResultIs64  []bool
+	Code        []Inst
+	Native      *NativeFunc
 }
 
 type NativeFixup struct {

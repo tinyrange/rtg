@@ -696,9 +696,6 @@ func fullCompilerSkipReason(backend string, targetOS string, targetArch string, 
 	if archOnly != "" && (backend != "rtg" || targetArch != archOnly) {
 		return archOnly + "-only test"
 	}
-	if backend == "wasm" && name == "iface_typeassert" {
-		return "known wasm32 type-assertion issue"
-	}
 	if name == "comptime_method" && targetArch == "386" {
 		return "known 32-bit comptime VM allocation issue"
 	}

@@ -21,6 +21,7 @@ var typeKindNames = []string{
 	"BYTE",
 	"INT32",
 	"INT",
+	"FLOAT64",
 	"UINTPTR",
 	"STRING",
 	"POINTER",
@@ -35,6 +36,7 @@ var typeKindByName = map[string]ir.TypeKind{}
 
 var opcodeNames = []string{
 	"CONST_I64",
+	"CONST_F64",
 	"CONST_STR",
 	"CONST_BOOL",
 	"CONST_NIL",
@@ -138,7 +140,7 @@ func opRequiresVal(op ir.Opcode) bool {
 
 func opRequiresName(op ir.Opcode) bool {
 	switch op {
-	case ir.OP_CONST_STR, ir.OP_CALL, ir.OP_CALL_INTRINSIC, ir.OP_CONVERT, ir.OP_IFACE_CALL:
+	case ir.OP_CONST_F64, ir.OP_CONST_STR, ir.OP_CALL, ir.OP_CALL_INTRINSIC, ir.OP_CONVERT, ir.OP_IFACE_CALL:
 		return true
 	}
 	return false
@@ -1371,13 +1373,13 @@ func (d *textDecoder) consumeCode(tokens []string) error {
 			return fmt.Errorf("missing attr %q", "name")
 		}
 	}
-	d.curFunc.code = append(d.curFunc.code, ir.Inst{
-		Op:    op,
-		Arg:   arg,
-		Width: width,
-		Val:   val,
-		Name:  name,
-	})
+	var inst ir.Inst
+	inst.Op = op
+	inst.Arg = arg
+	inst.Width = width
+	inst.Val = val
+	inst.Name = name
+	d.curFunc.code = append(d.curFunc.code, inst)
 	return nil
 }
 

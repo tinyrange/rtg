@@ -15,6 +15,8 @@ func opcodeName(op ir.Opcode) string {
 	switch op {
 	case ir.OP_CONST_I64:
 		return "const_i64"
+	case ir.OP_CONST_F64:
+		return "const_f64"
 	case ir.OP_CONST_STR:
 		return "const_str"
 	case ir.OP_CONST_BOOL:
@@ -146,6 +148,8 @@ func typeKindName(k ir.TypeKind) string {
 		return "int32"
 	case ir.TY_INT:
 		return "int"
+	case ir.TY_FLOAT64:
+		return "float64"
 	case ir.TY_UINTPTR:
 		return "uintptr"
 	case ir.TY_STRING:
@@ -429,6 +433,11 @@ func instArgs(inst ir.Inst, f *ir.IRFunc, irmod *ir.IRModule) string {
 	switch op {
 	case ir.OP_CONST_I64:
 		return " " + fmt.Sprintf("%d", val) + w
+	case ir.OP_CONST_F64:
+		if name != "" {
+			return " " + irQuote(name) + w
+		}
+		return w
 	case ir.OP_CONST_STR:
 		return " " + irQuote(name)
 	case ir.OP_CONST_BOOL:

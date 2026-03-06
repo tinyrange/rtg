@@ -50,9 +50,13 @@ const (
 	OP_WASM_GLOBAL_SET = 0x24
 
 	OP_WASM_I32_LOAD     = 0x28
+	OP_WASM_I64_LOAD     = 0x29
+	OP_WASM_F64_LOAD     = 0x2b
 	OP_WASM_I32_LOAD8_U  = 0x2d
 	OP_WASM_I32_LOAD16_U = 0x2f
 	OP_WASM_I32_STORE    = 0x36
+	OP_WASM_I64_STORE    = 0x37
+	OP_WASM_F64_STORE    = 0x39
 	OP_WASM_I32_STORE8   = 0x3a
 	OP_WASM_I32_STORE16  = 0x3b
 
@@ -91,6 +95,7 @@ const (
 
 	// i64 opcodes
 	OP_WASM_I64_CONST = 0x42
+	OP_WASM_F64_CONST = 0x44
 	OP_WASM_I64_EQZ   = 0x50
 	OP_WASM_I64_EQ    = 0x51
 	OP_WASM_I64_NE    = 0x52
@@ -102,6 +107,12 @@ const (
 	OP_WASM_I64_LE_U  = 0x58
 	OP_WASM_I64_GE_S  = 0x59
 	OP_WASM_I64_GE_U  = 0x5a
+	OP_WASM_F64_EQ    = 0x61
+	OP_WASM_F64_NE    = 0x62
+	OP_WASM_F64_LT    = 0x63
+	OP_WASM_F64_GT    = 0x64
+	OP_WASM_F64_LE    = 0x65
+	OP_WASM_F64_GE    = 0x66
 	OP_WASM_I64_ADD   = 0x7c
 	OP_WASM_I64_SUB   = 0x7d
 	OP_WASM_I64_MUL   = 0x7e
@@ -113,9 +124,20 @@ const (
 	OP_WASM_I64_SHL   = 0x86
 	OP_WASM_I64_SHR_S = 0x87
 	OP_WASM_I64_SHR_U = 0x88
+	OP_WASM_F64_NEG   = 0x9a
+	OP_WASM_F64_ADD   = 0xa0
+	OP_WASM_F64_SUB   = 0xa1
+	OP_WASM_F64_MUL   = 0xa2
+	OP_WASM_F64_DIV   = 0xa3
 
-	OP_WASM_I64_EXTEND_I32_S = 0xac
-	OP_WASM_I64_EXTEND_I32_U = 0xad
+	OP_WASM_I64_EXTEND_I32_S    = 0xac
+	OP_WASM_I64_EXTEND_I32_U    = 0xad
+	OP_WASM_I32_TRUNC_F64_S     = 0xaa
+	OP_WASM_I64_TRUNC_F64_S     = 0xb0
+	OP_WASM_F64_CONVERT_I32_S   = 0xb7
+	OP_WASM_F64_CONVERT_I64_S   = 0xb9
+	OP_WASM_I64_REINTERPRET_F64 = 0xbd
+	OP_WASM_F64_REINTERPRET_I64 = 0xbf
 )
 
 // External kind for imports/exports
@@ -364,6 +386,18 @@ func (w *wasmCodeWriter) i64Const(v int64) {
 	w.op(OP_WASM_I64_OR)
 }
 
+func (w *wasmCodeWriter) f64ConstBits(bits uint64) {
+	w.op(OP_WASM_F64_CONST)
+	w.buf = append(w.buf, byte(bits))
+	w.buf = append(w.buf, byte(bits>>8))
+	w.buf = append(w.buf, byte(bits>>16))
+	w.buf = append(w.buf, byte(bits>>24))
+	w.buf = append(w.buf, byte(bits>>32))
+	w.buf = append(w.buf, byte(bits>>40))
+	w.buf = append(w.buf, byte(bits>>48))
+	w.buf = append(w.buf, byte(bits>>56))
+}
+
 func (w *wasmCodeWriter) i64ExtendI32U() {
 	w.op(OP_WASM_I64_EXTEND_I32_U)
 }
@@ -377,13 +411,25 @@ func (w *wasmCodeWriter) i32WrapI64() {
 }
 
 func (w *wasmCodeWriter) i64Load(align uint32, offset uint32) {
-	w.op(0x29) // i64.load
+	w.op(OP_WASM_I64_LOAD)
 	w.uleb(align)
 	w.uleb(offset)
 }
 
 func (w *wasmCodeWriter) i64Store(align uint32, offset uint32) {
-	w.op(0x37) // i64.store
+	w.op(OP_WASM_I64_STORE)
+	w.uleb(align)
+	w.uleb(offset)
+}
+
+func (w *wasmCodeWriter) f64Load(align uint32, offset uint32) {
+	w.op(OP_WASM_F64_LOAD)
+	w.uleb(align)
+	w.uleb(offset)
+}
+
+func (w *wasmCodeWriter) f64Store(align uint32, offset uint32) {
+	w.op(OP_WASM_F64_STORE)
 	w.uleb(align)
 	w.uleb(offset)
 }

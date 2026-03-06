@@ -31,11 +31,6 @@ func optimizeIRFuncCode(target *common.Target, f *IRFunc, funcRetCounts map[stri
 		changed = false
 
 		var stepChanged bool
-		code, stepChanged = foldLocalAddImm(code, f.Locals)
-		if stepChanged {
-			changed = true
-		}
-
 		code, stepChanged = foldNotConditionalJumps(code)
 		if stepChanged {
 			changed = true
@@ -156,21 +151,21 @@ func buildCompositeHelperFunc(name string, fieldCount int, wordSize int) *IRFunc
 
 	structBytes := fieldCount * wordSize
 	code := make([]Inst, 0, 4+fieldCount*4)
-	code = append(code, Inst{Op: OP_CONST_I64, Val: int64(structBytes)})
-	code = append(code, Inst{Op: OP_CALL, Name: "runtime.Alloc", Arg: 1})
-	code = append(code, Inst{Op: OP_LOCAL_SET, Arg: ptrLocal})
+	code = append(code, makeInst(OP_CONST_I64, 0, 0, int64(structBytes), ""))
+	code = append(code, makeInst(OP_CALL, 1, 0, 0, "runtime.Alloc"))
+	code = append(code, makeInst(OP_LOCAL_SET, ptrLocal, 0, 0, ""))
 
 	for i := 0; i < fieldCount; i++ {
-		code = append(code, Inst{Op: OP_LOCAL_GET, Arg: i})        // value
-		code = append(code, Inst{Op: OP_LOCAL_GET, Arg: ptrLocal}) // base addr
+		code = append(code, makeInst(OP_LOCAL_GET, i, 0, 0, ""))        // value
+		code = append(code, makeInst(OP_LOCAL_GET, ptrLocal, 0, 0, "")) // base addr
 		if i != 0 {
-			code = append(code, Inst{Op: OP_OFFSET, Arg: i * wordSize})
+			code = append(code, makeInst(OP_OFFSET, i*wordSize, 0, 0, ""))
 		}
-		code = append(code, Inst{Op: OP_STORE, Arg: wordSize})
+		code = append(code, makeInst(OP_STORE, wordSize, 0, 0, ""))
 	}
 
-	code = append(code, Inst{Op: OP_LOCAL_GET, Arg: ptrLocal})
-	code = append(code, Inst{Op: OP_RETURN, Arg: 1})
+	code = append(code, makeInst(OP_LOCAL_GET, ptrLocal, 0, 0, ""))
+	code = append(code, makeInst(OP_RETURN, 1, 0, 0, ""))
 
 	return &IRFunc{
 		Name:     name,
@@ -192,6 +187,11 @@ func buildCompositeHelperFunc(name string, fieldCount int, wordSize int) *IRFunc
 // so backends do not duplicate large constructor lowering at every callsite.
 func outlineCompositeLiteralCalls(target *common.Target, irmod *IRModule) {
 	if irmod == nil || len(irmod.Funcs) == 0 {
+		return
+	}
+	if target != nil && target.GOOS == "wasi" && target.GOARCH == "wasm32" {
+		// The wasm32 backend needs the original composite type name so it can
+		// recover 8-byte float/int field widths from the operand types.
 		return
 	}
 
@@ -289,13 +289,8 @@ func foldLocalAddImm(code []Inst, locals []IRLocal) ([]Inst, bool) {
 					if code[i+2].Op == OP_SUB {
 						imm = -imm
 					}
-					imm32 := int32(imm)
-					if int64(imm32) == imm {
-						out = append(out, Inst{
-							Op:  OP_LOCAL_ADD_IMM,
-							Arg: idx,
-							Val: int64(imm32),
-						})
+					if imm >= -2147483648 && imm <= 2147483647 {
+						out = append(out, makeInst(OP_LOCAL_ADD_IMM, idx, 0, imm, ""))
 						changed = true
 						i += 4
 						continue
@@ -469,11 +464,7 @@ func foldSliceAppendU32LE(code []Inst) ([]Inst, bool) {
 				out = append(out, code[:i]...)
 			}
 			out = append(out, v)
-			out = append(out, Inst{
-				Op:   OP_CALL,
-				Name: "runtime.SliceAppendU32LE",
-				Arg:  2,
-			})
+			out = append(out, makeInst(OP_CALL, 2, 0, 0, "runtime.SliceAppendU32LE"))
 			changed = true
 			i += 22
 			continue
@@ -1057,7 +1048,7 @@ func annotateNonNilMemoryBases(code []Inst, f *IRFunc, funcRetCounts map[string]
 		cur := out[i]
 		if cur.Op != OP_LOAD {
 			// Nothing to mark.
-		} else if cur.Name != InstNonNilMemoryBase && topNonNil(state) {
+		} else if cur.Name == "" && topNonNil(state) {
 			out[i].Name = InstNonNilMemoryBase
 			changed = true
 		}
@@ -1136,7 +1127,7 @@ func deadLocalStoreToDrop(code []Inst, numLocals int) ([]Inst, bool) {
 			continue
 		}
 
-		out[i] = Inst{Op: OP_DROP}
+		out[i] = makeInst(OP_DROP, 0, 0, 0, "")
 		changed = true
 	}
 	return out, changed
@@ -1247,11 +1238,11 @@ func mergeReturnsToSharedEpilogue(code []Inst, retCount int) ([]Inst, bool) {
 			continue
 		}
 		if i == lastReturnIdx {
-			out = append(out, Inst{Op: OP_LABEL, Arg: epLabel})
+			out = append(out, makeInst(OP_LABEL, epLabel, 0, 0, ""))
 			out = append(out, inst)
 			continue
 		}
-		out = append(out, Inst{Op: OP_JMP, Arg: epLabel})
+		out = append(out, makeInst(OP_JMP, epLabel, 0, 0, ""))
 		changed = true
 	}
 

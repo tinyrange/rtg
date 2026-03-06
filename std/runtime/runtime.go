@@ -925,7 +925,7 @@ func mapStringHashKey(key uintptr) uintptr {
 	}
 	sptr := ReadPtr(key)
 	slen := int(ReadPtr(key + uintptr(PtrSize)))
-	h := uintptr(2166136261)
+	h := (uintptr(0x811c) << 16) | uintptr(0x9dc5)
 	i := 0
 	for i < slen {
 		h = h ^ uintptr(readByte(sptr+uintptr(i)))

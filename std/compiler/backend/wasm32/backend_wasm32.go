@@ -50,9 +50,8 @@ type WasmGen struct {
 	stringsSize int32 // total bytes for strings
 	shadowBase  int32 // initial shadow stack pointer (top of shadow region)
 
-	// String dedup: decoded content → offset of header in string data area
-	stringMap  map[string]int
-	stringData []byte // raw string data + headers
+	// String data area: raw bytes followed by per-string 8-byte headers.
+	stringData []byte
 
 	// Current function state
 	curFunc       *ir.IRFunc
@@ -61,10 +60,12 @@ type WasmGen struct {
 	numWasmLocals int // WASM locals beyond params (frame slots + temps)
 	tempLocal     int // index of a temp i32 local for reordering
 	tempLocal64   int // index of a temp i64 local for DUP of i64 values
+	tempLocalF64  int // index of a temp f64 local for DUP/reordering
 
 	// i64 type tracking
-	valTypes     []byte       // type stack: WASM_TYPE_I32 or WASM_TYPE_I64 per stack entry
+	valTypes     []byte       // type stack: WASM_TYPE_I32/I64/F64 per stack entry
 	localI64     map[int]bool // which IR locals hold i64 values
+	localF64     map[int]bool // which IR locals hold f64 values
 	localOffsets []int32      // per-local byte offset in shadow stack frame
 
 	// Stackifier state
@@ -96,9 +97,8 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	g := &WasmGen{
 		mod:       &wasmModule{memMin: 2}, // start with 2 pages (128KB)
 		irmod:     irmod,
-		funcMap:   make(map[string]int),
-		stringMap: make(map[string]int),
-		entryFn:   common.EntryFuncName(target),
+		funcMap: make(map[string]int),
+		entryFn: common.EntryFuncName(target),
 	}
 
 	// Setup WASI imports
@@ -112,13 +112,13 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		params := make([]byte, f.Params)
 		pi := 0
 		for pi < len(params) {
-			params[pi] = WASM_TYPE_I32
+			params[pi] = g.wasmParamType(f, pi)
 			pi++
 		}
 		results := make([]byte, f.RetCount)
 		ri := 0
 		for ri < len(results) {
-			results[ri] = WASM_TYPE_I32
+			results[ri] = g.wasmResultType(f, ri)
 			ri++
 		}
 		idx := g.mod.addFunc(params, results)
@@ -258,8 +258,10 @@ func (g *WasmGen) setupMemoryLayout() {
 	g.scratchAddr = 0x0400
 	g.globalsAddr = 0x0800
 
-	numGlobals := len(g.irmod.Globals)
-	g.globalsSize = int32(numGlobals * 4)
+	g.globalsSize = 0
+	for i := range g.irmod.Globals {
+		g.globalsSize = g.globalsSize + g.globalSize(i)
+	}
 
 	// String data comes after globals
 	g.stringsAddr = g.globalsAddr + g.globalsSize
@@ -267,6 +269,23 @@ func (g *WasmGen) setupMemoryLayout() {
 	// Shadow stack pointer: WASM global (mutable i32)
 	// Actual value set after we know string data size
 	g.globalSP = g.mod.addGlobal(WASM_TYPE_I32, true, 0) // placeholder, updated later
+}
+
+func (g *WasmGen) globalSize(idx int) int32 {
+	if idx >= 0 && idx < len(g.irmod.Globals) && g.irmod.Globals[idx].Type != nil && g.irmod.Globals[idx].Type.Kind == ir.TY_FLOAT64 {
+		return 8
+	}
+	return 4
+}
+
+func (g *WasmGen) globalOffset(idx int) int32 {
+	var off int32
+	i := 0
+	for i < idx && i < len(g.irmod.Globals) {
+		off = off + g.globalSize(i)
+		i++
+	}
+	return off
 }
 
 func (g *WasmGen) setupDataSegments() {
@@ -299,25 +318,27 @@ func (g *WasmGen) setupDataSegments() {
 func (g *WasmGen) internString(s string) int32 {
 	decoded := becommon.DecodeStringLiteral(s)
 
-	if headerOff, ok := g.stringMap[decoded]; ok {
-		return int32(headerOff) + g.stringsAddr
-	}
-
 	// Append string data bytes
 	dataOff := len(g.stringData)
-	g.stringData = append(g.stringData, []byte(decoded)...)
+	i := 0
+	for i < len(decoded) {
+		g.stringData = append(g.stringData, decoded[i])
+		i++
+	}
 
 	// Append 8-byte header {data_ptr:4, len:4}
 	headerOff := len(g.stringData)
 	// data_ptr: absolute address = stringsAddr + dataOff
 	dataAddr := g.stringsAddr + int32(dataOff)
-	g.stringData = append(g.stringData,
-		byte(dataAddr), byte(dataAddr>>8), byte(dataAddr>>16), byte(dataAddr>>24))
+	g.stringData = append(g.stringData, byte(dataAddr))
+	g.stringData = append(g.stringData, byte(dataAddr>>8))
+	g.stringData = append(g.stringData, byte(dataAddr>>16))
+	g.stringData = append(g.stringData, byte(dataAddr>>24))
 	lenVal := int32(len(decoded))
-	g.stringData = append(g.stringData,
-		byte(lenVal), byte(lenVal>>8), byte(lenVal>>16), byte(lenVal>>24))
-
-	g.stringMap[decoded] = headerOff
+	g.stringData = append(g.stringData, byte(lenVal))
+	g.stringData = append(g.stringData, byte(lenVal>>8))
+	g.stringData = append(g.stringData, byte(lenVal>>16))
+	g.stringData = append(g.stringData, byte(lenVal>>24))
 	return int32(headerOff) + g.stringsAddr
 }
 
@@ -394,21 +415,24 @@ func (g *WasmGen) compileFunc(f *ir.IRFunc) []byte {
 	g.curFrameSize = frameSize
 	g.numParams = f.Params
 
-	// Initialize localI64 from IRLocal.Is64 flags
+	// Initialize local type maps from IRLocal flags.
 	g.localI64 = make(map[int]bool)
+	g.localF64 = make(map[int]bool)
 	for i, loc := range f.Locals {
-		if loc.Is64 {
+		if loc.IsFloat64 {
+			g.localF64[i] = true
+		} else if loc.Is64 {
 			g.localI64[i] = true
 		}
 	}
 
-	// Compute localOffsets: i64 locals get 8 bytes, others get 4
+	// Compute localOffsets: f64/i64 locals get 8 bytes, others get 4.
 	g.localOffsets = make([]int32, frameSize)
 	var frameBytes int32
 	i := 0
 	for i < frameSize {
 		g.localOffsets[i] = frameBytes
-		if g.localI64[i] {
+		if g.localI64[i] || g.localF64[i] {
 			frameBytes = frameBytes + 8
 		} else {
 			frameBytes = frameBytes + 4
@@ -418,13 +442,15 @@ func (g *WasmGen) compileFunc(f *ir.IRFunc) []byte {
 
 	// WASM locals: params are implicit (index 0..Params-1)
 	// We need additional locals for:
-	//   - 2 temp i32 locals for DUP/operand reordering/STORE swap
-	//   - 1 temp i64 local for DUP of i64 values and type promotion
+	//   - 2 temp i32 locals for operand reordering/STORE swap
+	//   - 1 temp i64 local for DUP/i64 spills
+	//   - 1 temp f64 local for DUP/f64 spills
 	// With shadow stack approach: ALL frame slots are in shadow stack memory.
 	// WASM params are copied to shadow stack in prologue.
 	g.numWasmLocals = 2 // 2 i32 temp locals (declared as first group)
 	g.tempLocal = f.Params + 0
 	g.tempLocal64 = f.Params + 2 // i64 temp local (declared as second group)
+	g.tempLocalF64 = f.Params + 3
 
 	// Prologue: allocate shadow stack frame
 	if frameBytes > 0 {
@@ -434,17 +460,20 @@ func (g *WasmGen) compileFunc(f *ir.IRFunc) []byte {
 		g.w.globalSet(uint32(g.globalSP))
 	}
 
-	// Copy params from WASM params to shadow stack
-	// For i64 params, extend i32 WASM param to i64 and use i64.store
+	// Copy params from WASM params to shadow stack.
 	if f.Params > 0 {
 		i = 0
 		for i < f.Params {
 			g.w.globalGet(uint32(g.globalSP))
-			g.w.localGet(uint32(i))
-			if g.localI64[i] {
-				g.w.i64ExtendI32S() // extend i32 param to i64
+			switch g.wasmParamType(f, i) {
+			case WASM_TYPE_F64:
+				g.w.localGet(uint32(i))
+				g.w.f64Store(3, uint32(g.localOffsets[i]))
+			case WASM_TYPE_I64:
+				g.w.localGet(uint32(i))
 				g.w.i64Store(3, uint32(g.localOffsets[i]))
-			} else {
+			default:
+				g.w.localGet(uint32(i))
 				g.w.i32Store(2, uint32(g.localOffsets[i]))
 			}
 			i++
@@ -454,10 +483,9 @@ func (g *WasmGen) compileFunc(f *ir.IRFunc) []byte {
 	// Compile instructions via stackifier
 	g.stackify(f.Code)
 
-	// Build function body with local declarations
-	// 2 i32 temp locals + 1 i64 temp local
-	localCounts := []uint32{uint32(g.numWasmLocals), 1}
-	localTypes := []byte{WASM_TYPE_I32, WASM_TYPE_I64}
+	// Build function body with local declarations.
+	localCounts := []uint32{uint32(g.numWasmLocals), 1, 1}
+	localTypes := []byte{WASM_TYPE_I32, WASM_TYPE_I64, WASM_TYPE_F64}
 	return encodeFuncBody(localCounts, localTypes, g.w.buf)
 }
 
@@ -656,7 +684,7 @@ func (g *WasmGen) compileStart() []byte {
 		g.w.i32Store(2, 12)
 
 		// Store slice header pointer into os.Args global.
-		argsAddr := g.globalsAddr + int32(argsGlobalIdx*4)
+		argsAddr := g.globalsAddr + g.globalOffset(argsGlobalIdx)
 		g.w.i32Const(argsAddr)
 		g.w.localGet(10)
 		g.w.i32Store(2, 0)
@@ -1230,7 +1258,7 @@ func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) 
 	i = 0
 	for i < dropCount {
 		offsets[i] = spillAddr
-		if savedTypes[i] == WASM_TYPE_I64 {
+		if savedTypes[i] == WASM_TYPE_I64 || savedTypes[i] == WASM_TYPE_F64 {
 			spillAddr = spillAddr + 8
 		} else {
 			spillAddr = spillAddr + 4
@@ -1246,7 +1274,12 @@ func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) 
 		if len(g.valTypes) > 0 {
 			t = g.popType()
 		}
-		if t == WASM_TYPE_I64 {
+		if t == WASM_TYPE_F64 {
+			g.w.localSet(uint32(g.tempLocalF64))
+			g.w.i32Const(offsets[i])
+			g.w.localGet(uint32(g.tempLocalF64))
+			g.w.f64Store(3, 0)
+		} else if t == WASM_TYPE_I64 {
 			g.w.localSet(uint32(g.tempLocal64))
 			g.w.i32Const(offsets[i])
 			g.w.localGet(uint32(g.tempLocal64))
@@ -1271,7 +1304,9 @@ func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) 
 	i = 0
 	for i < dropCount {
 		g.w.i32Const(offsets[i])
-		if savedTypes[i] == WASM_TYPE_I64 {
+		if savedTypes[i] == WASM_TYPE_F64 {
+			g.w.f64Load(3, 0)
+		} else if savedTypes[i] == WASM_TYPE_I64 {
 			g.w.i64Load(3, 0)
 		} else {
 			g.w.i32Load(2, 0)
@@ -1295,6 +1330,13 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 			g.w.i32Const(int32(inst.Val))
 			g.pushType(WASM_TYPE_I32)
 		}
+	case ir.OP_CONST_F64:
+		bits, ok := parseFloatLiteralBits(inst.Name)
+		if !ok {
+			bits = 0
+		}
+		g.w.f64ConstBits(bits)
+		g.pushType(WASM_TYPE_F64)
 	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.w.i32Const(1)
@@ -1333,13 +1375,29 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 		g.compileDup()
 
 	case ir.OP_ADD:
-		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
+		if inst.Name == "float64" {
+			g.compileBinaryOpFloat(OP_WASM_F64_ADD)
+		} else {
+			g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
+		}
 	case ir.OP_SUB:
-		g.compileBinaryOp(OP_WASM_I32_SUB, OP_WASM_I64_SUB)
+		if inst.Name == "float64" {
+			g.compileBinaryOpFloat(OP_WASM_F64_SUB)
+		} else {
+			g.compileBinaryOp(OP_WASM_I32_SUB, OP_WASM_I64_SUB)
+		}
 	case ir.OP_MUL:
-		g.compileBinaryOp(OP_WASM_I32_MUL, OP_WASM_I64_MUL)
+		if inst.Name == "float64" {
+			g.compileBinaryOpFloat(OP_WASM_F64_MUL)
+		} else {
+			g.compileBinaryOp(OP_WASM_I32_MUL, OP_WASM_I64_MUL)
+		}
 	case ir.OP_DIV:
-		g.compileBinaryOp(OP_WASM_I32_DIV_S, OP_WASM_I64_DIV_S)
+		if inst.Name == "float64" {
+			g.compileBinaryOpFloat(OP_WASM_F64_DIV)
+		} else {
+			g.compileBinaryOp(OP_WASM_I32_DIV_S, OP_WASM_I64_DIV_S)
+		}
 	case ir.OP_MOD:
 		g.compileBinaryOp(OP_WASM_I32_REM_S, OP_WASM_I64_REM_S)
 
@@ -1355,17 +1413,41 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 		g.compileBinaryOp(OP_WASM_I32_SHR_S, OP_WASM_I64_SHR_U)
 
 	case ir.OP_EQ:
-		g.compileCompareOp(OP_WASM_I32_EQ, OP_WASM_I64_EQ)
+		if inst.Name == "float64" {
+			g.compileCompareOpFloat(OP_WASM_F64_EQ)
+		} else {
+			g.compileCompareOp(OP_WASM_I32_EQ, OP_WASM_I64_EQ)
+		}
 	case ir.OP_NEQ:
-		g.compileCompareOp(OP_WASM_I32_NE, OP_WASM_I64_NE)
+		if inst.Name == "float64" {
+			g.compileCompareOpFloat(OP_WASM_F64_NE)
+		} else {
+			g.compileCompareOp(OP_WASM_I32_NE, OP_WASM_I64_NE)
+		}
 	case ir.OP_LT:
-		g.compileCompareOp(OP_WASM_I32_LT_S, OP_WASM_I64_LT_S)
+		if inst.Name == "float64" {
+			g.compileCompareOpFloat(OP_WASM_F64_LT)
+		} else {
+			g.compileCompareOp(OP_WASM_I32_LT_S, OP_WASM_I64_LT_S)
+		}
 	case ir.OP_GT:
-		g.compileCompareOp(OP_WASM_I32_GT_S, OP_WASM_I64_GT_S)
+		if inst.Name == "float64" {
+			g.compileCompareOpFloat(OP_WASM_F64_GT)
+		} else {
+			g.compileCompareOp(OP_WASM_I32_GT_S, OP_WASM_I64_GT_S)
+		}
 	case ir.OP_LEQ:
-		g.compileCompareOp(OP_WASM_I32_LE_S, OP_WASM_I64_LE_S)
+		if inst.Name == "float64" {
+			g.compileCompareOpFloat(OP_WASM_F64_LE)
+		} else {
+			g.compileCompareOp(OP_WASM_I32_LE_S, OP_WASM_I64_LE_S)
+		}
 	case ir.OP_GEQ:
-		g.compileCompareOp(OP_WASM_I32_GE_S, OP_WASM_I64_GE_S)
+		if inst.Name == "float64" {
+			g.compileCompareOpFloat(OP_WASM_F64_GE)
+		} else {
+			g.compileCompareOp(OP_WASM_I32_GE_S, OP_WASM_I64_GE_S)
+		}
 
 	case ir.OP_NOT:
 		t := g.popType()
@@ -1378,7 +1460,9 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 
 	case ir.OP_NEG:
 		t := g.peekType()
-		if t == WASM_TYPE_I64 {
+		if inst.Name == "float64" || t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_F64_NEG)
+		} else if t == WASM_TYPE_I64 {
 			g.w.localSet(uint32(g.tempLocal64))
 			g.w.i64Const(0)
 			g.w.localGet(uint32(g.tempLocal64))
@@ -1448,6 +1532,13 @@ func (g *WasmGen) compileBinaryOp(i32op byte, i64op byte) {
 	}
 }
 
+func (g *WasmGen) compileBinaryOpFloat(op byte) {
+	g.popType()
+	g.popType()
+	g.w.op(op)
+	g.pushType(WASM_TYPE_F64)
+}
+
 // compileCompareOp emits a comparison, promoting to i64 if needed. Result is always i32.
 func (g *WasmGen) compileCompareOp(i32op byte, i64op byte) {
 	t := g.ensureBothSameType()
@@ -1461,7 +1552,33 @@ func (g *WasmGen) compileCompareOp(i32op byte, i64op byte) {
 	g.pushType(WASM_TYPE_I32)
 }
 
+func (g *WasmGen) compileCompareOpFloat(op byte) {
+	g.popType()
+	g.popType()
+	g.w.op(op)
+	g.pushType(WASM_TYPE_I32)
+}
+
 func (g *WasmGen) compileCompareJump(inst ir.Inst) {
+	if inst.Name == "float64" {
+		g.popType()
+		g.popType()
+		switch inst.Op {
+		case ir.OP_JMP_EQ:
+			g.w.op(OP_WASM_F64_EQ)
+		case ir.OP_JMP_NEQ:
+			g.w.op(OP_WASM_F64_NE)
+		case ir.OP_JMP_LT:
+			g.w.op(OP_WASM_F64_LT)
+		case ir.OP_JMP_GT:
+			g.w.op(OP_WASM_F64_GT)
+		case ir.OP_JMP_LEQ:
+			g.w.op(OP_WASM_F64_LE)
+		case ir.OP_JMP_GEQ:
+			g.w.op(OP_WASM_F64_GE)
+		}
+		return
+	}
 	t := g.ensureBothSameType()
 	g.popType()
 	g.popType()
@@ -1537,6 +1654,9 @@ func (g *WasmGen) compileDup() {
 	if t == WASM_TYPE_I64 {
 		g.w.localTee(uint32(g.tempLocal64))
 		g.w.localGet(uint32(g.tempLocal64))
+	} else if t == WASM_TYPE_F64 {
+		g.w.localTee(uint32(g.tempLocalF64))
+		g.w.localGet(uint32(g.tempLocalF64))
 	} else {
 		g.w.localTee(uint32(g.tempLocal))
 		g.w.localGet(uint32(g.tempLocal))
@@ -1548,7 +1668,11 @@ func (g *WasmGen) compileDup() {
 
 func (g *WasmGen) compileLocalGet(idx int) {
 	offset := g.localOffsets[idx]
-	if g.localI64[idx] {
+	if g.localF64[idx] {
+		g.w.globalGet(uint32(g.globalSP))
+		g.w.f64Load(3, uint32(offset))
+		g.pushType(WASM_TYPE_F64)
+	} else if g.localI64[idx] {
 		g.w.globalGet(uint32(g.globalSP))
 		g.w.i64Load(3, uint32(offset))
 		g.pushType(WASM_TYPE_I64)
@@ -1562,7 +1686,19 @@ func (g *WasmGen) compileLocalGet(idx int) {
 func (g *WasmGen) compileLocalSet(idx int) {
 	offset := g.localOffsets[idx]
 	t := g.popType()
-	if g.localI64[idx] {
+	if g.localF64[idx] {
+		if t != WASM_TYPE_F64 {
+			if t == WASM_TYPE_I64 {
+				g.w.op(OP_WASM_F64_CONVERT_I64_S)
+			} else {
+				g.w.op(OP_WASM_F64_CONVERT_I32_S)
+			}
+		}
+		g.w.localSet(uint32(g.tempLocalF64))
+		g.w.globalGet(uint32(g.globalSP))
+		g.w.localGet(uint32(g.tempLocalF64))
+		g.w.f64Store(3, uint32(offset))
+	} else if g.localI64[idx] {
 		// Local has an 8-byte slot — use i64.store
 		if t == WASM_TYPE_I32 {
 			g.w.i64ExtendI32U() // promote to i64
@@ -1585,7 +1721,11 @@ func (g *WasmGen) compileLocalSet(idx int) {
 
 func (g *WasmGen) compileLocalAddImm(idx int, imm int32) {
 	g.compileLocalGet(idx)
-	if g.peekType() == WASM_TYPE_I64 {
+	if g.peekType() == WASM_TYPE_F64 {
+		g.w.f64ConstBits(float64BitsFromI32(imm))
+		g.pushType(WASM_TYPE_F64)
+		g.compileBinaryOpFloat(OP_WASM_F64_ADD)
+	} else if g.peekType() == WASM_TYPE_I64 {
 		g.w.i64Const(int64(imm))
 		g.pushType(WASM_TYPE_I64)
 		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
@@ -1608,24 +1748,45 @@ func (g *WasmGen) compileLocalAddr(idx int) {
 // === Global variable access (linear memory) ===
 
 func (g *WasmGen) compileGlobalGet(inst ir.Inst) {
-	g.w.i32Const(g.globalsAddr + int32(inst.Arg*4))
+	if inst.Arg >= 0 && inst.Arg < len(g.irmod.Globals) && g.irmod.Globals[inst.Arg].Type != nil && g.irmod.Globals[inst.Arg].Type.Kind == ir.TY_FLOAT64 {
+		g.w.i32Const(g.globalsAddr + g.globalOffset(inst.Arg))
+		g.w.f64Load(3, 0)
+		g.pushType(WASM_TYPE_F64)
+		return
+	}
+	g.w.i32Const(g.globalsAddr + g.globalOffset(inst.Arg))
 	g.w.i32Load(2, 0)
 	g.pushType(WASM_TYPE_I32)
 }
 
 func (g *WasmGen) compileGlobalSet(inst ir.Inst) {
 	t := g.popType()
+	isFloat := inst.Arg >= 0 && inst.Arg < len(g.irmod.Globals) && g.irmod.Globals[inst.Arg].Type != nil && g.irmod.Globals[inst.Arg].Type.Kind == ir.TY_FLOAT64
+	if isFloat {
+		if t != WASM_TYPE_F64 {
+			if t == WASM_TYPE_I64 {
+				g.w.op(OP_WASM_F64_CONVERT_I64_S)
+			} else {
+				g.w.op(OP_WASM_F64_CONVERT_I32_S)
+			}
+		}
+		g.w.localSet(uint32(g.tempLocalF64))
+		g.w.i32Const(g.globalsAddr + g.globalOffset(inst.Arg))
+		g.w.localGet(uint32(g.tempLocalF64))
+		g.w.f64Store(3, 0)
+		return
+	}
 	if t == WASM_TYPE_I64 {
-		g.w.i32WrapI64() // globals are always i32
+		g.w.i32WrapI64()
 	}
 	g.w.localSet(uint32(g.tempLocal))
-	g.w.i32Const(g.globalsAddr + int32(inst.Arg*4))
+	g.w.i32Const(g.globalsAddr + g.globalOffset(inst.Arg))
 	g.w.localGet(uint32(g.tempLocal))
 	g.w.i32Store(2, 0)
 }
 
 func (g *WasmGen) compileGlobalAddr(inst ir.Inst) {
-	g.w.i32Const(g.globalsAddr + int32(inst.Arg*4))
+	g.w.i32Const(g.globalsAddr + g.globalOffset(inst.Arg))
 	g.pushType(WASM_TYPE_I32)
 }
 
@@ -1641,7 +1802,6 @@ func (g *WasmGen) compileLoad(inst ir.Inst) {
 		useMemOffset = true
 	}
 	// Stack: [addr] → [value]
-	// addr is always i32, result is always i32
 	t := g.popType()
 	if t == WASM_TYPE_I64 {
 		g.w.i32WrapI64()
@@ -1660,27 +1820,56 @@ func (g *WasmGen) compileLoad(inst ir.Inst) {
 		}
 	}
 	if ir.IsNonNilMemoryBase(inst.Name) {
-		if size == 1 {
+		if size == 8 && inst.Name == "float64" {
+			g.w.f64Load(3, memOffset)
+			g.pushType(WASM_TYPE_F64)
+		} else if size == 8 {
+			g.w.i64Load(3, memOffset)
+			g.pushType(WASM_TYPE_I64)
+		} else if size == 1 {
 			g.w.i32Load8u(0, memOffset)
+			g.pushType(WASM_TYPE_I32)
 		} else {
 			g.w.i32Load(2, memOffset)
+			g.pushType(WASM_TYPE_I32)
 		}
-		g.pushType(WASM_TYPE_I32)
 		return
 	}
 	g.w.localTee(uint32(g.tempLocal))
 	g.w.op(OP_WASM_I32_EQZ)
-	g.w.ifOp(WASM_TYPE_I32)
-	g.w.i32Const(0)
+	blockType := byte(WASM_TYPE_I32)
+	if size == 8 && inst.Name == "float64" {
+		blockType = WASM_TYPE_F64
+	} else if size == 8 {
+		blockType = WASM_TYPE_I64
+	}
+	g.w.ifOp(blockType)
+	if blockType == WASM_TYPE_F64 {
+		g.w.f64ConstBits(0)
+	} else if blockType == WASM_TYPE_I64 {
+		g.w.i64Const(0)
+	} else {
+		g.w.i32Const(0)
+	}
 	g.w.elseOp()
 	g.w.localGet(uint32(g.tempLocal))
-	if size == 1 {
+	if size == 8 && inst.Name == "float64" {
+		g.w.f64Load(3, memOffset)
+	} else if size == 8 {
+		g.w.i64Load(3, memOffset)
+	} else if size == 1 {
 		g.w.i32Load8u(0, memOffset)
 	} else {
 		g.w.i32Load(2, memOffset)
 	}
 	g.w.end()
-	g.pushType(WASM_TYPE_I32)
+	if size == 8 && inst.Name == "float64" {
+		g.pushType(WASM_TYPE_F64)
+	} else if size == 8 {
+		g.pushType(WASM_TYPE_I64)
+	} else {
+		g.pushType(WASM_TYPE_I32)
+	}
 }
 
 func (g *WasmGen) compileStore(inst ir.Inst) {
@@ -1700,24 +1889,82 @@ func (g *WasmGen) compileStore(inst ir.Inst) {
 	}
 	g.w.localSet(uint32(g.tempLocal)) // temp0 = addr
 
-	// value is below, could be i64 — wrap to i32 for memory store
+	// value is below.
 	vt := g.popType()
-	if vt == WASM_TYPE_I64 {
-		g.w.i32WrapI64()
-	}
 	temp2 := uint32(g.tempLocal + 1)
-	g.w.localSet(temp2)
+	if size == 8 && inst.Name == "float64" {
+		if vt != WASM_TYPE_F64 {
+			if vt == WASM_TYPE_I64 {
+				g.w.op(OP_WASM_F64_CONVERT_I64_S)
+			} else {
+				g.w.op(OP_WASM_F64_CONVERT_I32_S)
+			}
+		}
+		g.w.localSet(uint32(g.tempLocalF64))
+	} else if size == 8 {
+		if vt == WASM_TYPE_I32 {
+			g.w.i64ExtendI32U()
+		}
+		g.w.localSet(uint32(g.tempLocal64))
+	} else {
+		if vt == WASM_TYPE_I64 {
+			g.w.i32WrapI64()
+		}
+		g.w.localSet(temp2)
+	}
 	g.w.localGet(uint32(g.tempLocal))
 	if offset != 0 && !useMemOffset {
 		g.w.i32Const(int32(offset))
 		g.w.op(OP_WASM_I32_ADD)
 	}
-	g.w.localGet(temp2)
-	if size == 1 {
-		g.w.i32Store8(0, memOffset)
+	if size == 8 && inst.Name == "float64" {
+		g.w.localGet(uint32(g.tempLocalF64))
+		g.w.f64Store(3, memOffset)
+	} else if size == 8 {
+		g.w.localGet(uint32(g.tempLocal64))
+		g.w.i64Store(3, memOffset)
 	} else {
-		g.w.i32Store(2, memOffset)
+		g.w.localGet(temp2)
+		if size == 1 {
+			g.w.i32Store8(0, memOffset)
+		} else {
+			g.w.i32Store(2, memOffset)
+		}
 	}
+}
+
+func wasmValueSize(t byte) int32 {
+	if t == WASM_TYPE_I64 || t == WASM_TYPE_F64 {
+		return 8
+	}
+	return 4
+}
+
+func (g *WasmGen) wasmLocalType(loc ir.IRLocal) byte {
+	if loc.IsFloat64 {
+		return WASM_TYPE_F64
+	}
+	if loc.Is64 {
+		return WASM_TYPE_I64
+	}
+	return WASM_TYPE_I32
+}
+
+func (g *WasmGen) wasmParamType(f *ir.IRFunc, idx int) byte {
+	if f != nil && idx >= 0 && idx < len(f.Locals) {
+		return g.wasmLocalType(f.Locals[idx])
+	}
+	return WASM_TYPE_I32
+}
+
+func (g *WasmGen) wasmResultType(f *ir.IRFunc, idx int) byte {
+	if f != nil && idx >= 0 && idx < len(f.ResultKinds) && f.ResultKinds[idx] == ir.TY_FLOAT64 {
+		return WASM_TYPE_F64
+	}
+	if f != nil && idx >= 0 && idx < len(f.ResultIs64) && f.ResultIs64[idx] {
+		return WASM_TYPE_I64
+	}
+	return WASM_TYPE_I32
 }
 
 func (g *WasmGen) compileOffset(inst ir.Inst) {
@@ -1801,6 +2048,7 @@ func (g *WasmGen) compileCall(inst ir.Inst) {
 		g.compileCompositeLitCall(inst)
 		return
 	}
+	var callee *ir.IRFunc
 	idx, ok := g.funcMap[inst.Name]
 	if !ok {
 		// Unresolved call - trap
@@ -1813,94 +2061,160 @@ func (g *WasmGen) compileCall(inst ir.Inst) {
 		g.w.unreachable()
 		return
 	}
-	// Wrap any i64 args to i32 before call (all signatures are i32)
-	// We need to check the top N args and wrap as needed
-	// Pop arg types, wrap i64s, then call
-	nArgs := inst.Arg
-	if nArgs > 0 && len(g.valTypes) >= nArgs {
-		// Check each arg from bottom to top
-		baseIdx := len(g.valTypes) - nArgs
-		i := baseIdx
-		for i < len(g.valTypes) {
-			if g.valTypes[i] == WASM_TYPE_I64 {
-				// We need to insert i32.wrap_i64 at the right position
-				// Since args are on stack from bottom to top, we can only
-				// easily wrap the topmost. For simplicity, save top args to
-				// shadow stack, wrap, and restore. But that's complex.
-				// Simpler: just wrap as we pop. Let's handle it below.
-				break
-			}
-			i++
-		}
-		// If any arg is i64, save all args, wrap i64s, reload
-		hasI64 := false
-		i = baseIdx
-		for i < len(g.valTypes) {
-			if g.valTypes[i] == WASM_TYPE_I64 {
-				hasI64 = true
-				break
-			}
-			i++
-		}
-		if hasI64 {
-			// Save args to shadow stack scratch, wrapping i64 to i32
-			g.w.globalGet(uint32(g.globalSP))
-			g.w.i32Const(int32(nArgs * 4))
-			g.w.op(OP_WASM_I32_SUB)
-			g.w.globalSet(uint32(g.globalSP))
-
-			i = nArgs - 1
-			for i >= 0 {
-				t := g.valTypes[baseIdx+i]
-				if t == WASM_TYPE_I64 {
-					g.w.i32WrapI64()
-				}
-				g.w.localSet(uint32(g.tempLocal))
-				g.w.globalGet(uint32(g.globalSP))
-				g.w.localGet(uint32(g.tempLocal))
-				g.w.i32Store(2, uint32(i*4))
-				i = i - 1
-			}
-			// Reload all as i32
-			i = 0
-			for i < nArgs {
-				g.w.globalGet(uint32(g.globalSP))
-				g.w.i32Load(2, uint32(i*4))
-				i++
-			}
-			// Restore SP
-			g.w.globalGet(uint32(g.globalSP))
-			g.w.i32Const(int32(nArgs * 4))
-			g.w.op(OP_WASM_I32_ADD)
-			g.w.globalSet(uint32(g.globalSP))
-		}
-	}
-
-	// Pop arg types
-	i := 0
-	for i < nArgs {
-		g.popType()
-		i++
-	}
-	g.w.call(uint32(idx))
-	// Push result types (all functions return i32)
-	retCount := 0
 	for _, f := range g.irmod.Funcs {
 		if f.Name == inst.Name {
-			retCount = f.RetCount
+			callee = f
 			break
 		}
 	}
-	i = 0
-	for i < retCount {
-		g.pushType(WASM_TYPE_I32)
+	nArgs := inst.Arg
+	baseIdx := len(g.valTypes) - nArgs
+	if baseIdx < 0 {
+		baseIdx = 0
+	}
+	needMarshal := false
+	i := 0
+	for i < nArgs && baseIdx+i < len(g.valTypes) {
+		if g.valTypes[baseIdx+i] != g.wasmParamType(callee, i) {
+			needMarshal = true
+			break
+		}
 		i++
+	}
+	if needMarshal {
+		argTypes := make([]byte, nArgs)
+		offsets := make([]int32, nArgs)
+		var totalBytes int32
+		i = 0
+		for i < nArgs {
+			t := byte(WASM_TYPE_I32)
+			if baseIdx+i >= 0 && baseIdx+i < len(g.valTypes) {
+				t = g.valTypes[baseIdx+i]
+			}
+			argTypes[i] = t
+			offsets[i] = totalBytes
+			totalBytes = totalBytes + wasmValueSize(t)
+			i++
+		}
+
+		g.w.globalGet(uint32(g.globalSP))
+		g.w.i32Const(totalBytes)
+		g.w.op(OP_WASM_I32_SUB)
+		g.w.globalSet(uint32(g.globalSP))
+
+		i = nArgs - 1
+		for i >= 0 {
+			t := g.popType()
+			switch t {
+			case WASM_TYPE_F64:
+				g.w.localSet(uint32(g.tempLocalF64))
+				g.w.globalGet(uint32(g.globalSP))
+				g.w.i32Const(offsets[i])
+				g.w.op(OP_WASM_I32_ADD)
+				g.w.localGet(uint32(g.tempLocalF64))
+				g.w.f64Store(3, 0)
+			case WASM_TYPE_I64:
+				g.w.localSet(uint32(g.tempLocal64))
+				g.w.globalGet(uint32(g.globalSP))
+				g.w.i32Const(offsets[i])
+				g.w.op(OP_WASM_I32_ADD)
+				g.w.localGet(uint32(g.tempLocal64))
+				g.w.i64Store(3, 0)
+			default:
+				g.w.localSet(uint32(g.tempLocal))
+				g.w.globalGet(uint32(g.globalSP))
+				g.w.i32Const(offsets[i])
+				g.w.op(OP_WASM_I32_ADD)
+				g.w.localGet(uint32(g.tempLocal))
+				g.w.i32Store(2, 0)
+			}
+			i = i - 1
+		}
+
+		i = 0
+		for i < nArgs {
+			want := g.wasmParamType(callee, i)
+			got := argTypes[i]
+			g.w.globalGet(uint32(g.globalSP))
+			g.w.i32Const(offsets[i])
+			g.w.op(OP_WASM_I32_ADD)
+			if want == WASM_TYPE_F64 {
+				if got == WASM_TYPE_F64 {
+					g.w.f64Load(3, 0)
+				} else if got == WASM_TYPE_I64 {
+					g.w.i64Load(3, 0)
+					g.w.op(OP_WASM_F64_CONVERT_I64_S)
+				} else {
+					g.w.i32Load(2, 0)
+					g.w.op(OP_WASM_F64_CONVERT_I32_S)
+				}
+			} else if want == WASM_TYPE_I64 {
+				if got == WASM_TYPE_F64 {
+					g.w.f64Load(3, 0)
+					g.w.op(OP_WASM_I64_TRUNC_F64_S)
+				} else if got == WASM_TYPE_I64 {
+					g.w.i64Load(3, 0)
+				} else {
+					g.w.i32Load(2, 0)
+					g.w.i64ExtendI32S()
+				}
+			} else {
+				if got == WASM_TYPE_F64 {
+					g.w.f64Load(3, 0)
+					g.w.op(OP_WASM_I32_TRUNC_F64_S)
+				} else if got == WASM_TYPE_I64 {
+					g.w.i64Load(3, 0)
+					g.w.i32WrapI64()
+				} else {
+					g.w.i32Load(2, 0)
+				}
+			}
+			i++
+		}
+
+		g.w.globalGet(uint32(g.globalSP))
+		g.w.i32Const(totalBytes)
+		g.w.op(OP_WASM_I32_ADD)
+		g.w.globalSet(uint32(g.globalSP))
+	} else {
+		i = 0
+		for i < nArgs {
+			g.popType()
+			i++
+		}
+	}
+	g.w.call(uint32(idx))
+	retCount := 0
+	if callee != nil {
+		retCount = callee.RetCount
+		i = 0
+		for i < retCount {
+			g.pushType(g.wasmResultType(callee, i))
+			i++
+		}
 	}
 }
 
 func (g *WasmGen) compileCompositeLitCall(inst ir.Inst) {
 	fieldCount := inst.Arg
-	structSize := fieldCount * 4
+	fieldTypes := make([]byte, fieldCount)
+	fieldOffsets := make([]int32, fieldCount)
+	var structSize int32
+	baseIdx := len(g.valTypes) - fieldCount
+	if baseIdx < 0 {
+		baseIdx = 0
+	}
+	i := 0
+	for i < fieldCount {
+		t := byte(WASM_TYPE_I32)
+		if baseIdx+i >= 0 && baseIdx+i < len(g.valTypes) {
+			t = g.valTypes[baseIdx+i]
+		}
+		fieldTypes[i] = t
+		fieldOffsets[i] = structSize
+		structSize = structSize + wasmValueSize(t)
+		i++
+	}
 
 	if structSize == 0 {
 		// Pop all field types from valTypes
@@ -1916,26 +2230,42 @@ func (g *WasmGen) compileCompositeLitCall(inst ir.Inst) {
 
 	// Save fields to shadow stack scratch area
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Const(int32(fieldCount * 4))
+	g.w.i32Const(structSize)
 	g.w.op(OP_WASM_I32_SUB)
 	g.w.globalSet(uint32(g.globalSP))
 
 	// Pop fields from WASM stack into shadow scratch (reverse order since stack is LIFO)
-	i := fieldCount - 1
+	i = fieldCount - 1
 	for i >= 0 {
 		t := g.popType()
-		if t == WASM_TYPE_I64 {
-			g.w.i32WrapI64() // fields are stored as i32
-		}
-		g.w.localSet(uint32(g.tempLocal)) // value
 		g.w.globalGet(uint32(g.globalSP))
-		g.w.localGet(uint32(g.tempLocal))
-		g.w.i32Store(2, uint32(i*4))
+		g.w.i32Const(fieldOffsets[i])
+		g.w.op(OP_WASM_I32_ADD)
+		switch t {
+		case WASM_TYPE_F64:
+			g.w.localSet(uint32(g.tempLocal))
+			g.w.localSet(uint32(g.tempLocalF64))
+			g.w.localGet(uint32(g.tempLocal))
+			g.w.localGet(uint32(g.tempLocalF64))
+			g.w.f64Store(3, 0)
+		case WASM_TYPE_I64:
+			g.w.localSet(uint32(g.tempLocal))
+			g.w.localSet(uint32(g.tempLocal64))
+			g.w.localGet(uint32(g.tempLocal))
+			g.w.localGet(uint32(g.tempLocal64))
+			g.w.i64Store(3, 0)
+		default:
+			g.w.localSet(uint32(g.tempLocal + 1))
+			g.w.localSet(uint32(g.tempLocal))
+			g.w.localGet(uint32(g.tempLocal + 1))
+			g.w.localGet(uint32(g.tempLocal))
+			g.w.i32Store(2, 0)
+		}
 		i = i - 1
 	}
 
 	// Call runtime.Alloc(structSize)
-	g.w.i32Const(int32(structSize))
+	g.w.i32Const(structSize)
 	if idx, ok := g.funcMap["runtime.Alloc"]; ok {
 		g.w.call(uint32(idx))
 	} else {
@@ -1948,15 +2278,36 @@ func (g *WasmGen) compileCompositeLitCall(inst ir.Inst) {
 	i = 0
 	for i < fieldCount {
 		g.w.localGet(uint32(g.tempLocal))
-		g.w.globalGet(uint32(g.globalSP))
-		g.w.i32Load(2, uint32(i*4))
-		g.w.i32Store(2, uint32(i*4))
+		if fieldOffsets[i] != 0 {
+			g.w.i32Const(fieldOffsets[i])
+			g.w.op(OP_WASM_I32_ADD)
+		}
+		switch fieldTypes[i] {
+		case WASM_TYPE_F64:
+			g.w.globalGet(uint32(g.globalSP))
+			g.w.i32Const(fieldOffsets[i])
+			g.w.op(OP_WASM_I32_ADD)
+			g.w.f64Load(3, 0)
+			g.w.f64Store(3, 0)
+		case WASM_TYPE_I64:
+			g.w.globalGet(uint32(g.globalSP))
+			g.w.i32Const(fieldOffsets[i])
+			g.w.op(OP_WASM_I32_ADD)
+			g.w.i64Load(3, 0)
+			g.w.i64Store(3, 0)
+		default:
+			g.w.globalGet(uint32(g.globalSP))
+			g.w.i32Const(fieldOffsets[i])
+			g.w.op(OP_WASM_I32_ADD)
+			g.w.i32Load(2, 0)
+			g.w.i32Store(2, 0)
+		}
 		i++
 	}
 
 	// Restore shadow stack
 	g.w.globalGet(uint32(g.globalSP))
-	g.w.i32Const(int32(fieldCount * 4))
+	g.w.i32Const(structSize)
 	g.w.op(OP_WASM_I32_ADD)
 	g.w.globalSet(uint32(g.globalSP))
 
@@ -1971,52 +2322,61 @@ func (g *WasmGen) compileReturn(inst ir.Inst) {
 	if g.curFrameSize > 0 {
 		lastIdx := g.curFrameSize - 1
 		frameBytes = g.localOffsets[lastIdx]
-		if g.localI64[lastIdx] {
+		if g.localI64[lastIdx] || g.localF64[lastIdx] {
 			frameBytes = frameBytes + 8
 		} else {
 			frameBytes = frameBytes + 4
 		}
 	}
 
-	if frameBytes > 0 {
-		retCount := g.curFunc.RetCount
-		if retCount > 0 {
-			// Wrap any i64 return values to i32 before saving
-			scratch := g.scratchAddr
-			i := retCount - 1
-			for i >= 0 {
-				t := g.popType()
-				if t == WASM_TYPE_I64 {
-					g.w.i32WrapI64()
-				}
-				g.w.i32Const(scratch + int32(i*4))
+	retCount := g.curFunc.RetCount
+	scratch := g.scratchAddr
+	if retCount > 0 {
+		i := retCount - 1
+		for i >= 0 {
+			t := g.popType()
+			addr := scratch + int32(i*8)
+			switch t {
+			case WASM_TYPE_F64:
+				g.w.localSet(uint32(g.tempLocalF64))
+				g.w.i32Const(addr)
+				g.w.localGet(uint32(g.tempLocalF64))
+				g.w.f64Store(3, 0)
+			case WASM_TYPE_I64:
+				g.w.localSet(uint32(g.tempLocal64))
+				g.w.i32Const(addr)
+				g.w.localGet(uint32(g.tempLocal64))
+				g.w.i64Store(3, 0)
+			default:
 				g.w.localSet(uint32(g.tempLocal))
-				temp2 := uint32(g.tempLocal + 1)
-				g.w.localSet(temp2)
+				g.w.i32Const(addr)
 				g.w.localGet(uint32(g.tempLocal))
-				g.w.localGet(temp2)
 				g.w.i32Store(2, 0)
-				i = i - 1
 			}
+			i = i - 1
+		}
+	}
 
-			// Restore SP
-			g.w.globalGet(uint32(g.globalSP))
-			g.w.i32Const(frameBytes)
-			g.w.op(OP_WASM_I32_ADD)
-			g.w.globalSet(uint32(g.globalSP))
+	if frameBytes > 0 {
+		g.w.globalGet(uint32(g.globalSP))
+		g.w.i32Const(frameBytes)
+		g.w.op(OP_WASM_I32_ADD)
+		g.w.globalSet(uint32(g.globalSP))
+	}
 
-			// Reload return values as i32
-			i = 0
-			for i < retCount {
-				g.w.i32Const(scratch + int32(i*4))
+	if retCount > 0 {
+		i := 0
+		for i < retCount {
+			g.w.i32Const(scratch + int32(i*8))
+			switch g.wasmResultType(g.curFunc, i) {
+			case WASM_TYPE_F64:
+				g.w.f64Load(3, 0)
+			case WASM_TYPE_I64:
+				g.w.i64Load(3, 0)
+			default:
 				g.w.i32Load(2, 0)
-				i++
 			}
-		} else {
-			g.w.globalGet(uint32(g.globalSP))
-			g.w.i32Const(frameBytes)
-			g.w.op(OP_WASM_I32_ADD)
-			g.w.globalSet(uint32(g.globalSP))
+			i++
 		}
 	}
 
@@ -2952,13 +3312,21 @@ func (g *WasmGen) compileIfaceBox(inst ir.Inst) {
 
 	// Stack: [concrete_value]
 	t := g.popType()
-	if t == WASM_TYPE_I64 {
-		g.w.i32WrapI64()
+	boxSize := int32(8)
+	if t == WASM_TYPE_I64 || t == WASM_TYPE_F64 {
+		boxSize = 12
 	}
-	g.w.localSet(uint32(g.tempLocal)) // save concrete value
+	switch t {
+	case WASM_TYPE_F64:
+		g.w.localSet(uint32(g.tempLocalF64))
+	case WASM_TYPE_I64:
+		g.w.localSet(uint32(g.tempLocal64))
+	default:
+		g.w.localSet(uint32(g.tempLocal))
+	}
 
-	// Allocate 8 bytes: {type_id:4, value:4}
-	g.w.i32Const(8)
+	// Allocate {type_id:4, value:4|8}.
+	g.w.i32Const(boxSize)
 	if idx, ok := g.funcMap["runtime.Alloc"]; ok {
 		g.w.call(uint32(idx))
 	}
@@ -2972,8 +3340,17 @@ func (g *WasmGen) compileIfaceBox(inst ir.Inst) {
 
 	// Store value
 	g.w.localGet(temp2)
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Store(2, 4)
+	switch t {
+	case WASM_TYPE_F64:
+		g.w.localGet(uint32(g.tempLocalF64))
+		g.w.f64Store(3, 4)
+	case WASM_TYPE_I64:
+		g.w.localGet(uint32(g.tempLocal64))
+		g.w.i64Store(3, 4)
+	default:
+		g.w.localGet(uint32(g.tempLocal))
+		g.w.i32Store(2, 4)
+	}
 
 	// Push box ptr
 	g.w.localGet(temp2)
@@ -2983,9 +3360,27 @@ func (g *WasmGen) compileIfaceBox(inst ir.Inst) {
 func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 	argCount := inst.Arg
 	methodName := inst.Name
+	argTypes := make([]byte, argCount)
+	argOffsets := make([]int32, argCount)
+	baseIdx := len(g.valTypes) - argCount
+	if baseIdx < 0 {
+		baseIdx = 0
+	}
+	var argBytes int32
+	i := 0
+	for i < argCount {
+		t := byte(WASM_TYPE_I32)
+		if baseIdx+i >= 0 && baseIdx+i < len(g.valTypes) {
+			t = g.valTypes[baseIdx+i]
+		}
+		argTypes[i] = t
+		argOffsets[i] = argBytes
+		argBytes = argBytes + wasmValueSize(t)
+		i++
+	}
 
 	// Pop all types from valTypes: args + iface_ptr
-	i := 0
+	i = 0
 	for i < argCount+1 {
 		g.popType()
 		i++
@@ -2998,18 +3393,35 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 	// Save args to shadow stack scratch
 	if argCount > 0 {
 		g.w.globalGet(uint32(g.globalSP))
-		g.w.i32Const(int32(argCount * 4))
+		g.w.i32Const(argBytes)
 		g.w.op(OP_WASM_I32_SUB)
 		g.w.globalSet(uint32(g.globalSP))
 
 		i := argCount - 1
 		for i >= 0 {
-			// Save to scratch: [$sp + i*4]
-			temp2 := uint32(g.tempLocal + 1)
-			g.w.localSet(temp2)
 			g.w.globalGet(uint32(g.globalSP))
-			g.w.localGet(temp2)
-			g.w.i32Store(2, uint32(i*4))
+			g.w.i32Const(argOffsets[i])
+			g.w.op(OP_WASM_I32_ADD)
+			switch argTypes[i] {
+			case WASM_TYPE_F64:
+				g.w.localSet(uint32(g.tempLocal))
+				g.w.localSet(uint32(g.tempLocalF64))
+				g.w.localGet(uint32(g.tempLocal))
+				g.w.localGet(uint32(g.tempLocalF64))
+				g.w.f64Store(3, 0)
+			case WASM_TYPE_I64:
+				g.w.localSet(uint32(g.tempLocal))
+				g.w.localSet(uint32(g.tempLocal64))
+				g.w.localGet(uint32(g.tempLocal))
+				g.w.localGet(uint32(g.tempLocal64))
+				g.w.i64Store(3, 0)
+			default:
+				g.w.localSet(uint32(g.tempLocal + 1))
+				g.w.localSet(uint32(g.tempLocal))
+				g.w.localGet(uint32(g.tempLocal + 1))
+				g.w.localGet(uint32(g.tempLocal))
+				g.w.i32Store(2, 0)
+			}
 			i = i - 1
 		}
 	}
@@ -3019,25 +3431,6 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 	g.w.i32Load(2, 0) // type_id
 	temp2 := uint32(g.tempLocal + 1)
 	g.w.localSet(temp2) // type_id in temp2
-
-	// Push concrete value as receiver
-	g.w.localGet(uint32(g.tempLocal))
-	g.w.i32Load(2, 4) // concrete value
-
-	// Restore args from shadow scratch
-	if argCount > 0 {
-		i := 0
-		for i < argCount {
-			g.w.globalGet(uint32(g.globalSP))
-			g.w.i32Load(2, uint32(i*4))
-			i++
-		}
-		// Restore SP
-		g.w.globalGet(uint32(g.globalSP))
-		g.w.i32Const(int32(argCount * 4))
-		g.w.op(OP_WASM_I32_ADD)
-		g.w.globalSet(uint32(g.globalSP))
-	}
 
 	// Extract interface and bare method names using the last '.'
 	// so fully-qualified names like "main.Stringer.String" are handled.
@@ -3067,6 +3460,8 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 
 	// Collect dispatch entries with signature filtering
 	var entries []becommon.DispatchEntry
+	var entryFuncs []*ir.IRFunc
+	var resultTypes []byte
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + "." + bareMethod
@@ -3101,41 +3496,58 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 				expectedRetCount = fn.RetCount
 			}
 
+			if resultTypes == nil {
+				resultTypes = make([]byte, fn.RetCount)
+				ri := 0
+				for ri < fn.RetCount {
+					resultTypes[ri] = g.wasmResultType(fn, ri)
+					ri++
+				}
+			} else if len(resultTypes) != fn.RetCount {
+				continue
+			} else {
+				match := true
+				ri := 0
+				for ri < fn.RetCount {
+					if resultTypes[ri] != g.wasmResultType(fn, ri) {
+						match = false
+						break
+					}
+					ri++
+				}
+				if !match {
+					continue
+				}
+			}
+
 			entries = append(entries, becommon.DispatchEntry{tid, funcName})
+			entryFuncs = append(entryFuncs, fn)
 		}
 	}
 
 	if len(entries) == 0 {
 		g.w.unreachable()
 	} else {
-		// Stack has: [concrete_value, arg0, ...argN]
-		// Save all call inputs to shadow memory, then reload per dispatch arm.
-		totalVals := 1 + argCount // receiver + args
-		g.w.globalGet(uint32(g.globalSP))
-		g.w.i32Const(int32(totalVals * 4))
-		g.w.op(OP_WASM_I32_SUB)
-		g.w.globalSet(uint32(g.globalSP))
-
-		i := totalVals - 1
-		for i >= 0 {
-			scratch := uint32(g.tempLocal)
-			g.w.localSet(scratch)
-			g.w.globalGet(uint32(g.globalSP))
-			g.w.localGet(scratch)
-			g.w.i32Store(2, uint32(i*4))
-			i = i - 1
-		}
-
 		retCount := 0
 		if expectedRetCount > 0 {
 			retCount = expectedRetCount
 		}
-		retScratchWords := 0
+		var retScratchBytes int32
+		retOffsets := make([]int32, retCount)
 		if retCount > 1 {
-			retScratchWords = retCount
+			ri := 0
+			for ri < retCount {
+				retOffsets[ri] = retScratchBytes
+				if ri < len(resultTypes) {
+					retScratchBytes = retScratchBytes + wasmValueSize(resultTypes[ri])
+				} else {
+					retScratchBytes = retScratchBytes + 4
+				}
+				ri++
+			}
 			// Reserve scratch for multi-value dispatch results.
 			g.w.globalGet(uint32(g.globalSP))
-			g.w.i32Const(int32(retScratchWords * 4))
+			g.w.i32Const(retScratchBytes)
 			g.w.op(OP_WASM_I32_SUB)
 			g.w.globalSet(uint32(g.globalSP))
 		}
@@ -3145,7 +3557,11 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 		if retCount == 0 {
 			blockType = WASM_TYPE_VOID
 		} else if retCount == 1 {
-			blockType = WASM_TYPE_I32
+			if len(resultTypes) > 0 {
+				blockType = resultTypes[0]
+			} else {
+				blockType = WASM_TYPE_I32
+			}
 		} else {
 			// Multi-value blocks use shadow scratch and a void block.
 			blockType = WASM_TYPE_VOID
@@ -3153,21 +3569,60 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 
 		// Dispatch chain
 		for ei, entry := range entries {
+			fn := entryFuncs[ei]
 			g.w.localGet(temp2) // type_id
 			g.w.i32Const(int32(entry.TypeID))
 			g.w.op(OP_WASM_I32_EQ)
 
-			if ei < len(entries)-1 {
-				g.w.ifOp(blockType)
+			g.w.ifOp(blockType)
+
+			recvType := g.wasmParamType(fn, 0)
+			g.w.localGet(uint32(g.tempLocal))
+			if recvType == WASM_TYPE_F64 {
+				g.w.f64Load(3, 4)
 			} else {
-				g.w.ifOp(blockType)
+				g.w.i32Load(2, 4)
 			}
 
 			// Load values from scratch and call
 			j := 0
-			for j < totalVals {
+			for j < argCount {
+				want := g.wasmParamType(fn, j+1)
+				got := argTypes[j]
 				g.w.globalGet(uint32(g.globalSP))
-				g.w.i32Load(2, uint32((retScratchWords+j)*4))
+				g.w.i32Const(retScratchBytes + argOffsets[j])
+				g.w.op(OP_WASM_I32_ADD)
+				if want == WASM_TYPE_F64 {
+					if got == WASM_TYPE_F64 {
+						g.w.f64Load(3, 0)
+					} else if got == WASM_TYPE_I64 {
+						g.w.i64Load(3, 0)
+						g.w.op(OP_WASM_F64_CONVERT_I64_S)
+					} else {
+						g.w.i32Load(2, 0)
+						g.w.op(OP_WASM_F64_CONVERT_I32_S)
+					}
+				} else if want == WASM_TYPE_I64 {
+					if got == WASM_TYPE_F64 {
+						g.w.f64Load(3, 0)
+						g.w.op(OP_WASM_I64_TRUNC_F64_S)
+					} else if got == WASM_TYPE_I64 {
+						g.w.i64Load(3, 0)
+					} else {
+						g.w.i32Load(2, 0)
+						g.w.i64ExtendI32S()
+					}
+				} else {
+					if got == WASM_TYPE_F64 {
+						g.w.f64Load(3, 0)
+						g.w.op(OP_WASM_I32_TRUNC_F64_S)
+					} else if got == WASM_TYPE_I64 {
+						g.w.i64Load(3, 0)
+						g.w.i32WrapI64()
+					} else {
+						g.w.i32Load(2, 0)
+					}
+				}
 				j++
 			}
 			if idx, ok := g.funcMap[entry.FuncName]; ok {
@@ -3178,11 +3633,33 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 				// blocks remain type-consistent.
 				ri := retCount - 1
 				for ri >= 0 {
-					scratch := uint32(g.tempLocal)
-					g.w.localSet(scratch)
 					g.w.globalGet(uint32(g.globalSP))
-					g.w.localGet(scratch)
-					g.w.i32Store(2, uint32(ri*4))
+					g.w.i32Const(retOffsets[ri])
+					g.w.op(OP_WASM_I32_ADD)
+					rt := byte(WASM_TYPE_I32)
+					if ri < len(resultTypes) {
+						rt = resultTypes[ri]
+					}
+					switch rt {
+					case WASM_TYPE_F64:
+						g.w.localSet(uint32(g.tempLocal))
+						g.w.localSet(uint32(g.tempLocalF64))
+						g.w.localGet(uint32(g.tempLocal))
+						g.w.localGet(uint32(g.tempLocalF64))
+						g.w.f64Store(3, 0)
+					case WASM_TYPE_I64:
+						g.w.localSet(uint32(g.tempLocal))
+						g.w.localSet(uint32(g.tempLocal64))
+						g.w.localGet(uint32(g.tempLocal))
+						g.w.localGet(uint32(g.tempLocal64))
+						g.w.i64Store(3, 0)
+					default:
+						g.w.localSet(uint32(g.tempLocal + 1))
+						g.w.localSet(uint32(g.tempLocal))
+						g.w.localGet(uint32(g.tempLocal + 1))
+						g.w.localGet(uint32(g.tempLocal))
+						g.w.i32Store(2, 0)
+					}
 					ri = ri - 1
 				}
 			}
@@ -3197,8 +3674,12 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 			g.w.elseOp()
 		}
 		// Push dummy results for type consistency
-		if retCount == 1 && blockType == WASM_TYPE_I32 {
-			g.w.i32Const(0)
+		if retCount == 1 {
+			if blockType == WASM_TYPE_F64 {
+				g.w.f64ConstBits(0)
+			} else {
+				g.w.i32Const(0)
+			}
 		}
 		g.w.unreachable()
 
@@ -3214,21 +3695,31 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 			ri := 0
 			for ri < retCount {
 				g.w.globalGet(uint32(g.globalSP))
-				g.w.i32Load(2, uint32(ri*4))
+				g.w.i32Const(retOffsets[ri])
+				g.w.op(OP_WASM_I32_ADD)
+				if ri < len(resultTypes) && resultTypes[ri] == WASM_TYPE_F64 {
+					g.w.f64Load(3, 0)
+				} else {
+					g.w.i32Load(2, 0)
+				}
 				ri++
 			}
 		}
 
 		// Restore shadow stack
 		g.w.globalGet(uint32(g.globalSP))
-		g.w.i32Const(int32((totalVals + retScratchWords) * 4))
+		g.w.i32Const(argBytes + retScratchBytes)
 		g.w.op(OP_WASM_I32_ADD)
 		g.w.globalSet(uint32(g.globalSP))
 
 		// Push result types
 		ri := 0
 		for ri < retCount {
-			g.pushType(WASM_TYPE_I32)
+			if ri < len(resultTypes) {
+				g.pushType(resultTypes[ri])
+			} else {
+				g.pushType(WASM_TYPE_I32)
+			}
 			ri++
 		}
 	}
@@ -3252,19 +3743,33 @@ func (g *WasmGen) compileConvert(typeName string) {
 		g.pushType(WASM_TYPE_I32)
 	case "uint64":
 		t := g.popType()
-		if t == WASM_TYPE_I32 {
+		if t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_I64_TRUNC_F64_S)
+		} else if t == WASM_TYPE_I32 {
 			g.w.i64ExtendI32U()
 		}
 		g.pushType(WASM_TYPE_I64)
 	case "int64":
 		t := g.popType()
-		if t == WASM_TYPE_I32 {
+		if t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_I64_TRUNC_F64_S)
+		} else if t == WASM_TYPE_I32 {
 			g.w.i64ExtendI32S()
 		}
 		g.pushType(WASM_TYPE_I64)
-	case "byte":
+	case "float64":
 		t := g.popType()
 		if t == WASM_TYPE_I64 {
+			g.w.op(OP_WASM_F64_CONVERT_I64_S)
+		} else if t == WASM_TYPE_I32 {
+			g.w.op(OP_WASM_F64_CONVERT_I32_S)
+		}
+		g.pushType(WASM_TYPE_F64)
+	case "byte":
+		t := g.popType()
+		if t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_I32_TRUNC_F64_S)
+		} else if t == WASM_TYPE_I64 {
 			g.w.i32WrapI64()
 		}
 		g.w.i32Const(0xff)
@@ -3272,7 +3777,9 @@ func (g *WasmGen) compileConvert(typeName string) {
 		g.pushType(WASM_TYPE_I32)
 	case "uint8":
 		t := g.popType()
-		if t == WASM_TYPE_I64 {
+		if t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_I32_TRUNC_F64_S)
+		} else if t == WASM_TYPE_I64 {
 			g.w.i32WrapI64()
 		}
 		g.w.i32Const(0xff)
@@ -3280,7 +3787,9 @@ func (g *WasmGen) compileConvert(typeName string) {
 		g.pushType(WASM_TYPE_I32)
 	case "int8":
 		t := g.popType()
-		if t == WASM_TYPE_I64 {
+		if t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_I32_TRUNC_F64_S)
+		} else if t == WASM_TYPE_I64 {
 			g.w.i32WrapI64()
 		}
 		g.w.i32Const(24)
@@ -3290,7 +3799,9 @@ func (g *WasmGen) compileConvert(typeName string) {
 		g.pushType(WASM_TYPE_I32)
 	case "uint16":
 		t := g.popType()
-		if t == WASM_TYPE_I64 {
+		if t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_I32_TRUNC_F64_S)
+		} else if t == WASM_TYPE_I64 {
 			g.w.i32WrapI64()
 		}
 		g.w.i32Const(0xffff)
@@ -3298,7 +3809,9 @@ func (g *WasmGen) compileConvert(typeName string) {
 		g.pushType(WASM_TYPE_I32)
 	case "int16":
 		t := g.popType()
-		if t == WASM_TYPE_I64 {
+		if t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_I32_TRUNC_F64_S)
+		} else if t == WASM_TYPE_I64 {
 			g.w.i32WrapI64()
 		}
 		g.w.i32Const(16)
@@ -3308,11 +3821,222 @@ func (g *WasmGen) compileConvert(typeName string) {
 		g.pushType(WASM_TYPE_I32)
 	case "int", "uintptr", "uint", "int32", "uint32":
 		t := g.popType()
-		if t == WASM_TYPE_I64 {
+		if t == WASM_TYPE_F64 {
+			g.w.op(OP_WASM_I32_TRUNC_F64_S)
+		} else if t == WASM_TYPE_I64 {
 			g.w.i32WrapI64()
 		}
 		g.pushType(WASM_TYPE_I32)
 	}
+}
+
+func mul10Checked(v uint64) (uint64, bool) {
+	if v > ^uint64(0)/10 {
+		return 0, false
+	}
+	return v * 10, true
+}
+
+func float64BitsFromI32(v int32) uint64 {
+	if v == 0 {
+		return 0
+	}
+	sign := uint64(0)
+	u := uint64(v)
+	if v < 0 {
+		sign = uint64(1) << 63
+		u = uint64(-int64(v))
+	}
+	exp := 0
+	tmp := u
+	for tmp > 1 {
+		tmp = tmp >> 1
+		exp++
+	}
+	mant := (u << uint(52-exp)) & ((uint64(1) << 52) - 1)
+	return sign | (uint64(exp+1023) << 52) | mant
+}
+
+func parseFloatLiteralBits(s string) (uint64, bool) {
+	if len(s) == 0 {
+		return 0, false
+	}
+	i := 0
+	sign := uint64(0)
+	if s[i] == '+' || s[i] == '-' {
+		if s[i] == '-' {
+			sign = uint64(1) << 63
+		}
+		i++
+		if i >= len(s) {
+			return 0, false
+		}
+	}
+
+	mant := uint64(0)
+	exp10 := 0
+	sawDigit := false
+	sawDot := false
+	for i < len(s) {
+		ch := s[i]
+		if ch == '_' {
+			i++
+			continue
+		}
+		if ch == '.' {
+			if sawDot {
+				return 0, false
+			}
+			sawDot = true
+			i++
+			continue
+		}
+		if ch == 'e' || ch == 'E' {
+			break
+		}
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		var ok bool
+		mant, ok = mul10Checked(mant)
+		if !ok {
+			return 0, false
+		}
+		mant = mant + uint64(ch-'0')
+		if sawDot {
+			exp10--
+		}
+		sawDigit = true
+		i++
+	}
+	if !sawDigit {
+		return 0, false
+	}
+
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i >= len(s) {
+			return 0, false
+		}
+		expNeg := false
+		if s[i] == '+' || s[i] == '-' {
+			expNeg = s[i] == '-'
+			i++
+		}
+		if i >= len(s) {
+			return 0, false
+		}
+		exp := 0
+		haveExpDigit := false
+		for i < len(s) {
+			ch := s[i]
+			if ch == '_' {
+				i++
+				continue
+			}
+			if ch < '0' || ch > '9' {
+				return 0, false
+			}
+			exp = exp*10 + int(ch-'0')
+			haveExpDigit = true
+			i++
+		}
+		if !haveExpDigit {
+			return 0, false
+		}
+		if expNeg {
+			exp10 = exp10 - exp
+		} else {
+			exp10 = exp10 + exp
+		}
+	}
+	if i != len(s) {
+		return 0, false
+	}
+	if mant == 0 {
+		return sign, true
+	}
+
+	num := mant
+	den := uint64(1)
+	for exp10 > 0 {
+		var ok bool
+		num, ok = mul10Checked(num)
+		if !ok {
+			return 0, false
+		}
+		exp10--
+	}
+	for exp10 < 0 {
+		var ok bool
+		den, ok = mul10Checked(den)
+		if !ok {
+			return 0, false
+		}
+		exp10++
+	}
+
+	exp2 := 0
+	for num < den {
+		if num > (^uint64(0) >> 1) {
+			return 0, false
+		}
+		num = num << 1
+		exp2--
+	}
+	for {
+		if den <= (^uint64(0) >> 1) {
+			if num >= (den << 1) {
+				den = den << 1
+				exp2++
+				continue
+			}
+		} else if (num >> 1) >= den {
+			num = (num + 1) >> 1
+			exp2++
+			continue
+		}
+		break
+	}
+
+	frac := num - den
+	mantBits := uint64(0)
+	bit := uint64(1) << 51
+	for bit != 0 {
+		if frac > (^uint64(0) >> 1) {
+			den = (den + 1) >> 1
+		} else {
+			frac = frac << 1
+		}
+		if frac >= den {
+			mantBits = mantBits | bit
+			frac = frac - den
+		}
+		bit = bit >> 1
+	}
+
+	round := frac
+	if round > (^uint64(0) >> 1) {
+		den = (den + 1) >> 1
+	} else {
+		round = round << 1
+	}
+	if round > den || (round == den && (mantBits&1) != 0) {
+		mantBits++
+		if mantBits == (uint64(1) << 52) {
+			mantBits = 0
+			exp2++
+		}
+	}
+
+	expBits := exp2 + 1023
+	if expBits <= 0 {
+		return sign, true
+	}
+	if expBits >= 0x7ff {
+		return sign | (uint64(0x7ff) << 52), true
+	}
+	return sign | (uint64(expBits) << 52) | mantBits, true
 }
 
 // === Panic ===
