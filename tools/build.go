@@ -720,6 +720,9 @@ func fullCompilerSkipReason(backend string, targetOS string, targetArch string, 
 	if backend == "rtg" && name == "56_compileas_embed" && targetArch == "armv8m" {
 		return "compileas nested cross-compilation is too heavy for constrained armv8m fullcompiler targets"
 	}
+	if backend == "rtg" && name == "56_compileas_embed" && targetOS == "dos" {
+		return "compileas nested cross-compilation fixture is not supported on dos/8086 fullcompiler targets"
+	}
 	return ""
 }
 
