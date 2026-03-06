@@ -7,13 +7,20 @@ func OptimizeIRModule(target *common.Target, irmod *IRModule) []string {
 	var errors []string
 	errors = append(errors, inlineZeroCallFuncs(irmod)...)
 	outlineCompositeLiteralCalls(target, irmod)
+	funcRetCounts := make(map[string]int, len(irmod.Funcs))
 	for _, f := range irmod.Funcs {
-		f.Code = optimizeIRFuncCode(target, f)
+		if f == nil {
+			continue
+		}
+		funcRetCounts[f.Name] = f.RetCount
+	}
+	for _, f := range irmod.Funcs {
+		f.Code = optimizeIRFuncCode(target, f, funcRetCounts, irmod.IfaceMethodRets)
 	}
 	return errors
 }
 
-func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
+func optimizeIRFuncCode(target *common.Target, f *IRFunc, funcRetCounts map[string]int, ifaceMethodRets map[string]int) []Inst {
 	code := f.Code
 	if len(code) == 0 {
 		return code
@@ -53,7 +60,7 @@ func optimizeIRFuncCode(target *common.Target, f *IRFunc) []Inst {
 			}
 		}
 
-		code, stepChanged = annotateNonNilMemoryBases(code)
+		code, stepChanged = annotateNonNilMemoryBases(code, f, funcRetCounts, ifaceMethodRets)
 		if stepChanged {
 			changed = true
 		}
@@ -584,34 +591,430 @@ func foldOffsetIntoMemoryOps(code []Inst) ([]Inst, bool) {
 	return out, true
 }
 
-// annotateNonNilMemoryBases marks selected LOAD/LEN/CAP instructions with a
-// backend hint when their input pointer is trivially non-nil.
-//
-// The matcher is intentionally narrow to stay semantics-preserving across all
-// targets: it only recognizes immediate producers that are always non-nil.
-func annotateNonNilMemoryBases(code []Inst) ([]Inst, bool) {
-	if len(code) < 2 {
-		return code, false
+type nonNilState struct {
+	locals []bool
+	stack  []bool
+}
+
+func cloneNonNilState(src *nonNilState) *nonNilState {
+	if src == nil {
+		return nil
+	}
+	dst := &nonNilState{
+		locals: make([]bool, len(src.locals)),
+		stack:  make([]bool, len(src.stack)),
+	}
+	copy(dst.locals, src.locals)
+	copy(dst.stack, src.stack)
+	return dst
+}
+
+func mergeNonNilState(dst *nonNilState, src *nonNilState) bool {
+	if dst == nil || src == nil {
+		return false
 	}
 
 	changed := false
+	if len(dst.locals) > len(src.locals) {
+		for i := len(src.locals); i < len(dst.locals); i++ {
+			if dst.locals[i] {
+				dst.locals[i] = false
+				changed = true
+			}
+		}
+	}
+	limit := len(dst.locals)
+	if len(src.locals) < limit {
+		limit = len(src.locals)
+	}
+	for i := 0; i < limit; i++ {
+		merged := dst.locals[i] && src.locals[i]
+		if dst.locals[i] != merged {
+			dst.locals[i] = merged
+			changed = true
+		}
+	}
+
+	if len(dst.stack) != len(src.stack) {
+		limit = len(dst.stack)
+		if len(src.stack) < limit {
+			limit = len(src.stack)
+		}
+		merged := make([]bool, limit)
+		for i := 0; i < limit; i++ {
+			merged[i] = dst.stack[i] && src.stack[i]
+		}
+		if len(dst.stack) != len(merged) {
+			changed = true
+		} else {
+			for i := 0; i < len(merged); i++ {
+				if dst.stack[i] != merged[i] {
+					changed = true
+					break
+				}
+			}
+		}
+		dst.stack = merged
+		return changed
+	}
+
+	for i := 0; i < len(dst.stack); i++ {
+		merged := dst.stack[i] && src.stack[i]
+		if dst.stack[i] != merged {
+			dst.stack[i] = merged
+			changed = true
+		}
+	}
+	return changed
+}
+
+func pushNonNil(state *nonNilState, v bool) {
+	if state == nil {
+		return
+	}
+	state.stack = append(state.stack, v)
+}
+
+func popNonNil(state *nonNilState) bool {
+	if state == nil || len(state.stack) == 0 {
+		return false
+	}
+	i := len(state.stack) - 1
+	v := state.stack[i]
+	state.stack = state.stack[:i]
+	return v
+}
+
+func topNonNil(state *nonNilState) bool {
+	if state == nil || len(state.stack) == 0 {
+		return false
+	}
+	return state.stack[len(state.stack)-1]
+}
+
+func dropNonNil(state *nonNilState, count int) {
+	if state == nil || count <= 0 {
+		return
+	}
+	if count >= len(state.stack) {
+		state.stack = state.stack[:0]
+		return
+	}
+	state.stack = state.stack[:len(state.stack)-count]
+}
+
+func setLocalNonNil(state *nonNilState, idx int, v bool) {
+	if state == nil || idx < 0 || idx >= len(state.locals) {
+		return
+	}
+	state.locals[idx] = v
+}
+
+func getLocalNonNil(state *nonNilState, idx int) bool {
+	if state == nil || idx < 0 || idx >= len(state.locals) {
+		return false
+	}
+	return state.locals[idx]
+}
+
+func clearStackNonNil(state *nonNilState) {
+	if state == nil {
+		return
+	}
+	for i := range state.stack {
+		state.stack[i] = false
+	}
+}
+
+func isZeroConstInst(inst Inst) bool {
+	switch inst.Op {
+	case OP_CONST_NIL:
+		return true
+	case OP_CONST_BOOL:
+		return inst.Arg == 0
+	case OP_CONST_I64:
+		return inst.Val == 0
+	default:
+		return false
+	}
+}
+
+func callResultProvablyNonNil(inst Inst) bool {
+	if inst.Op != OP_CALL {
+		return false
+	}
+	if inst.Name == "runtime.Alloc" {
+		return true
+	}
+	if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
+		return true
+	}
+	return len(inst.Name) > 22 && inst.Name[0:22] == "runtime.$rtgComposite$"
+}
+
+func convertPreservesNonNil(name string) bool {
+	switch name {
+	case "int", "uintptr", "uint", "int64", "uint64":
+		return true
+	default:
+		return false
+	}
+}
+
+func instRetCount(inst Inst, f *IRFunc, funcRetCounts map[string]int, ifaceMethodRets map[string]int) int {
+	switch inst.Op {
+	case OP_CALL:
+		if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
+			return 1
+		}
+		if funcRetCounts != nil {
+			if n, ok := funcRetCounts[inst.Name]; ok {
+				return n
+			}
+		}
+	case OP_CALL_INTRINSIC:
+		if f != nil {
+			return f.RetCount
+		}
+	case OP_IFACE_CALL:
+		if ifaceMethodRets != nil && len(inst.Name) > 0 {
+			dot := len(inst.Name) - 1
+			for dot >= 0 && inst.Name[dot] != '.' {
+				dot--
+			}
+			if dot > 0 && dot+1 < len(inst.Name) {
+				if n, ok := ifaceMethodRets[inst.Name[:dot]+"\x00"+inst.Name[dot+1:]]; ok {
+					return n
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func compareJumpProvenNonNilLocal(code []Inst, i int) (int, bool) {
+	if i < 2 {
+		return 0, false
+	}
+	a := code[i-2]
+	b := code[i-1]
+	if a.Op == OP_LOCAL_GET && isZeroConstInst(b) {
+		return a.Arg, true
+	}
+	if b.Op == OP_LOCAL_GET && isZeroConstInst(a) {
+		return b.Arg, true
+	}
+	return 0, false
+}
+
+func branchProvenNonNilLocal(code []Inst, i int, onTarget bool) (int, bool) {
+	if i < 0 || i >= len(code) {
+		return 0, false
+	}
+	inst := code[i]
+	switch inst.Op {
+	case OP_JMP_IF:
+		if onTarget && i > 0 && code[i-1].Op == OP_LOCAL_GET {
+			return code[i-1].Arg, true
+		}
+	case OP_JMP_IF_NOT:
+		if !onTarget && i > 0 && code[i-1].Op == OP_LOCAL_GET {
+			return code[i-1].Arg, true
+		}
+	case OP_JMP_NEQ:
+		if onTarget {
+			return compareJumpProvenNonNilLocal(code, i)
+		}
+	case OP_JMP_EQ:
+		if !onTarget {
+			return compareJumpProvenNonNilLocal(code, i)
+		}
+	}
+	return 0, false
+}
+
+func transferNonNilState(state *nonNilState, inst Inst, f *IRFunc, funcRetCounts map[string]int, ifaceMethodRets map[string]int) *nonNilState {
+	next := cloneNonNilState(state)
+	if next == nil {
+		return nil
+	}
+
+	switch inst.Op {
+	case OP_CONST_I64:
+		pushNonNil(next, inst.Val != 0)
+	case OP_CONST_STR:
+		pushNonNil(next, false)
+	case OP_CONST_BOOL:
+		pushNonNil(next, inst.Arg != 0)
+	case OP_CONST_NIL:
+		pushNonNil(next, false)
+	case OP_LOCAL_GET:
+		pushNonNil(next, getLocalNonNil(next, inst.Arg))
+	case OP_LOCAL_SET:
+		setLocalNonNil(next, inst.Arg, popNonNil(next))
+	case OP_LOCAL_ADD_IMM:
+		if inst.Val != 0 {
+			setLocalNonNil(next, inst.Arg, false)
+		}
+	case OP_LOCAL_ADDR:
+		pushNonNil(next, true)
+	case OP_GLOBAL_GET:
+		pushNonNil(next, false)
+	case OP_GLOBAL_SET:
+		popNonNil(next)
+	case OP_GLOBAL_ADDR:
+		pushNonNil(next, true)
+	case OP_DROP:
+		popNonNil(next)
+	case OP_DUP:
+		pushNonNil(next, topNonNil(next))
+	case OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_AND, OP_OR, OP_XOR, OP_SHL, OP_SHR:
+		popNonNil(next)
+		popNonNil(next)
+		pushNonNil(next, false)
+	case OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LEQ, OP_GEQ:
+		popNonNil(next)
+		popNonNil(next)
+		pushNonNil(next, false)
+	case OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+		popNonNil(next)
+		popNonNil(next)
+	case OP_NEG:
+		v := popNonNil(next)
+		pushNonNil(next, v)
+	case OP_NOT:
+		popNonNil(next)
+		pushNonNil(next, false)
+	case OP_LOAD, OP_LEN, OP_CAP:
+		popNonNil(next)
+		pushNonNil(next, false)
+	case OP_STORE:
+		popNonNil(next)
+		popNonNil(next)
+	case OP_OFFSET:
+		v := popNonNil(next)
+		pushNonNil(next, v && inst.Arg >= 0)
+	case OP_LABEL, OP_JMP:
+		// No stack effect.
+	case OP_JMP_IF, OP_JMP_IF_NOT:
+		popNonNil(next)
+	case OP_CALL:
+		dropNonNil(next, inst.Arg)
+		retCount := instRetCount(inst, f, funcRetCounts, ifaceMethodRets)
+		for i := 0; i < retCount; i++ {
+			pushNonNil(next, false)
+		}
+		if retCount == 1 && callResultProvablyNonNil(inst) {
+			next.stack[len(next.stack)-1] = true
+		}
+	case OP_CALL_INTRINSIC:
+		retCount := instRetCount(inst, f, funcRetCounts, ifaceMethodRets)
+		for i := 0; i < retCount; i++ {
+			pushNonNil(next, false)
+		}
+	case OP_RETURN:
+		dropNonNil(next, inst.Arg)
+	case OP_SLICE_GET, OP_SLICE_MAKE, OP_STRING_GET, OP_STRING_MAKE:
+		clearStackNonNil(next)
+	case OP_INDEX_ADDR:
+		popNonNil(next)
+		popNonNil(next)
+		pushNonNil(next, false)
+	case OP_CONVERT:
+		v := popNonNil(next)
+		pushNonNil(next, convertPreservesNonNil(inst.Name) && v)
+	case OP_IFACE_BOX:
+		popNonNil(next)
+		pushNonNil(next, true)
+	case OP_IFACE_CALL:
+		dropNonNil(next, inst.Arg+1)
+		retCount := instRetCount(inst, f, funcRetCounts, ifaceMethodRets)
+		for i := 0; i < retCount; i++ {
+			pushNonNil(next, false)
+		}
+	case OP_PANIC:
+		popNonNil(next)
+	}
+
+	return next
+}
+
+// annotateNonNilMemoryBases marks selected LOAD/LEN/CAP instructions with a
+// backend hint when their input address is provably non-zero.
+func annotateNonNilMemoryBases(code []Inst, f *IRFunc, funcRetCounts map[string]int, ifaceMethodRets map[string]int) ([]Inst, bool) {
+	if len(code) == 0 {
+		return code, false
+	}
+
+	numLocals := 0
+	if f != nil {
+		numLocals = len(f.Locals)
+	}
+	changed := false
 	out := make([]Inst, len(code))
 	copy(out, code)
+	labels := buildLabelIndex(code)
+	in := make([]*nonNilState, len(code))
+	in[0] = &nonNilState{locals: make([]bool, numLocals)}
+	work := []int{0}
 
-	for i := 1; i < len(out); i++ {
+	enqueue := func(idx int, state *nonNilState) {
+		if idx < 0 || idx >= len(code) || state == nil {
+			return
+		}
+		if in[idx] == nil {
+			in[idx] = cloneNonNilState(state)
+			work = append(work, idx)
+			return
+		}
+		if mergeNonNilState(in[idx], state) {
+			work = append(work, idx)
+		}
+	}
+
+	for len(work) > 0 {
+		i := work[len(work)-1]
+		work = work[:len(work)-1]
+		state := cloneNonNilState(in[i])
+		if state == nil {
+			continue
+		}
+
 		cur := out[i]
 		if cur.Op != OP_LOAD && cur.Op != OP_LEN && cur.Op != OP_CAP {
-			continue
-		}
-		if cur.Name == InstNonNilMemoryBase {
-			continue
-		}
-
-		prev := out[i-1]
-		switch prev.Op {
-		case OP_LOCAL_ADDR:
+			// Nothing to mark.
+		} else if cur.Name != InstNonNilMemoryBase && topNonNil(state) {
 			out[i].Name = InstNonNilMemoryBase
 			changed = true
+		}
+
+		next := transferNonNilState(state, code[i], f, funcRetCounts, ifaceMethodRets)
+		switch code[i].Op {
+		case OP_JMP:
+			if target, ok := labels[code[i].Arg]; ok {
+				enqueue(target, next)
+			}
+		case OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
+			if target, ok := labels[code[i].Arg]; ok {
+				targetState := cloneNonNilState(next)
+				if idx, ok := branchProvenNonNilLocal(code, i, true); ok {
+					setLocalNonNil(targetState, idx, true)
+				}
+				enqueue(target, targetState)
+			}
+			if i+1 < len(code) {
+				fallthroughState := cloneNonNilState(next)
+				if idx, ok := branchProvenNonNilLocal(code, i, false); ok {
+					setLocalNonNil(fallthroughState, idx, true)
+				}
+				enqueue(i+1, fallthroughState)
+			}
+		case OP_RETURN, OP_PANIC:
+			// No successors.
+		default:
+			if i+1 < len(code) {
+				enqueue(i+1, next)
+			}
 		}
 	}
 
