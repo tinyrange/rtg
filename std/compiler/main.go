@@ -847,6 +847,8 @@ func cloneTargetForCompileAs(base common.Target) common.Target {
 	out := base
 	out.BuildTags = nil
 	out.Defines = cloneStringMap(base.Defines)
+	out.Profile = false
+	out.TestMode = false
 	out.CompileAsArtifacts = nil
 	return out
 }
@@ -1037,6 +1039,9 @@ func buildCompileAsArtifacts(baseTarget common.Target, baseDir string, entryFile
 		}
 		if innerTarget.Backend == "vm" {
 			return nil, fmt.Errorf("id=%s target=%s: vm backend is not supported by //rtg:compileas", spec.ID, spec.Target)
+		}
+		if innerTarget.Backend == "c" {
+			return nil, fmt.Errorf("id=%s target=%s: c backend is not supported by //rtg:compileas", spec.ID, spec.Target)
 		}
 		applyBuildTags(&innerTarget, extraTags)
 

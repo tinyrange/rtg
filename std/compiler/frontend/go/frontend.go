@@ -1610,10 +1610,7 @@ func sortCompileAsSpecs(specs []CompileAsSpec) {
 	for i < len(specs) {
 		j := i
 		for j > 0 {
-			if specs[j-1].ID < specs[j].ID {
-				break
-			}
-			if specs[j-1].ID == specs[j].ID && specs[j-1].EntryFunc <= specs[j].EntryFunc {
+			if specs[j-1].ID <= specs[j].ID {
 				break
 			}
 			specs[j-1], specs[j] = specs[j], specs[j-1]
