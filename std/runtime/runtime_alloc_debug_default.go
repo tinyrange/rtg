@@ -5,22 +5,27 @@ package runtime
 const allocDebugEnabled = false
 
 //rtg:noprofile
+//rtg:zerocall
 func allocDebugRecord(_ int, _ int) {
 }
 
 //rtg:noprofile
+//rtg:zerocall
 func allocDebugRecordMapHashMeta(_ int) {
 }
 
 //rtg:noprofile
+//rtg:zerocall
 func allocDebugRecordMapHashMetaAlloc(_ int) {
 }
 
 //rtg:noprofile
+//rtg:zerocall
 func allocDebugRecordMapHashRebuild() {
 }
 
 //rtg:noprofile
+//rtg:zerocall
 func allocDebugRecordMapHashFallback() {
 }
 
@@ -28,6 +33,7 @@ func allocDebugRecordMapHashFallback() {
 // In default builds this is a no-op.
 //
 //rtg:noprofile
+//rtg:zerocall
 func AllocDebugReset() {
 }
 
@@ -44,5 +50,6 @@ func AllocDebugSnapshot() (allocCalls int, reqBytes int, mmapCalls int, mmapByte
 }
 
 //rtg:noprofile
+//rtg:zerocall
 func allocDebugMaybePrintSummary() {
 }
