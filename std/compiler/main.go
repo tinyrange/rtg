@@ -693,7 +693,7 @@ func main() {
 			os.Exit(1)
 		}
 		if len(compileAsSpecs) > 0 {
-			artifacts, err := buildCompileAsArtifacts(compileTarget, baseDir, entryFiles, extraTags, compileAsSpecs)
+			artifacts, err := buildCompileAsArtifacts(&compileTarget, baseDir, entryFiles, extraTags, compileAsSpecs)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "compileas error: %v\n", err)
 				runCleanup()
@@ -843,10 +843,28 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func cloneTargetForCompileAs(base common.Target) common.Target {
-	out := base
+func cloneTargetForCompileAs(base *common.Target) common.Target {
+	var out common.Target
+	if base != nil {
+		out.Triple = base.Triple
+		out.GOOS = base.GOOS
+		out.GOARCH = base.GOARCH
+		out.PtrSize = base.PtrSize
+		out.Backend = base.Backend
+		out.CModel = base.CModel
+		out.WordSize = base.WordSize
+		out.Defines = cloneStringMap(base.Defines)
+		out.Strict = base.Strict
+		out.CompilerDebug = base.CompilerDebug
+		out.EmitIRAndBinaryPath = base.EmitIRAndBinaryPath
+		out.StripBinary = base.StripBinary
+		if len(base.StdlibIncludePaths) > 0 {
+			out.StdlibIncludePaths = append([]string{}, base.StdlibIncludePaths...)
+		}
+		out.StdlibIncludeExplicit = base.StdlibIncludeExplicit
+		out.StdlibIncludeEmbedded = base.StdlibIncludeEmbedded
+	}
 	out.BuildTags = nil
-	out.Defines = cloneStringMap(base.Defines)
 	out.Profile = false
 	out.TestMode = false
 	out.CompileAsArtifacts = nil
@@ -1019,7 +1037,21 @@ func summarizeErrors(errs []string) string {
 	return out
 }
 
-func buildCompileAsArtifacts(baseTarget common.Target, baseDir string, entryFiles []string, extraTags string, specs []frontend.CompileAsSpec) (map[string]string, error) {
+func readCompileAsArtifact(path string) ([]byte, error) {
+	payload, err := os.ReadFile(path)
+	if err == nil {
+		return payload, nil
+	}
+	// Some selfhosted outputs can land with an unreadable initial mode until chmod.
+	_ = os.Chmod(path, 0600)
+	payload, err2 := os.ReadFile(path)
+	if err2 == nil {
+		return payload, nil
+	}
+	return nil, err
+}
+
+func buildCompileAsArtifacts(baseTarget *common.Target, baseDir string, entryFiles []string, extraTags string, specs []frontend.CompileAsSpec) (map[string]string, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
@@ -1055,12 +1087,11 @@ func buildCompileAsArtifacts(baseTarget common.Target, baseDir string, entryFile
 			return nil, fmt.Errorf("id=%s target=%s compile failed: %s", spec.ID, spec.Target, summarizeErrors(compileErrs))
 		}
 		ir.EliminateDeadFunctions(innerIR, common.EntryFuncName(&innerTarget))
-
 		outPath := fmt.Sprintf("%s/%03d_%s%s", tmpDir, i, sanitizeCompileAsName(spec.ID), compileAsOutputExt(&innerTarget))
 		if err := backend.Generate(&innerTarget, innerIR, outPath); err != nil {
 			return nil, fmt.Errorf("id=%s target=%s codegen failed: %v", spec.ID, spec.Target, err)
 		}
-		payload, err := os.ReadFile(outPath)
+		payload, err := readCompileAsArtifact(outPath)
 		if err != nil {
 			return nil, fmt.Errorf("id=%s target=%s read artifact: %v", spec.ID, spec.Target, err)
 		}

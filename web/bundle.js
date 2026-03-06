@@ -7,6 +7,7 @@ const path = require("path");
 
 const webDir = __dirname;
 const rootDir = path.dirname(webDir);
+const exampleManifest = require(path.join(webDir, "examples-manifest.js"));
 
 // --- Step 1: Bundle std library ---
 function walkGo(dir, base) {
@@ -23,13 +24,43 @@ function walkGo(dir, base) {
 }
 
 const lib = walkGo(path.join(rootDir, "std"), "std");
+const xlib = walkGo(path.join(rootDir, "x"), "x");
 const stdLibJS = "const STD_LIBRARY = " + JSON.stringify(lib) + ";";
+const xLibJS = "const X_LIBRARY = " + JSON.stringify(xlib) + ";";
 console.log("Bundled " + Object.keys(lib).length + " std library files");
+console.log("Bundled " + Object.keys(xlib).length + " x library files");
+
+function buildExampleLibrary() {
+  return exampleManifest.map((spec) => {
+    const files = {};
+    for (const mapping of spec.files || []) {
+      files[mapping.to] = fs.readFileSync(path.join(rootDir, mapping.from), "utf8");
+    }
+    return {
+      defaultTarget: spec.defaultTarget || "wasi/wasm32",
+      smoke: spec.smoke !== false,
+      openPath: spec.openPath || Object.keys(files)[0] || "user/main.go",
+      files,
+    };
+  });
+}
+
+const examples = buildExampleLibrary();
+const examplesLibJS = "const EXAMPLE_LIBRARY = " + JSON.stringify(examples) + ";";
+console.log("Bundled " + examples.length + " examples");
 
 // Also write the ES module version for dev mode
 fs.writeFileSync(
   path.join(webDir, "std-library.js"),
   "// Auto-generated - do not edit\nexport const STD_LIBRARY = " + JSON.stringify(lib) + ";\n"
+);
+fs.writeFileSync(
+  path.join(webDir, "x-library.js"),
+  "// Auto-generated - do not edit\nexport const X_LIBRARY = " + JSON.stringify(xlib) + ";\n"
+);
+fs.writeFileSync(
+  path.join(webDir, "examples-library.js"),
+  "// Auto-generated - do not edit\nexport const EXAMPLE_LIBRARY = " + JSON.stringify(examples) + ";\n"
 );
 
 // --- Step 2: Read source files ---
@@ -59,6 +90,12 @@ const script = [
   "",
   "// --- std-library.js ---",
   stdLibJS,
+  "",
+  "// --- x-library.js ---",
+  xLibJS,
+  "",
+  "// --- examples-library.js ---",
+  examplesLibJS,
   "",
   "// --- playground.js ---",
   stripImports(playgroundJS),

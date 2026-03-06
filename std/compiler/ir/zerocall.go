@@ -50,9 +50,18 @@ func nextIRLabelID(code []Inst) int {
 	return maxLabel + 1
 }
 
+func appendUniqueString(list []string, value string) []string {
+	for i := 0; i < len(list); i++ {
+		if list[i] == value {
+			return list
+		}
+	}
+	return append(list, value)
+}
+
 func detectZeroCallCyclesVisit(
 	name string,
-	edges map[string]map[string]bool,
+	edges map[string][]string,
 	zeroCall map[string]bool,
 	state map[string]int,
 	stack *[]string,
@@ -65,11 +74,8 @@ func detectZeroCallCyclesVisit(
 	state[name] = 1
 	stackPos[name] = len(*stack)
 	*stack = append(*stack, name)
-	if nexts := edges[name]; nexts != nil {
-		nextNames := make([]string, 0, len(nexts))
-		for next := range nexts {
-			nextNames = append(nextNames, next)
-		}
+	if nexts := edges[name]; len(nexts) > 0 {
+		nextNames := append([]string{}, nexts...)
 		sort.Strings(nextNames)
 		for _, next := range nextNames {
 			if !zeroCall[next] {
@@ -96,7 +102,7 @@ func detectZeroCallCyclesVisit(
 	state[name] = 2
 }
 
-func detectZeroCallCycles(edges map[string]map[string]bool, zeroCall map[string]bool) []string {
+func detectZeroCallCycles(edges map[string][]string, zeroCall map[string]bool) []string {
 	state := make(map[string]int) // 0=unvisited, 1=visiting, 2=done
 	stack := []string{}
 	stackPos := make(map[string]int)
@@ -112,8 +118,8 @@ func detectZeroCallCycles(edges map[string]map[string]bool, zeroCall map[string]
 	return nil
 }
 
-func validateZeroCallFuncs(irmod *IRModule, funcIndex map[string]*IRFunc) (map[string]map[string]bool, []string) {
-	edges := make(map[string]map[string]bool)
+func validateZeroCallFuncs(irmod *IRModule, funcIndex map[string]*IRFunc) (map[string][]string, []string) {
+	edges := make(map[string][]string)
 	var errs []string
 
 	for _, name := range sortedStringKeys(irmod.ZeroCallFuncs) {
@@ -132,22 +138,19 @@ func validateZeroCallFuncs(irmod *IRModule, funcIndex map[string]*IRFunc) (map[s
 				errs = append(errs, fmt.Sprintf("zerocall function %s uses intrinsic call %s (unsupported)", name, inst.Name))
 			case OP_IFACE_CALL:
 				errs = append(errs, fmt.Sprintf("zerocall function %s uses interface dispatch %s (unsupported)", name, inst.Name))
-			case OP_CALL:
-				if strings.HasPrefix(inst.Name, "builtin.composite.") {
-					errs = append(errs, fmt.Sprintf("zerocall function %s uses composite helper call %s (unsupported)", name, inst.Name))
-					continue
+				case OP_CALL:
+					if strings.HasPrefix(inst.Name, "builtin.composite.") {
+						errs = append(errs, fmt.Sprintf("zerocall function %s uses composite helper call %s (unsupported)", name, inst.Name))
+						continue
+					}
+					if !irmod.ZeroCallFuncs[inst.Name] {
+						errs = append(errs, fmt.Sprintf("zerocall function %s calls non-zerocall function %s", name, inst.Name))
+						continue
+					}
+					edges[name] = appendUniqueString(edges[name], inst.Name)
 				}
-				if !irmod.ZeroCallFuncs[inst.Name] {
-					errs = append(errs, fmt.Sprintf("zerocall function %s calls non-zerocall function %s", name, inst.Name))
-					continue
-				}
-				if edges[name] == nil {
-					edges[name] = make(map[string]bool)
-				}
-				edges[name][inst.Name] = true
 			}
 		}
-	}
 	if len(errs) > 0 {
 		return edges, errs
 	}
@@ -190,7 +193,7 @@ func inlineZeroCallsInFunc(caller *IRFunc, funcIndex map[string]*IRFunc, zeroCal
 		}
 		for i := 0; i < frameSlots; i++ {
 			local := IRLocal{
-				Name:  fmt.Sprintf("$zerocall.%s.%d.%d", inst.Name, callSite, i),
+				Name:  "$zerocall",
 				Index: base + i,
 			}
 			if i < len(callee.Locals) {
