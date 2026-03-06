@@ -60,6 +60,13 @@ func optimizeIRFuncCode(target *common.Target, f *IRFunc, funcRetCounts map[stri
 			}
 		}
 
+		if !(target.GOOS == "wasi" && target.GOARCH == "wasm32") {
+			code, stepChanged = foldConstAddIntoMemoryOps(code)
+			if stepChanged {
+				changed = true
+			}
+		}
+
 		code, stepChanged = annotateNonNilMemoryBases(code, f, funcRetCounts, ifaceMethodRets)
 		if stepChanged {
 			changed = true
@@ -580,6 +587,56 @@ func foldOffsetIntoMemoryOps(code []Inst) ([]Inst, bool) {
 			out = append(out, next)
 			changed = true
 			i += 2
+			continue
+		}
+		out = append(out, code[i])
+		i++
+	}
+	if !changed {
+		return code, false
+	}
+	return out, true
+}
+
+// foldConstAddIntoMemoryOps rewrites:
+//
+//	CONST_I64 k; ADD; LOAD size
+//	CONST_I64 k; ADD; STORE size
+//
+// into:
+//
+//	LOAD size (with Val += k)
+//	STORE size (with Val += k)
+//
+// when the ADD result is consumed immediately as a memory address. This covers
+// address materialization patterns that were not first canonicalized into
+// OP_OFFSET.
+func foldConstAddIntoMemoryOps(code []Inst) ([]Inst, bool) {
+	if len(code) < 3 {
+		return code, false
+	}
+
+	changed := false
+	out := make([]Inst, 0, len(code))
+	i := 0
+	for i < len(code) {
+		if i+2 < len(code) &&
+			code[i].Op == OP_CONST_I64 &&
+			code[i+1].Op == OP_ADD &&
+			(code[i+2].Op == OP_LOAD || code[i+2].Op == OP_STORE) {
+			next := code[i+2]
+			delta := code[i].Val
+			sum := next.Val + delta
+			// Keep behavior explicit; skip pathological int64 overflow cases.
+			if (delta > 0 && sum < next.Val) || (delta < 0 && sum > next.Val) {
+				out = append(out, code[i])
+				i++
+				continue
+			}
+			next.Val = sum
+			out = append(out, next)
+			changed = true
+			i += 3
 			continue
 		}
 		out = append(out, code[i])
