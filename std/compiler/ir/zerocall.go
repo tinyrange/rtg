@@ -138,19 +138,19 @@ func validateZeroCallFuncs(irmod *IRModule, funcIndex map[string]*IRFunc) (map[s
 				errs = append(errs, fmt.Sprintf("zerocall function %s uses intrinsic call %s (unsupported)", name, inst.Name))
 			case OP_IFACE_CALL:
 				errs = append(errs, fmt.Sprintf("zerocall function %s uses interface dispatch %s (unsupported)", name, inst.Name))
-				case OP_CALL:
-					if strings.HasPrefix(inst.Name, "builtin.composite.") {
-						errs = append(errs, fmt.Sprintf("zerocall function %s uses composite helper call %s (unsupported)", name, inst.Name))
-						continue
-					}
-					if !irmod.ZeroCallFuncs[inst.Name] {
-						errs = append(errs, fmt.Sprintf("zerocall function %s calls non-zerocall function %s", name, inst.Name))
-						continue
-					}
-					edges[name] = appendUniqueString(edges[name], inst.Name)
+			case OP_CALL:
+				if strings.HasPrefix(inst.Name, "builtin.composite.") {
+					errs = append(errs, fmt.Sprintf("zerocall function %s uses composite helper call %s (unsupported)", name, inst.Name))
+					continue
 				}
+				if !irmod.ZeroCallFuncs[inst.Name] {
+					errs = append(errs, fmt.Sprintf("zerocall function %s calls non-zerocall function %s", name, inst.Name))
+					continue
+				}
+				edges[name] = appendUniqueString(edges[name], inst.Name)
 			}
 		}
+	}
 	if len(errs) > 0 {
 		return edges, errs
 	}
