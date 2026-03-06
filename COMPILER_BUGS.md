@@ -134,7 +134,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - Avoid direct imported-const comparison in backend packages:
   - use `ir.IsNonNilMemoryBase(inst.Name)` (comparison stays in package `ir`).
 - Keep conservative annotation production in IR:
-  - annotate only when immediately fed by `OP_LOCAL_ADDR` (now for `OP_LOAD`/`OP_LEN`/`OP_CAP`).
+  - annotate only `OP_LOAD`, and only when the proof stays conservative across control-flow joins.
 - C backend remains conservative for now.
 
 ### 27) ARM64 operand-cache branch edges could desync virtual vs hardware value stack (resolved)

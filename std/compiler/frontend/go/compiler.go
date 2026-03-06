@@ -7211,6 +7211,19 @@ func (c *Compiler) buildRecoverReachability() map[string]bool {
 	return mayRecover
 }
 
+func (c *Compiler) buildKnownFuncSet() map[string]bool {
+	known := make(map[string]bool)
+	if c == nil || c.irmod == nil {
+		return known
+	}
+	for _, f := range c.irmod.Funcs {
+		if f != nil {
+			known[f.Name] = true
+		}
+	}
+	return known
+}
+
 func (c *Compiler) ifaceCallMayReachRecover(ifaceCallName string, mayRecover map[string]bool) bool {
 	dot := lastIndexByteInString(ifaceCallName, '.')
 	if dot < 0 || dot+1 >= len(ifaceCallName) {
@@ -7238,7 +7251,7 @@ func (c *Compiler) ifaceCallMayReachRecover(ifaceCallName string, mayRecover map
 	return false
 }
 
-func (c *Compiler) callMayReachRecover(inst ir.Inst, mayRecover map[string]bool) bool {
+func (c *Compiler) callMayReachRecover(inst ir.Inst, mayRecover map[string]bool, known map[string]bool) bool {
 	switch inst.Op {
 	case ir.OP_CALL:
 		if inst.Name == "" {
@@ -7248,14 +7261,7 @@ func (c *Compiler) callMayReachRecover(inst ir.Inst, mayRecover map[string]bool)
 		if mayRecover[inst.Name] {
 			return true
 		}
-		known := false
-		for _, f := range c.irmod.Funcs {
-			if f != nil && f.Name == inst.Name {
-				known = true
-				break
-			}
-		}
-		return !known
+		return !known[inst.Name]
 	case ir.OP_IFACE_CALL:
 		return c.ifaceCallMayReachRecover(inst.Name, mayRecover)
 	default:
@@ -7284,12 +7290,7 @@ func (c *Compiler) buildPanicReachability() map[string]bool {
 			}
 		}
 	}
-	known := make(map[string]bool, len(c.irmod.Funcs))
-	for _, f := range c.irmod.Funcs {
-		if f != nil {
-			known[f.Name] = true
-		}
-	}
+	known := c.buildKnownFuncSet()
 	changed := true
 	for changed {
 		changed = false
@@ -7363,7 +7364,7 @@ func (c *Compiler) ifaceCallMayReachPanic(ifaceCallName string, mayPanic map[str
 	return false
 }
 
-func (c *Compiler) callMayTriggerPanic(inst ir.Inst, mayPanic map[string]bool) bool {
+func (c *Compiler) callMayTriggerPanic(inst ir.Inst, mayPanic map[string]bool, known map[string]bool) bool {
 	switch inst.Op {
 	case ir.OP_CALL:
 		if inst.Name == "" {
@@ -7372,14 +7373,7 @@ func (c *Compiler) callMayTriggerPanic(inst ir.Inst, mayPanic map[string]bool) b
 		if mayPanic[inst.Name] {
 			return true
 		}
-		known := false
-		for _, f := range c.irmod.Funcs {
-			if f != nil && f.Name == inst.Name {
-				known = true
-				break
-			}
-		}
-		return !known
+		return !known[inst.Name]
 	case ir.OP_IFACE_CALL:
 		return true
 	default:
@@ -7397,6 +7391,7 @@ func (c *Compiler) prunePanicPropagationChecks() {
 		return
 	}
 	mayPanic := c.buildPanicReachability()
+	known := c.buildKnownFuncSet()
 	for _, f := range c.irmod.Funcs {
 		if f == nil || len(f.Code) < 3 {
 			continue
@@ -7411,7 +7406,7 @@ func (c *Compiler) prunePanicPropagationChecks() {
 				(f.Code[i+2].Op == ir.OP_JMP_IF_NOT || f.Code[i+2].Op == ir.OP_JMP_IF) {
 				callInst := f.Code[i]
 				if f.Code[i+2].Op == ir.OP_JMP_IF {
-					if c.callMayTriggerPanic(callInst, mayPanic) {
+					if c.callMayTriggerPanic(callInst, mayPanic, known) {
 						out = append(out, f.Code[i:i+3]...)
 					} else {
 						out = append(out, callInst)
@@ -7428,7 +7423,7 @@ func (c *Compiler) prunePanicPropagationChecks() {
 					f.Code[j].Op == ir.OP_JMP &&
 					f.Code[j+1].Op == ir.OP_LABEL &&
 					f.Code[j+1].Arg == continueLabel {
-					if c.callMayTriggerPanic(callInst, mayPanic) {
+					if c.callMayTriggerPanic(callInst, mayPanic, known) {
 						out = append(out, f.Code[i:j+2]...)
 					} else {
 						out = append(out, callInst)
@@ -7449,6 +7444,7 @@ func (c *Compiler) insertDeferRecoverCallWrappers() {
 		return
 	}
 	mayRecover := c.buildRecoverReachability()
+	known := c.buildKnownFuncSet()
 	for _, f := range c.irmod.Funcs {
 		if f == nil || len(f.Code) < 3 {
 			continue
@@ -7464,7 +7460,7 @@ func (c *Compiler) insertDeferRecoverCallWrappers() {
 				f.Code[i+1].Op == ir.OP_CALL &&
 				f.Code[i+1].Name == "runtime.PanicShouldUnwind" &&
 				(f.Code[i+2].Op == ir.OP_JMP_IF_NOT || f.Code[i+2].Op == ir.OP_JMP_IF) &&
-				c.callMayReachRecover(f.Code[i], mayRecover) {
+				c.callMayReachRecover(f.Code[i], mayRecover, known) {
 				out = append(out, ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverBeforeCall", Arg: 0})
 				out = append(out, f.Code[i])
 				out = append(out, ir.Inst{Op: ir.OP_CALL, Name: "runtime.DeferRecoverAfterCall", Arg: 0})
