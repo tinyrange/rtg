@@ -88,7 +88,7 @@ func (l *Lexer) advance() byte {
 }
 
 func isAlpha(ch byte) bool {
-	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '$' || ch >= 0x80
 }
 
 func isDigit(ch byte) bool {
@@ -168,19 +168,34 @@ func (l *Lexer) scanPunct() (Token, error) {
 	line := l.line
 	col := l.col
 
-	multi := []string{
+	multiSrc := []string{
+		"%:%:",
 		"...",
 		"<<=", ">>=",
-		"->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
+		"<:", ":>", "<%", "%>", "%:",
+		"->", "++", "--", "<<", ">>", "<=", ">=",
+		"==", "!=", "&&", "||",
 		"*=", "/=", "%=", "+=", "-=", "&=", "^=", "|=",
 		"##",
 	}
-	for _, p := range multi {
-		if len(l.src)-l.pos >= len(p) && l.src[l.pos:l.pos+len(p)] == p {
-			l.pos += len(p)
-			l.col += len(p)
+	multiOut := []string{
+		"##",
+		"...",
+		"<<=", ">>=",
+		"[", "]", "{", "}", "#",
+		"->", "++", "--", "<<", ">>", "<=", ">=",
+		"==", "!=", "&&", "||",
+		"*=", "/=", "%=", "+=", "-=", "&=", "^=", "|=",
+		"##",
+	}
+	for i := 0; i < len(multiSrc) && i < len(multiOut); i++ {
+		src := multiSrc[i]
+		out := multiOut[i]
+		if len(l.src)-l.pos >= len(src) && l.src[l.pos:l.pos+len(src)] == src {
+			l.pos += len(src)
+			l.col += len(src)
 			l.startOfLine = false
-			return Token{Kind: TokPunct, Text: p, File: l.file, Line: line, Col: col}, nil
+			return Token{Kind: TokPunct, Text: out, File: l.file, Line: line, Col: col}, nil
 		}
 	}
 
@@ -248,6 +263,41 @@ func (l *Lexer) tokenizeOne(leadingSpace bool, startOfLine bool) (Token, error) 
 			return tok, nil
 		}
 		tok := l.scanIdent()
+		switch tok.Text {
+		case "and":
+			tok.Kind = TokPunct
+			tok.Text = "&&"
+		case "or":
+			tok.Kind = TokPunct
+			tok.Text = "||"
+		case "not":
+			tok.Kind = TokPunct
+			tok.Text = "!"
+		case "bitand":
+			tok.Kind = TokPunct
+			tok.Text = "&"
+		case "bitor":
+			tok.Kind = TokPunct
+			tok.Text = "|"
+		case "xor":
+			tok.Kind = TokPunct
+			tok.Text = "^"
+		case "compl":
+			tok.Kind = TokPunct
+			tok.Text = "~"
+		case "and_eq":
+			tok.Kind = TokPunct
+			tok.Text = "&="
+		case "or_eq":
+			tok.Kind = TokPunct
+			tok.Text = "|="
+		case "xor_eq":
+			tok.Kind = TokPunct
+			tok.Text = "^="
+		case "not_eq":
+			tok.Kind = TokPunct
+			tok.Text = "!="
+		}
 		tok.LeadingSpace = leadingSpace
 		tok.StartOfLine = startOfLine
 		return tok, nil

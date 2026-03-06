@@ -828,7 +828,9 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 	}
 	for _, it := range items {
 		if hasExtern && len(it.Init) == 0 {
-			continue
+			if _, exists := c.globalIndex[it.Name]; exists {
+				continue
+			}
 		}
 		if hasExtern && len(it.Init) > 0 {
 			c.errorf(file, n.Line, n.Col, "extern declaration with initializer is not supported: %s", it.Name)
@@ -1594,7 +1596,7 @@ func splitDeclSpecPrefix(tokens []Token, context string) ([]Token, []Token, erro
 		break
 	}
 	if !sawType {
-		return nil, nil, fmt.Errorf("%s is missing a type specifier", context)
+		return nil, tokens, nil
 	}
 	return trimTokens(tokens[:end]), trimTokens(tokens[end:]), nil
 }
@@ -1841,6 +1843,10 @@ func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context s
 func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInfo, bool, bool, error) {
 	var hasExtern bool
 	var hasTypedef bool
+	spec = trimTokens(spec)
+	if len(spec) == 0 {
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, false, false, nil
+	}
 	var sawType bool
 	var sawEnum bool
 	var sawAggregate bool
@@ -2133,6 +2139,24 @@ func cloneInt64s(src []int64) []int64 {
 	out := make([]int64, len(src))
 	copy(out, src)
 	return out
+}
+
+func cTypeInfoEquivalent(a cTypeInfo, b cTypeInfo) bool {
+	if a.Kind != b.Kind || a.PtrDepth != b.PtrDepth || a.ArrayLen != b.ArrayLen || a.IsVoid != b.IsVoid || a.Base != b.Base || a.OpaqueAggregate != b.OpaqueAggregate || a.AggregateKeyword != b.AggregateKeyword || a.AggregateTag != b.AggregateTag {
+		return false
+	}
+	if len(a.ArrayDims) != len(b.ArrayDims) {
+		return false
+	}
+	for i := range a.ArrayDims {
+		if a.ArrayDims[i] != b.ArrayDims[i] {
+			return false
+		}
+	}
+	if a.FuncSig == nil || b.FuncSig == nil {
+		return a.FuncSig == nil && b.FuncSig == nil
+	}
+	return funcTypeSigEqual(a.FuncSig, b.FuncSig)
 }
 
 func matchingParenClose(tokens []Token, open int) int {
@@ -2507,9 +2531,76 @@ func isEnumConstCastToken(t Token) bool {
 	}
 }
 
-func (p *enumConstParser) consumeSimpleCast() bool {
+type enumConstCastInfo struct {
+	apply    bool
+	unsigned bool
+	bits     int
+}
+
+func classifyEnumConstCast(tokens []Token) enumConstCastInfo {
+	info := enumConstCastInfo{apply: true, bits: 32}
+	var sawUnsigned bool
+	var sawChar bool
+	var sawShort bool
+	var sawLong bool
+	for _, t := range tokens {
+		if t.Kind != TokIdent {
+			continue
+		}
+		switch t.Text {
+		case "unsigned":
+			sawUnsigned = true
+		case "char":
+			sawChar = true
+		case "short":
+			sawShort = true
+		case "long":
+			sawLong = true
+		}
+	}
+	info.unsigned = sawUnsigned
+	switch {
+	case sawChar:
+		info.bits = 8
+	case sawShort:
+		info.bits = 16
+	case sawLong:
+		info.bits = int(currentCTargetLongSize() * 8)
+	}
+	return info
+}
+
+func applyEnumConstCast(v int64, info enumConstCastInfo) int64 {
+	if !info.apply {
+		return v
+	}
+	switch info.bits {
+	case 8:
+		if info.unsigned {
+			return int64(uint8(v))
+		}
+		return int64(int8(v))
+	case 16:
+		if info.unsigned {
+			return int64(uint16(v))
+		}
+		return int64(int16(v))
+	case 32:
+		if info.unsigned {
+			return int64(uint32(v))
+		}
+		return int64(int32(v))
+	default:
+		if info.unsigned {
+			return int64(uint64(v))
+		}
+		return v
+	}
+}
+
+func (p *enumConstParser) consumeSimpleCast() (enumConstCastInfo, bool) {
 	if p.atEnd() || p.peek().Kind != TokPunct || p.peek().Text != "(" {
-		return false
+		return enumConstCastInfo{}, false
 	}
 	depth := 0
 	close := -1
@@ -2531,19 +2622,19 @@ func (p *enumConstParser) consumeSimpleCast() bool {
 		}
 	}
 	if close < 0 {
-		return false
+		return enumConstCastInfo{}, false
 	}
 	inner := trimTokens(p.toks[p.pos+1 : close])
 	if len(inner) == 0 {
-		return false
+		return enumConstCastInfo{}, false
 	}
 	for _, t := range inner {
 		if !isEnumConstCastToken(t) {
-			return false
+			return enumConstCastInfo{}, false
 		}
 	}
 	p.pos = close + 1
-	return true
+	return classifyEnumConstCast(inner), true
 }
 
 func (p *enumConstParser) parsePrimary() (int64, error) {
@@ -2585,8 +2676,12 @@ func (p *enumConstParser) parsePrimary() (int64, error) {
 }
 
 func (p *enumConstParser) parseUnary() (int64, error) {
-	if p.consumeSimpleCast() {
-		return p.parseUnary()
+	if cast, ok := p.consumeSimpleCast(); ok {
+		v, err := p.parseUnary()
+		if err != nil {
+			return 0, err
+		}
+		return applyEnumConstCast(v, cast), nil
 	}
 	if p.matchPunct("+") {
 		return p.parseUnary()
@@ -4825,7 +4920,15 @@ func (fc *funcCompiler) resolveDirectCallSig(call *expr) (*cFuncSig, bool) {
 	}
 	sig, ok := fc.c.funcs[name]
 	if !ok {
-		return nil, false
+		return &cFuncSig{
+			Name:      name,
+			IRName:    name,
+			ParamCount: len(call.args),
+			RetCount:  1,
+			RetKind:   cDeclScalar,
+			RetBase:   cScalarInt,
+			Variadic:  true,
+		}, true
 	}
 	return sig, true
 }
@@ -4859,6 +4962,23 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 		return fc.varTypeInfo(ex.name)
 	case exprAssign:
 		return fc.exprTypeInfo(ex.left)
+	case exprComma:
+		return fc.exprTypeInfo(ex.right)
+	case exprConditional:
+		if len(ex.args) >= 2 {
+			if lt, ok := fc.exprTypeInfo(ex.args[0]); ok {
+				if rt, rok := fc.exprTypeInfo(ex.args[1]); rok {
+					if cTypeInfoEquivalent(lt, rt) {
+						return lt, true
+					}
+				}
+				return lt, true
+			}
+			if rt, ok := fc.exprTypeInfo(ex.args[1]); ok {
+				return rt, true
+			}
+		}
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 	case exprUnary:
 		switch ex.op {
 		case "&":
@@ -5001,6 +5121,17 @@ func (fc *funcCompiler) exprPointerStep(ex *expr) int64 {
 		return fc.pointerStepForVar(ex.name)
 	case exprAssign:
 		return fc.exprPointerStep(ex.left)
+	case exprComma:
+		return fc.exprPointerStep(ex.right)
+	case exprConditional:
+		if len(ex.args) >= 2 {
+			if fc.exprIsPointer(ex.args[0]) {
+				return fc.exprPointerStep(ex.args[0])
+			}
+			if fc.exprIsPointer(ex.args[1]) {
+				return fc.exprPointerStep(ex.args[1])
+			}
+		}
 	case exprUnary:
 		if ex.op == "&" {
 			if t, ok := fc.exprTypeInfo(ex.left); ok {
@@ -5346,7 +5477,69 @@ func (fc *funcCompiler) checkCallArgs(sig *cFuncSig, call *expr) bool {
 	if sig == nil || call == nil {
 		return false
 	}
+	if !sig.Defined {
+		return true
+	}
 	return fc.checkCallArgsByType(sig.Name, sig.ParamCount, sig.Variadic, sig.ParamKinds, sig.ParamFuncSigs, call)
+}
+
+func (fc *funcCompiler) allocTempLocal(name string) int {
+	return fc.addLocal(fmt.Sprintf("%s$%d", name, fc.c.nextLabel()), fc.sig.File, 0, 0)
+}
+
+func (fc *funcCompiler) emitUpdateExpr(ex *expr, step int64, op string, postfix bool) {
+	if ex == nil {
+		fc.errorf(fc.sig.File, 0, 0, "%s requires assignable operand", op)
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
+	if t, ok := fc.exprTypeInfo(ex); ok && isAggregateObjectType(t) {
+		fc.errorf(fc.sig.File, 0, 0, "%s on aggregate object is not yet supported", op)
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
+	addrTmp := fc.allocTempLocal("$lvalue_addr")
+	if !fc.emitAddressOf(ex) {
+		fc.errorf(fc.sig.File, 0, 0, "%s requires assignable operand", op)
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: addrTmp})
+	width := fc.exprLValueWidth(ex)
+	if postfix {
+		oldTmp := fc.allocTempLocal("$lvalue_old")
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
+		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: width})
+		fc.emit(ir.Inst{Op: ir.OP_DUP})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: oldTmp})
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
+		if op == "++" {
+			fc.emit(ir.Inst{Op: ir.OP_ADD})
+		} else {
+			fc.emit(ir.Inst{Op: ir.OP_SUB})
+		}
+		if t, ok := fc.exprTypeInfo(ex); ok {
+			fc.emitCastToType(t)
+		}
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
+		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: width})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: oldTmp})
+		return
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
+	fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: width})
+	fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
+	if op == "++" {
+		fc.emit(ir.Inst{Op: ir.OP_ADD})
+	} else {
+		fc.emit(ir.Inst{Op: ir.OP_SUB})
+	}
+	if t, ok := fc.exprTypeInfo(ex); ok {
+		fc.emitCastToType(t)
+	}
+	fc.emit(ir.Inst{Op: ir.OP_DUP})
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
+	fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: width})
 }
 
 func (fc *funcCompiler) emitExpr(ex *expr) {
@@ -5397,61 +5590,71 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}
-		fc.emitExpr(ex.right)
+		addrTmp := fc.allocTempLocal("$assign_addr")
+		if !fc.emitAddressOf(ex.left) {
+			fc.errorf(fc.sig.File, 0, 0, "left-hand side of assignment is not assignable")
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			return
+		}
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: addrTmp})
+		if ex.op != "" && ex.op != "=" {
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
+			fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprLValueWidth(ex.left)})
+			fc.emitExpr(ex.right)
+			switch ex.op {
+			case "+=":
+				fc.emit(ir.Inst{Op: ir.OP_ADD})
+			case "-=":
+				fc.emit(ir.Inst{Op: ir.OP_SUB})
+			case "*=":
+				fc.emit(ir.Inst{Op: ir.OP_MUL})
+			case "/=":
+				fc.emit(ir.Inst{Op: ir.OP_DIV})
+			case "%=":
+				fc.emit(ir.Inst{Op: ir.OP_MOD})
+			case "&=":
+				fc.emit(ir.Inst{Op: ir.OP_AND})
+			case "^=":
+				fc.emit(ir.Inst{Op: ir.OP_XOR})
+			case "|=":
+				fc.emit(ir.Inst{Op: ir.OP_OR})
+			default:
+				fc.errorf(fc.sig.File, 0, 0, "unsupported assignment operator %q", ex.op)
+			}
+		} else {
+			fc.emitExpr(ex.right)
+		}
 		if t, ok := fc.exprTypeInfo(ex.left); ok {
 			fc.emitCastToType(t)
 		}
 		fc.emit(ir.Inst{Op: ir.OP_DUP})
-		if !fc.emitAddressOf(ex.left) {
-			fc.errorf(fc.sig.File, 0, 0, "left-hand side of assignment is not assignable")
-			fc.emit(ir.Inst{Op: ir.OP_DROP})
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
+		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: fc.exprLValueWidth(ex.left)})
+	case exprComma:
+		fc.emitExpr(ex.left)
+		fc.emit(ir.Inst{Op: ir.OP_DROP})
+		fc.emitExpr(ex.right)
+	case exprConditional:
+		if len(ex.args) < 2 {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			return
 		}
-		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: fc.exprLValueWidth(ex.left)})
+		falseLabel := fc.c.nextLabel()
+		endLabel := fc.c.nextLabel()
+		fc.emitExpr(ex.left)
+		fc.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: falseLabel})
+		fc.emitExpr(ex.args[0])
+		fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
+		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: falseLabel})
+		fc.emitExpr(ex.args[1])
+		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: endLabel})
 	case exprUnary:
 		if ex.op == "++" || ex.op == "--" {
-			if ex.left == nil || ex.left.kind != exprVar {
-				fc.errorf(fc.sig.File, 0, 0, "%s requires variable operand", ex.op)
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-				return
-			}
-			name := ex.left.name
-			if t, ok := fc.varTypeInfo(name); ok && isAggregateObjectType(t) {
-				fc.errorf(fc.sig.File, 0, 0, "%s on aggregate object %q is not yet supported", ex.op, name)
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-				return
-			}
 			step := int64(1)
 			if fc.exprIsPointer(ex.left) {
 				step = fc.exprPointerStep(ex.left)
 			}
-			if idx, ok := fc.lookupLocal(name); ok {
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
-				if ex.op == "++" {
-					fc.emit(ir.Inst{Op: ir.OP_ADD})
-				} else {
-					fc.emit(ir.Inst{Op: ir.OP_SUB})
-				}
-				fc.emit(ir.Inst{Op: ir.OP_DUP})
-				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
-				return
-			}
-			if idx, ok := fc.lookupGlobal(name); ok {
-				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: idx})
-				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
-				if ex.op == "++" {
-					fc.emit(ir.Inst{Op: ir.OP_ADD})
-				} else {
-					fc.emit(ir.Inst{Op: ir.OP_SUB})
-				}
-				fc.emit(ir.Inst{Op: ir.OP_DUP})
-				fc.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: idx})
-				return
-			}
-			fc.errorf(fc.sig.File, 0, 0, "%s on undeclared variable %q", ex.op, name)
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			fc.emitUpdateExpr(ex.left, step, ex.op, false)
 			return
 		}
 		if ex.op == "&" {
@@ -5488,50 +5691,11 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.errorf(fc.sig.File, 0, 0, "unsupported unary operator %q", ex.op)
 		}
 	case exprPostfix:
-		if ex.left == nil || ex.left.kind != exprVar {
-			fc.errorf(fc.sig.File, 0, 0, "%s requires variable operand", ex.op)
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			return
-		}
-		name := ex.left.name
-		if t, ok := fc.varTypeInfo(name); ok && isAggregateObjectType(t) {
-			fc.errorf(fc.sig.File, 0, 0, "%s on aggregate object %q is not yet supported", ex.op, name)
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			return
-		}
-		var idx int
-		var isGlobal bool
-		if v, ok := fc.lookupLocal(name); ok {
-			idx = v
-		} else if v, ok := fc.lookupGlobal(name); ok {
-			idx = v
-			isGlobal = true
-		} else {
-			fc.errorf(fc.sig.File, 0, 0, "%s on undeclared variable %q", ex.op, name)
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			return
-		}
-		if isGlobal {
-			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: idx})
-		} else {
-			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
-		}
-		fc.emit(ir.Inst{Op: ir.OP_DUP})
 		step := int64(1)
 		if fc.exprIsPointer(ex.left) {
 			step = fc.exprPointerStep(ex.left)
 		}
-		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
-		if ex.op == "++" {
-			fc.emit(ir.Inst{Op: ir.OP_ADD})
-		} else {
-			fc.emit(ir.Inst{Op: ir.OP_SUB})
-		}
-		if isGlobal {
-			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: idx})
-		} else {
-			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
-		}
+		fc.emitUpdateExpr(ex.left, step, ex.op, true)
 	case exprBinary:
 		if ex.op == "&&" || ex.op == "||" {
 			fc.emitLogicalExpr(ex)
@@ -5857,6 +6021,8 @@ const (
 	exprStringLit
 	exprVar
 	exprAssign
+	exprComma
+	exprConditional
 	exprUnary
 	exprPostfix
 	exprBinary
@@ -5999,22 +6165,75 @@ func (p *cExprParser) tryParseParenType(allowArray bool) (cTypeInfo, int, bool) 
 }
 
 func (p *cExprParser) parseExpression() *expr {
-	return p.parseAssignment()
+	return p.parseComma()
+}
+
+func (p *cExprParser) parseComma() *expr {
+	n := p.parseAssignment()
+	for p.matchPunct(",") {
+		r := p.parseAssignment()
+		n = &expr{kind: exprComma, left: n, right: r}
+	}
+	return n
 }
 
 func (p *cExprParser) parseAssignment() *expr {
-	lhs := p.parseLogicalOr()
+	lhs := p.parseConditional()
 	if lhs == nil {
 		return nil
 	}
-	if p.matchPunct("=") {
+	assignOp := ""
+	switch {
+	case p.matchPunct("="):
+		assignOp = "="
+	case p.matchPunct("+="):
+		assignOp = "+="
+	case p.matchPunct("-="):
+		assignOp = "-="
+	case p.matchPunct("*="):
+		assignOp = "*="
+	case p.matchPunct("/="):
+		assignOp = "/="
+	case p.matchPunct("%="):
+		assignOp = "%="
+	case p.matchPunct("&="):
+		assignOp = "&="
+	case p.matchPunct("^="):
+		assignOp = "^="
+	case p.matchPunct("|="):
+		assignOp = "|="
+	}
+	if assignOp != "" {
 		rhs := p.parseAssignment()
 		if rhs == nil {
 			rhs = &expr{kind: exprIntLit, intVal: 0}
 		}
-		return &expr{kind: exprAssign, left: lhs, right: rhs}
+		return &expr{kind: exprAssign, op: assignOp, left: lhs, right: rhs}
 	}
 	return lhs
+}
+
+func (p *cExprParser) parseConditional() *expr {
+	cond := p.parseLogicalOr()
+	if cond == nil {
+		return nil
+	}
+	if !p.matchPunct("?") {
+		return cond
+	}
+	thenExpr := p.parseExpression()
+	if thenExpr == nil {
+		thenExpr = &expr{kind: exprIntLit, intVal: 0}
+	}
+	if !p.matchPunct(":") {
+		p.errorf("expected ':' in conditional expression")
+		return thenExpr
+	}
+	elseExpr := p.parseConditional()
+	if elseExpr == nil {
+		elseExpr = &expr{kind: exprIntLit, intVal: 0}
+	}
+	return &expr{kind: exprConditional, left: cond, args: []*expr{thenExpr, elseExpr}}
 }
 
 func (p *cExprParser) parseLogicalOr() *expr {
@@ -6224,7 +6443,7 @@ func (p *cExprParser) parsePostfix() *expr {
 			var args []*expr
 			if !p.matchPunct(")") {
 				for {
-					a := p.parseExpression()
+					a := p.parseAssignment()
 					if a == nil {
 						a = &expr{kind: exprIntLit, intVal: 0}
 					}

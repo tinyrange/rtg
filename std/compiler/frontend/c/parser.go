@@ -248,6 +248,54 @@ func (p *Parser) consumeBalancedUntil(terminator string) ([]Token, bool) {
 	return p.collectRange(start, p.pos), false
 }
 
+func (p *Parser) consumeStatementText() ([]Token, bool) {
+	start := p.pos
+	depthParen := 0
+	depthBracket := 0
+	depthBrace := 0
+	for !p.atEndRaw() {
+		t := p.peekRaw()
+		if t.Kind == TokNewline {
+			p.pos++
+			continue
+		}
+		if t.Kind == TokPunct {
+			switch t.Text {
+			case "(":
+				depthParen++
+			case ")":
+				if depthParen > 0 {
+					depthParen--
+				}
+			case "[":
+				depthBracket++
+			case "]":
+				if depthBracket > 0 {
+					depthBracket--
+				}
+			case "{":
+				depthBrace++
+			case "}":
+				if depthBrace > 0 {
+					depthBrace--
+					break
+				}
+				if depthParen == 0 && depthBracket == 0 {
+					return p.collectRange(start, p.pos), true
+				}
+			case ";":
+				if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+					body := p.collectRange(start, p.pos)
+					p.pos++
+					return body, true
+				}
+			}
+		}
+		p.pos++
+	}
+	return p.collectRange(start, p.pos), false
+}
+
 func (p *Parser) parseParenText(ctx string) (string, bool) {
 	if !p.expectPunct("(", ctx) {
 		return "", false
@@ -606,7 +654,7 @@ func (p *Parser) parseLabelStmt() *Node {
 func (p *Parser) parseDeclOrExprStmt(forceDecl bool) *Node {
 	startTok := p.peekRaw()
 	start := p.pos
-	body, ok := p.consumeBalancedUntil(";")
+	body, ok := p.consumeStatementText()
 	if !ok {
 		t := p.peekRaw()
 		p.errorf(t, "expected ';' to terminate statement")

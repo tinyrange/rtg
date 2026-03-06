@@ -558,6 +558,18 @@ func decodeStringToken(tok Token) (string, error) {
 		return "", fmt.Errorf("invalid string token %q", tok.Text)
 	}
 	q := tok.Text
+	for len(q) > 0 {
+		switch q[0] {
+		case ' ', '\t', '\r', '\n':
+			q = q[1:]
+		default:
+			goto trimmed
+		}
+	}
+trimmed:
+	if len(q) < 2 {
+		return "", fmt.Errorf("invalid string token %q", tok.Text)
+	}
 	if q[0] == 'L' || q[0] == 'u' || q[0] == 'U' {
 		q = q[1:]
 	} else if len(q) >= 2 && q[0] == 'u' && q[1] == '8' {
@@ -641,11 +653,15 @@ func (p *Preprocessor) expandTokens(file string, in []Token, disabled map[string
 			m, ok := p.macros[tok.Text]
 			if ok && m != nil && !disabled[tok.Text] {
 				if m.FunctionLike {
-					if i+1 >= len(in) || in[i+1].Kind != TokPunct || in[i+1].Text != "(" {
+					open := i + 1
+					for open < len(in) && in[open].Kind == TokNewline {
+						open++
+					}
+					if open >= len(in) || in[open].Kind != TokPunct || in[open].Text != "(" {
 						out = append(out, tok)
 						continue
 					}
-					args, end, ok := parseMacroArgs(in, i+1)
+					args, end, ok := parseMacroArgs(in, open)
 					if !ok {
 						return nil, fmt.Errorf("%s:%d:%d: unterminated macro call", file, tok.Line, tok.Col)
 					}
@@ -680,39 +696,58 @@ func parseMacroArgs(tokens []Token, openParen int) ([][]Token, int, bool) {
 	if openParen >= len(tokens) || tokens[openParen].Kind != TokPunct || tokens[openParen].Text != "(" {
 		return nil, 0, false
 	}
-	depth := 0
+	depthParen := 0
+	depthBracket := 0
+	depthBrace := 0
 	j := openParen + 1
 	var args [][]Token
 	var cur []Token
 	sawAny := false
 	for j < len(tokens) {
 		t := tokens[j]
-		if t.Kind == TokPunct && t.Text == "(" {
-			depth++
-			cur = append(cur, t)
-			sawAny = true
-			j++
-			continue
-		}
-		if t.Kind == TokPunct && t.Text == ")" {
-			if depth == 0 {
-				if sawAny || len(args) > 0 {
-					args = append(args, cur)
+		if t.Kind == TokPunct {
+			switch t.Text {
+			case "(":
+				depthParen++
+				cur = append(cur, t)
+				sawAny = true
+				j++
+				continue
+			case ")":
+				if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+					if sawAny || len(args) > 0 {
+						args = append(args, cur)
+					}
+					return args, j, true
 				}
-				return args, j, true
+				if depthParen > 0 {
+					depthParen--
+				}
+				cur = append(cur, t)
+				sawAny = true
+				j++
+				continue
+			case "[":
+				depthBracket++
+			case "]":
+				if depthBracket > 0 {
+					depthBracket--
+				}
+			case "{":
+				depthBrace++
+			case "}":
+				if depthBrace > 0 {
+					depthBrace--
+				}
+			case ",":
+				if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+					args = append(args, cur)
+					cur = nil
+					sawAny = true
+					j++
+					continue
+				}
 			}
-			depth--
-			cur = append(cur, t)
-			sawAny = true
-			j++
-			continue
-		}
-		if t.Kind == TokPunct && t.Text == "," && depth == 0 {
-			args = append(args, cur)
-			cur = nil
-			sawAny = true
-			j++
-			continue
 		}
 		cur = append(cur, t)
 		sawAny = true
