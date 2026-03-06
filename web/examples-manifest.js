@@ -1,0 +1,146 @@
+module.exports = [
+  {
+    id: "go-hello",
+    category: "Go",
+    title: "Hello",
+    description: "A tiny starting point for printing to stdout.",
+    defaultTarget: "wasi/wasm32",
+    openPath: "examples/go/hello/main.go",
+    files: [
+      { from: "web/examples-src/go/hello/main.go", to: "examples/go/hello/main.go" },
+    ],
+  },
+  {
+    id: "go-control-flow",
+    category: "Go",
+    title: "Control Flow",
+    description: "Basic functions, switch statements, and loops.",
+    defaultTarget: "wasi/wasm32",
+    openPath: "examples/go/control_flow/main.go",
+    files: [
+      { from: "web/examples-src/go/control_flow/main.go", to: "examples/go/control_flow/main.go" },
+    ],
+  },
+  {
+    id: "go-collections",
+    category: "Go",
+    title: "Collections",
+    description: "Slices, maps, and range loops.",
+    defaultTarget: "wasi/wasm32",
+    openPath: "examples/go/collections/main.go",
+    files: [
+      { from: "web/examples-src/go/collections/main.go", to: "examples/go/collections/main.go" },
+    ],
+  },
+  {
+    id: "go-multifile",
+    category: "Go",
+    title: "Multi-File Package",
+    description: "A simple package spread across multiple files.",
+    defaultTarget: "wasi/wasm32",
+    openPath: "examples/go/multifile/main.go",
+    files: [
+      { from: "web/examples-src/go/multifile/main.go", to: "examples/go/multifile/main.go" },
+      { from: "web/examples-src/go/multifile/helpers.go", to: "examples/go/multifile/helpers.go" },
+    ],
+  },
+  {
+    id: "compileas-artifacts",
+    category: "Directives",
+    title: "Embedded Artifacts",
+    description: "Use //rtg:compileas and //rtg:artifact to bake inner target binaries into the main program.",
+    defaultTarget: "wasi/wasm32",
+    openPath: "examples/directives/compileas_embed/main.go",
+    files: [
+      { from: "web/examples-src/directives/compileas_embed/main.go", to: "examples/directives/compileas_embed/main.go" },
+    ],
+  },
+  {
+    id: "zerocall-methods",
+    category: "Directives",
+    title: "Zero-Call Methods",
+    description: "Show //rtg:zerocall on functions and methods without losing regular Go structure.",
+    defaultTarget: "wasi/wasm32",
+    openPath: "examples/directives/zerocall_methods/main.go",
+    files: [
+      { from: "tests/zerocall_type_methods.go", to: "examples/directives/zerocall_methods/main.go" },
+    ],
+  },
+  {
+    id: "targetfile-darwin-arm64",
+    category: "Directives",
+    title: "Custom Targetfile",
+    description: "Declare assembler, binfmt, target, and target ABI providers directly in Go source.",
+    defaultTarget: "darwin/arm64",
+    openPath: "examples/directives/targetfile_darwin_arm64/main.go",
+    files: [
+      { from: "tests/targetfile_darwin_arm64.go", to: "examples/directives/targetfile_darwin_arm64/main.go" },
+    ],
+  },
+  {
+    id: "asm-amd64",
+    category: "Directives",
+    title: "Inline AMD64 Assembly",
+    description: "Emit native amd64 instructions with //rtg:assemble and the x/asm helpers.",
+    defaultTarget: "linux/amd64",
+    openPath: "examples/directives/asm_amd64/main.go",
+    files: [
+      { from: "tests/38_asm_param_balance_amd64.go", to: "examples/directives/asm_amd64/main.go" },
+    ],
+  },
+  {
+    id: "runtime-now",
+    category: "Runtime",
+    title: "runtime.Now()",
+    description: "Exercise RTG's monotonic clock support in a browser-runnable target.",
+    defaultTarget: "wasi/wasm32",
+    openPath: "examples/runtime/runtime_now/main.go",
+    files: [
+      { from: "tests/53_runtime_now.go", to: "examples/runtime/runtime_now/main.go" },
+    ],
+  },
+  {
+    id: "windows-console-basic",
+    category: "Windows",
+    title: "Windows Console Basics",
+    description: "Interact with the Windows console API and inspect handles, modes, and input state.",
+    defaultTarget: "windows/386",
+    openPath: "examples/windows/basic/main.go",
+    files: [
+      { from: "examples/windows/basic/main_windows.go", to: "examples/windows/basic/main.go" },
+    ],
+  },
+  {
+    id: "windows-console-colors",
+    category: "Windows",
+    title: "Windows Console Colors",
+    description: "Drive console attributes directly for colored text and buffer manipulation.",
+    defaultTarget: "windows/386",
+    openPath: "examples/windows/colors/main.go",
+    files: [
+      { from: "examples/windows/colors/main_windows.go", to: "examples/windows/colors/main.go" },
+    ],
+  },
+  {
+    id: "windows-console-input",
+    category: "Windows",
+    title: "Windows Console Input",
+    description: "Read and echo console input with the low-level Windows helpers in x/os/windows/console.",
+    defaultTarget: "windows/386",
+    openPath: "examples/windows/input/main.go",
+    files: [
+      { from: "examples/windows/input/main_windows.go", to: "examples/windows/input/main.go" },
+    ],
+  },
+  {
+    id: "windows-ui-window",
+    category: "Windows",
+    title: "WinUI Echo Window",
+    description: "Create a native window, controls, and a message loop with x/os/windows/winui.",
+    defaultTarget: "windows/386",
+    openPath: "examples/windows/window/main.go",
+    files: [
+      { from: "examples/windows/window/main_windows.go", to: "examples/windows/window/main.go" },
+    ],
+  },
+];

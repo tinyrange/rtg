@@ -38,7 +38,7 @@
       flex-direction: column;
       overflow: hidden;
     }
-    button, select { font-family: inherit; font-size: inherit; }
+    button, select, input { font-family: inherit; font-size: inherit; }
     .hidden { display: none !important; }
 
     /* ── Scrollbar ─────────────────────────────────────────── */
@@ -109,6 +109,27 @@
       align-items: center;
       gap: 6px;
     }
+    #mobile-view-toggle {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--border-dim);
+      background: linear-gradient(180deg, #141d31 0%, #111827 100%);
+    }
+    .mobile-view-btn {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      background: var(--bg-panel);
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+    .mobile-view-btn.active {
+      background: var(--bg-raised);
+      border-color: var(--accent);
+      color: var(--text-bright);
+    }
     #target-select {
       background: var(--bg-raised);
       color: var(--text);
@@ -167,6 +188,20 @@
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
       z-index: 120;
     }
+    #targets-panel {
+      position: fixed;
+      top: 42px;
+      right: 12px;
+      width: 360px;
+      max-height: 70vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      z-index: 121;
+    }
     .tags-header {
       display: flex;
       align-items: center;
@@ -210,6 +245,13 @@
       font-family: var(--font-mono);
       font-size: 11px;
     }
+    #targets-list {
+      overflow-y: auto;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
     .tag-row {
       display: flex;
       align-items: center;
@@ -222,6 +264,29 @@
     .tags-empty {
       color: var(--text-muted);
       font-family: var(--font-ui);
+    }
+    .panel-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .target-option {
+      width: 100%;
+      text-align: left;
+      padding: 7px 9px;
+      border: 1px solid var(--border-dim);
+      background: var(--bg-surface);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .target-option:hover {
+      border-color: var(--accent);
+      background: var(--bg-raised);
+    }
+    .target-option.active {
+      border-color: var(--accent);
+      color: var(--text-bright);
+      background: linear-gradient(180deg, rgba(53, 116, 240, 0.24) 0%, rgba(30, 40, 64, 0.95) 100%);
     }
 
     /* ── Panel Layout ──────────────────────────────────────── */
@@ -639,7 +704,7 @@
     #statusbar {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      gap: 10px;
       padding: 0 12px;
       height: 22px;
       background: linear-gradient(180deg, #141c2e 0%, #101828 100%);
@@ -651,6 +716,13 @@
     .status-right {
       font-family: var(--font-mono);
       font-size: 10px;
+    }
+    #entry-path {
+      margin-left: auto;
+      max-width: 48%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     /* ── Welcome Page ──────────────────────────────────────── */
@@ -800,7 +872,34 @@
     /* ── Mobile ────────────────────────────────────────────── */
     @media (max-width: 768px) {
       #btn-toggle-files { display: block; }
+      #toolbar {
+        height: auto;
+        align-items: flex-start;
+        padding: 8px 12px;
+      }
+      .toolbar-left {
+        width: 100%;
+        justify-content: space-between;
+      }
+      #toolbar-buttons {
+        width: 100%;
+      }
+      .toolbar-group {
+        width: 100%;
+        flex-wrap: wrap;
+      }
+      #target-select {
+        flex: 1 1 180px;
+      }
+      #mobile-view-toggle { display: flex; }
       #main-panels { flex-direction: column; }
+      #main-panels.mobile-view-editor #panel-output { display: none; }
+      #main-panels.mobile-view-output #panel-editor { display: none; }
+      #main-panels.mobile-view-output #panel-output {
+        display: flex;
+        max-height: none;
+        flex: 1;
+      }
       .panel-resize-handle { display: none; }
 
       #panel-files {
@@ -840,22 +939,48 @@
         grid-template-columns: 1fr;
         gap: 20px;
       }
-
       #toolbar h1 { font-size: 13px; }
       .btn { padding: 4px 8px; font-size: 11px; }
       #target-select { font-size: 11px; padding: 3px 4px; }
       #tags-panel {
-        top: 40px;
+        top: 82px;
         right: 8px;
         width: calc(100vw - 16px);
         max-height: 50vh;
       }
+      #targets-panel {
+        top: 82px;
+        right: 8px;
+        width: calc(100vw - 16px);
+        max-height: calc(100vh - 140px);
+      }
+      #entry-path {
+        max-width: 38%;
+      }
     }
 
     @media (max-width: 480px) {
+      #toolbar {
+        gap: 10px;
+      }
+      #toolbar-buttons {
+        gap: 8px;
+      }
+      .toolbar-group {
+        gap: 8px;
+      }
       .download-links { flex-direction: column; }
       .download-link { text-align: center; }
       .target-grid { grid-template-columns: 1fr 1fr; }
+      #statusbar {
+        padding: 0 8px;
+      }
+      #compiler-stamp {
+        display: none;
+      }
+      #entry-path {
+        max-width: 58%;
+      }
     }
   </style>
 </head>
@@ -868,7 +993,7 @@
     </div>
     <div id="toolbar-buttons">
       <div class="toolbar-group">
-        <select id="target-select">
+        <select id="target-select" class="hidden">
           <option value="wasi/wasm32">wasi/wasm32</option>
           <option value="linux/amd64">linux/amd64</option>
           <option value="linux/386">linux/386</option>
@@ -882,6 +1007,7 @@
           <option value="c/16">c/16</option>
           <option value="dos/8086">dos/8086</option>
         </select>
+        <button id="btn-targets" class="btn btn-gray">wasi/wasm32</button>
         <button id="btn-emit-ir" class="btn btn-gray" aria-pressed="false" title="Emit textual IR for the selected target">Emit IR</button>
         <button id="btn-tags" class="btn btn-gray">Build Tags</button>
       </div>
@@ -889,6 +1015,10 @@
       <button id="btn-run" class="btn btn-green" disabled>Run</button>
       <button id="btn-download" class="btn btn-gray hidden" disabled>Download</button>
     </div>
+  </div>
+  <div id="mobile-view-toggle">
+    <button id="btn-mobile-editor" class="mobile-view-btn active">Editor</button>
+    <button id="btn-mobile-output" class="mobile-view-btn">Output</button>
   </div>
   <div id="tags-panel" class="hidden">
     <div class="tags-header">
@@ -901,6 +1031,15 @@
       </div>
     </div>
     <div id="tags-list"></div>
+  </div>
+  <div id="targets-panel" class="hidden">
+    <div class="tags-header">
+      <div class="tags-header-left">
+        <span class="tags-title">Targets</span>
+        <span id="targets-meta" class="panel-meta">Choose a compile target</span>
+      </div>
+    </div>
+    <div id="targets-list"></div>
   </div>
 
   <!-- Main panels -->
@@ -1043,6 +1182,7 @@
 
   <div id="statusbar">
     <span id="status">Ready</span>
+    <span id="entry-path" class="status-right">Entry user/</span>
     <span id="compiler-stamp" class="status-right">RTG Compiler</span>
   </div>
 

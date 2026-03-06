@@ -72,6 +72,9 @@ jobs:
           node web/bundle.js
           node web/node-wasm-selfhost-smoke.mjs --platform "${{ matrix.target }}"
 
+      - name: Webpage bundled examples smoke (Node)
+        run: node web/node-compile-examples-smoke.mjs
+
       - name: Native self-hosting (3-stage)
         run: |
           ./build/rtg${{ matrix.suffix }} -T ${{ matrix.target }} -o build/stage1${{ matrix.suffix }} ./std/compiler/

@@ -23,25 +23,11 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#29` `OFFSET+LOAD/STORE` folding currently causes wasm one-stage selfhost lag (`stage2 != stage3`, `stage3 == stage4`) without a wasm guard.
 - `#30` Non-void shared-return tail merge currently breaks wasm validation (`values remaining on stack at end of block`).
 - `#31` Panic-unwind slow-path outlining currently breaks wasm validation (`not enough arguments on the stack for drop`).
+- `#32` x64 Windows backend is missing lowering for runtime syscall intrinsics such as `SysRead`/`SysWrite`/`SysOpen`/`SysClose` (`ICE: unknown intrinsic 'SysRead' on GOOS=windows` when compiling stdlib-using Windows targets).
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
 - `#7` package-level `log` state runtime crash paths.
-
-### Resolved / Not Reproduced
-- `#2` interface method calls on chained struct fields.
-- `#3` chained receiver-field interface call in custom wrapper types.
-- `#4` type-asserted interface method dispatch.
-- `#5` chained temporary method call degrading to unresolved `unknown`.
-- `#6` bool-pointer deref typing in conditions/comparisons.
-- `#8` top-level function values unresolved in synthetic init wiring.
-- `#9` prior stdlib fixture callback-unresolved path.
-- `#10` `log.Logger.SetOutput` + write runtime crash.
-- `#11` deferred `testing.FinishTest`/`FinishBenchmark` panic-sentinel recovery.
-- `#12` WASM validator/semantic failures in extended stdlib fixtures (`54`/`55`).
-- `#13` DOS/8086 COMEMU OOM for `54_stdlib_cli_core`.
-- `#27` ARM64 operand-cache branch-edge desync (`OP_JMP_IF*`/`OP_JMP_*` could skip cache materialization and corrupt x28).
-- Historical DOS map/slice COMEMU failures from logs (`map_literal`, `slice_ops`, `map_comma_ok`, `map_range`, `map_types`, `slice_append`, `slice_nested`, `slice_range`) now PASS.
 
 ## Work Order
 

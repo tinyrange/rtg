@@ -1,11 +1,35 @@
 import { VirtualFS, createWASI, WASIExit } from "./wasi.js";
 import { STD_LIBRARY } from "./std-library.js";
+import { X_LIBRARY } from "./x-library.js";
+import { EXAMPLE_LIBRARY } from "./examples-library.js";
+
+const DEFAULT_USER_FILES = {
+  "user/main.go": `package main
+
+import "fmt"
+
+func main() {
+\tfmt.Println("Hello from RTG2!")
+}
+`,
+};
+
+const EXAMPLE_FILES = {};
+const EXAMPLE_BY_PATH = new Map();
+for (const example of EXAMPLE_LIBRARY) {
+  for (const [path, content] of Object.entries(example.files || {})) {
+    EXAMPLE_FILES[path] = content;
+    EXAMPLE_BY_PATH.set(path, example);
+  }
+  if (example.openPath) EXAMPLE_BY_PATH.set(example.openPath, example);
+}
 
 // --- State ---
 let userFiles = {};       // { path: content }
 let activeFile = null;    // currently open file path
 let compiledWasm = null;  // Uint8Array of compiled output
 let compiledTarget = null; // target the last compile was for
+let compiledEntry = null; // package path used for the last compile
 let compilerModule = null; // cached WebAssembly.Module for the compiler
 let saveTimer = null;
 let dirty = true;         // files changed since last compile
@@ -28,6 +52,7 @@ const btnDownload = document.getElementById("btn-download");
 const btnNewFile = document.getElementById("btn-new-file");
 const btnClearOutput = document.getElementById("btn-clear-output");
 const targetSelect = document.getElementById("target-select");
+const btnTargets = document.getElementById("btn-targets");
 const btnEmitIR = document.getElementById("btn-emit-ir");
 const panelOutput = document.getElementById("panel-output");
 const irViewer = document.getElementById("ir-viewer");
@@ -39,19 +64,32 @@ const tagsPanel = document.getElementById("tags-panel");
 const tagsList = document.getElementById("tags-list");
 const tagsMeta = document.getElementById("tags-meta");
 const btnRescanTags = document.getElementById("btn-rescan-tags");
+const targetsPanel = document.getElementById("targets-panel");
+const targetsList = document.getElementById("targets-list");
+const targetsMeta = document.getElementById("targets-meta");
+const btnMobileEditor = document.getElementById("btn-mobile-editor");
+const btnMobileOutput = document.getElementById("btn-mobile-output");
+const mainPanels = document.getElementById("main-panels");
+const entryPathEl = document.getElementById("entry-path");
 const compilerStampEl = document.getElementById("compiler-stamp");
 
 // --- Init ---
 function init() {
+  targetSelect.value = "wasi/wasm32";
   loadUserFiles();
   renderFileTree();
   openFile("user/main.go");
   setupEditorEvents();
   setupButtons();
   setupTagPanel();
+  setupTargetPanel();
+  setupMobilePanels();
   renderBuildTags();
+  renderTargetPanel();
   loadCompilerModule();
   updateDirtyIndicator();
+  updateEntryIndicator();
+  updateTargetButton();
   discoverBuildTags();
 }
 
@@ -64,17 +102,7 @@ function loadUserFiles() {
       return;
     }
   } catch {}
-  // Default
-  userFiles = {
-    "user/main.go": `package main
-
-import "fmt"
-
-func main() {
-\tfmt.Println("Hello from RTG2!")
-}
-`,
-  };
+  userFiles = cloneFileMap(DEFAULT_USER_FILES);
   saveUserFiles();
 }
 
@@ -98,6 +126,10 @@ function saveEnabledBuildTags() {
   localStorage.setItem("rtg2-build-tags", JSON.stringify(Array.from(enabledBuildTags).sort()));
 }
 
+function cloneFileMap(files) {
+  return Object.fromEntries(Object.entries(files).map(([path, content]) => [path, content]));
+}
+
 // --- Dirty tracking ---
 function markDirty() {
   dirty = true;
@@ -113,20 +145,106 @@ function updateDirtyIndicator() {
   editorDirty.classList.toggle("hidden", !dirty);
 }
 
+function isMobileViewport() {
+  return window.innerWidth <= 768;
+}
+
+function setMobilePanel(panel) {
+  if (!mainPanels) return;
+  if (!isMobileViewport()) {
+    mainPanels.classList.remove("mobile-view-editor", "mobile-view-output");
+    btnMobileEditor.classList.remove("active");
+    btnMobileOutput.classList.remove("active");
+    return;
+  }
+  mainPanels.classList.toggle("mobile-view-editor", panel === "editor");
+  mainPanels.classList.toggle("mobile-view-output", panel === "output");
+  btnMobileEditor.classList.toggle("active", panel === "editor");
+  btnMobileOutput.classList.toggle("active", panel === "output");
+}
+
+function setupMobilePanels() {
+  btnMobileEditor.addEventListener("click", () => setMobilePanel("editor"));
+  btnMobileOutput.addEventListener("click", () => setMobilePanel("output"));
+  window.addEventListener("resize", () => {
+    setMobilePanel(mainPanels.classList.contains("mobile-view-output") ? "output" : "editor");
+  });
+  setMobilePanel("editor");
+}
+
+function dirname(path) {
+  const slash = path.lastIndexOf("/");
+  return slash >= 0 ? path.slice(0, slash) : path;
+}
+
+function getCompileEntryPath() {
+  if (!activeFile) return "user";
+  return dirname(activeFile);
+}
+
+function updateEntryIndicator() {
+  const entryPath = getCompileEntryPath();
+  if (entryPathEl) entryPathEl.textContent = "Entry " + entryPath;
+  btnCompile.title = "Compile active package: " + entryPath;
+}
+
+function updateTargetButton() {
+  btnTargets.textContent = targetSelect.value;
+  if (targetsMeta) targetsMeta.textContent = targetSelect.value;
+}
+
+function handleTargetChange() {
+  updateTargetButton();
+  renderTargetPanel();
+  updateRunVisibility();
+  markDirty();
+  resetCompiledOutputState();
+  discoverBuildTags();
+}
+
+function setTargetValue(target) {
+  if (!target || targetSelect.value === target) {
+    updateTargetButton();
+    return false;
+  }
+  targetSelect.value = target;
+  handleTargetChange();
+  return true;
+}
+
+function resetCompiledOutputState() {
+  compiledWasm = null;
+  compiledTarget = null;
+  compiledEntry = null;
+  btnRun.disabled = true;
+  btnDownload.disabled = true;
+  btnDownload.classList.add("hidden");
+  showIRViewer(false);
+  document.getElementById("size-analysis").classList.add("hidden");
+}
+
 // --- File Tree ---
 function renderFileTree() {
   fileTree.innerHTML = "";
 
   // User files section
-  const userSection = buildTreeSection("user", userFiles, false);
+  const userSection = buildTreeSection("user", userFiles, false, true);
   fileTree.appendChild(userSection);
 
+  // Examples section
+  const examplesSection = buildTreeSection("examples", EXAMPLE_FILES, true, true);
+  fileTree.appendChild(examplesSection);
+
   // Std library section
-  const stdSection = buildTreeSection("std", STD_LIBRARY, true);
+  const stdSection = buildTreeSection("std", STD_LIBRARY, true, false);
   fileTree.appendChild(stdSection);
+
+  // x library section
+  const xSection = buildTreeSection("x", X_LIBRARY, true, false);
+  fileTree.appendChild(xSection);
 }
 
-function buildTreeSection(rootName, filesObj, readOnly) {
+function buildTreeSection(rootName, filesObj, readOnly, startOpen) {
   const tree = {};
   for (const path of Object.keys(filesObj)) {
     const parts = path.split("/");
@@ -144,7 +262,7 @@ function buildTreeSection(rootName, filesObj, readOnly) {
 
   const rootNode = tree[rootName];
   if (!rootNode) return document.createDocumentFragment();
-  return renderTreeNode(rootName, rootNode, rootName, readOnly, !readOnly);
+  return renderTreeNode(rootName, rootNode, rootName, readOnly, startOpen);
 }
 
 function renderTreeNode(name, children, fullPath, readOnly, startOpen) {
@@ -197,9 +315,11 @@ function renderTreeNode(name, children, fullPath, readOnly, startOpen) {
 // --- Editor ---
 function openFile(path) {
   saveCurrentFile();
+  const previousEntry = getCompileEntryPath();
 
   activeFile = path;
   editorFilename.textContent = path;
+  const example = EXAMPLE_BY_PATH.get(path) || null;
 
   const isUserFile = path.startsWith("user/");
 
@@ -209,7 +329,7 @@ function openFile(path) {
     editorReadonlyBadge.classList.add("hidden");
     btnDeleteFile.classList.toggle("hidden", path === "user/main.go");
   } else {
-    editor.value = STD_LIBRARY[path] || "";
+    editor.value = EXAMPLE_FILES[path] || STD_LIBRARY[path] || X_LIBRARY[path] || "";
     editor.readOnly = true;
     editorReadonlyBadge.classList.remove("hidden");
     btnDeleteFile.classList.add("hidden");
@@ -218,6 +338,15 @@ function openFile(path) {
   for (const el of fileTree.querySelectorAll(".tree-item")) {
     el.classList.toggle("active", el.dataset.path === path);
   }
+  if (compiledEntry !== null && getCompileEntryPath() !== previousEntry) {
+    resetCompiledOutputState();
+    markDirty();
+  }
+  if (example && example.defaultTarget) {
+    setTargetValue(example.defaultTarget);
+  }
+  updateEntryIndicator();
+  setMobilePanel("editor");
 }
 
 function saveCurrentFile() {
@@ -264,23 +393,12 @@ function setupButtons() {
     updateEmitIRButton();
     updateRunVisibility();
     markDirty();
-    compiledWasm = null;
-    btnDownload.disabled = true;
-    btnDownload.classList.add("hidden");
-    showIRViewer(false);
+    resetCompiledOutputState();
     discoverBuildTags();
   });
 
   targetSelect.addEventListener("change", () => {
-    // Target change means recompile is needed
-    updateRunVisibility();
-    markDirty();
-    compiledWasm = null;
-    btnRun.disabled = true;
-    btnDownload.disabled = true;
-    btnDownload.classList.add("hidden");
-    showIRViewer(false);
-    discoverBuildTags();
+    handleTargetChange();
   });
 
   btnNewFile.addEventListener("click", () => {
@@ -309,12 +427,14 @@ function setupButtons() {
   });
 
   updateEmitIRButton();
+  updateTargetButton();
   updateRunVisibility();
 }
 
 function setupTagPanel() {
   btnTags.addEventListener("click", (e) => {
     e.stopPropagation();
+    targetsPanel.classList.add("hidden");
     const nowVisible = tagsPanel.classList.toggle("hidden") === false;
     if (nowVisible) discoverBuildTags();
   });
@@ -326,6 +446,36 @@ function setupTagPanel() {
   btnRescanTags.addEventListener("click", () => {
     discoverBuildTags();
   });
+}
+
+function setupTargetPanel() {
+  btnTargets.addEventListener("click", (e) => {
+    e.stopPropagation();
+    tagsPanel.classList.add("hidden");
+    targetsPanel.classList.toggle("hidden");
+  });
+  document.addEventListener("click", (e) => {
+    if (targetsPanel.classList.contains("hidden")) return;
+    if (targetsPanel.contains(e.target) || e.target === btnTargets) return;
+    targetsPanel.classList.add("hidden");
+  });
+}
+
+function renderTargetPanel() {
+  targetsList.replaceChildren();
+  for (const option of targetSelect.options) {
+    const button = document.createElement("button");
+    button.className = "target-option";
+    button.textContent = option.value;
+    button.classList.toggle("active", option.value === targetSelect.value);
+    button.addEventListener("click", () => {
+      setTargetValue(option.value);
+      renderTargetPanel();
+      targetsPanel.classList.add("hidden");
+    });
+    targetsList.appendChild(button);
+  }
+  targetsMeta.textContent = targetSelect.value;
 }
 
 function renderBuildTags() {
@@ -513,13 +663,20 @@ async function discoverBuildTags() {
     for (const [path, content] of Object.entries(STD_LIBRARY)) {
       fs.addFile(path, content);
     }
+    for (const [path, content] of Object.entries(X_LIBRARY)) {
+      fs.addFile(path, content);
+    }
+    for (const [path, content] of Object.entries(EXAMPLE_FILES)) {
+      fs.addFile(path, content);
+    }
     for (const [path, content] of Object.entries(userFiles)) {
       fs.addFile(path, content);
     }
 
+    const entryPath = getCompileEntryPath();
     const args = ["rtg", "-T", targetSelect.value, "-parse-only", "-list-build-tags", "build-tags.txt"];
     appendTagArgs(args);
-    args.push("user/");
+    args.push(entryPath);
 
     const exitCode = await runCompilerInWasi(fs, args);
     if (exitCode !== 0) {
@@ -561,12 +718,11 @@ async function compile() {
   const isIR = shouldEmitIR();
   const outputTarget = isIR ? "ir" : target;
   const outputFile = getOutputFilename(outputTarget);
+  const entryPath = getCompileEntryPath();
 
   outputContent.innerHTML = "";
-  compiledWasm = null;
-  btnRun.disabled = true;
-  btnDownload.disabled = true;
-  btnDownload.classList.add("hidden");
+  resetCompiledOutputState();
+  setMobilePanel("output");
   setStatus("Compiling...");
   btnCompile.disabled = true;
 
@@ -579,20 +735,27 @@ async function compile() {
     for (const [path, content] of Object.entries(STD_LIBRARY)) {
       fs.addFile(path, content);
     }
+    for (const [path, content] of Object.entries(X_LIBRARY)) {
+      fs.addFile(path, content);
+    }
+
+    // Add bundled examples
+    for (const [path, content] of Object.entries(EXAMPLE_FILES)) {
+      fs.addFile(path, content);
+    }
 
     // Add all user files
     for (const [path, content] of Object.entries(userFiles)) {
       fs.addFile(path, content);
     }
 
-    const entryFile = "user/main.go";
     const args = ["rtg", "-T", target];
     appendTagArgs(args);
     if (isIR) {
-      args.push("-emit-ir", outputFile, entryFile);
+      args.push("-emit-ir", outputFile, entryPath);
     } else {
       args.push("-size-analysis", "size-analysis.json");
-      args.push("-o", outputFile, entryFile);
+      args.push("-o", outputFile, entryPath);
     }
 
     const exitCode = await runCompilerInWasi(fs, args, {
@@ -612,11 +775,12 @@ async function compile() {
     if (output && output.length > 0) {
       compiledWasm = output;
       compiledTarget = outputTarget;
+      compiledEntry = entryPath;
       markClean();
 
       if (isIR) {
         const irText = new TextDecoder().decode(output);
-        appendOutput(`IR generated (${irText.split("\n").length} lines) in ${elapsed}s\n`, "stdout");
+        appendOutput(`IR generated for ${entryPath} (${irText.split("\n").length} lines) in ${elapsed}s\n`, "stdout");
         renderIRViewer(irText);
         showIRViewer(true);
         btnRun.disabled = true;
@@ -630,7 +794,7 @@ async function compile() {
         btnDownload.disabled = false;
         btnDownload.classList.remove("hidden");
 
-        appendOutput(`Compiled ${output.length} bytes in ${elapsed}s\n`, "stdout");
+        appendOutput(`Compiled ${entryPath} to ${output.length} bytes in ${elapsed}s\n`, "stdout");
 
         // Read and display size analysis
         try {
@@ -662,11 +826,12 @@ async function compile() {
 // --- Run ---
 async function run() {
   // Auto-compile if dirty
-  if (dirty || !compiledWasm || compiledTarget !== "wasi/wasm32") {
+  if (dirty || !compiledWasm || compiledTarget !== "wasi/wasm32" || compiledEntry !== getCompileEntryPath()) {
     await compile();
     if (!compiledWasm || compiledTarget !== "wasi/wasm32") return;
   }
 
+  setMobilePanel("output");
   setStatus("Running...");
   btnRun.disabled = true;
 
@@ -1019,6 +1184,7 @@ window.selfCompileAndDownload = async function(target) {
   const downloadName = "rtg-" + os + "-" + arch + (isWindows ? ".exe" : "");
 
   outputContent.innerHTML = "";
+  setMobilePanel("output");
   setStatus("Building RTG for " + target + "...");
   btnCompile.disabled = true;
 
