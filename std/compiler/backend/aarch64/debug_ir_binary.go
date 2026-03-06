@@ -539,5 +539,8 @@ func WriteIRAndBinaryDebug(path string, irmod *ir.IRModule, g *CodeGen) error {
 		_ = out.Close()
 		return err
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0600)
 }

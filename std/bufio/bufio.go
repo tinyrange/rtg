@@ -4,12 +4,6 @@ import "io"
 
 const defaultBufSize = 4096
 
-type eofError struct{}
-
-func (e eofError) Error() string {
-	return "EOF"
-}
-
 type Reader struct {
 	rd  io.Reader
 	buf []byte
@@ -58,7 +52,7 @@ func (b *Reader) fill() error {
 	if err != nil {
 		b.err = err
 	} else if n == 0 {
-		b.err = eofError{}
+		b.err = io.EOF
 	}
 	return b.err
 }
@@ -91,7 +85,7 @@ func (b *Reader) Read(p []byte) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			return 0, eofError{}
+			return 0, io.EOF
 		}
 		b.fill()
 	}
@@ -108,7 +102,7 @@ func (b *Reader) ReadByte() (byte, error) {
 			if b.err != nil {
 				return 0, b.err
 			}
-			return 0, eofError{}
+			return 0, io.EOF
 		}
 	}
 	ch := b.buf[b.r]
@@ -186,7 +180,7 @@ func (b *Writer) Flush() error {
 			return err
 		}
 		if nw == 0 {
-			b.err = eofError{}
+			b.err = io.EOF
 			return b.err
 		}
 	}
@@ -210,7 +204,7 @@ func (b *Writer) Write(p []byte) (int, error) {
 				return total, err
 			}
 			if nw == 0 {
-				b.err = eofError{}
+				b.err = io.EOF
 				return total, b.err
 			}
 			continue

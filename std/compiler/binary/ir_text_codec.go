@@ -661,6 +661,11 @@ func WriteIRText(irmod *ir.IRModule, path string) error {
 		if err := outFile.Close(); err != nil {
 			return err
 		}
+		// Self-hosted open/create paths do not always apply the requested mode
+		// on first create; normalize the final file mode after close.
+		if err := os.Chmod(path, 0600); err != nil {
+			return err
+		}
 	}
 	return nil
 }
