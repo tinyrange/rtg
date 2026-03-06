@@ -2,6 +2,7 @@ package binary
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -102,6 +103,13 @@ func init() {
 	for i := 0; i < len(opcodeNames); i++ {
 		opcodeByName[opcodeNames[i]] = ir.Opcode(i)
 	}
+}
+
+func OpcodeName(op ir.Opcode) string {
+	if int(op) < 0 || int(op) >= len(opcodeNames) {
+		return "OP_" + strconv.Itoa(int(op))
+	}
+	return opcodeNames[int(op)]
 }
 
 func opRequiresArg(op ir.Opcode) bool {
@@ -397,7 +405,7 @@ func WriteIRText(irmod *ir.IRModule, path string) error {
 		outFile = os.Stdout
 	} else {
 		var err error
-		outFile, err = os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		outFile, err = os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 		if err != nil {
 			return err
 		}
@@ -520,12 +528,8 @@ func WriteIRText(irmod *ir.IRModule, path string) error {
 		w.WriteString("    code {\n")
 		for j := 0; j < len(f.Code); j++ {
 			in := f.Code[j]
-			opName := "UNKNOWN"
-			if int(in.Op) >= 0 && int(in.Op) < len(opcodeNames) {
-				opName = opcodeNames[int(in.Op)]
-			}
 			w.WriteString("      ")
-			w.WriteString(opName)
+			w.WriteString(OpcodeName(in.Op))
 			if opRequiresArg(in.Op) || in.Arg != 0 {
 				w.WriteString(" arg=")
 				writeInt(w, in.Arg)
@@ -657,7 +661,6 @@ func WriteIRText(irmod *ir.IRModule, path string) error {
 		if err := outFile.Close(); err != nil {
 			return err
 		}
-		_ = os.Chmod(path, 0600)
 	}
 	return nil
 }
@@ -1835,6 +1838,5 @@ func isEOFReadError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return msg == "EOF" || strings.HasSuffix(msg, ": EOF")
+	return err == io.EOF
 }

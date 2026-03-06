@@ -484,11 +484,6 @@ func main() {
 		os.Exit(1)
 	}
 	if stdinInput {
-		if fromKind == "ir" {
-			fmt.Fprintf(os.Stderr, "cannot use '-' stdin source input with -F ir; use '-F ir -'\n")
-			runCleanup()
-			os.Exit(1)
-		}
 		if fromIRBinaryPath != "" {
 			fmt.Fprintf(os.Stderr, "cannot use - with -from-ir-binary\n")
 			runCleanup()

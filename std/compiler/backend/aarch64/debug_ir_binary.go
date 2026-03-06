@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"j5.nz/rtg/std/compiler/binary"
 	"j5.nz/rtg/std/compiler/ir"
 )
 
@@ -13,67 +14,6 @@ type debugFuncSpan struct {
 	name  string
 	start int
 	end   int
-}
-
-var debugOpcodeNames = []string{
-	"CONST_I64",
-	"CONST_STR",
-	"CONST_BOOL",
-	"CONST_NIL",
-	"LOCAL_GET",
-	"LOCAL_SET",
-	"LOCAL_ADD_IMM",
-	"LOCAL_ADDR",
-	"GLOBAL_GET",
-	"GLOBAL_SET",
-	"GLOBAL_ADDR",
-	"DROP",
-	"DUP",
-	"ADD",
-	"SUB",
-	"MUL",
-	"DIV",
-	"MOD",
-	"NEG",
-	"AND",
-	"OR",
-	"XOR",
-	"SHL",
-	"SHR",
-	"EQ",
-	"NEQ",
-	"LT",
-	"GT",
-	"LEQ",
-	"GEQ",
-	"JMP_EQ",
-	"JMP_NEQ",
-	"JMP_LT",
-	"JMP_GT",
-	"JMP_LEQ",
-	"JMP_GEQ",
-	"NOT",
-	"LOAD",
-	"STORE",
-	"OFFSET",
-	"LABEL",
-	"JMP",
-	"JMP_IF",
-	"JMP_IF_NOT",
-	"CALL",
-	"CALL_INTRINSIC",
-	"RETURN",
-	"SLICE_GET",
-	"SLICE_MAKE",
-	"STRING_GET",
-	"STRING_MAKE",
-	"INDEX_ADDR",
-	"LEN",
-	"CONVERT",
-	"IFACE_BOX",
-	"IFACE_CALL",
-	"PANIC",
-	"CAP",
 }
 
 type debugBufferedWriter struct {
@@ -220,10 +160,7 @@ func debugQuote(s string) string {
 }
 
 func debugOpcodeName(op ir.Opcode) string {
-	if int(op) < 0 || int(op) >= len(debugOpcodeNames) {
-		return "OP_" + strconv.Itoa(int(op))
-	}
-	return debugOpcodeNames[int(op)]
+	return binary.OpcodeName(op)
 }
 
 func normalizeSegments(raw []InstByteSegment, minStart int, maxEnd int) []InstByteSegment {
