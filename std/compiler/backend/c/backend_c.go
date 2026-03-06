@@ -105,6 +105,83 @@ func cWritef(b *strings.Builder, format string, a ...interface{}) {
 	b.WriteString(fmt.Sprintf(format, a...))
 }
 
+func cDecimalI64(v int64) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	var u uint64
+	if neg {
+		u = uint64(-(v + 1))
+		u = u + 1
+	} else {
+		u = uint64(v)
+	}
+	var buf [32]byte
+	i := len(buf)
+	for u != 0 {
+		i--
+		buf[i] = byte('0' + (u % 10))
+		u = u / 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:len(buf)])
+}
+
+func cSignedLiteral(val int64, bits int) string {
+	b := &strings.Builder{}
+	if bits == 16 && val == -32768 {
+		b.WriteByte('(')
+		b.WriteByte('-')
+		b.WriteString(cDecimalI64(32767))
+		b.WriteByte(' ')
+		b.WriteByte('-')
+		b.WriteByte(' ')
+		b.WriteByte('1')
+		b.WriteByte(')')
+		return b.String()
+	}
+	if bits == 32 && val == -2147483648 {
+		b.WriteByte('(')
+		b.WriteByte('-')
+		b.WriteString(cDecimalI64(2147483647))
+		b.WriteByte('L')
+		b.WriteByte(' ')
+		b.WriteByte('-')
+		b.WriteByte(' ')
+		b.WriteByte('1')
+		b.WriteByte('L')
+		b.WriteByte(')')
+		return b.String()
+	}
+	if bits == 64 && val == -9223372036854775808 {
+		b.WriteByte('(')
+		b.WriteByte('-')
+		b.WriteString(cDecimalI64(9223372036854775807))
+		b.WriteByte('L')
+		b.WriteByte('L')
+		b.WriteByte(' ')
+		b.WriteByte('-')
+		b.WriteByte(' ')
+		b.WriteByte('1')
+		b.WriteByte('L')
+		b.WriteByte('L')
+		b.WriteByte(')')
+		return b.String()
+	}
+	b.WriteString(cDecimalI64(val))
+	if bits == 32 {
+		b.WriteByte('L')
+	} else if bits == 64 {
+		b.WriteByte('L')
+		b.WriteByte('L')
+	}
+	return b.String()
+}
+
 func cEmitIntrinsicResultCall(bp *strings.Builder, callExpr string) {
 	cWritef(bp, "  { rtg_sword rv = %s;\n", callExpr)
 	bp.WriteString("    if (rv < 0) { rtg_push(0); rtg_push(0); rtg_push((rtg_word)(-(int)rv)); } else { rtg_push((rtg_word)rv); rtg_push(0); rtg_push(0); } }\n")
@@ -1205,11 +1282,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			}
 			switch in.Op {
 			case ir.OP_CONST_I64:
-				if bits == 16 {
-					cWritef(bp, "  rtg_push((rtg_word)((rtg_sword)%d));\n", in.Val)
-				} else {
-					cWritef(bp, "  rtg_push((rtg_word)((rtg_sword)%dL));\n", in.Val)
-				}
+				cWritef(bp, "  rtg_push((rtg_word)((rtg_sword)%s));\n", cSignedLiteral(in.Val, bits))
 			case ir.OP_CONST_STR:
 				lit := becommon.DecodeStringLiteral(in.Name)
 				idx := litIdx[lit]
