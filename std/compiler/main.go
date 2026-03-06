@@ -1483,7 +1483,7 @@ func collectProfileCallableNameHashes(entryFiles []string) (map[uint32]string, e
 }
 
 func profileHash32(name string) uint32 {
-	var h uint32 = 2166136261
+	var h uint32 = (uint32(0x811c) << 16) | uint32(0x9dc5)
 	i := 0
 	for i < len(name) {
 		h = h ^ uint32(name[i])

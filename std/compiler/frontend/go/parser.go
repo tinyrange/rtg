@@ -662,6 +662,7 @@ const (
 	NBranch
 	NIdent
 	NIntLit
+	NFloatLit
 	NStringLit
 	NRuneLit
 	NBasicLit
@@ -1183,7 +1184,7 @@ func (p *Parser) parseType() *Node {
 		if tok.Val == "any" {
 			return &Node{Kind: NIdent, Name: "interface{}", Pos: tok.Line}
 		}
-		if tok.Val == "float32" || tok.Val == "float64" || tok.Val == "complex64" || tok.Val == "complex128" {
+		if tok.Val == "float32" || tok.Val == "complex64" || tok.Val == "complex128" {
 			p.errorf("%s type is not supported at line %d", tok.Val, tok.Line)
 			return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 		}
@@ -1833,8 +1834,7 @@ func (p *Parser) parsePrimaryExpr() *Node {
 		node = &Node{Kind: NIntLit, Name: tok.Val, Pos: tok.Line}
 	case TOKEN_FLOAT:
 		tok := p.advance()
-		p.errorf("float literals are not supported at line %d col %d", tok.Line, tok.Col)
-		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
+		node = &Node{Kind: NFloatLit, Name: tok.Val, Pos: tok.Line}
 	case TOKEN_IMAG:
 		tok := p.advance()
 		p.errorf("imaginary literals are not supported at line %d col %d", tok.Line, tok.Col)

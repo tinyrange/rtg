@@ -5,5 +5,7 @@ tests/*/*
 !tests/compiler_bugs/manifest.txt
 build/
 local/
+tmp/
+web/*-library.js
 
 .DS_Store

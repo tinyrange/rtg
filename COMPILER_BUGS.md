@@ -6,7 +6,6 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 ### Open
 - `#14` `55_stdlib_additions_extended` crashes on RTG x64 runtime targets (`linux/amd64`, `windows/amd64`).
-- `#15` WASM `iface_typeassert` still fails validation (`expected i32 but nothing on stack`).
 - `#16` Parser rejects unnamed method receivers (`func (T) M()`).
 - `#17` Function-valued callback/local calls still lower as unresolved `fn`.
 - `#18` Function values stored in maps can fail symbol resolution (`undefined: genA`).
@@ -410,16 +409,6 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 **Local status**
 - Cannot be directly executed/reproduced in this host environment; still open.
 
-### 15) WASM `iface_typeassert` validator failure
-
-**Symptom**
-- `./build/rtg -T wasi/wasm32 tests/iface_typeassert.go` output fails in `wasmtime` with:
-  - `Invalid input WebAssembly code ... type mismatch: expected i32 but nothing on stack`.
-
-**Current mitigation**
-- Fullcompiler skip remains in `tools/build.go`:
-  - `backend == "wasm" && name == "iface_typeassert"`.
-
 ### 16) Unnamed receiver parser rejection (`func (T) M()`)
 
 **Repro**
@@ -529,8 +518,6 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 ## Workarounds From Logs (2026-03-01 Audit)
 
 ### Active in current tree
-- WASM fullcompiler skip for `iface_typeassert` remains active in `tools/build.go`:
-  - `backend == "wasm" && name == "iface_typeassert"` (`known wasm32 type-assertion issue`).
 - RTG amd64 fullcompiler skip for `55_stdlib_additions_extended` remains active:
   - `backend == "rtg" && name == "55_stdlib_additions_extended" && targetArch == "amd64"` (`known x64 runtime instability`).
 - Bootstrap/selfhost compatibility workaround in `tools/build.go` remains active:
