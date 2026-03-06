@@ -21,6 +21,15 @@ type Target struct {
 	StdlibIncludeExplicit bool
 	StdlibIncludeEmbedded bool
 	TestMode              bool
+	EntryFunc             string
+	CompileAsArtifacts    map[string]string
+}
+
+func EntryFuncName(target *Target) string {
+	if target != nil && target.EntryFunc != "" {
+		return target.EntryFunc
+	}
+	return "main.main"
 }
 
 func HexDigit(v byte) byte {

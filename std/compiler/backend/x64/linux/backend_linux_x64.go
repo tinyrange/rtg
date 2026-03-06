@@ -14,7 +14,7 @@ import (
 // === Linux amd64-specific backend code ===
 
 // emitStart generates the _start entry point.
-func emitStart(g *core.CodeGen, irmod *ir.IRModule) {
+func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// _start:
 	//   mmap 1MB for operand stack → R15
 	//   call main.main
@@ -50,8 +50,8 @@ func emitStart(g *core.CodeGen, irmod *ir.IRModule) {
 		}
 	}
 
-	// Call main.main
-	g.EmitCallPlaceholder("main.main")
+	// Call entry function.
+	g.EmitCallPlaceholder(entryFunc)
 
 	// exit(0)
 	g.XorRR(core.REG_RDI, core.REG_RDI) // exit code 0
@@ -138,7 +138,7 @@ func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) e
 	g := core.NewCodeGen(target, irmod, 0x400000)
 
 	// Emit _start
-	emitStart(g, irmod)
+	emitStart(g, irmod, common.EntryFuncName(target))
 
 	g.EmitAllFunctions(irmod)
 

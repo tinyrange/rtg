@@ -19,6 +19,7 @@ type WasmGen struct {
 	irmod   *ir.IRModule
 	w       wasmCodeWriter // current function body writer
 	funcMap map[string]int // IR func name → WASM func index
+	entryFn string
 
 	// WASI import function indices
 	wasiFdWrite          int
@@ -91,12 +92,13 @@ const (
 )
 
 // Generate is the entry point for the WASM backend.
-func Generate(_ *common.Target, irmod *ir.IRModule, outputPath string) error {
+func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) error {
 	g := &WasmGen{
 		mod:       &wasmModule{memMin: 2}, // start with 2 pages (128KB)
 		irmod:     irmod,
 		funcMap:   make(map[string]int),
 		stringMap: make(map[string]int),
+		entryFn:   common.EntryFuncName(target),
 	}
 
 	// Setup WASI imports
@@ -670,8 +672,8 @@ func (g *WasmGen) compileStart() []byte {
 		}
 	}
 
-	// Call main.main
-	if idx, ok := g.funcMap["main.main"]; ok {
+	// Call entry function.
+	if idx, ok := g.funcMap[g.entryFn]; ok {
 		g.w.call(uint32(idx))
 	}
 

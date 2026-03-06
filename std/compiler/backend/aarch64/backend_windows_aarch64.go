@@ -31,7 +31,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 	g.data = make([]byte, len(irmod.Globals)*8)
 
 	// Emit entry point
-	g.emitStartArm64Windows(irmod)
+	g.emitStartArm64Windows(irmod, common.EntryFuncName(target))
 
 	// Compile all functions
 	for _, f := range irmod.Funcs {
@@ -83,7 +83,7 @@ func GenerateWinPE(target *common.Target, irmod *ir.IRModule, outputPath string)
 }
 
 // emitStartArm64Windows generates the Windows ARM64 entry point.
-func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
+func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule, entryFunc string) {
 	// Save LR (entry is called by Windows loader)
 	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
 	g.EmitMovRRArm64(REG_FP, REG_SP)
@@ -113,8 +113,8 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule) {
 
 	emitDebugMarkerArm64(g, 'C')
 
-	// Call main.main
-	g.EmitCallPlaceholderArm64("main.main")
+	// Call entry function.
+	g.EmitCallPlaceholderArm64(entryFunc)
 
 	emitDebugMarkerArm64(g, 'D')
 

@@ -821,9 +821,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	for i, f := range irmod.Funcs {
 		funcSyms[i] = cMangleSymbol(f.Name)
 	}
-	mainIdx, ok := funcIdx["main.main"]
+	entryFunc := common.EntryFuncName(target)
+	mainIdx, ok := funcIdx[entryFunc]
 	if !ok {
-		return fmt.Errorf("main.main not found")
+		return fmt.Errorf("%s not found", entryFunc)
 	}
 
 	// String literal interning.

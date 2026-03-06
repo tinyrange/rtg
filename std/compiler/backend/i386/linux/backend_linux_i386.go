@@ -8,7 +8,7 @@ import (
 )
 
 // EmitStart generates the _start entry point for i386.
-func EmitStart(g *core.CodeGen, irmod *ir.IRModule) {
+func EmitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// _start:
 	//   mmap2(NULL, 1MB, PROT_RW, MAP_PRIV|MAP_ANON, 0, 0) via int 0x80
 	//   edi = eax + 1MB (operand stack top, grows down)
@@ -46,8 +46,8 @@ func EmitStart(g *core.CodeGen, irmod *ir.IRModule) {
 		}
 	}
 
-	// Call main.main
-	g.EmitCallPlaceholder("main.main")
+	// Call entry function.
+	g.EmitCallPlaceholder(entryFunc)
 
 	// exit(0): mov eax, 252 (SYS_EXIT_GROUP); xor ebx, ebx; int 0x80
 	g.XorRR32(core.REG32_EBX, core.REG32_EBX)

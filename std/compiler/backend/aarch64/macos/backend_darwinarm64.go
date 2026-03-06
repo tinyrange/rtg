@@ -21,7 +21,7 @@ func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string
 	g := aarch64.NewCodeGen(target, irmod, 0x100000000, 3, true)
 
 	// Emit entry point
-	emitStartArm64(g, irmod)
+	emitStartArm64(g, irmod, common.EntryFuncName(target))
 
 	// Compile all functions
 	g.CompileModuleFuncs(irmod)
@@ -76,7 +76,7 @@ func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string
 
 // emitStartArm64 generates the entry point for macOS ARM64.
 // LC_MAIN receives: X0=argc, X1=argv, X2=envp (as a C function call)
-func emitStartArm64(g *aarch64.CodeGen, irmod *ir.IRModule) {
+func emitStartArm64(g *aarch64.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// Save LR (we're called as a function by dyld)
 	g.EmitStp(aarch64.REG_FP, aarch64.REG_LR, aarch64.REG_SP, -16)
 	g.EmitMovRRArm64(aarch64.REG_FP, aarch64.REG_SP)
@@ -110,7 +110,7 @@ func emitStartArm64(g *aarch64.CodeGen, irmod *ir.IRModule) {
 			g.EmitCallPlaceholderArm64(f.Name)
 		}
 	}
-	g.EmitCallPlaceholderArm64("main.main")
+	g.EmitCallPlaceholderArm64(entryFunc)
 
 	g.EmitMovZ(aarch64.REG_X0, 0, 0)
 	g.EmitCallGOT("_exit")

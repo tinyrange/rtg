@@ -21,7 +21,7 @@ func GenerateLinuxELF(target *common.Target, irmod *ir.IRModule, outputPath stri
 	g := aarch64.NewCodeGen(target, irmod, 0x400000, 0, false)
 
 	// Emit _start entry point
-	emitStartArm64Linux(g, irmod)
+	emitStartArm64Linux(g, irmod, common.EntryFuncName(target))
 
 	// Compile all functions
 	g.CompileModuleFuncs(irmod)
@@ -63,7 +63,7 @@ func GenerateLinuxELF(target *common.Target, irmod *ir.IRModule, outputPath stri
 // emitStartArm64Linux generates the _start entry point for Linux ARM64.
 // The kernel enters _start with SP pointing to argc on the stack.
 // Linux ARM64 does not need argc/argv/envp — the os package reads from /proc.
-func emitStartArm64Linux(g *aarch64.CodeGen, irmod *ir.IRModule) {
+func emitStartArm64Linux(g *aarch64.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// Allocate operand stack: mmap(NULL, 1MB, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)
 	// Linux ARM64: SYS_mmap = 222, MAP_ANONYMOUS = 0x20, MAP_PRIVATE = 0x02 → flags = 0x22
 	g.EmitMovZ(aarch64.REG_X0, 0, 0)
@@ -86,8 +86,8 @@ func emitStartArm64Linux(g *aarch64.CodeGen, irmod *ir.IRModule) {
 		}
 	}
 
-	// Call main.main
-	g.EmitCallPlaceholderArm64("main.main")
+	// Call entry function.
+	g.EmitCallPlaceholderArm64(entryFunc)
 
 	// exit_group(0): X8=94, X0=0
 	g.EmitMovZ(aarch64.REG_X0, 0, 0)

@@ -276,7 +276,7 @@ func (g *CodeGen) emitEXEStart(irmod *ir.IRModule) {
 			g.emitCallPlaceholder(f.Name)
 		}
 	}
-	g.emitCallPlaceholder("main.main")
+	g.emitCallPlaceholder(common.EntryFuncName(g.target))
 
 	g.emitMovImm16(REG16_AX, 0x4C00) // AH=4Ch, AL=0
 	g.emitBytes(0xCD, 0x21)          // int 21h
