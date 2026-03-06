@@ -597,7 +597,9 @@ func discoverEntryBuildFlags(entryDir string) ([]string, []string, error) {
 	vars := parseSimpleMakeVars(string(data))
 	cdefine := expandMakeVars(vars["CDEFINE"], vars)
 	cinclude := expandMakeVars(vars["CINCLUDE"], vars)
-	return extractDefines(cdefine), extractForcedIncludes(cinclude), nil
+	defines := extractDefines(cdefine)
+	defines = append(defines, extractRecipeDefines(string(data), vars)...)
+	return uniqueStrings(defines), uniqueStrings(extractForcedIncludes(cinclude)), nil
 }
 
 func parseSimpleMakeVars(src string) map[string]string {
@@ -626,15 +628,19 @@ func parseSimpleMakeVars(src string) map[string]string {
 }
 
 func expandMakeVars(s string, vars map[string]string) string {
-	re := regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}`)
+	re := regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}|\$\(([A-Za-z0-9_]+)\)`)
 	for i := 0; i < 16; i++ {
 		changed := false
 		s = re.ReplaceAllStringFunc(s, func(m string) string {
 			sub := re.FindStringSubmatch(m)
-			if len(sub) != 2 {
+			if len(sub) != 3 {
 				return m
 			}
-			if v, ok := vars[sub[1]]; ok {
+			name := sub[1]
+			if name == "" {
+				name = sub[2]
+			}
+			if v, ok := vars[name]; ok {
 				changed = true
 				return v
 			}
@@ -648,9 +654,15 @@ func expandMakeVars(s string, vars map[string]string) string {
 }
 
 func extractDefines(s string) []string {
-	fields := strings.Fields(s)
+	fields := splitShellWords(s)
 	out := make([]string, 0, len(fields))
-	for _, f := range fields {
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		if f == "-D" && i+1 < len(fields) {
+			out = append(out, fields[i+1])
+			i++
+			continue
+		}
 		if strings.HasPrefix(f, "-D") && len(f) > 2 {
 			out = append(out, f[2:])
 		}
@@ -659,13 +671,135 @@ func extractDefines(s string) []string {
 }
 
 func extractForcedIncludes(s string) []string {
-	fields := strings.Fields(s)
+	fields := splitShellWords(s)
 	var out []string
 	for i := 0; i < len(fields); i++ {
 		if fields[i] == "-include" && i+1 < len(fields) {
 			out = append(out, fields[i+1])
 			i++
 		}
+	}
+	return out
+}
+
+func extractRecipeDefines(src string, vars map[string]string) []string {
+	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
+	targets := make(map[string]bool)
+	for _, name := range []string{
+		expandMakeVars(vars["PROG"], vars),
+		expandMakeVars(vars["ENTRY"], vars),
+	} {
+		for _, part := range splitShellWords(name) {
+			if part != "" {
+				targets[part] = true
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	ruleRe := regexp.MustCompile(`^\s*([^:#=][^:]*)\s*:(.*)$`)
+	var out []string
+	inTargetRule := false
+	for _, rawLine := range lines {
+		line := strings.TrimRight(rawLine, "\r")
+		if strings.HasPrefix(line, "\t") {
+			if inTargetRule {
+				out = append(out, extractDefines(expandMakeVars(strings.TrimSpace(line), vars))...)
+			}
+			continue
+		}
+		inTargetRule = false
+		body := line
+		if idx := strings.IndexByte(body, '#'); idx >= 0 {
+			body = body[:idx]
+		}
+		body = strings.TrimSpace(body)
+		if body == "" {
+			continue
+		}
+		m := ruleRe.FindStringSubmatch(body)
+		if m == nil {
+			continue
+		}
+		for _, target := range splitShellWords(expandMakeVars(m[1], vars)) {
+			if targets[target] {
+				inTargetRule = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+func splitShellWords(s string) []string {
+	var out []string
+	var cur strings.Builder
+	quote := byte(0)
+	escaped := false
+	flush := func() {
+		if cur.Len() == 0 {
+			return
+		}
+		out = append(out, cur.String())
+		cur.Reset()
+	}
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			cur.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if quote == '\'' {
+			if ch == '\'' {
+				quote = 0
+			} else {
+				cur.WriteByte(ch)
+			}
+			continue
+		}
+		if quote == '"' {
+			switch ch {
+			case '"':
+				quote = 0
+			case '\\':
+				if i+1 < len(s) {
+					i++
+					cur.WriteByte(s[i])
+				}
+			default:
+				cur.WriteByte(ch)
+			}
+			continue
+		}
+		switch ch {
+		case '\\':
+			escaped = true
+		case '\'', '"':
+			quote = ch
+		case ' ', '\t', '\n', '\r':
+			flush()
+		default:
+			cur.WriteByte(ch)
+		}
+	}
+	flush()
+	return out
+}
+
+func uniqueStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
 	}
 	return out
 }

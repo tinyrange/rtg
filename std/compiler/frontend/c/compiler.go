@@ -6756,6 +6756,11 @@ func (fc *funcCompiler) checkCallArgsByType(calleeName string, paramCount int, p
 				}
 				continue
 			}
+			if _, ok := fc.exprTypeInfo(arg); ok {
+				// Preserve old C compatibility for integer-to-pointer calls;
+				// lowering keeps both as plain machine values.
+				continue
+			}
 			fc.errorf(fc.sig.File, 0, 0, "argument %d of %q expects pointer value", i+1, calleeName)
 			ok = false
 			continue

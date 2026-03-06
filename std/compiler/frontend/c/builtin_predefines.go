@@ -1,5 +1,10 @@
 package frontend
 
+import (
+	"strconv"
+	"time"
+)
+
 func defaultTargetPtrSize(arch string) int {
 	switch arch {
 	case "386", "arm", "armv8m", "wasm32":
@@ -19,6 +24,7 @@ func builtinPredefineSpecs(targetOS string, targetArch string, ptrSize int, host
 	if ptrSize <= 0 {
 		ptrSize = defaultTargetPtrSize(targetArch)
 	}
+	now := time.Now()
 
 	longType := "long"
 	ulongType := "unsigned long"
@@ -51,6 +57,8 @@ func builtinPredefineSpecs(targetOS string, targetArch string, ptrSize int, host
 		"__STDC__=1",
 		"__STDC_VERSION__=199901L",
 		"__STDC_HOSTED__=0",
+		"__DATE__=" + strconv.Quote(now.Format("Jan _2 2006")),
+		"__TIME__=" + strconv.Quote(now.Format("15:04:05")),
 		"__ORDER_LITTLE_ENDIAN__=1234",
 		"__ORDER_BIG_ENDIAN__=4321",
 		"__ORDER_PDP_ENDIAN__=3412",
