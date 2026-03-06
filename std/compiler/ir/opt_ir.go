@@ -166,7 +166,7 @@ func buildCompositeHelperFunc(name string, fieldCount int, wordSize int) *IRFunc
 		if i != 0 {
 			code = append(code, Inst{Op: OP_OFFSET, Arg: i * wordSize})
 		}
-		code = append(code, Inst{Op: OP_STORE, Arg: 0})
+		code = append(code, Inst{Op: OP_STORE, Arg: wordSize})
 	}
 
 	code = append(code, Inst{Op: OP_LOCAL_GET, Arg: ptrLocal})
@@ -1013,8 +1013,8 @@ func transferNonNilState(state *nonNilState, inst Inst, f *IRFunc, funcRetCounts
 	return next
 }
 
-// annotateNonNilMemoryBases marks selected LOAD/LEN/CAP instructions with a
-// backend hint when their input address is provably non-zero.
+// annotateNonNilMemoryBases marks selected LOAD instructions with a backend
+// hint when their input address is provably non-zero.
 func annotateNonNilMemoryBases(code []Inst, f *IRFunc, funcRetCounts map[string]int, ifaceMethodRets map[string]int) ([]Inst, bool) {
 	if len(code) == 0 {
 		return code, false
@@ -1055,7 +1055,7 @@ func annotateNonNilMemoryBases(code []Inst, f *IRFunc, funcRetCounts map[string]
 		}
 
 		cur := out[i]
-		if cur.Op != OP_LOAD && cur.Op != OP_LEN && cur.Op != OP_CAP {
+		if cur.Op != OP_LOAD {
 			// Nothing to mark.
 		} else if cur.Name != InstNonNilMemoryBase && topNonNil(state) {
 			out[i].Name = InstNonNilMemoryBase

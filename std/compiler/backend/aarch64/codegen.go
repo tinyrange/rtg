@@ -305,9 +305,10 @@ func (g *CodeGen) CompileModuleFuncs(irmod *ir.IRModule) {
 
 func (g *CodeGen) compiledFuncBodyKey(start int, fixStart int) string {
 	body := g.code[start:]
-	sig := make([]byte, 0, len(body)+(len(g.callFixups)-fixStart)*32)
+	sig := make([]byte, 0, 4+len(body)+(len(g.callFixups)-fixStart)*32)
+	sig = append(sig, 0, 0, 0, 0)
+	common.PutU32(sig[len(sig)-4:], uint32(len(body)))
 	sig = append(sig, body...)
-	sig = append(sig, 0xff)
 	for i := fixStart; i < len(g.callFixups); i++ {
 		fix := g.callFixups[i]
 		rel := fix.CodeOffset - start
