@@ -910,6 +910,19 @@ func (e *Executor) handleFullCompiler(args []string) error {
 				if targetArch != runtime.GOARCH {
 					allow32On64 := runtime.GOARCH == "amd64" && targetArch == "386" &&
 						(runtime.GOOS == "linux" || runtime.GOOS == "windows")
+					if allow32On64 {
+						break
+					}
+					if runtime.GOOS == "linux" && targetOS == "linux" && targetArch == "rv64" {
+						runBin = "qemu-riscv64"
+						runArgs = []string{out}
+						break
+					}
+					if runtime.GOOS == "linux" && targetOS == "linux" && targetArch == "rv32" {
+						runBin = "qemu-riscv32"
+						runArgs = []string{out}
+						break
+					}
 					if !allow32On64 {
 						return fmt.Errorf("cannot execute %s/%s binary on %s/%s host: %s", targetOS, targetArch, runtime.GOOS, runtime.GOARCH, out)
 					}
