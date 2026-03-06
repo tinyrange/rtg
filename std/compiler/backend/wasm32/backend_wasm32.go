@@ -364,16 +364,20 @@ func (g *WasmGen) peekType() byte {
 	return g.valTypes[len(g.valTypes)-1]
 }
 
-func (g *WasmGen) promoteI32ToI64() {
+func (g *WasmGen) promoteI32ToI64(unsigned bool) {
 	if g.peekType() == WASM_TYPE_I32 {
-		g.w.i64ExtendI32U()
+		if unsigned {
+			g.w.i64ExtendI32U()
+		} else {
+			g.w.i64ExtendI32S()
+		}
 		g.valTypes[len(g.valTypes)-1] = WASM_TYPE_I64
 	}
 }
 
 // ensureBothSameType promotes i32 operand to i64 if the other is i64.
 // Returns the common type after promotion.
-func (g *WasmGen) ensureBothSameType() byte {
+func (g *WasmGen) ensureBothSameType(unsigned bool) byte {
 	if len(g.valTypes) < 2 {
 		return WASM_TYPE_I32
 	}
@@ -385,14 +389,22 @@ func (g *WasmGen) ensureBothSameType() byte {
 	if top == WASM_TYPE_I64 && below == WASM_TYPE_I32 {
 		// Need to promote the below value. Save top to temp, promote below, restore top.
 		g.w.localSet(uint32(g.tempLocal64)) // save i64 top
-		g.w.i64ExtendI32U()                 // promote i32 below to i64
+		if unsigned {
+			g.w.i64ExtendI32U()
+		} else {
+			g.w.i64ExtendI32S()
+		}
 		g.w.localGet(uint32(g.tempLocal64)) // restore i64 top
 		g.valTypes[len(g.valTypes)-2] = WASM_TYPE_I64
 		return WASM_TYPE_I64
 	}
 	if top == WASM_TYPE_I32 && below == WASM_TYPE_I64 {
 		// Top is i32, promote it
-		g.w.i64ExtendI32U()
+		if unsigned {
+			g.w.i64ExtendI32U()
+		} else {
+			g.w.i64ExtendI32S()
+		}
 		g.valTypes[len(g.valTypes)-1] = WASM_TYPE_I64
 		return WASM_TYPE_I64
 	}
@@ -1378,75 +1390,93 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 		if inst.Name == "float64" {
 			g.compileBinaryOpFloat(OP_WASM_F64_ADD)
 		} else {
-			g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
+			g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD, inst.Name == "unsigned")
 		}
 	case ir.OP_SUB:
 		if inst.Name == "float64" {
 			g.compileBinaryOpFloat(OP_WASM_F64_SUB)
 		} else {
-			g.compileBinaryOp(OP_WASM_I32_SUB, OP_WASM_I64_SUB)
+			g.compileBinaryOp(OP_WASM_I32_SUB, OP_WASM_I64_SUB, inst.Name == "unsigned")
 		}
 	case ir.OP_MUL:
 		if inst.Name == "float64" {
 			g.compileBinaryOpFloat(OP_WASM_F64_MUL)
 		} else {
-			g.compileBinaryOp(OP_WASM_I32_MUL, OP_WASM_I64_MUL)
+			g.compileBinaryOp(OP_WASM_I32_MUL, OP_WASM_I64_MUL, inst.Name == "unsigned")
 		}
 	case ir.OP_DIV:
 		if inst.Name == "float64" {
 			g.compileBinaryOpFloat(OP_WASM_F64_DIV)
+		} else if inst.Name == "unsigned" {
+			g.compileBinaryOp(OP_WASM_I32_DIV_U, OP_WASM_I64_DIV_U, true)
 		} else {
-			g.compileBinaryOp(OP_WASM_I32_DIV_S, OP_WASM_I64_DIV_S)
+			g.compileBinaryOp(OP_WASM_I32_DIV_S, OP_WASM_I64_DIV_S, false)
 		}
 	case ir.OP_MOD:
-		g.compileBinaryOp(OP_WASM_I32_REM_S, OP_WASM_I64_REM_S)
+		if inst.Name == "unsigned" {
+			g.compileBinaryOp(OP_WASM_I32_REM_U, OP_WASM_I64_REM_U, true)
+		} else {
+			g.compileBinaryOp(OP_WASM_I32_REM_S, OP_WASM_I64_REM_S, false)
+		}
 
 	case ir.OP_AND:
-		g.compileBinaryOp(OP_WASM_I32_AND, OP_WASM_I64_AND)
+		g.compileBinaryOp(OP_WASM_I32_AND, OP_WASM_I64_AND, inst.Name == "unsigned")
 	case ir.OP_OR:
-		g.compileBinaryOp(OP_WASM_I32_OR, OP_WASM_I64_OR)
+		g.compileBinaryOp(OP_WASM_I32_OR, OP_WASM_I64_OR, inst.Name == "unsigned")
 	case ir.OP_XOR:
-		g.compileBinaryOp(OP_WASM_I32_XOR, OP_WASM_I64_XOR)
+		g.compileBinaryOp(OP_WASM_I32_XOR, OP_WASM_I64_XOR, inst.Name == "unsigned")
 	case ir.OP_SHL:
-		g.compileBinaryOp(OP_WASM_I32_SHL, OP_WASM_I64_SHL)
+		g.compileBinaryOp(OP_WASM_I32_SHL, OP_WASM_I64_SHL, inst.Name == "unsigned")
 	case ir.OP_SHR:
-		g.compileBinaryOp(OP_WASM_I32_SHR_S, OP_WASM_I64_SHR_U)
+		if inst.Name == "unsigned" {
+			g.compileBinaryOp(OP_WASM_I32_SHR_U, OP_WASM_I64_SHR_U, true)
+		} else {
+			g.compileBinaryOp(OP_WASM_I32_SHR_S, OP_WASM_I64_SHR_S, false)
+		}
 
 	case ir.OP_EQ:
 		if inst.Name == "float64" {
 			g.compileCompareOpFloat(OP_WASM_F64_EQ)
 		} else {
-			g.compileCompareOp(OP_WASM_I32_EQ, OP_WASM_I64_EQ)
+			g.compileCompareOp(OP_WASM_I32_EQ, OP_WASM_I64_EQ, inst.Name == "unsigned")
 		}
 	case ir.OP_NEQ:
 		if inst.Name == "float64" {
 			g.compileCompareOpFloat(OP_WASM_F64_NE)
 		} else {
-			g.compileCompareOp(OP_WASM_I32_NE, OP_WASM_I64_NE)
+			g.compileCompareOp(OP_WASM_I32_NE, OP_WASM_I64_NE, inst.Name == "unsigned")
 		}
 	case ir.OP_LT:
 		if inst.Name == "float64" {
 			g.compileCompareOpFloat(OP_WASM_F64_LT)
+		} else if inst.Name == "unsigned" {
+			g.compileCompareOp(OP_WASM_I32_LT_U, OP_WASM_I64_LT_U, true)
 		} else {
-			g.compileCompareOp(OP_WASM_I32_LT_S, OP_WASM_I64_LT_S)
+			g.compileCompareOp(OP_WASM_I32_LT_S, OP_WASM_I64_LT_S, false)
 		}
 	case ir.OP_GT:
 		if inst.Name == "float64" {
 			g.compileCompareOpFloat(OP_WASM_F64_GT)
+		} else if inst.Name == "unsigned" {
+			g.compileCompareOp(OP_WASM_I32_GT_U, OP_WASM_I64_GT_U, true)
 		} else {
-			g.compileCompareOp(OP_WASM_I32_GT_S, OP_WASM_I64_GT_S)
+			g.compileCompareOp(OP_WASM_I32_GT_S, OP_WASM_I64_GT_S, false)
 		}
 	case ir.OP_LEQ:
 		if inst.Name == "float64" {
 			g.compileCompareOpFloat(OP_WASM_F64_LE)
+		} else if inst.Name == "unsigned" {
+			g.compileCompareOp(OP_WASM_I32_LE_U, OP_WASM_I64_LE_U, true)
 		} else {
-			g.compileCompareOp(OP_WASM_I32_LE_S, OP_WASM_I64_LE_S)
+			g.compileCompareOp(OP_WASM_I32_LE_S, OP_WASM_I64_LE_S, false)
 		}
 	case ir.OP_GEQ:
 		if inst.Name == "float64" {
 			g.compileCompareOpFloat(OP_WASM_F64_GE)
+		} else if inst.Name == "unsigned" {
+			g.compileCompareOp(OP_WASM_I32_GE_U, OP_WASM_I64_GE_U, true)
 		} else {
-			g.compileCompareOp(OP_WASM_I32_GE_S, OP_WASM_I64_GE_S)
+			g.compileCompareOp(OP_WASM_I32_GE_S, OP_WASM_I64_GE_S, false)
 		}
 
 	case ir.OP_NOT:
@@ -1519,8 +1549,8 @@ func (g *WasmGen) compileInst(inst ir.Inst) {
 }
 
 // compileBinaryOp emits a binary operation, promoting to i64 if either operand is i64.
-func (g *WasmGen) compileBinaryOp(i32op byte, i64op byte) {
-	t := g.ensureBothSameType()
+func (g *WasmGen) compileBinaryOp(i32op byte, i64op byte, unsigned bool) {
+	t := g.ensureBothSameType(unsigned)
 	g.popType()
 	g.popType()
 	if t == WASM_TYPE_I64 {
@@ -1540,8 +1570,8 @@ func (g *WasmGen) compileBinaryOpFloat(op byte) {
 }
 
 // compileCompareOp emits a comparison, promoting to i64 if needed. Result is always i32.
-func (g *WasmGen) compileCompareOp(i32op byte, i64op byte) {
-	t := g.ensureBothSameType()
+func (g *WasmGen) compileCompareOp(i32op byte, i64op byte, unsigned bool) {
+	t := g.ensureBothSameType(unsigned)
 	g.popType()
 	g.popType()
 	if t == WASM_TYPE_I64 {
@@ -1579,10 +1609,10 @@ func (g *WasmGen) compileCompareJump(inst ir.Inst) {
 		}
 		return
 	}
-	t := g.ensureBothSameType()
-	g.popType()
-	g.popType()
 	unsigned := inst.Name == "unsigned"
+	t := g.ensureBothSameType(unsigned)
+	g.popType()
+	g.popType()
 	if t == WASM_TYPE_I64 {
 		switch inst.Op {
 		case ir.OP_JMP_EQ:
@@ -1726,14 +1756,14 @@ func (g *WasmGen) compileLocalAddImm(idx int, imm int32) {
 		g.pushType(WASM_TYPE_F64)
 		g.compileBinaryOpFloat(OP_WASM_F64_ADD)
 	} else if g.peekType() == WASM_TYPE_I64 {
-		g.w.i64Const(int64(imm))
-		g.pushType(WASM_TYPE_I64)
-		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
-	} else {
-		g.w.i32Const(imm)
-		g.pushType(WASM_TYPE_I32)
-		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD)
-	}
+			g.w.i64Const(int64(imm))
+			g.pushType(WASM_TYPE_I64)
+			g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD, false)
+		} else {
+			g.w.i32Const(imm)
+			g.pushType(WASM_TYPE_I32)
+			g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD, false)
+		}
 	g.compileLocalSet(idx)
 }
 
