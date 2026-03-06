@@ -861,6 +861,17 @@ func compareJumpProvenNonNilLocal(code []Inst, i int) (int, bool) {
 	if b.Op == OP_LOCAL_GET && isZeroConstInst(a) {
 		return b.Arg, true
 	}
+	if i >= 3 {
+		a = code[i-3]
+		b = code[i-2]
+		c := code[i-1]
+		if a.Op == OP_LOCAL_GET && (b.Op == OP_LEN || b.Op == OP_CAP) && isZeroConstInst(c) {
+			return a.Arg, true
+		}
+		if c.Op == OP_LOCAL_GET && isZeroConstInst(a) && (b.Op == OP_LEN || b.Op == OP_CAP) {
+			return c.Arg, true
+		}
+	}
 	return 0, false
 }
 
@@ -874,9 +885,15 @@ func branchProvenNonNilLocal(code []Inst, i int, onTarget bool) (int, bool) {
 		if onTarget && i > 0 && code[i-1].Op == OP_LOCAL_GET {
 			return code[i-1].Arg, true
 		}
+		if onTarget && i > 1 && (code[i-1].Op == OP_LEN || code[i-1].Op == OP_CAP) && code[i-2].Op == OP_LOCAL_GET {
+			return code[i-2].Arg, true
+		}
 	case OP_JMP_IF_NOT:
 		if !onTarget && i > 0 && code[i-1].Op == OP_LOCAL_GET {
 			return code[i-1].Arg, true
+		}
+		if !onTarget && i > 1 && (code[i-1].Op == OP_LEN || code[i-1].Op == OP_CAP) && code[i-2].Op == OP_LOCAL_GET {
+			return code[i-2].Arg, true
 		}
 	case OP_JMP_NEQ:
 		if onTarget {
@@ -900,7 +917,7 @@ func transferNonNilState(state *nonNilState, inst Inst, f *IRFunc, funcRetCounts
 	case OP_CONST_I64:
 		pushNonNil(next, inst.Val != 0)
 	case OP_CONST_STR:
-		pushNonNil(next, false)
+		pushNonNil(next, len(inst.Name) > 0)
 	case OP_CONST_BOOL:
 		pushNonNil(next, inst.Arg != 0)
 	case OP_CONST_NIL:
