@@ -733,7 +733,16 @@ func (p *Preprocessor) expandTokens(file string, in []Token, disabled map[string
 						return nil, err
 					}
 					nextDisabled := copyDisabled(disabled, tok.Text)
+					rawRepl := cloneTokens(repl)
 					repl, err = p.expandTokens(file, repl, nextDisabled, depth+1)
+					if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
+						tail := append(rawRepl, cloneTokens(in[end+1:])...)
+						repl, err = p.expandTokens(file, tail, nextDisabled, depth+1)
+						if err == nil {
+							out = append(out, repl...)
+							return out, nil
+						}
+					}
 					if err != nil {
 						return nil, err
 					}
@@ -743,6 +752,14 @@ func (p *Preprocessor) expandTokens(file string, in []Token, disabled map[string
 				}
 				nextDisabled := copyDisabled(disabled, tok.Text)
 				repl, err := p.expandTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
+				if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
+					tail := append(cloneTokens(m.Body), cloneTokens(in[i+1:])...)
+					repl, err = p.expandTokens(file, tail, nextDisabled, depth+1)
+					if err == nil {
+						out = append(out, repl...)
+						return out, nil
+					}
+				}
 				if err != nil {
 					return nil, err
 				}
@@ -829,7 +846,16 @@ func (p *Preprocessor) expandIfExprTokens(file string, in []Token, disabled map[
 						return nil, err
 					}
 					nextDisabled := copyDisabled(disabled, tok.Text)
+					rawRepl := cloneTokens(repl)
 					repl, err = p.expandIfExprTokens(file, repl, nextDisabled, depth+1)
+					if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
+						tail := append(rawRepl, cloneTokens(in[end+1:])...)
+						repl, err = p.expandIfExprTokens(file, tail, nextDisabled, depth+1)
+						if err == nil {
+							out = append(out, repl...)
+							return out, nil
+						}
+					}
 					if err != nil {
 						return nil, err
 					}
@@ -839,6 +865,14 @@ func (p *Preprocessor) expandIfExprTokens(file string, in []Token, disabled map[
 				}
 				nextDisabled := copyDisabled(disabled, tok.Text)
 				repl, err := p.expandIfExprTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
+				if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
+					tail := append(cloneTokens(m.Body), cloneTokens(in[i+1:])...)
+					repl, err = p.expandIfExprTokens(file, tail, nextDisabled, depth+1)
+					if err == nil {
+						out = append(out, repl...)
+						return out, nil
+					}
+				}
 				if err != nil {
 					return nil, err
 				}
@@ -873,7 +907,7 @@ func parseMacroArgs(tokens []Token, openParen int) ([][]Token, int, bool) {
 				j++
 				continue
 			case ")":
-				if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+				if depthParen == 0 {
 					if sawAny || len(args) > 0 {
 						args = append(args, cur)
 					}

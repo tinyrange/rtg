@@ -356,10 +356,6 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 					l.advance()
 					break
 				}
-				if l.peek() == '\n' {
-					tok := Token{Kind: TokNewline, Text: "\n", File: l.file, Line: l.line, Col: l.col, StartOfLine: true}
-					out = append(out, tok)
-				}
 				l.advance()
 			}
 			continue
