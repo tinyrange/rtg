@@ -4863,6 +4863,22 @@ func (c *Compiler) emitPanicPropagationCheck(_ int) {
 	}
 	savedDepth := c.stackDepth
 	c.emit(ir.Inst{Op: ir.OP_CALL, Name: "runtime.PanicShouldUnwind", Arg: 0})
+	if c.target != nil && c.target.GOOS == "wasi" && c.target.GOARCH == "wasm32" {
+		// The wasm stackifier still depends on the original inline panic-unwind
+		// shape here; outlined slow labels can leave branch targets with the
+		// wrong stack state during validation.
+		continueLabel := c.newLabel()
+		c.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: continueLabel})
+		dropCount := savedDepth
+		for dropCount > 0 {
+			c.emit(ir.Inst{Op: ir.OP_DROP})
+			dropCount--
+		}
+		c.emit(ir.Inst{Op: ir.OP_JMP, Arg: c.panicUnwindLabel})
+		c.stackDepth = savedDepth
+		c.emitLabel(continueLabel)
+		return
+	}
 	slowLabel := c.panicUnwindLabel
 	if savedDepth > 0 {
 		// Reuse one outlined slow path per transient stack depth so callsites
