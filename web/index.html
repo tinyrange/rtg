@@ -28,6 +28,7 @@
       --yellow: #d4a72c;
       --font-ui: Tahoma, "Segoe UI", system-ui, -apple-system, sans-serif;
       --font-mono: "Cascadia Code", "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+      --floating-panel-top: 42px;
     }
     body {
       font-family: var(--font-ui);
@@ -176,7 +177,7 @@
     }
     #tags-panel {
       position: fixed;
-      top: 42px;
+      top: var(--floating-panel-top);
       right: 12px;
       width: 280px;
       max-height: 62vh;
@@ -190,7 +191,7 @@
     }
     #targets-panel {
       position: fixed;
-      top: 42px;
+      top: var(--floating-panel-top);
       right: 12px;
       width: 360px;
       max-height: 70vh;
@@ -904,6 +905,7 @@
         flex: 1 1 180px;
         overflow: hidden;
         text-overflow: ellipsis;
+        white-space: nowrap;
       }
       #btn-emit-ir,
       #btn-tags,
@@ -987,13 +989,11 @@
       .btn { padding: 4px 8px; font-size: 11px; }
       #target-select { font-size: 11px; padding: 3px 4px; }
       #tags-panel {
-        top: 82px;
         right: 8px;
         width: calc(100vw - 16px);
         max-height: 50vh;
       }
       #targets-panel {
-        top: 82px;
         right: 8px;
         width: calc(100vw - 16px);
         max-height: calc(100vh - 140px);
