@@ -396,6 +396,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 	}
 	c.assignFunctionIDs()
 
+	c.finalizeTentativeGlobals()
 	c.emitGlobalInit()
 	for _, sig := range c.funcOrder {
 		if !sig.Defined {
@@ -636,6 +637,34 @@ func (c *compiler) addGlobalEnumConst(name string, val int64, file string, line 
 func (c *compiler) addGlobalEnumConsts(vals map[string]int64, file string, line int, col int) {
 	for name, val := range vals {
 		c.addGlobalEnumConst(name, val, file, line, col)
+	}
+}
+
+func (c *compiler) finalizeTentativeGlobals() {
+	for name, kind := range c.globalKind {
+		if kind != cDeclArray {
+			continue
+		}
+		if c.globalArray[name] != cArrayLenUnspecified {
+			continue
+		}
+		c.globalArray[name] = 1
+		if len(c.globalArrayDims[name]) > 0 {
+			dims := cloneInt64s(c.globalArrayDims[name])
+			dims[0] = 1
+			c.globalArrayDims[name] = dims
+		}
+		for i := range c.globalInits {
+			if c.globalInits[i].Name != name || c.globalInits[i].Kind != cDeclArray {
+				continue
+			}
+			c.globalInits[i].ArrayLen = 1
+			if len(c.globalInits[i].ArrayDims) > 0 {
+				dims := cloneInt64s(c.globalInits[i].ArrayDims)
+				dims[0] = 1
+				c.globalInits[i].ArrayDims = dims
+			}
+		}
 	}
 }
 
@@ -1003,10 +1032,6 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			AggregateKeyword: it.AggregateKeyword,
 			AggregateTag:     it.AggregateTag,
 		}
-		if it.Kind == cDeclArray && it.ArrayLen == cArrayLenUnspecified && len(it.Init) == 0 && !hasExtern && !hasTypedef {
-			it.ArrayLen = 1
-			info.ArrayLen = 1
-		}
 		if idx, exists := c.globalIndex[it.Name]; exists {
 			existing, ok := c.globalTypeInfo(it.Name)
 			merged, compatible := mergeRedeclaredTypeInfo(existing, info)
@@ -1018,6 +1043,13 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			if it.Kind == cDeclArray && info.ArrayLen != cArrayLenUnspecified {
 				c.globalArray[it.Name] = info.ArrayLen
 				c.globalArrayDims[it.Name] = cloneInt64s(info.ArrayDims)
+				for i := range c.globalInits {
+					if c.globalInits[i].Name != it.Name || c.globalInits[i].Kind != cDeclArray {
+						continue
+					}
+					c.globalInits[i].ArrayLen = info.ArrayLen
+					c.globalInits[i].ArrayDims = cloneInt64s(info.ArrayDims)
+				}
 			}
 			if len(it.Init) == 0 {
 				continue
@@ -1033,22 +1065,43 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			c.globalHasInit[it.Name] = true
 			irName := c.irmod.Globals[idx].Name
 			if it.Kind == cDeclArray {
-				c.globalInits = append(c.globalInits, cGlobalInit{
-					Name:             it.Name,
-					Index:            idx,
-					Kind:             it.Kind,
-					PtrDepth:         it.PtrDepth,
-					ArrayLen:         it.ArrayLen,
-					ArrayDims:        cloneInt64s(it.ArrayDims),
-					Base:             it.Base,
-					AggregateKeyword: it.AggregateKeyword,
-					AggregateTag:     it.AggregateTag,
-					Init:             append([]Token{}, it.Init...),
-					File:             file,
-					Line:             n.Line,
-					Col:              n.Col,
-					IRName:           irName,
-				})
+				replaced := false
+				for i := range c.globalInits {
+					if c.globalInits[i].Name != it.Name || c.globalInits[i].Kind != cDeclArray {
+						continue
+					}
+					c.globalInits[i].PtrDepth = it.PtrDepth
+					c.globalInits[i].ArrayLen = info.ArrayLen
+					c.globalInits[i].ArrayDims = cloneInt64s(info.ArrayDims)
+					c.globalInits[i].Base = it.Base
+					c.globalInits[i].AggregateKeyword = it.AggregateKeyword
+					c.globalInits[i].AggregateTag = it.AggregateTag
+					c.globalInits[i].Init = append([]Token{}, it.Init...)
+					c.globalInits[i].File = file
+					c.globalInits[i].Line = n.Line
+					c.globalInits[i].Col = n.Col
+					c.globalInits[i].IRName = irName
+					replaced = true
+					break
+				}
+				if !replaced {
+					c.globalInits = append(c.globalInits, cGlobalInit{
+						Name:             it.Name,
+						Index:            idx,
+						Kind:             it.Kind,
+						PtrDepth:         it.PtrDepth,
+						ArrayLen:         info.ArrayLen,
+						ArrayDims:        cloneInt64s(info.ArrayDims),
+						Base:             it.Base,
+						AggregateKeyword: it.AggregateKeyword,
+						AggregateTag:     it.AggregateTag,
+						Init:             append([]Token{}, it.Init...),
+						File:             file,
+						Line:             n.Line,
+						Col:              n.Col,
+						IRName:           irName,
+					})
+				}
 				continue
 			}
 			c.globalInits = append(c.globalInits, cGlobalInit{
@@ -1382,7 +1435,6 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 func (c *compiler) emitEntryWrapper() {
 	mainSig, ok := c.funcs["main"]
 	if !ok || !mainSig.Defined {
-		c.errorf("", 0, 0, "no C entrypoint found: expected function \"main\"")
 		return
 	}
 	f := &ir.IRFunc{Name: "main.main", Params: 0, RetCount: 1}
@@ -1561,7 +1613,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if err != nil {
 		return nil, err
 	}
-	retSpec, _, _, err := parseScalarTypeSpec(spec, "function declaration", true)
+	retSpec, _, _, _, err := parseScalarTypeSpec(spec, "function declaration", true)
 	if err != nil {
 		return nil, err
 	}
@@ -1612,7 +1664,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				if len(p0) > 0 {
 					spec, decl, err := splitDeclSpecPrefix(p0, "function parameter list")
 					if err == nil {
-						baseInfo, _, _, err := parseScalarTypeSpec(spec, "function parameter list", true)
+						baseInfo, _, _, _, err := parseScalarTypeSpec(spec, "function parameter list", true)
 						if err == nil {
 							_, kind, ptrDepth, arrLen, arrDims, _, _, err := parseDeclarator(decl, true)
 							if err == nil {
@@ -1644,7 +1696,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				if err != nil {
 					return nil, err
 				}
-				pbaseInfo, _, _, err := parseScalarTypeSpec(spec, fmt.Sprintf("function parameter %d", i+1), true)
+				pbaseInfo, _, _, _, err := parseScalarTypeSpec(spec, fmt.Sprintf("function parameter %d", i+1), true)
 				if err != nil {
 					return nil, err
 				}
@@ -2044,10 +2096,11 @@ func parseBitfieldWidth(tokens []Token) (int64, error) {
 	return n, nil
 }
 
-func parseAggregateFields(tokens []Token, keyword string, tag string, context string) ([]cAggregateField, int64, int64, error) {
+func parseAggregateFields(tokens []Token, keyword string, tag string, context string) ([]cAggregateField, int64, int64, map[string]int64, error) {
 	decls := splitTopLevel(trimTokens(tokens), ";")
 	fields := make([]cAggregateField, 0, len(decls))
 	used := make(map[string]bool)
+	var enumConsts map[string]int64
 	maxAlign := int64(1)
 	maxSize := int64(0)
 	nextOffset := int64(0)
@@ -2065,20 +2118,24 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 		dctx := fmt.Sprintf("%s member declaration %d", context, i+1)
 		spec, rest, err := splitDeclSpecPrefix(decl, dctx)
 		if err != nil {
-			return nil, 0, 0, err
+			return nil, 0, 0, nil, err
 		}
-		baseInfo, hasExtern, hasTypedef, err := parseScalarTypeSpec(spec, dctx, true)
+		baseInfo, memberEnumConsts, hasExtern, hasTypedef, err := parseScalarTypeSpec(spec, dctx, true)
 		if err != nil {
-			return nil, 0, 0, err
+			return nil, 0, 0, nil, err
+		}
+		enumConsts, err = mergeEnumConstMaps(enumConsts, memberEnumConsts)
+		if err != nil {
+			return nil, 0, 0, nil, fmt.Errorf("%s: %v", dctx, err)
 		}
 		if hasExtern {
-			return nil, 0, 0, fmt.Errorf("%s does not allow extern members", dctx)
+			return nil, 0, 0, nil, fmt.Errorf("%s does not allow extern members", dctx)
 		}
 		if hasTypedef {
-			return nil, 0, 0, fmt.Errorf("%s does not allow typedef members", dctx)
+			return nil, 0, 0, nil, fmt.Errorf("%s does not allow typedef members", dctx)
 		}
 		if len(rest) == 0 {
-			return nil, 0, 0, fmt.Errorf("%s requires at least one declarator", dctx)
+			return nil, 0, 0, nil, fmt.Errorf("%s requires at least one declarator", dctx)
 		}
 		parts := splitTopLevel(rest, ",")
 		for j, part := range parts {
@@ -2089,7 +2146,7 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 			bctx := fmt.Sprintf("%s member declarator %d", dctx, j+1)
 			eqIdx := topLevelPunctIndex(part, "=")
 			if eqIdx >= 0 {
-				return nil, 0, 0, fmt.Errorf("%s cannot have initializer", bctx)
+				return nil, 0, 0, nil, fmt.Errorf("%s cannot have initializer", bctx)
 			}
 			colonIdx := topLevelPunctIndex(part, ":")
 			lhs := part
@@ -2098,13 +2155,13 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 				lhs = trimTokens(part[:colonIdx])
 				w, err := parseBitfieldWidth(part[colonIdx+1:])
 				if err != nil {
-					return nil, 0, 0, fmt.Errorf("%s has invalid bitfield width: %v", bctx, err)
+					return nil, 0, 0, nil, fmt.Errorf("%s has invalid bitfield width: %v", bctx, err)
 				}
 				width = w
 			}
 			if len(lhs) == 0 {
 				if colonIdx < 0 {
-					return nil, 0, 0, fmt.Errorf("%s has unnamed member", bctx)
+					return nil, 0, 0, nil, fmt.Errorf("%s has unnamed member", bctx)
 				}
 				lhs = nil
 			}
@@ -2120,11 +2177,11 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 				var directFunc bool
 				name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err = parseDeclarator(lhs, false)
 				if err != nil {
-					return nil, 0, 0, fmt.Errorf("%s: %w (%s)", bctx, err, tokenSliceText(lhs))
+					return nil, 0, 0, nil, fmt.Errorf("%s: %w (%s)", bctx, err, tokenSliceText(lhs))
 				}
 				memberType, err = combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, false, bctx)
 				if err != nil {
-					return nil, 0, 0, err
+					return nil, 0, 0, nil, err
 				}
 				applyDeclaratorArrayDims(&memberType, arrayDims)
 				if fnSig != nil {
@@ -2145,18 +2202,18 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 			}
 			if colonIdx >= 0 {
 				if !isSupportedBitfieldType(memberType) {
-					return nil, 0, 0, fmt.Errorf("%s uses unsupported bitfield type", bctx)
+					return nil, 0, 0, nil, fmt.Errorf("%s uses unsupported bitfield type", bctx)
 				}
 				size, align, err := cTypeLayout(memberType)
 				if err != nil {
-					return nil, 0, 0, fmt.Errorf("%s has unsupported bitfield type: %v", bctx, err)
+					return nil, 0, 0, nil, fmt.Errorf("%s has unsupported bitfield type: %v", bctx, err)
 				}
 				if align <= 0 {
 					align = 1
 				}
 				unitBits := size * 8
 				if width > unitBits {
-					return nil, 0, 0, fmt.Errorf("%s bitfield width %d exceeds storage width %d", bctx, width, unitBits)
+					return nil, 0, 0, nil, fmt.Errorf("%s bitfield width %d exceeds storage width %d", bctx, width, unitBits)
 				}
 				field = cAggregateField{
 					Name:          name,
@@ -2199,11 +2256,11 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 				}
 			} else {
 				if name == "" {
-					return nil, 0, 0, fmt.Errorf("%s has unnamed member", bctx)
+					return nil, 0, 0, nil, fmt.Errorf("%s has unnamed member", bctx)
 				}
 				size, align, err := cTypeLayout(memberType)
 				if err != nil {
-					return nil, 0, 0, fmt.Errorf("%s member %q has unsupported type: %v", bctx, name, err)
+					return nil, 0, 0, nil, fmt.Errorf("%s member %q has unsupported type: %v", bctx, name, err)
 				}
 				if align <= 0 {
 					align = 1
@@ -2234,22 +2291,22 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 				}
 			}
 			if used[name] {
-				return nil, 0, 0, fmt.Errorf("%s has duplicate member name %q", bctx, name)
+				return nil, 0, 0, nil, fmt.Errorf("%s has duplicate member name %q", bctx, name)
 			}
 			used[name] = true
 			fields = append(fields, field)
 		}
 	}
 	if len(fields) == 0 {
-		return nil, 0, 0, fmt.Errorf("%s %q requires at least one member declaration", keyword, tag)
+		return nil, 0, 0, nil, fmt.Errorf("%s %q requires at least one member declaration", keyword, tag)
 	}
 	maxSize = alignTo(maxSize, maxAlign)
-	return fields, maxSize, maxAlign, nil
+	return fields, maxSize, maxAlign, enumConsts, nil
 }
 
-func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context string) (int, cTypeInfo, error) {
+func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context string) (int, cTypeInfo, map[string]int64, error) {
 	if start >= len(tokens) || tokens[start].Kind != TokIdent || tokens[start].Text != keyword {
-		return start, cTypeInfo{}, fmt.Errorf("%s expected %s specifier", context, keyword)
+		return start, cTypeInfo{}, nil, fmt.Errorf("%s expected %s specifier", context, keyword)
 	}
 	i := start + 1
 	tag := ""
@@ -2280,11 +2337,11 @@ func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context s
 			i++
 		}
 		if depth != 0 || bodyClose < 0 {
-			return start, cTypeInfo{}, fmt.Errorf("%s has unterminated %s definition", context, keyword)
+			return start, cTypeInfo{}, nil, fmt.Errorf("%s has unterminated %s definition", context, keyword)
 		}
 	}
 	if tag == "" && !hasBody {
-		return start, cTypeInfo{}, fmt.Errorf("%s %s specifier requires tag or body", context, keyword)
+		return start, cTypeInfo{}, nil, fmt.Errorf("%s %s specifier requires tag or body", context, keyword)
 	}
 	if hasBody {
 		if tag == "" {
@@ -2292,12 +2349,12 @@ func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context s
 		}
 		placeholder := &cAggregateInfo{Keyword: keyword, Tag: tag, IsUnion: keyword == "union"}
 		if err := registerAggregateAlias(placeholder); err != nil {
-			return start, cTypeInfo{}, err
+			return start, cTypeInfo{}, nil, err
 		}
 		body := trimTokens(tokens[bodyOpen+1 : bodyClose])
-		fields, size, align, err := parseAggregateFields(body, keyword, tag, context)
+		fields, size, align, enumConsts, err := parseAggregateFields(body, keyword, tag, context)
 		if err != nil {
-			return start, cTypeInfo{}, err
+			return start, cTypeInfo{}, nil, err
 		}
 		info := &cAggregateInfo{
 			Keyword: keyword,
@@ -2308,7 +2365,7 @@ func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context s
 			Fields:  fields,
 		}
 		if err := registerAggregateAlias(info); err != nil {
-			return start, cTypeInfo{}, err
+			return start, cTypeInfo{}, nil, err
 		}
 		return i, cTypeInfo{
 			Kind:             cDeclScalar,
@@ -2316,7 +2373,7 @@ func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context s
 			OpaqueAggregate:  false,
 			AggregateKeyword: keyword,
 			AggregateTag:     tag,
-		}, nil
+		}, enumConsts, nil
 	}
 	opaque := true
 	if agg, ok := lookupAggregateAlias(keyword, tag); ok && len(agg.Fields) > 0 {
@@ -2328,15 +2385,16 @@ func parseAggregateTypeSpec(tokens []Token, start int, keyword string, context s
 		OpaqueAggregate:  opaque,
 		AggregateKeyword: keyword,
 		AggregateTag:     tag,
-	}, nil
+	}, nil, nil
 }
 
-func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInfo, bool, bool, error) {
+func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInfo, map[string]int64, bool, bool, error) {
 	var hasExtern bool
 	var hasTypedef bool
+	var enumConsts map[string]int64
 	spec = trimTokens(spec)
 	if len(spec) == 0 {
-		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, false, false, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, nil, false, false, nil
 	}
 	var sawType bool
 	var sawEnum bool
@@ -2359,11 +2417,15 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 		t := spec[i]
 		if t.Kind == TokIdent && (t.Text == "struct" || t.Text == "union") {
 			if aliasSet || sawEnum || sawAggregate || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine %s with additional type specifiers", context, t.Text)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine %s with additional type specifiers", context, t.Text)
 			}
-			next, aggInfo, err := parseAggregateTypeSpec(spec, i, t.Text, context)
+			next, aggInfo, aggEnumConsts, err := parseAggregateTypeSpec(spec, i, t.Text, context)
 			if err != nil {
-				return cTypeInfo{}, false, false, err
+				return cTypeInfo{}, nil, false, false, err
+			}
+			enumConsts, err = mergeEnumConstMaps(enumConsts, aggEnumConsts)
+			if err != nil {
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s: %v", context, err)
 			}
 			sawType = true
 			sawAggregate = true
@@ -2375,19 +2437,23 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 		}
 		if t.Kind == TokIdent && t.Text == "enum" {
 			if aliasSet || sawAggregate || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned || sawEnum {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine enum with additional type specifiers", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine enum with additional type specifiers", context)
 			}
-			next, err := consumeEnumSpecifierTokens(spec, i, context)
+			consumed, localEnumConsts, err := parseEnumSpecifierAndConstants(spec[i:], enumConsts)
 			if err != nil {
-				return cTypeInfo{}, false, false, err
+				return cTypeInfo{}, nil, false, false, err
+			}
+			enumConsts, err = mergeEnumConstMaps(enumConsts, localEnumConsts)
+			if err != nil {
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s: %v", context, err)
 			}
 			sawType = true
 			sawEnum = true
-			i = next
+			i += consumed
 			continue
 		}
 		if t.Kind != TokIdent {
-			return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid type token %q", context, t.Text)
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid type token %q", context, t.Text)
 		}
 		if aliasSet {
 			switch t.Text {
@@ -2400,7 +2466,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			case "const", "volatile", "restrict", "inline", "__const", "__volatile", "__restrict", "__inline", "__inline__":
 				continue
 			}
-			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine typedef name %q with additional type specifiers", context, t.Text)
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine typedef name %q with additional type specifiers", context, t.Text)
 		}
 		switch t.Text {
 		case "extern":
@@ -2417,56 +2483,56 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			sawPrefixOnly = true
 		case "void":
 			if sawEnum || sawAggregate {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with void", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with void", context)
 			}
 			sawType = true
 			sawVoid = true
 		case "char":
 			if sawEnum || sawAggregate {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with char", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with char", context)
 			}
 			sawType = true
 			sawChar = true
 		case "short":
 			if sawEnum || sawAggregate {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with short", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with short", context)
 			}
 			sawType = true
 			sawShort = true
 		case "int":
 			if sawEnum || sawAggregate {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with int", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with int", context)
 			}
 			sawType = true
 			sawInt = true
 		case "long":
 			if sawEnum || sawAggregate {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with long", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with long", context)
 			}
 			sawType = true
 			sawLongCount++
 			if sawLongCount > 2 {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid long type combination", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid long type combination", context)
 			}
 		case "signed", "__signed":
 			if sawEnum || sawAggregate {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with signed", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with signed", context)
 			}
 			sawType = true
 			sawSigned = true
 		case "unsigned":
 			if sawEnum || sawAggregate {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with unsigned", context)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with unsigned", context)
 			}
 			sawType = true
 			sawUnsigned = true
 		default:
 			if builtin, ok := lookupBuiltinTypedefAlias(t.Text); ok {
 				if sawEnum || sawAggregate {
-					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with typedef name %q", context, t.Text)
+					return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with typedef name %q", context, t.Text)
 				}
 				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
-					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
+					return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
 				}
 				sawType = true
 				aliasSet = true
@@ -2475,10 +2541,10 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			}
 			if alias, ok := lookupTypedefAlias(t.Text); ok {
 				if sawEnum || sawAggregate {
-					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine aggregate/enum with typedef name %q", context, t.Text)
+					return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with typedef name %q", context, t.Text)
 				}
 				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
-					return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
+					return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
 				}
 				sawType = true
 				aliasSet = true
@@ -2486,28 +2552,28 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 				break
 			}
 			if isUnsupportedCTypeKeyword(t.Text) {
-				return cTypeInfo{}, false, false, fmt.Errorf("%s uses unsupported type keyword %q", context, t.Text)
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s uses unsupported type keyword %q", context, t.Text)
 			}
-			return cTypeInfo{}, false, false, fmt.Errorf("%s has unsupported type token %q", context, t.Text)
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has unsupported type token %q", context, t.Text)
 		}
 		i++
 	}
 
 	if !sawType {
 		if sawPrefixOnly {
-			return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasExtern, hasTypedef, nil
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, enumConsts, hasExtern, hasTypedef, nil
 		}
-		return cTypeInfo{}, false, false, fmt.Errorf("%s is missing a type specifier", context)
+		return cTypeInfo{}, nil, false, false, fmt.Errorf("%s is missing a type specifier", context)
 	}
 	if aliasSet {
 		if aliasInfo.IsVoid && !allowVoid {
-			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot use void type here", context)
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot use void type here", context)
 		}
 		aliasInfo.FuncSig = cloneFuncTypeSig(aliasInfo.FuncSig)
-		return aliasInfo, hasExtern, hasTypedef, nil
+		return aliasInfo, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawSigned && sawUnsigned {
-		return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine signed and unsigned", context)
+		return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine signed and unsigned", context)
 	}
 	if sawAggregate {
 		return cTypeInfo{
@@ -2516,54 +2582,64 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			OpaqueAggregate:  aggregateOpaque,
 			AggregateKeyword: aggregateKeyword,
 			AggregateTag:     aggregateTag,
-		}, hasExtern, hasTypedef, nil
+		}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawEnum {
-		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasExtern, hasTypedef, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawVoid {
 		if sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
-			return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid void type combination", context)
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid void type combination", context)
 		}
 		if !allowVoid {
-			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot use void type here", context)
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot use void type here", context)
 		}
-		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt, IsVoid: true}, hasExtern, hasTypedef, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt, IsVoid: true}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawChar {
 		if sawShort || sawInt || sawLongCount > 0 {
-			return cTypeInfo{}, false, false, fmt.Errorf("%s has invalid char type combination", context)
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid char type combination", context)
 		}
 		if sawUnsigned {
-			return cTypeInfo{Kind: cDeclScalar, Base: cScalarUChar}, hasExtern, hasTypedef, nil
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarUChar}, enumConsts, hasExtern, hasTypedef, nil
 		}
-		return cTypeInfo{Kind: cDeclScalar, Base: cScalarChar}, hasExtern, hasTypedef, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarChar}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawShort {
 		if sawLongCount > 0 {
-			return cTypeInfo{}, false, false, fmt.Errorf("%s cannot combine short and long", context)
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine short and long", context)
 		}
 		if sawUnsigned {
-			return cTypeInfo{Kind: cDeclScalar, Base: cScalarUShort}, hasExtern, hasTypedef, nil
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarUShort}, enumConsts, hasExtern, hasTypedef, nil
 		}
-		return cTypeInfo{Kind: cDeclScalar, Base: cScalarShort}, hasExtern, hasTypedef, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarShort}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawLongCount > 0 {
 		if sawUnsigned {
-			return cTypeInfo{Kind: cDeclScalar, Base: cScalarULong}, hasExtern, hasTypedef, nil
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarULong}, enumConsts, hasExtern, hasTypedef, nil
 		}
-		return cTypeInfo{Kind: cDeclScalar, Base: cScalarLong}, hasExtern, hasTypedef, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarLong}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawUnsigned {
-		return cTypeInfo{Kind: cDeclScalar, Base: cScalarUInt}, hasExtern, hasTypedef, nil
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarUInt}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	_ = sawInt
-	return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasExtern, hasTypedef, nil
+	return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, enumConsts, hasExtern, hasTypedef, nil
 }
 
 func combineTypeAndDeclarator(base cTypeInfo, declKind cDeclKind, declPtrDepth int, declArrayLen int64, allowOpaqueObject bool, context string) (cTypeInfo, error) {
 	out := base
-	if base.AggregateKeyword != "" && base.OpaqueAggregate && base.Kind != cDeclPointer && declKind != cDeclPointer && !allowOpaqueObject {
+	allowsOpaqueUse := allowOpaqueObject
+	if base.AggregateKeyword != "" && base.OpaqueAggregate {
+		if agg, ok := lookupAggregateAlias(base.AggregateKeyword, base.AggregateTag); ok && len(agg.Fields) > 0 {
+			base.OpaqueAggregate = false
+			out.OpaqueAggregate = false
+		}
+	}
+	if base.AggregateKeyword != "" && base.OpaqueAggregate && base.Kind != cDeclPointer && declKind == cDeclArray && declPtrDepth > 0 {
+		allowsOpaqueUse = true
+	}
+	if base.AggregateKeyword != "" && base.OpaqueAggregate && base.Kind != cDeclPointer && declKind != cDeclPointer && !allowsOpaqueUse {
 		what := base.AggregateKeyword
 		if what == "" {
 			what = "aggregate"
@@ -2652,6 +2728,22 @@ func cloneInt64s(src []int64) []int64 {
 	return out
 }
 
+func mergeEnumConstMaps(dst map[string]int64, src map[string]int64) (map[string]int64, error) {
+	if len(src) == 0 {
+		return dst, nil
+	}
+	if dst == nil {
+		dst = make(map[string]int64, len(src))
+	}
+	for name, val := range src {
+		if _, exists := dst[name]; exists {
+			return nil, fmt.Errorf("duplicate enum constant %q", name)
+		}
+		dst[name] = val
+	}
+	return dst, nil
+}
+
 func applyDeclaratorArrayDims(info *cTypeInfo, dims []int64) {
 	if len(dims) == 0 {
 		if info.Kind != cDeclArray {
@@ -2683,6 +2775,46 @@ func cTypeInfoEquivalent(a cTypeInfo, b cTypeInfo) bool {
 func mergeRedeclaredTypeInfo(existing cTypeInfo, next cTypeInfo) (cTypeInfo, bool) {
 	if cTypeInfoEquivalent(existing, next) {
 		return next, true
+	}
+	if existing.Kind == next.Kind &&
+		existing.PtrDepth == next.PtrDepth &&
+		existing.ArrayLen == next.ArrayLen &&
+		existing.IsVoid == next.IsVoid &&
+		existing.Base == next.Base &&
+		existing.AggregateKeyword != "" &&
+		existing.AggregateKeyword == next.AggregateKeyword &&
+		existing.AggregateTag == next.AggregateTag &&
+		len(existing.ArrayDims) == len(next.ArrayDims) {
+		sameDims := true
+		for i := range existing.ArrayDims {
+			if existing.ArrayDims[i] != next.ArrayDims[i] {
+				sameDims = false
+				break
+			}
+		}
+		if sameDims {
+			if existing.FuncSig == nil || next.FuncSig == nil {
+				if existing.FuncSig == nil && next.FuncSig == nil {
+					if existing.OpaqueAggregate && !next.OpaqueAggregate {
+						return next, true
+					}
+					if !existing.OpaqueAggregate && next.OpaqueAggregate {
+						merged := next
+						merged.OpaqueAggregate = false
+						return merged, true
+					}
+				}
+			} else if funcTypeSigEqual(existing.FuncSig, next.FuncSig) {
+				if existing.OpaqueAggregate && !next.OpaqueAggregate {
+					return next, true
+				}
+				if !existing.OpaqueAggregate && next.OpaqueAggregate {
+					merged := next
+					merged.OpaqueAggregate = false
+					return merged, true
+				}
+			}
+		}
 	}
 	if existing.Kind != cDeclArray || next.Kind != cDeclArray {
 		return cTypeInfo{}, false
@@ -2877,16 +3009,38 @@ func trimTrailingDeclaratorDecorators(tokens []Token) []Token {
 			break
 		}
 		if work[open-1].Kind != TokIdent {
+			if open >= 2 && work[open-1].Kind == TokPunct && work[open-1].Text == "(" && work[open-2].Kind == TokIdent {
+				switch work[open-2].Text {
+				case "__attribute__", "__attribute":
+					work = trimTokens(work[:open-2])
+					continue
+				}
+			}
 			break
 		}
 		switch work[open-1].Text {
-		case "__asm", "asm":
+		case "__asm", "asm", "__attribute__", "__attribute":
 			work = trimTokens(work[:open-1])
 			continue
 		}
 		break
 	}
 	return work
+}
+
+func isGNUAsmStatementText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if strings.Contains(trimmed, "asm") && strings.Contains(trimmed, "volatile") {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "asm(") ||
+		strings.HasPrefix(trimmed, "asm ") ||
+		strings.HasPrefix(trimmed, "asm\t") ||
+		strings.HasPrefix(trimmed, "__asm(") ||
+		strings.HasPrefix(trimmed, "__asm ") ||
+		strings.HasPrefix(trimmed, "__asm\t") ||
+		strings.HasPrefix(trimmed, "__asm__(") ||
+		strings.HasPrefix(trimmed, "__asm__ ")
 }
 
 func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, []cScalarType, []int, []bool, []string, []string, []*cFuncTypeSig, bool, bool, error) {
@@ -2900,7 +3054,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if len(p0) > 0 {
 			spec, decl, err := splitDeclSpecPrefix(p0, context)
 			if err == nil {
-				baseInfo, _, _, err := parseScalarTypeSpec(spec, context, true)
+				baseInfo, _, _, _, err := parseScalarTypeSpec(spec, context, true)
 				if err == nil {
 					_, kind, ptrDepth, arrLen, arrDims, _, _, err := parseDeclarator(decl, true)
 					if err == nil {
@@ -2942,7 +3096,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, false, err
 		}
-		pbaseInfo, _, _, err := parseScalarTypeSpec(spec, pctx, true)
+		pbaseInfo, _, _, _, err := parseScalarTypeSpec(spec, pctx, true)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, false, err
 		}
@@ -3365,12 +3519,12 @@ func parseArrayLength(tokens []Token) (int64, error) {
 	return n, nil
 }
 
-func parseArrayDesignatorIndex(tokens []Token) (int64, error) {
+func parseArrayDesignatorIndex(tokens []Token, lookup map[string]int64) (int64, error) {
 	tokens = trimTokens(tokens)
 	if len(tokens) == 0 {
 		return 0, fmt.Errorf("initializer designator index is empty")
 	}
-	n, err := parseEnumConstExprTokens(tokens, nil)
+	n, err := parseEnumConstExprTokens(tokens, lookup)
 	if err != nil {
 		return 0, err
 	}
@@ -3850,7 +4004,7 @@ func parseEnumSpecifierAndConstants(toks []Token, enumLookup map[string]int64) (
 	return j + 1, vals, nil
 }
 
-func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncompleteArray bool, rest []Token, allowRuntimeArrays bool) ([]cDeclItem, error) {
+func parseDeclItemsWithBase(baseInfo cTypeInfo, enumLookup map[string]int64, hasTypedef bool, allowOpaqueObject bool, allowIncompleteArray bool, rest []Token, allowRuntimeArrays bool) ([]cDeclItem, error) {
 	parts := splitTopLevel(rest, ",")
 	items := make([]cDeclItem, 0, len(parts))
 	for _, part := range parts {
@@ -3925,7 +4079,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 		if err != nil {
 			return nil, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
 		}
-		info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, hasTypedef, fmt.Sprintf("declaration of %q", name))
+		info, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrayLen, allowOpaqueObject || hasTypedef, fmt.Sprintf("declaration of %q", name))
 		if err != nil {
 			return nil, err
 		}
@@ -3943,7 +4097,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 			}
 		}
 		if info.Kind == cDeclArray && info.ArrayLen == cArrayLenUnspecified {
-			n, ok, err := inferArrayLengthFromInit(info.Base, init)
+			n, ok, err := inferArrayLengthFromInit(info.Base, init, enumLookup)
 			if err != nil {
 				return nil, err
 			}
@@ -4081,7 +4235,7 @@ func parseDeclItemsWithOptions(toks []Token, enumLookup map[string]int64, allowR
 		if len(rest) == 0 {
 			return nil, enumConsts, hasExtern, hasTypedef, nil
 		}
-		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasTypedef, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
+		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, enumLookup, hasTypedef, hasTypedef || hasExtern, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
 		if err != nil {
 			return nil, nil, false, false, err
 		}
@@ -4095,24 +4249,24 @@ func parseDeclItemsWithOptions(toks []Token, enumLookup map[string]int64, allowR
 	if err != nil {
 		return nil, nil, false, false, err
 	}
-	baseInfo, hasExtern, hasTypedef, err := parseScalarTypeSpec(spec, "declaration", true)
+	baseInfo, baseEnumConsts, hasExtern, hasTypedef, err := parseScalarTypeSpec(spec, "declaration", true)
 	if err != nil {
 		return nil, nil, false, false, err
 	}
 	if len(rest) == 0 {
 		if baseInfo.AggregateKeyword != "" && !hasTypedef {
-			return nil, nil, hasExtern, hasTypedef, nil
+			return nil, baseEnumConsts, hasExtern, hasTypedef, nil
 		}
 		return nil, nil, false, false, fmt.Errorf("missing declarator in declaration")
 	}
-	items, err := parseDeclItemsWithBase(baseInfo, hasTypedef, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
+	items, err := parseDeclItemsWithBase(baseInfo, enumLookup, hasTypedef, hasTypedef || hasExtern, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
 	if err != nil {
 		return nil, nil, false, false, err
 	}
 	if len(items) == 0 {
 		return nil, nil, false, false, fmt.Errorf("empty declaration")
 	}
-	return items, nil, hasExtern, hasTypedef, nil
+	return items, baseEnumConsts, hasExtern, hasTypedef, nil
 }
 
 func parseDeclItems(toks []Token, enumLookup map[string]int64, allowRuntimeArrays bool) ([]cDeclItem, map[string]int64, bool, bool, error) {
@@ -4137,7 +4291,7 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if err != nil {
 		return cTypeInfo{}, err
 	}
-	baseInfo, _, _, err := parseScalarTypeSpec(spec, "type name", true)
+	baseInfo, _, _, _, err := parseScalarTypeSpec(spec, "type name", true)
 	if err != nil {
 		return cTypeInfo{}, err
 	}
@@ -4222,7 +4376,7 @@ func decodeStringLiteralSequence(tokens []Token) (string, error) {
 	return b.String(), nil
 }
 
-func inferArrayLengthFromInit(base cScalarType, init []Token) (int64, bool, error) {
+func inferArrayLengthFromInit(base cScalarType, init []Token, enumLookup map[string]int64) (int64, bool, error) {
 	init = trimTokens(init)
 	if len(init) == 0 {
 		return 0, false, nil
@@ -4236,6 +4390,25 @@ func inferArrayLengthFromInit(base cScalarType, init []Token) (int64, bool, erro
 			return 0, false, err
 		}
 		return int64(len(s) + 1), true, nil
+	}
+	if parts, err := parseArrayInitializerElems(init, enumLookup); err == nil {
+		nextIndex := int64(0)
+		maxLen := int64(0)
+		hasDesignator := false
+		for _, part := range parts {
+			if len(part.Indexes) > 0 {
+				hasDesignator = true
+				nextIndex = part.Indexes[0] + 1
+			} else {
+				nextIndex++
+			}
+			if nextIndex > maxLen {
+				maxLen = nextIndex
+			}
+		}
+		if hasDesignator && maxLen > 0 {
+			return maxLen, true, nil
+		}
 	}
 	elems, err := parseBraceInitializerExprs(init)
 	if err == nil {
@@ -4946,6 +5119,9 @@ func (fc *funcCompiler) compileStmt(n *Node) {
 	case NDeclStmt:
 		fc.compileDeclStmt(n)
 	case NExprStmt:
+		if isGNUAsmStatementText(n.Text) {
+			return
+		}
 		fc.compileExprText(n.Text, n.Line, n.Col)
 		fc.emit(ir.Inst{Op: ir.OP_DROP})
 	case NEmptyStmt:
@@ -5039,9 +5215,9 @@ func (fc *funcCompiler) compileSwitchStmt(n *Node) {
 		return
 	}
 	body := n.Children[0]
+	bodyChildren := body.Children
 	if body.Kind != NCompoundStmt {
-		fc.errorf(fc.sig.File, n.Line, n.Col, "switch body must be a compound statement")
-		return
+		bodyChildren = []*Node{body}
 	}
 
 	tmpName := fmt.Sprintf("$switch%d", fc.c.nextLabel())
@@ -5054,7 +5230,7 @@ func (fc *funcCompiler) compileSwitchStmt(n *Node) {
 	hasDefault := false
 	caseLabels := make(map[*Node]int)
 
-	for _, st := range body.Children {
+	for _, st := range bodyChildren {
 		labels, _ := flattenSwitchLabelChain(st)
 		for _, lab := range labels {
 			lbl := fc.c.nextLabel()
@@ -5070,7 +5246,7 @@ func (fc *funcCompiler) compileSwitchStmt(n *Node) {
 		}
 	}
 
-	for _, st := range body.Children {
+	for _, st := range bodyChildren {
 		labels, _ := flattenSwitchLabelChain(st)
 		for _, lab := range labels {
 			if lab.Kind != NCaseStmt {
@@ -5090,7 +5266,7 @@ func (fc *funcCompiler) compileSwitchStmt(n *Node) {
 
 	fc.pushScope()
 	fc.breakTargets = append(fc.breakTargets, endLabel)
-	for _, st := range body.Children {
+	for _, st := range bodyChildren {
 		labels, tail := flattenSwitchLabelChain(st)
 		if len(labels) == 0 {
 			fc.compileStmt(st)
@@ -5148,6 +5324,11 @@ type cAggregateInitElem struct {
 	Init    []Token
 }
 
+type cArrayInitElem struct {
+	Indexes []int64
+	Init    []Token
+}
+
 func findTopLevelInitAssign(tokens []Token) int {
 	depthParen := 0
 	depthBracket := 0
@@ -5184,7 +5365,7 @@ func findTopLevelInitAssign(tokens []Token) int {
 	return -1
 }
 
-func parseAggregateInitializerElems(init []Token) ([]cAggregateInitElem, error) {
+func parseAggregateInitializerElems(init []Token, enumLookup map[string]int64) ([]cAggregateInitElem, error) {
 	parts, err := parseBraceInitializerParts(init)
 	if err != nil {
 		return nil, err
@@ -5202,7 +5383,7 @@ func parseAggregateInitializerElems(init []Token) ([]cAggregateInitElem, error) 
 				if close < 0 {
 					return nil, fmt.Errorf("unterminated initializer designator index")
 				}
-				n, err := parseArrayDesignatorIndex(value[i+1 : close])
+				n, err := parseArrayDesignatorIndex(value[i+1:close], enumLookup)
 				if err != nil {
 					return nil, err
 				}
@@ -5217,6 +5398,43 @@ func parseAggregateInitializerElems(init []Token) ([]cAggregateInitElem, error) 
 			}
 		}
 		out = append(out, cAggregateInitElem{Field: field, Indexes: indexes, Init: value})
+	}
+	return out, nil
+}
+
+func parseArrayInitializerElems(init []Token, enumLookup map[string]int64) ([]cArrayInitElem, error) {
+	parts, err := parseBraceInitializerParts(init)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]cArrayInitElem, 0, len(parts))
+	for _, p := range parts {
+		value := trimTokens(p)
+		var indexes []int64
+		i := 0
+		for i < len(value) && value[i].Kind == TokPunct && value[i].Text == "[" {
+			close := matchingBracketClose(value, i)
+			if close < 0 {
+				return nil, fmt.Errorf("unterminated initializer designator index")
+			}
+			n, err := parseArrayDesignatorIndex(value[i+1:close], enumLookup)
+			if err != nil {
+				return nil, err
+			}
+			indexes = append(indexes, n)
+			i = close + 1
+		}
+		if len(indexes) > 0 {
+			if i < len(value) && value[i].Kind == TokPunct && value[i].Text == "=" {
+				value = trimTokens(value[i+1:])
+			} else {
+				value = trimTokens(value[i:])
+				if len(value) == 0 {
+					indexes = nil
+				}
+			}
+		}
+		out = append(out, cArrayInitElem{Indexes: indexes, Init: value})
 	}
 	return out, nil
 }
@@ -5260,24 +5478,54 @@ func (fc *funcCompiler) emitArrayInitializerAt(name string, baseIdx int, offset 
 		}
 		return
 	}
-	parts, err := parseBraceInitializerParts(init)
+	elems, err := parseArrayInitializerElems(init, fc.enumLookupMap())
 	if err != nil {
 		fc.errorf(file, line, col, "invalid array initializer for %s: %v", name, err)
 		return
 	}
-	if int64(len(parts)) > info.ArrayLen {
-		fc.errorf(file, line, col, "too many initializer elements for %s (%d > %d)", name, len(parts), info.ArrayLen)
-		return
-	}
 	elemInfo := arrayElementTypeInfo(info)
 	elemStep := fc.typeByteSize(elemInfo)
-	for i, part := range parts {
-		part = trimTokens(part)
+	nextIndex := int64(0)
+	for _, elem := range elems {
+		part := trimTokens(elem.Init)
 		if len(part) == 0 {
 			continue
 		}
-		elemOff := offset + int64(i)*elemStep
-		if elemInfo.Kind == cDeclArray {
+		curInfo := elemInfo
+		curOff := offset
+		topIndex := nextIndex
+		if len(elem.Indexes) > 0 {
+			topIndex = elem.Indexes[0]
+			curInfo = info
+			valid := true
+			for _, index := range elem.Indexes {
+				if curInfo.Kind != cDeclArray {
+					fc.errorf(file, line, col, "initializer designator for %s indexes non-array type", name)
+					valid = false
+					break
+				}
+				if index < 0 || index >= curInfo.ArrayLen {
+					fc.errorf(file, line, col, "initializer designator for %s has out-of-bounds index %d", name, index)
+					valid = false
+					break
+				}
+				nextInfo := arrayElementTypeInfo(curInfo)
+				curOff += index * fc.typeByteSize(nextInfo)
+				curInfo = nextInfo
+			}
+			if !valid {
+				continue
+			}
+			nextIndex = topIndex + 1
+		} else {
+			if nextIndex >= info.ArrayLen {
+				fc.errorf(file, line, col, "too many initializer elements for %s (%d > %d)", name, nextIndex+1, info.ArrayLen)
+				return
+			}
+			curOff += nextIndex * elemStep
+			nextIndex++
+		}
+		if curInfo.Kind == cDeclArray {
 			if !isBraceInitializer(part) && !isStringLiteralExpr(part) {
 				if isZeroInitializerExpr(part) {
 					continue
@@ -5285,10 +5533,10 @@ func (fc *funcCompiler) emitArrayInitializerAt(name string, baseIdx int, offset 
 				fc.errorf(file, line, col, "invalid array initializer for %s: expected brace initializer list", name)
 				continue
 			}
-			fc.emitArrayInitializerAt(name, baseIdx, elemOff, elemInfo, part, file, line, col)
+			fc.emitArrayInitializerAt(name, baseIdx, curOff, curInfo, part, file, line, col)
 			continue
 		}
-		if isAggregateObjectType(elemInfo) {
+		if isAggregateObjectType(curInfo) {
 			if !isBraceInitializer(part) {
 				if isZeroInitializerExpr(part) {
 					continue
@@ -5296,10 +5544,10 @@ func (fc *funcCompiler) emitArrayInitializerAt(name string, baseIdx int, offset 
 				fc.errorf(file, line, col, "invalid aggregate initializer for %s: expected brace initializer list", name)
 				continue
 			}
-			fc.emitAggregateObjectInitializerAt(name, baseIdx, elemOff, elemInfo, part, file, line, col)
+			fc.emitAggregateObjectInitializerAt(name, baseIdx, curOff, curInfo, part, file, line, col)
 			continue
 		}
-		fc.emitScalarLikeInitializerAt(baseIdx, elemOff, elemInfo, part, file, line, col)
+		fc.emitScalarLikeInitializerAt(baseIdx, curOff, curInfo, part, file, line, col)
 	}
 }
 
@@ -5312,7 +5560,7 @@ func (fc *funcCompiler) emitAggregateObjectInitializerAt(name string, baseIdx in
 		fc.errorf(file, line, col, "aggregate object initializer for %s %q uses unknown/incomplete type", info.AggregateKeyword, name)
 		return
 	}
-	initElems, err := parseAggregateInitializerElems(init)
+	initElems, err := parseAggregateInitializerElems(init, fc.enumLookupMap())
 	if err != nil {
 		fc.errorf(file, line, col, "invalid aggregate initializer for %s: %v", name, err)
 		return
@@ -5408,6 +5656,9 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 	toks, err := lexSnippet(fc.sig.File, n.Text)
 	if err != nil {
 		fc.errorf(fc.sig.File, n.Line, n.Col, "invalid declaration: %v", err)
+		return
+	}
+	if isGNUAsmStatementText(tokenSliceText(toks)) {
 		return
 	}
 	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, fc.enumLookupMap(), true)
@@ -5697,6 +5948,9 @@ func (fc *funcCompiler) compileReturnStmt(n *Node) {
 }
 
 func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
+	if isGNUAsmStatementText(tokenSliceText(toks)) {
+		return
+	}
 	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, fc.enumLookupMap(), true)
 	if err != nil {
 		if fc.shouldFallbackDeclToExpr(toks, err) {
@@ -5869,6 +6123,10 @@ func (fc *funcCompiler) emitCondJumpTrue(file string, line int, col int, cond []
 }
 
 func (fc *funcCompiler) compileExprText(text string, line int, col int) {
+	if isGNUAsmStatementText(text) {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
 	toks, err := lexSnippet(fc.sig.File, text)
 	if err != nil {
 		fc.errorf(fc.sig.File, line, col, "invalid expression: %v", err)
@@ -8198,7 +8456,7 @@ func parseCIntLiteral(text string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("empty literal")
 	}
-	if strings.Contains(s, ".") || strings.Contains(s, "e") || strings.Contains(s, "E") || strings.Contains(s, "p") || strings.Contains(s, "P") {
+	if strings.Contains(s, ".") {
 		return 0, fmt.Errorf("floating-point literals are not supported")
 	}
 
@@ -8215,6 +8473,9 @@ func parseCIntLiteral(text string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("invalid literal suffix")
 	}
+	if strings.Contains(s, ".") {
+		return 0, fmt.Errorf("floating-point literals are not supported")
+	}
 
 	base := 10
 	num := s
@@ -8227,6 +8488,13 @@ func parseCIntLiteral(text string) (int64, error) {
 	} else if len(num) > 1 && num[0] == '0' {
 		base = 8
 		num = num[1:]
+	}
+	if base == 16 {
+		if strings.Contains(num, "p") || strings.Contains(num, "P") {
+			return 0, fmt.Errorf("floating-point literals are not supported")
+		}
+	} else if strings.Contains(s, "e") || strings.Contains(s, "E") || strings.Contains(s, "p") || strings.Contains(s, "P") {
+		return 0, fmt.Errorf("floating-point literals are not supported")
 	}
 	if num == "" {
 		return 0, nil

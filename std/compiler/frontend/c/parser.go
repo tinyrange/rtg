@@ -154,6 +154,19 @@ func tokenSliceText(tokens []Token) string {
 	return out
 }
 
+func looksLikeAsmStatement(body []Token) bool {
+	body = filterNonNewline(body)
+	if len(body) == 0 || body[0].Kind != TokIdent {
+		return false
+	}
+	switch body[0].Text {
+	case "asm", "__asm", "__asm__":
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *Parser) collectRange(start int, end int) []Token {
 	if start < 0 {
 		start = 0
@@ -761,6 +774,9 @@ func (p *Parser) parseDeclOrExprStmt(forceDecl bool) *Node {
 		return &Node{Kind: NEmptyStmt, Line: startTok.Line, Col: startTok.Col}
 	}
 	if forceDecl {
+		if looksLikeAsmStatement(body) {
+			return &Node{Kind: NExprStmt, Text: text, Line: startTok.Line, Col: startTok.Col}
+		}
 		return &Node{Kind: NDeclStmt, Text: text, Line: startTok.Line, Col: startTok.Col}
 	}
 	if looksLikeDeclaration(body) {
@@ -774,6 +790,9 @@ func (p *Parser) parseDeclOrExprStmt(forceDecl bool) *Node {
 
 func looksLikeDeclaration(body []Token) bool {
 	if len(body) == 0 {
+		return false
+	}
+	if looksLikeAsmStatement(body) {
 		return false
 	}
 	first := body[0]

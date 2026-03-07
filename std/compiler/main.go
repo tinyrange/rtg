@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"j5.nz/rtg/std/buildtool"
 	"j5.nz/rtg/std/compiler/backend"
 	"j5.nz/rtg/std/compiler/backend/irprint"
 	"j5.nz/rtg/std/compiler/backend/vm"
@@ -388,6 +389,8 @@ func main() {
 	var fromIRTextPath string
 	var profileReportPath string
 	var extractStdlibDest string
+	var buildFilePath string
+	var buildList bool
 	var runMode bool
 	var testMode bool
 	var stdinInput bool
@@ -615,6 +618,16 @@ func main() {
 				i = i + 2
 				continue
 			}
+		case "-buildfile":
+			if i+1 < len(args) {
+				buildFilePath = common.NormalizePath(args[i+1])
+				i = i + 2
+				continue
+			}
+		case "-build-list":
+			buildList = true
+			i = i + 1
+			continue
 		case "-debug":
 			compileTarget.CompilerDebug = true
 			i = i + 1
@@ -640,6 +653,15 @@ func main() {
 	}
 	if showVersion {
 		fmt.Fprintf(os.Stdout, "%s\n", compilerStamp())
+		os.Exit(0)
+	}
+	if buildFilePath != "" {
+		if err := buildtool.RunFile(buildFilePath, entryFiles, buildList); err != nil {
+			fmt.Fprintf(os.Stderr, "build error: %v\n", err)
+			runCleanup()
+			os.Exit(1)
+		}
+		runCleanup()
 		os.Exit(0)
 	}
 	sourceLang, err = inferSourceLanguage(sourceLangExplicit, entryFiles)
@@ -1489,6 +1511,8 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -isystem <dir>         C99 mode: add system include search path\n")
 	fmt.Fprintf(out, "  -target-file <path>    Load a single-file target definition before -T resolution\n")
 	fmt.Fprintf(out, "  -target-root <path>    Recursively load *.go target definitions from a directory\n")
+	fmt.Fprintf(out, "  -buildfile <path>      Run build targets from a build file instead of compiling sources\n")
+	fmt.Fprintf(out, "  -build-list            List targets from -buildfile and exit\n")
 	fmt.Fprintf(out, "  -include <path|->      Add stdlib search root; first -include disables default embedded stdlib, -include - re-enables it\n")
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
