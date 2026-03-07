@@ -111,6 +111,16 @@ func parenBalance(tokens []Token) int {
 	return depth
 }
 
+func lastNonNewlineToken(tokens []Token) (Token, bool) {
+	for i := len(tokens) - 1; i >= 0; i-- {
+		if tokens[i].Kind == TokNewline {
+			continue
+		}
+		return tokens[i], true
+	}
+	return Token{}, false
+}
+
 func copyDisabled(disabled map[string]bool, name string) map[string]bool {
 	out := make(map[string]bool)
 	for k, v := range disabled {
@@ -373,7 +383,7 @@ func (p *Preprocessor) processSource(file string, src string, depth int) ([]Toke
 				newlines = append(newlines, nlTok)
 				next = i + 1
 			}
-			for parenBalance(group) > 0 && next < len(toks) {
+			for next < len(toks) && (parenBalance(group) > 0 || p.groupNeedsFunctionMacroContinuation(group, toks, next)) {
 				lineStart = next
 				for next < len(toks) && toks[next].Kind != TokNewline {
 					next++
@@ -406,6 +416,21 @@ func (p *Preprocessor) processSource(file string, src string, depth int) ([]Toke
 	}
 
 	return out, nil
+}
+
+func (p *Preprocessor) groupNeedsFunctionMacroContinuation(group []Token, toks []Token, next int) bool {
+	last, ok := lastNonNewlineToken(group)
+	if !ok || last.Kind != TokIdent {
+		return false
+	}
+	m := p.macros[last.Text]
+	if m == nil || !m.FunctionLike {
+		return false
+	}
+	for next < len(toks) && toks[next].Kind == TokNewline {
+		next++
+	}
+	return next < len(toks) && toks[next].Kind == TokPunct && toks[next].Text == "("
 }
 
 func isDirectiveName(line []Token, name string) bool {

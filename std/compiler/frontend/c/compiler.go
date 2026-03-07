@@ -78,6 +78,8 @@ type cDeclItem struct {
 	OpaqueAggregate  bool
 	AggregateKeyword string
 	AggregateTag     string
+	RuntimeArrayBound []Token
+	RuntimeArrayElem  cTypeInfo
 }
 
 type cDeclaratorSuffix struct {
@@ -884,7 +886,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		}
 	}
 
-	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, c.enumConsts)
+	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, c.enumConsts, false)
 	if err != nil {
 		c.errorf(file, n.Line, n.Col, "%v", err)
 		return
@@ -1765,7 +1767,7 @@ func parseKNRFunctionParams(paramNameTokens []Token, declTokens []Token) ([]stri
 			if len(rawDecl) == 0 {
 				continue
 			}
-			items, _, _, _, err := parseDeclItems(rawDecl, nil)
+			items, _, _, _, err := parseDeclItems(rawDecl, nil, false)
 			if err != nil {
 				return nil, nil, nil, nil, nil, nil, nil, nil, false, err
 			}
@@ -3844,7 +3846,7 @@ func parseEnumSpecifierAndConstants(toks []Token, enumLookup map[string]int64) (
 	return j + 1, vals, nil
 }
 
-func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncompleteArray bool, rest []Token) ([]cDeclItem, error) {
+func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncompleteArray bool, rest []Token, allowRuntimeArrays bool) ([]cDeclItem, error) {
 	parts := splitTopLevel(rest, ",")
 	items := make([]cDeclItem, 0, len(parts))
 	for _, part := range parts {
@@ -3906,6 +3908,15 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 			return nil, fmt.Errorf("missing declarator in declaration")
 		}
 
+		if allowRuntimeArrays && !hasTypedef {
+			if item, ok, err := tryParseRuntimeArrayDeclItem(baseInfo, lhs, init); err != nil {
+				return nil, err
+			} else if ok {
+				items = append(items, item)
+				continue
+			}
+		}
+
 		name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(lhs, false)
 		if err != nil {
 			return nil, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
@@ -3960,7 +3971,70 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, hasTypedef bool, allowIncomplete
 	return items, nil
 }
 
-func parseDeclItems(toks []Token, enumLookup map[string]int64) ([]cDeclItem, map[string]int64, bool, bool, error) {
+func tryParseRuntimeArrayDeclItem(baseInfo cTypeInfo, lhs []Token, init []Token) (cDeclItem, bool, error) {
+	lhs = trimTokens(lhs)
+	if len(init) != 0 || len(lhs) < 4 {
+		return cDeclItem{}, false, nil
+	}
+	last := len(lhs) - 1
+	if lhs[last].Kind != TokPunct || lhs[last].Text != "]" {
+		return cDeclItem{}, false, nil
+	}
+	open := -1
+	for i := last - 1; i >= 0; i-- {
+		if lhs[i].Kind == TokPunct && lhs[i].Text == "[" {
+			if matchingBracketClose(lhs, i) == last {
+				open = i
+				break
+			}
+		}
+	}
+	if open <= 0 {
+		return cDeclItem{}, false, nil
+	}
+	bound := trimTokens(lhs[open+1 : last])
+	if len(bound) == 0 {
+		return cDeclItem{}, false, nil
+	}
+	if _, err := parseArrayLength(bound); err == nil {
+		return cDeclItem{}, false, nil
+	}
+
+	baseDecl := trimTokens(lhs[:open])
+	name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(baseDecl, false)
+	if err != nil {
+		return cDeclItem{}, false, nil
+	}
+	if directFunc || fnSig != nil || kind == cDeclArray || arrayLen != 0 || len(arrayDims) != 0 {
+		return cDeclItem{}, false, nil
+	}
+	elemInfo, err := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, 0, false, fmt.Sprintf("declaration of %q", name))
+	if err != nil {
+		return cDeclItem{}, false, err
+	}
+	info := elemInfo
+	if info.Kind == cDeclPointer {
+		info.PtrDepth++
+	} else {
+		info.Kind = cDeclPointer
+		info.PtrDepth = 1
+	}
+	return cDeclItem{
+		Name:              name,
+		Kind:              info.Kind,
+		PtrDepth:          info.PtrDepth,
+		IsVoid:            info.IsVoid,
+		Base:              info.Base,
+		FuncSig:           cloneFuncTypeSig(info.FuncSig),
+		OpaqueAggregate:   info.OpaqueAggregate,
+		AggregateKeyword:  info.AggregateKeyword,
+		AggregateTag:      info.AggregateTag,
+		RuntimeArrayBound: cloneTokens(bound),
+		RuntimeArrayElem:  elemInfo,
+	}, true, nil
+}
+
+func parseDeclItems(toks []Token, enumLookup map[string]int64, allowRuntimeArrays bool) ([]cDeclItem, map[string]int64, bool, bool, error) {
 	toks = trimTokens(toks)
 	if len(toks) == 0 {
 		return nil, nil, false, false, nil
@@ -4003,7 +4077,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64) ([]cDeclItem, map
 		if len(rest) == 0 {
 			return nil, enumConsts, hasExtern, hasTypedef, nil
 		}
-		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasTypedef, hasTypedef || hasExtern, rest)
+		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasTypedef, hasTypedef || hasExtern, rest, allowRuntimeArrays)
 		if err != nil {
 			return nil, nil, false, false, err
 		}
@@ -4027,7 +4101,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64) ([]cDeclItem, map
 		}
 		return nil, nil, false, false, fmt.Errorf("missing declarator in declaration")
 	}
-	items, err := parseDeclItemsWithBase(baseInfo, hasTypedef, hasTypedef || hasExtern, rest)
+	items, err := parseDeclItemsWithBase(baseInfo, hasTypedef, hasTypedef || hasExtern, rest, allowRuntimeArrays)
 	if err != nil {
 		return nil, nil, false, false, err
 	}
@@ -5326,7 +5400,7 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 		fc.errorf(fc.sig.File, n.Line, n.Col, "invalid declaration: %v", err)
 		return
 	}
-	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, fc.enumLookupMap())
+	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, fc.enumLookupMap(), true)
 	if err != nil {
 		if fc.shouldFallbackDeclToExpr(toks, err) {
 			fc.emitExprTokens(fc.sig.File, n.Line, n.Col, toks)
@@ -5377,6 +5451,9 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 			AggregateTag:     it.AggregateTag,
 		}
 		elemStep := fc.pointerElemStep(it.Kind, it.PtrDepth, it.Base, it.IsVoid, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag)
+		if len(it.RuntimeArrayBound) > 0 {
+			elemStep = fc.typeByteSize(it.RuntimeArrayElem)
+		}
 		if it.Kind == cDeclArray {
 			elemStep = fc.typeByteSize(arrayElementTypeInfo(info))
 		}
@@ -5384,6 +5461,15 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 			elemStep = 1
 		}
 		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.ArrayDims, it.FuncSig, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag, fc.sig.File, n.Line, n.Col)
+		if len(it.RuntimeArrayBound) > 0 {
+			fc.emitExprTokens(fc.sig.File, n.Line, n.Col, it.RuntimeArrayBound)
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: fc.typeByteSize(it.RuntimeArrayElem)})
+			fc.emit(ir.Inst{Op: ir.OP_MUL})
+			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			continue
+		}
 		if isAggregateObjectDecl(it.Kind, it.PtrDepth, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag) {
 			fc.initLocalAggregateObject(it.Name, idx, cTypeInfo{
 				Kind:             it.Kind,
@@ -5513,7 +5599,7 @@ func (fc *funcCompiler) compileForStmt(n *Node) {
 	defer fc.popScope()
 
 	if len(initToks) > 0 {
-		if initToks[0].Kind == TokIdent && isDeclarationKeyword(initToks[0]) {
+		if looksLikeConcreteDeclStart(initToks) {
 			declNode := &Node{Line: n.Line, Col: n.Col}
 			fc.compileDeclTokens(fc.sig.File, declNode, initToks)
 		} else {
@@ -5601,7 +5687,7 @@ func (fc *funcCompiler) compileReturnStmt(n *Node) {
 }
 
 func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
-	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, fc.enumLookupMap())
+	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, fc.enumLookupMap(), true)
 	if err != nil {
 		if fc.shouldFallbackDeclToExpr(toks, err) {
 			fc.emitExprTokens(file, n.Line, n.Col, toks)
@@ -5652,6 +5738,9 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 			AggregateTag:     it.AggregateTag,
 		}
 		elemStep := fc.pointerElemStep(it.Kind, it.PtrDepth, it.Base, it.IsVoid, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag)
+		if len(it.RuntimeArrayBound) > 0 {
+			elemStep = fc.typeByteSize(it.RuntimeArrayElem)
+		}
 		if it.Kind == cDeclArray {
 			elemStep = fc.typeByteSize(arrayElementTypeInfo(info))
 		}
@@ -5659,6 +5748,15 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 			elemStep = 1
 		}
 		idx := fc.addLocalDecl(it.Name, it.Kind, it.Base, it.PtrDepth, elemStep, it.ArrayLen, it.ArrayDims, it.FuncSig, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag, file, n.Line, n.Col)
+		if len(it.RuntimeArrayBound) > 0 {
+			fc.emitExprTokens(file, n.Line, n.Col, it.RuntimeArrayBound)
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: fc.typeByteSize(it.RuntimeArrayElem)})
+			fc.emit(ir.Inst{Op: ir.OP_MUL})
+			alloc := fc.c.ensureIntrinsicWrapper("Alloc", 1, 1)
+			fc.emit(ir.Inst{Op: ir.OP_CALL, Name: alloc, Arg: 1})
+			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
+			continue
+		}
 		if isAggregateObjectDecl(it.Kind, it.PtrDepth, it.OpaqueAggregate, it.AggregateKeyword, it.AggregateTag) {
 			fc.initLocalAggregateObject(it.Name, idx, cTypeInfo{
 				Kind:             it.Kind,
