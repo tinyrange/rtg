@@ -7449,11 +7449,11 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 	switch node.Name {
 	case "!":
 		c.compileExpr(node.X)
-		c.emit(ir.Inst{Op: ir.OP_NOT})
+		c.emit(makeInst(ir.OP_NOT, 0, 0, 0, ""))
 	case "-":
 		w := c.exprWidth(node.X)
 		c.compileExpr(node.X)
-		inst := ir.Inst{Op: ir.OP_NEG, Width: w}
+		inst := makeInst(ir.OP_NEG, 0, w, 0, "")
 		if c.isFloatExpr(node.X) {
 			inst.Name = "float64"
 		}
@@ -7478,11 +7478,11 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 		}
 		w := c.exprWidth(node.X)
 		c.compileExpr(node.X)
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: -1, Width: w})
-		c.emit(ir.Inst{Op: ir.OP_XOR, Width: w})
+		c.emit(makeInst(ir.OP_CONST_I64, 0, w, -1, ""))
+		c.emit(makeInst(ir.OP_XOR, 0, w, 0, ""))
 		if w == 1 {
-			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0xFF})
-			c.emit(ir.Inst{Op: ir.OP_AND})
+			c.emit(makeInst(ir.OP_CONST_I64, 0, 0, 0xFF, ""))
+			c.emit(makeInst(ir.OP_AND, 0, 0, 0, ""))
 		}
 	default:
 		panic("ICE: unhandled unary operator in compileUnaryExpr")
@@ -10256,6 +10256,22 @@ func (c *Compiler) exprElemSize(node *Node) int {
 			}
 		}
 		return c.target.PtrSize
+	}
+	if t := c.resolveExprType(node); t != "" {
+		if elemType, ok := splitBracketType(t); ok {
+			return c.typeElemSize(elemType)
+		}
+		if t == "string" {
+			return 1
+		}
+	}
+	if ct := c.exprConcreteType(node); ct != "" {
+		if elemType, ok := splitBracketType(ct); ok {
+			return c.typeElemSize(elemType)
+		}
+		if ct == "string" {
+			return 1
+		}
 	}
 	return 1
 }
