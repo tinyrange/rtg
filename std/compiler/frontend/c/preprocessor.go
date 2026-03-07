@@ -156,6 +156,13 @@ func copyDisabled(disabled map[string]bool, name string) map[string]bool {
 	return out
 }
 
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", err)
+}
+
 func tokenizeDefineBody(spec string) []Token {
 	lx := NewLexer("<define>", spec)
 	toks, err := lx.Tokenize()
@@ -844,7 +851,7 @@ outer:
 					nextDisabled := copyDisabled(disabled, tok.Text)
 					rawRepl := cloneTokens(repl)
 					repl, err = p.expandTokens(file, repl, nextDisabled, depth+1)
-					if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
+					if err != nil && strings.Contains(errorText(err), "unterminated macro call") {
 						tail := append(rawRepl, cloneTokens(in[end+1:])...)
 						repl, err = p.expandTokens(file, tail, nextDisabled, depth+1)
 						if err == nil {
@@ -861,7 +868,7 @@ outer:
 				}
 				nextDisabled := copyDisabled(disabled, tok.Text)
 				repl, err := p.expandTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
-				if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
+				if err != nil && strings.Contains(errorText(err), "unterminated macro call") {
 					for _, end := range macroCallContinuationEnds(in, i+1, parenBalance(m.Body)) {
 						tail := append(cloneTokens(m.Body), cloneTokens(in[i+1:end+1])...)
 						repl, err = p.expandTokens(file, tail, nextDisabled, depth+1)
@@ -961,7 +968,7 @@ outer:
 					nextDisabled := copyDisabled(disabled, tok.Text)
 					rawRepl := cloneTokens(repl)
 					repl, err = p.expandIfExprTokens(file, repl, nextDisabled, depth+1)
-					if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
+					if err != nil && strings.Contains(errorText(err), "unterminated macro call") {
 						tail := append(rawRepl, cloneTokens(in[end+1:])...)
 						repl, err = p.expandIfExprTokens(file, tail, nextDisabled, depth+1)
 						if err == nil {
@@ -978,7 +985,7 @@ outer:
 				}
 				nextDisabled := copyDisabled(disabled, tok.Text)
 				repl, err := p.expandIfExprTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
-				if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
+				if err != nil && strings.Contains(errorText(err), "unterminated macro call") {
 					for _, end := range macroCallContinuationEnds(in, i+1, parenBalance(m.Body)) {
 						tail := append(cloneTokens(m.Body), cloneTokens(in[i+1:end+1])...)
 						repl, err = p.expandIfExprTokens(file, tail, nextDisabled, depth+1)
@@ -1427,7 +1434,7 @@ func (e *exprParser) parseHasInclude() (int64, error) {
 	if err == nil {
 		return 1, nil
 	}
-	if strings.Contains(err.Error(), "include not found:") {
+	if strings.Contains(errorText(err), "include not found:") {
 		return 0, nil
 	}
 	return 0, nil

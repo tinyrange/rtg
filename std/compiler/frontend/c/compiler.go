@@ -2395,9 +2395,7 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 	prevDeclSizes := cConstSizeLookupDecl
 	declSizes := make(map[string]int64)
 	cConstSizeLookupDecl = declSizes
-	defer func() {
-		cConstSizeLookupDecl = prevDeclSizes
-	}()
+	defer restoreDeclSizeLookup(prevDeclSizes)
 	maxAlign := int64(1)
 	maxSize := int64(0)
 	nextOffset := int64(0)
@@ -3114,6 +3112,10 @@ func mergeEnumConstMaps(dst map[string]int64, src map[string]int64) (map[string]
 		dst[name] = val
 	}
 	return dst, nil
+}
+
+func restoreDeclSizeLookup(prev map[string]int64) {
+	cConstSizeLookupDecl = prev
 }
 
 func applyDeclaratorArrayDims(info *cTypeInfo, dims []int64) {
@@ -4459,9 +4461,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, enumLookup map[string]int64, has
 	prevDeclSizes := cConstSizeLookupDecl
 	declSizes := make(map[string]int64)
 	cConstSizeLookupDecl = declSizes
-	defer func() {
-		cConstSizeLookupDecl = prevDeclSizes
-	}()
+	defer restoreDeclSizeLookup(prevDeclSizes)
 	for _, part := range parts {
 		part = trimTokens(part)
 		if len(part) == 0 {
@@ -6709,7 +6709,7 @@ func isDeclaratorParseError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	msg := fmt.Sprintf("%v", err)
 	return strings.Contains(msg, "complex declarators are not yet supported") ||
 		strings.Contains(msg, "unable to parse declarator name") ||
 		strings.Contains(msg, "missing declarator")
