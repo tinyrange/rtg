@@ -389,6 +389,13 @@ func (p *Preprocessor) processSource(file string, src string, depth int) ([]Toke
 			}
 			for next < len(toks) && (parenBalance(group) > 0 || p.groupNeedsFunctionMacroContinuation(group, toks, next)) {
 				lineStart = next
+				for lineStart < len(toks) && toks[lineStart].Kind == TokNewline {
+					lineStart++
+				}
+				if lineStart < len(toks) && toks[lineStart].Kind == TokPunct && toks[lineStart].Text == "#" {
+					break
+				}
+				next = lineStart
 				for next < len(toks) && toks[next].Kind != TokNewline {
 					next++
 				}

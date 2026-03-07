@@ -4270,9 +4270,11 @@ func stringArrayInitializerValues(init []Token, base cScalarType, arrayLen int64
 	for i := 0; i < len(s); i++ {
 		vals = append(vals, int64(uint8(s[i])))
 	}
-	vals = append(vals, 0)
 	if int64(len(vals)) > arrayLen {
 		return nil, true, fmt.Errorf("string initializer is too long (%d > %d)", len(vals), arrayLen)
+	}
+	if int64(len(vals)) < arrayLen {
+		vals = append(vals, 0)
 	}
 	return vals, true, nil
 }
