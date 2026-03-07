@@ -25,6 +25,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#32` x64 Windows backend is missing lowering for runtime syscall intrinsics such as `SysRead`/`SysWrite`/`SysOpen`/`SysClose` (`ICE: unknown intrinsic 'SysRead' on GOOS=windows` when compiling stdlib-using Windows targets).
 - `#35` Struct values are lowered with pointer-aliasing semantics instead of copy semantics in RTG-compiled programs.
 - `#40` WASM variadic/interface boxing still truncates `int64` values in `fmt.Printf`-style calls.
+- `#41` C backend float lowering currently requires the C word size to be at least as wide as the float payload (`c/64` for `float64`; `c/32+` for `float32`).
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -68,6 +69,21 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 13. `#31` Make wasm stackification tolerate outlined panic-unwind slow paths (or preserve the inline form there).
 14. `#35` Fix struct-value copy semantics in RTG-compiled programs (current lowering aliases heap-backed struct objects).
 15. `#40` Fix wasm boxing/variadic argument handling for `int64` values.
+16. `#41` Decide whether smaller-word C profiles should gain split-word float lowering or keep an explicit unsupported-target error.
+
+### 41) C backend float lowering currently depends on word-size >= float-size
+
+**Symptom**
+- The C backend now lowers scalar `float32`/`float64` values by carrying raw IEEE bits in `rtg_word`.
+- That works for `c/64` with both `float32` and `float64`, and for `c/32` only for `float32`.
+- `c/32` cannot faithfully carry `float64`, and `c/16` cannot faithfully carry either float width, without changing the current one-word operand/local model.
+
+**Impact**
+- `float64` programs targeting `-T c/32` still need to fail early instead of silently truncating values.
+- `float32`/`float64` support on the C backend is currently a `c/64` feature in practice, with only partial reach to narrower C profiles.
+
+**Current mitigation**
+- The backend now rejects unsupported profile/float-width combinations up front instead of generating truncated code.
 
 ### 40) WASM variadic/interface boxing truncates `int64` values in formatted calls
 

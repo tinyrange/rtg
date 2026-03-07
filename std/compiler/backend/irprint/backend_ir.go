@@ -15,6 +15,8 @@ func opcodeName(op ir.Opcode) string {
 	switch op {
 	case ir.OP_CONST_I64:
 		return "const_i64"
+	case ir.OP_CONST_F32:
+		return "const_f32"
 	case ir.OP_CONST_F64:
 		return "const_f64"
 	case ir.OP_CONST_STR:
@@ -148,6 +150,8 @@ func typeKindName(k ir.TypeKind) string {
 		return "int32"
 	case ir.TY_INT:
 		return "int"
+	case ir.TY_FLOAT32:
+		return "float32"
 	case ir.TY_FLOAT64:
 		return "float64"
 	case ir.TY_UINTPTR:
@@ -433,7 +437,7 @@ func instArgs(inst ir.Inst, f *ir.IRFunc, irmod *ir.IRModule) string {
 	switch op {
 	case ir.OP_CONST_I64:
 		return " " + fmt.Sprintf("%d", val) + w
-	case ir.OP_CONST_F64:
+	case ir.OP_CONST_F32, ir.OP_CONST_F64:
 		if name != "" {
 			return " " + irQuote(name) + w
 		}
@@ -480,11 +484,17 @@ func instArgs(inst ir.Inst, f *ir.IRFunc, irmod *ir.IRModule) string {
 		if val != 0 {
 			s = s + " off=" + fmt.Sprintf("%d", val)
 		}
+		if name != "" {
+			s = s + " kind=" + irQuote(name)
+		}
 		return s
 	case ir.OP_STORE:
 		s := " size=" + fmt.Sprintf("%d", arg)
 		if val != 0 {
 			s = s + " off=" + fmt.Sprintf("%d", val)
+		}
+		if name != "" {
+			s = s + " kind=" + irQuote(name)
 		}
 		return s
 	case ir.OP_OFFSET:
@@ -514,6 +524,14 @@ func instArgs(inst ir.Inst, f *ir.IRFunc, irmod *ir.IRModule) string {
 		return " kind=" + fmt.Sprintf("%d", arg)
 	case ir.OP_CAP:
 		return ""
+	}
+	switch op {
+	case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD, ir.OP_NEG,
+		ir.OP_EQ, ir.OP_NEQ, ir.OP_LT, ir.OP_GT, ir.OP_LEQ, ir.OP_GEQ,
+		ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
+		if name != "" {
+			return " kind=" + irQuote(name) + w
+		}
 	}
 	if w != "" {
 		return w

@@ -1184,7 +1184,7 @@ func (p *Parser) parseType() *Node {
 		if tok.Val == "any" {
 			return &Node{Kind: NIdent, Name: "interface{}", Pos: tok.Line}
 		}
-		if tok.Val == "float32" || tok.Val == "complex64" || tok.Val == "complex128" {
+		if tok.Val == "complex64" || tok.Val == "complex128" {
 			p.errorf("%s type is not supported at line %d", tok.Val, tok.Line)
 			return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 		}

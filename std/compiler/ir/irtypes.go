@@ -11,6 +11,7 @@ const (
 	TY_BYTE
 	TY_INT32
 	TY_INT
+	TY_FLOAT32
 	TY_FLOAT64
 	TY_UINTPTR
 	TY_STRING
@@ -50,6 +51,7 @@ type Opcode int
 
 const (
 	OP_CONST_I64 Opcode = iota
+	OP_CONST_F32
 	OP_CONST_F64
 	OP_CONST_STR
 	OP_CONST_BOOL
@@ -122,6 +124,14 @@ const (
 	OP_CAP
 )
 
+const (
+	CONVERT_SRC_UNKNOWN = iota
+	CONVERT_SRC_INT
+	CONVERT_SRC_UINT
+	CONVERT_SRC_FLOAT32
+	CONVERT_SRC_FLOAT64
+)
+
 // Inst annotation names used by backend-independent optimization passes.
 const (
 	// InstNonNilMemoryBase marks LOAD/LEN/CAP instructions whose pointer input
@@ -163,7 +173,8 @@ type IRLocal struct {
 	Index     int
 	Is64      bool // true for uint64/int64 locals (need i64 on wasm32)
 	IsFloat64 bool // true for float64 locals (need f64 on wasm32)
-	Width     int  // storage width: 0=word, 1=byte, 2=int16, 4=int32, 8=int64/float64
+	FloatKind TypeKind
+	Width     int // storage width: 0=word, 1=byte, 2=int16, 4=int32, 8=int64/float64
 }
 
 // IRFunc represents a compiled function.
