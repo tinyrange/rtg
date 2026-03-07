@@ -1426,7 +1426,16 @@ func (c *Compiler) floatInstNameForTypeName(typeName string) string {
 }
 
 func (c *Compiler) resolvedFloatInstName(node *Node) string {
-	return mergeFloatTypeNames(c.floatExprTypeName(node), "")
+	if node == nil {
+		return ""
+	}
+	if typ := c.floatExprTypeName(node); typ != "" {
+		return typ
+	}
+	if c.isConstFloatExpr(node) {
+		return "float64"
+	}
+	return ""
 }
 
 func (c *Compiler) convertSourceKind(node *Node) int64 {
