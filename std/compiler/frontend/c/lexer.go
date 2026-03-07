@@ -169,8 +169,12 @@ func (l *Lexer) scanNumber() Token {
 
 func (l *Lexer) scanQuoted(prefix string, delim byte, kind TokenKind) (Token, error) {
 	line := l.line
-	col := l.col - len(prefix) - 1
-	start := l.pos - len(prefix) - 1
+	start := l.pos - 1
+	col := l.col - 1
+	if prefix != "" {
+		start = l.pos - len(prefix)
+		col = l.col - len(prefix)
+	}
 	for !l.atEnd() {
 		ch := l.advance()
 		if ch == '\\' {

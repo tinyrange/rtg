@@ -5316,16 +5316,27 @@ func (fc *funcCompiler) resolveMemberField(ex *expr, diag bool) (cAggregateField
 		}
 		return cAggregateField{}, false
 	}
+	memberBase := baseType
 	switch ex.op {
 	case ".":
-		if baseType.Kind != cDeclScalar || baseType.AggregateKeyword == "" || baseType.AggregateTag == "" {
+		if memberBase.Kind != cDeclScalar || memberBase.AggregateKeyword == "" || memberBase.AggregateTag == "" {
 			if diag {
 				fc.errorf(fc.sig.File, 0, 0, "member access via '.' requires struct/union value")
 			}
 			return cAggregateField{}, false
 		}
 	case "->":
-		if baseType.Kind != cDeclPointer || baseType.PtrDepth != 1 || baseType.AggregateKeyword == "" || baseType.AggregateTag == "" {
+		if memberBase.Kind == cDeclArray || memberBase.ArrayLen != 0 || len(memberBase.ArrayDims) > 0 {
+			elemType := arrayElementTypeInfo(memberBase)
+			memberBase = elemType
+			memberBase.Kind = cDeclPointer
+			if memberBase.PtrDepth == 0 {
+				memberBase.PtrDepth = 1
+			} else {
+				memberBase.PtrDepth++
+			}
+		}
+		if memberBase.Kind != cDeclPointer || memberBase.PtrDepth != 1 || memberBase.AggregateKeyword == "" || memberBase.AggregateTag == "" {
 			if diag {
 				fc.errorf(fc.sig.File, 0, 0, "member access via '->' requires pointer to struct/union")
 			}
@@ -5337,13 +5348,13 @@ func (fc *funcCompiler) resolveMemberField(ex *expr, diag bool) (cAggregateField
 		}
 		return cAggregateField{}, false
 	}
-	agg, ok := fc.lookupAggregate(baseType.AggregateKeyword, baseType.AggregateTag)
+	agg, ok := fc.lookupAggregate(memberBase.AggregateKeyword, memberBase.AggregateTag)
 	if !ok || len(agg.Fields) == 0 {
 		if diag {
 			if ex.op == "." {
-				fc.errorf(fc.sig.File, 0, 0, "member access via '.' on incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
+				fc.errorf(fc.sig.File, 0, 0, "member access via '.' on incomplete %s %q", memberBase.AggregateKeyword, memberBase.AggregateTag)
 			} else {
-				fc.errorf(fc.sig.File, 0, 0, "member access via '->' on incomplete %s %q", baseType.AggregateKeyword, baseType.AggregateTag)
+				fc.errorf(fc.sig.File, 0, 0, "member access via '->' on incomplete %s %q", memberBase.AggregateKeyword, memberBase.AggregateTag)
 			}
 		}
 		return cAggregateField{}, false

@@ -111,6 +111,30 @@ func parenBalance(tokens []Token) int {
 	return depth
 }
 
+func macroCallContinuationEnds(tokens []Token, start int, openParen int) []int {
+	if openParen <= 0 || start < 0 || start >= len(tokens) {
+		return nil
+	}
+	depth := openParen
+	var ends []int
+	for end := start; end < len(tokens); end++ {
+		t := tokens[end]
+		if t.Kind != TokPunct {
+			continue
+		}
+		switch t.Text {
+		case "(":
+			depth++
+		case ")":
+			depth--
+			if depth == 0 {
+				ends = append(ends, end)
+			}
+		}
+	}
+	return ends
+}
+
 func lastNonNewlineToken(tokens []Token) (Token, bool) {
 	for i := len(tokens) - 1; i >= 0; i-- {
 		if tokens[i].Kind == TokNewline {
@@ -430,18 +454,52 @@ func (p *Preprocessor) processSource(file string, src string, depth int) ([]Toke
 }
 
 func (p *Preprocessor) groupNeedsFunctionMacroContinuation(group []Token, toks []Token, next int) bool {
-	last, ok := lastNonNewlineToken(group)
-	if !ok || last.Kind != TokIdent {
-		return false
+	open, endsWithFnLike := p.groupMacroTailContinuation(group, nil, 0)
+	if open > 0 {
+		return true
 	}
-	m := p.macros[last.Text]
-	if m == nil || !m.FunctionLike {
+	if !endsWithFnLike {
 		return false
 	}
 	for next < len(toks) && toks[next].Kind == TokNewline {
 		next++
 	}
 	return next < len(toks) && toks[next].Kind == TokPunct && toks[next].Text == "("
+}
+
+func (p *Preprocessor) groupMacroTailContinuation(tokens []Token, disabled map[string]bool, depth int) (int, bool) {
+	if depth > 64 {
+		return 0, false
+	}
+	last, ok := lastNonNewlineToken(tokens)
+	if !ok {
+		return 0, false
+	}
+	open := parenBalance(tokens)
+	if last.Kind != TokIdent {
+		return open, false
+	}
+	return p.groupMacroTailIdent(last.Text, open, disabled, depth)
+}
+
+func (p *Preprocessor) groupMacroTailIdent(name string, open int, disabled map[string]bool, depth int) (int, bool) {
+	if depth > 64 || disabled[name] {
+		return open, false
+	}
+	m := p.macros[name]
+	if m == nil {
+		return open, false
+	}
+	if m.FunctionLike {
+		return open, true
+	}
+	nextDisabled := copyDisabled(disabled, name)
+	open += parenBalance(m.Body)
+	last, ok := lastNonNewlineToken(m.Body)
+	if !ok || last.Kind != TokIdent {
+		return open, false
+	}
+	return p.groupMacroTailIdent(last.Text, open, nextDisabled, depth+1)
 }
 
 func isDirectiveName(line []Token, name string) bool {
@@ -738,9 +796,24 @@ func (p *Preprocessor) expandTokens(file string, in []Token, disabled map[string
 		return nil, fmt.Errorf("preprocessor: macro expansion depth exceeded")
 	}
 	var out []Token
+outer:
 	for i := 0; i < len(in); i++ {
 		tok := in[i]
 		if tok.Kind == TokIdent {
+			if tok.Text == "_Pragma" {
+				open := i + 1
+				for open < len(in) && in[open].Kind == TokNewline {
+					open++
+				}
+				if open < len(in) && in[open].Kind == TokPunct && in[open].Text == "(" {
+					_, end, ok := parseMacroArgs(in, open)
+					if !ok {
+						return nil, fmt.Errorf("%s:%d:%d: unterminated _Pragma", file, tok.Line, tok.Col)
+					}
+					i = end
+					continue
+				}
+			}
 			if tok.Text == "__LINE__" {
 				out = append(out, Token{Kind: TokNumber, Text: decimalItoa(tok.Line), File: file, Line: tok.Line, Col: tok.Col})
 				continue
@@ -789,11 +862,14 @@ func (p *Preprocessor) expandTokens(file string, in []Token, disabled map[string
 				nextDisabled := copyDisabled(disabled, tok.Text)
 				repl, err := p.expandTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
 				if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
-					tail := append(cloneTokens(m.Body), cloneTokens(in[i+1:])...)
-					repl, err = p.expandTokens(file, tail, nextDisabled, depth+1)
-					if err == nil {
-						out = append(out, repl...)
-						return out, nil
+					for _, end := range macroCallContinuationEnds(in, i+1, parenBalance(m.Body)) {
+						tail := append(cloneTokens(m.Body), cloneTokens(in[i+1:end+1])...)
+						repl, err = p.expandTokens(file, tail, nextDisabled, depth+1)
+						if err == nil {
+							out = append(out, repl...)
+							i = end
+							continue outer
+						}
 					}
 				}
 				if err != nil {
@@ -813,6 +889,7 @@ func (p *Preprocessor) expandIfExprTokens(file string, in []Token, disabled map[
 		return nil, fmt.Errorf("preprocessor: macro expansion depth exceeded")
 	}
 	var out []Token
+outer:
 	for i := 0; i < len(in); i++ {
 		tok := in[i]
 		if tok.Kind == TokIdent && tok.Text == "defined" {
@@ -902,11 +979,14 @@ func (p *Preprocessor) expandIfExprTokens(file string, in []Token, disabled map[
 				nextDisabled := copyDisabled(disabled, tok.Text)
 				repl, err := p.expandIfExprTokens(file, cloneTokens(m.Body), nextDisabled, depth+1)
 				if err != nil && strings.Contains(err.Error(), "unterminated macro call") {
-					tail := append(cloneTokens(m.Body), cloneTokens(in[i+1:])...)
-					repl, err = p.expandIfExprTokens(file, tail, nextDisabled, depth+1)
-					if err == nil {
-						out = append(out, repl...)
-						return out, nil
+					for _, end := range macroCallContinuationEnds(in, i+1, parenBalance(m.Body)) {
+						tail := append(cloneTokens(m.Body), cloneTokens(in[i+1:end+1])...)
+						repl, err = p.expandIfExprTokens(file, tail, nextDisabled, depth+1)
+						if err == nil {
+							out = append(out, repl...)
+							i = end
+							continue outer
+						}
 					}
 				}
 				if err != nil {
