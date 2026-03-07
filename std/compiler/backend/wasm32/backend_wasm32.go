@@ -52,6 +52,7 @@ type WasmGen struct {
 
 	// String data area: raw bytes followed by per-string 8-byte headers.
 	stringData []byte
+	stringMap  map[string]int32
 
 	// Current function state
 	curFunc       *ir.IRFunc
@@ -97,8 +98,9 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	g := &WasmGen{
 		mod:       &wasmModule{memMin: 2}, // start with 2 pages (128KB)
 		irmod:     irmod,
-		funcMap: make(map[string]int),
-		entryFn: common.EntryFuncName(target),
+		funcMap:   make(map[string]int),
+		stringMap: make(map[string]int32),
+		entryFn:   common.EntryFuncName(target),
 	}
 
 	// Setup WASI imports
@@ -315,8 +317,20 @@ func (g *WasmGen) setupDataSegments() {
 
 // === String Constants ===
 
+func lookupStringOffsetLinear(m map[string]int32, key string) (int32, bool) {
+	for k, v := range m {
+		if k == key {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
 func (g *WasmGen) internString(s string) int32 {
 	decoded := becommon.DecodeStringLiteral(s)
+	if headerOff, ok := lookupStringOffsetLinear(g.stringMap, decoded); ok {
+		return headerOff + g.stringsAddr
+	}
 
 	// Append string data bytes
 	dataOff := len(g.stringData)
@@ -339,6 +353,7 @@ func (g *WasmGen) internString(s string) int32 {
 	g.stringData = append(g.stringData, byte(lenVal>>8))
 	g.stringData = append(g.stringData, byte(lenVal>>16))
 	g.stringData = append(g.stringData, byte(lenVal>>24))
+	g.stringMap[decoded] = int32(headerOff)
 	return int32(headerOff) + g.stringsAddr
 }
 
@@ -1756,14 +1771,14 @@ func (g *WasmGen) compileLocalAddImm(idx int, imm int32) {
 		g.pushType(WASM_TYPE_F64)
 		g.compileBinaryOpFloat(OP_WASM_F64_ADD)
 	} else if g.peekType() == WASM_TYPE_I64 {
-			g.w.i64Const(int64(imm))
-			g.pushType(WASM_TYPE_I64)
-			g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD, false)
-		} else {
-			g.w.i32Const(imm)
-			g.pushType(WASM_TYPE_I32)
-			g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD, false)
-		}
+		g.w.i64Const(int64(imm))
+		g.pushType(WASM_TYPE_I64)
+		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD, false)
+	} else {
+		g.w.i32Const(imm)
+		g.pushType(WASM_TYPE_I32)
+		g.compileBinaryOp(OP_WASM_I32_ADD, OP_WASM_I64_ADD, false)
+	}
 	g.compileLocalSet(idx)
 }
 
@@ -3729,6 +3744,8 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 				g.w.op(OP_WASM_I32_ADD)
 				if ri < len(resultTypes) && resultTypes[ri] == WASM_TYPE_F64 {
 					g.w.f64Load(3, 0)
+				} else if ri < len(resultTypes) && resultTypes[ri] == WASM_TYPE_I64 {
+					g.w.i64Load(3, 0)
 				} else {
 					g.w.i32Load(2, 0)
 				}

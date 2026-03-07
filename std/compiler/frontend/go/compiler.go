@@ -103,6 +103,7 @@ type Compiler struct {
 	ifaceMethods          map[string][]string // interface name → method names
 	ifaceMethodRets       map[string]int      // iface+"\x00"+method → return count
 	ifaceMethodRetTypes   map[string]string   // iface+"\x00"+method → first return type name
+	ifaceMethodRetLists   map[string][]string // iface+"\x00"+method → full return type names
 	methodTable           map[string]string   // "pkg.Type.Method" → qualified IR func name
 	methodFuncNames       map[string]bool     // qualified method function names
 	typeIDs               map[string]int      // concrete type qualified name → unique int
@@ -201,6 +202,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		ifaceMethods:          make(map[string][]string),
 		ifaceMethodRets:       make(map[string]int),
 		ifaceMethodRetTypes:   make(map[string]string),
+		ifaceMethodRetLists:   make(map[string][]string),
 		methodTable:           make(map[string]string),
 		methodFuncNames:       make(map[string]bool),
 		typeIDs:               make(map[string]int),
@@ -360,6 +362,7 @@ func (c *Compiler) initBuiltinTypes() {
 	c.ifaceMethods["interface{}"] = []string{}
 	c.ifaceMethods["error"] = []string{"Error"}
 	c.ifaceMethodRets["error\x00Error"] = 1
+	c.ifaceMethodRetLists["error\x00Error"] = []string{"string"}
 }
 
 func (c *Compiler) errorf(format string, args ...interface{}) {
@@ -1110,7 +1113,7 @@ func qualifiedPointerTargetInfo(typeName string) (pkgPath string, targetName str
 	if dotIdx < 0 {
 		return "", targetName, true
 	}
-	return targetName[0:dotIdx], targetName[dotIdx+1:len(targetName)], true
+	return targetName[0:dotIdx], targetName[dotIdx+1 : len(targetName)], true
 }
 
 func isBuiltinBoolTypeName(typeName string) bool {
@@ -1387,13 +1390,13 @@ func (c *Compiler) exprWidth(node *Node) int {
 			}
 		}
 	case NCallExpr:
-		calleeName := c.resolveCallName(node.X)
 		// Type conversions: uint64(), int64(), int32(), byte(), etc.
+		calleeName := c.resolveCallName(node.X)
 		tw := typeWidth(calleeName)
 		if tw != 0 {
 			return tw
 		}
-		if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
+		if retTypes, ok := c.callReturnTypes(node); ok && len(retTypes) > 0 {
 			return typeWidth(retTypes[0])
 		}
 	case NBinaryExpr:
@@ -2227,15 +2230,28 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 				methods = append(methods, meth.Name)
 				retCount := 0
 				firstRetType := ""
+				var retTypes []string
 				if meth.Type != nil {
 					if meth.Type.Kind == NFuncType {
 						retCount = len(meth.Type.Nodes)
 						if len(meth.Type.Nodes) > 0 {
-							firstRetType = c.qualifiedTypeFromTypeNode(meth.Type.Nodes[0], pkg.Path)
+							firstRetNode := meth.Type.Nodes[0]
+							if firstRetNode != nil && firstRetNode.Type != nil {
+								firstRetNode = firstRetNode.Type
+							}
+							firstRetType = c.qualifiedTypeFromTypeNode(firstRetNode, pkg.Path)
+						}
+						for _, ret := range meth.Type.Nodes {
+							retNode := ret
+							if retNode != nil && retNode.Type != nil {
+								retNode = retNode.Type
+							}
+							retTypes = append(retTypes, c.qualifiedTypeFromTypeNode(retNode, pkg.Path))
 						}
 					} else {
 						retCount = 1
 						firstRetType = c.qualifiedTypeFromTypeNode(meth.Type, pkg.Path)
+						retTypes = append(retTypes, firstRetType)
 					}
 				}
 				c.ifaceMethodRets[node.Name+"\x00"+meth.Name] = retCount
@@ -2243,6 +2259,10 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 				if firstRetType != "" {
 					c.ifaceMethodRetTypes[node.Name+"\x00"+meth.Name] = firstRetType
 					c.ifaceMethodRetTypes[qname+"\x00"+meth.Name] = firstRetType
+				}
+				if len(retTypes) > 0 {
+					c.ifaceMethodRetLists[node.Name+"\x00"+meth.Name] = retTypes
+					c.ifaceMethodRetLists[qname+"\x00"+meth.Name] = retTypes
 				}
 			}
 		}
@@ -2278,6 +2298,17 @@ func (c *Compiler) ifaceMethodFirstReturnType(ifaceType string, methodName strin
 	return "", false
 }
 
+func (c *Compiler) ifaceMethodReturnTypes(ifaceType string, methodName string) ([]string, bool) {
+	if ifaceType == "" || methodName == "" {
+		return nil, false
+	}
+	key := ifaceType + "\x00" + methodName
+	if retTypes, ok := c.ifaceMethodRetLists[key]; ok && len(retTypes) > 0 {
+		return retTypes, true
+	}
+	return nil, false
+}
+
 // registerAnonInterfaceType assigns a stable synthetic name for an anonymous
 // interface type and records its method set/return counts for interface calls.
 func (c *Compiler) registerAnonInterfaceType(typeNode *Node) string {
@@ -2289,32 +2320,37 @@ func (c *Compiler) registerAnonInterfaceType(typeNode *Node) string {
 	}
 	var methodNames []string
 	var retCounts []int
-	var retTypes []string
+	var firstRetTypes []string
+	var allRetTypes [][]string
 	for _, meth := range typeNode.Nodes {
 		if meth == nil || meth.Kind != NFunc || meth.Name == "" {
 			continue
 		}
 		retCount := 0
+		var methodRetTypes []string
 		if meth.Type != nil {
 			if meth.Type.Kind == NFuncType {
 				retCount = len(meth.Type.Nodes)
+				for _, ret := range meth.Type.Nodes {
+					retNode := ret
+					if retNode != nil && retNode.Type != nil {
+						retNode = retNode.Type
+					}
+					methodRetTypes = append(methodRetTypes, c.qualifiedTypeFromTypeNode(retNode, ""))
+				}
 			} else {
 				retCount = 1
+				methodRetTypes = append(methodRetTypes, c.qualifiedTypeFromTypeNode(meth.Type, ""))
 			}
 		}
 		methodNames = append(methodNames, meth.Name)
 		retCounts = append(retCounts, retCount)
 		firstRetType := ""
-		if meth.Type != nil {
-			if meth.Type.Kind == NFuncType {
-				if len(meth.Type.Nodes) > 0 {
-					firstRetType = c.qualifiedTypeFromTypeNode(meth.Type.Nodes[0], "")
-				}
-			} else {
-				firstRetType = c.qualifiedTypeFromTypeNode(meth.Type, "")
-			}
+		if len(methodRetTypes) > 0 {
+			firstRetType = methodRetTypes[0]
 		}
-		retTypes = append(retTypes, firstRetType)
+		firstRetTypes = append(firstRetTypes, firstRetType)
+		allRetTypes = append(allRetTypes, methodRetTypes)
 	}
 	if len(methodNames) == 0 {
 		return "interface{}"
@@ -2335,12 +2371,53 @@ func (c *Compiler) registerAnonInterfaceType(typeNode *Node) string {
 	i = 0
 	for i < len(methodNames) {
 		c.ifaceMethodRets[key+"\x00"+methodNames[i]] = retCounts[i]
-		if retTypes[i] != "" {
-			c.ifaceMethodRetTypes[key+"\x00"+methodNames[i]] = retTypes[i]
+		if firstRetTypes[i] != "" {
+			c.ifaceMethodRetTypes[key+"\x00"+methodNames[i]] = firstRetTypes[i]
+		}
+		if len(allRetTypes[i]) > 0 {
+			c.ifaceMethodRetLists[key+"\x00"+methodNames[i]] = allRetTypes[i]
 		}
 		i = i + 1
 	}
 	return key
+}
+
+func (c *Compiler) callReturnTypes(node *Node) ([]string, bool) {
+	if node == nil || node.Kind != NCallExpr || node.X == nil {
+		return nil, false
+	}
+	if node.X.Kind == NSelectorExpr && node.X.X != nil {
+		ifaceType := c.resolveExprType(node.X.X)
+		if ifaceType == "" {
+			ifaceType = c.exprConcreteType(node.X.X)
+		}
+		if retTypes, ok := c.ifaceMethodReturnTypes(ifaceType, node.X.Name); ok {
+			return retTypes, true
+		}
+	}
+	calleeName := c.resolveCallName(node.X)
+	if node.X.Kind == NIdent {
+		if target, ok := c.localFuncTargets[node.X.Name]; ok {
+			calleeName = target
+		} else if target, ok := c.localMethodTargets[node.X.Name]; ok {
+			calleeName = target
+		}
+	}
+	if retTypes, ok := c.funcRetTypes[calleeName]; ok && len(retTypes) > 0 {
+		calleePkg := ""
+		if node.X.Kind == NSelectorExpr && node.X.X != nil && node.X.X.Kind == NIdent {
+			pkg := c.resolvePackage(node.X.X.Name)
+			if pkg != nil {
+				calleePkg = pkg.Path
+			}
+		}
+		qualified := make([]string, 0, len(retTypes))
+		for _, retType := range retTypes {
+			qualified = append(qualified, c.qualifyTypeName(retType, calleePkg))
+		}
+		return qualified, true
+	}
+	return nil, false
 }
 
 func (c *Compiler) qualifiedTypeFromTypeNode(typeNode *Node, pkgPath string) string {
@@ -4372,15 +4449,13 @@ func (c *Compiler) compileVarDecl(node *Node) {
 			c.maybeCloneArrayForTypeName(nodeTypeName(node.Type))
 		}
 		if node.Type == nil {
-				if ct := c.exprConcreteType(node.X); ct != "" {
-					c.localConcreteTypes[node.Name] = ct
-					if ct == "string" {
-						c.localStringVars[node.Name] = true
-					}
-					if isFloatTypeName(ct) {
-						c.setLocalTypeFlags(idx, "float64")
-					}
-					if elemType, ok := splitBracketType(ct); ok {
+			if ct := c.exprConcreteType(node.X); ct != "" {
+				c.localConcreteTypes[node.Name] = ct
+				if ct == "string" {
+					c.localStringVars[node.Name] = true
+				}
+				c.setLocalTypeFlags(idx, ct)
+				if elemType, ok := splitBracketType(ct); ok {
 					c.localElemSizes[node.Name] = c.typeElemSize(elemType)
 				}
 				c.maybeCloneArrayForTypeName(ct)
@@ -4551,50 +4626,41 @@ func (c *Compiler) compileAssign(node *Node) {
 		}
 		c.compileExpr(node.Y)
 
+		var callRetTypes []string
 		// Track interface-typed, string-typed, and concrete-typed locals from multi-value := assignments
 		if isDefine && node.Y != nil && node.Y.Kind == NCallExpr {
-			calleeName := c.resolveCallName(node.Y.X)
-			if retTypes, ok := c.funcRetTypes[calleeName]; ok {
-				// Determine the package of the callee for type qualification
-				calleePkg := ""
-				if node.Y.X != nil && node.Y.X.Kind == NSelectorExpr && node.Y.X.X != nil {
-					pkg := c.resolvePackage(node.Y.X.X.Name)
-					if pkg != nil {
-						calleePkg = pkg.Path
-					}
-				}
+			if retTypes, ok := c.callReturnTypes(node.Y); ok {
+				callRetTypes = retTypes
 				for j, lhs := range node.Nodes {
-					if j < len(retTypes) {
-						qret := c.qualifyTypeName(retTypes[j], calleePkg)
-						if c.isInterfaceTypeName(retTypes[j]) || c.isInterfaceTypeName(qret) {
-							c.localTypes[lhs.Name] = qret
-						}
-						if retTypes[j] == "string" {
-							c.localStringVars[lhs.Name] = true
-						}
-						if elemType, ok := splitBracketType(qret); ok {
-							c.localElemSizes[lhs.Name] = c.typeElemSize(elemType)
-						}
-						c.setLocalMapMetadataFromQualified(lhs.Name, qret)
-						// Track concrete type for method resolution
-						c.localConcreteTypes[lhs.Name] = qret
+					if j >= len(retTypes) || lhs == nil || lhs.Kind != NIdent {
+						continue
 					}
+					qret := retTypes[j]
+					if c.isInterfaceTypeName(qret) {
+						c.localTypes[lhs.Name] = qret
+					}
+					if qret == "string" {
+						c.localStringVars[lhs.Name] = true
+					}
+					if elemType, ok := splitBracketType(qret); ok {
+						c.localElemSizes[lhs.Name] = c.typeElemSize(elemType)
+					}
+					c.setLocalMapMetadataFromQualified(lhs.Name, qret)
+					// Track concrete type for method resolution
+					c.localConcreteTypes[lhs.Name] = qret
 				}
 			}
 		}
 
 		// Assign to each LHS in reverse order (values are on stack)
 		c.assignStackValuesToLHS(node.Nodes, isDefine)
-		if isDefine && node.Y != nil && node.Y.Kind == NCallExpr {
-			calleeName := c.resolveCallName(node.Y.X)
-			if retTypes, ok := c.funcRetTypes[calleeName]; ok {
-				for j, lhs := range node.Nodes {
-					if j >= len(retTypes) || lhs == nil || lhs.Kind != NIdent {
-						continue
-					}
-					if idx, found := c.lookupLocal(lhs.Name); found {
-						c.setLocalTypeFlags(idx, retTypes[j])
-					}
+		if isDefine && len(callRetTypes) > 0 {
+			for j, lhs := range node.Nodes {
+				if j >= len(callRetTypes) || lhs == nil || lhs.Kind != NIdent {
+					continue
+				}
+				if idx, found := c.lookupLocal(lhs.Name); found {
+					c.setLocalTypeFlags(idx, callRetTypes[j])
 				}
 			}
 		}
@@ -4656,6 +4722,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		// Track concrete type and elem size for method resolution and indexing
 		if ct := c.exprConcreteType(node.Y); ct != "" {
 			c.localConcreteTypes[node.X.Name] = ct
+			c.setLocalTypeFlags(idx, ct)
 			if ct == "string" {
 				c.localStringVars[node.X.Name] = true
 			}
@@ -5806,6 +5873,13 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 		// append returns the same slice type as its first argument
 		if expr.X != nil && expr.X.Kind == NIdent && expr.X.Name == "append" && len(expr.Nodes) > 0 {
 			return c.exprConcreteType(expr.Nodes[0])
+		}
+		if expr.X != nil && expr.X.Kind == NSelectorExpr && expr.X.X != nil {
+			if ifaceType := c.resolveExprType(expr.X.X); ifaceType != "" {
+				if retType, ok := c.ifaceMethodFirstReturnType(ifaceType, expr.X.Name); ok {
+					return retType
+				}
+			}
 		}
 		calleeName := c.resolveCallName(expr.X)
 		if expr.X != nil && expr.X.Kind == NIdent {

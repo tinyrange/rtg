@@ -24,6 +24,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#31` Panic-unwind slow-path outlining currently breaks wasm validation (`not enough arguments on the stack for drop`).
 - `#32` x64 Windows backend is missing lowering for runtime syscall intrinsics such as `SysRead`/`SysWrite`/`SysOpen`/`SysClose` (`ICE: unknown intrinsic 'SysRead' on GOOS=windows` when compiling stdlib-using Windows targets).
 - `#35` Struct values are lowered with pointer-aliasing semantics instead of copy semantics in RTG-compiled programs.
+- `#40` WASM variadic/interface boxing still truncates `int64` values in `fmt.Printf`-style calls.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -66,6 +67,23 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 12. `#30` Make wasm stackification tolerant of shared non-void return epilogues.
 13. `#31` Make wasm stackification tolerate outlined panic-unwind slow paths (or preserve the inline form there).
 14. `#35` Fix struct-value copy semantics in RTG-compiled programs (current lowering aliases heap-backed struct objects).
+15. `#40` Fix wasm boxing/variadic argument handling for `int64` values.
+
+### 40) WASM variadic/interface boxing truncates `int64` values in formatted calls
+
+**Symptom**
+- On `wasi/wasm32`, raw `int64` return/compare paths work, but passing the same value through `fmt.Printf("%d", v)` can print the low 32 bits.
+- Reduced repro used during Greptile follow-up:
+  - `func (T) One() int64 { return 0x100000000 }`
+  - `a := T{}.One()`
+  - `fmt.Printf("%d\n", a)` printed `0`
+  - `if a != 0x100000000 { ... }` still passed in the same binary
+
+**Impact**
+- Misreports `int64` values on wasm when they flow through variadic/interface formatting paths, even though the scalar call/return path is correct.
+
+**Current mitigation**
+- Use direct comparisons / non-variadic handling on wasm when validating `int64` behavior; avoid relying on formatted output until the boxing path is fixed.
 
 ### 23) Struct field tags are not accepted by parser in selfhost path
 
