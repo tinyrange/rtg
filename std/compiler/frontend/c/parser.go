@@ -530,8 +530,6 @@ func (p *Parser) parseCompoundStmt() *Node {
 			p.recoverToStmtBoundary()
 		}
 	}
-	t := p.peekRaw()
-	p.errorf(t, "unterminated compound statement")
 	return n
 }
 
@@ -697,7 +695,7 @@ func (p *Parser) parseDefaultStmt() *Node {
 func (p *Parser) parseReturnStmt() *Node {
 	start := p.advance()
 	body, ok := p.consumeBalancedUntil(";")
-	if !ok {
+	if !ok && !p.atEndRaw() && !(p.peekRaw().Kind == TokPunct && p.peekRaw().Text == "}") {
 		t := p.peekRaw()
 		p.errorf(t, "expected ';' after return statement")
 	}
@@ -717,6 +715,13 @@ func (p *Parser) parseGotoStmt() *Node {
 	p.skipNewlines()
 	t := p.peekRaw()
 	label := ""
+	if t.Kind == TokPunct && t.Text == "*" {
+		body, ok := p.consumeBalancedUntil(";")
+		if !ok && !p.atEndRaw() && !(p.peekRaw().Kind == TokPunct && p.peekRaw().Text == "}") {
+			p.errorf(p.peekRaw(), "expected ';' after goto")
+		}
+		return &Node{Kind: NGotoStmt, Text: tokenSliceText(body), Line: start.Line, Col: start.Col}
+	}
 	if t.Kind == TokIdent {
 		label = t.Text
 		p.pos++
@@ -747,7 +752,7 @@ func (p *Parser) parseDeclOrExprStmt(forceDecl bool) *Node {
 	startTok := p.peekRaw()
 	start := p.pos
 	body, ok := p.consumeStatementText()
-	if !ok {
+	if !ok && !p.atEndRaw() && !(p.peekRaw().Kind == TokPunct && p.peekRaw().Text == "}") {
 		t := p.peekRaw()
 		p.errorf(t, "expected ';' to terminate statement")
 	}

@@ -886,7 +886,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		}
 	}
 
-	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItems(toks, c.enumConsts, false)
+	items, enumConsts, hasExtern, hasTypedef, err := parseDeclItemsWithOptions(toks, c.enumConsts, false, true)
 	if err != nil {
 		c.errorf(file, n.Line, n.Col, "%v", err)
 		return
@@ -1002,6 +1002,10 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			OpaqueAggregate:  it.OpaqueAggregate,
 			AggregateKeyword: it.AggregateKeyword,
 			AggregateTag:     it.AggregateTag,
+		}
+		if it.Kind == cDeclArray && it.ArrayLen == cArrayLenUnspecified && len(it.Init) == 0 && !hasExtern && !hasTypedef {
+			it.ArrayLen = 1
+			info.ArrayLen = 1
 		}
 		if idx, exists := c.globalIndex[it.Name]; exists {
 			existing, ok := c.globalTypeInfo(it.Name)
@@ -1767,7 +1771,7 @@ func parseKNRFunctionParams(paramNameTokens []Token, declTokens []Token) ([]stri
 			if len(rawDecl) == 0 {
 				continue
 			}
-			items, _, _, _, err := parseDeclItems(rawDecl, nil, false)
+			items, _, _, _, err := parseDeclItemsWithOptions(rawDecl, nil, false, true)
 			if err != nil {
 				return nil, nil, nil, nil, nil, nil, nil, nil, false, err
 			}
@@ -4034,7 +4038,7 @@ func tryParseRuntimeArrayDeclItem(baseInfo cTypeInfo, lhs []Token, init []Token)
 	}, true, nil
 }
 
-func parseDeclItems(toks []Token, enumLookup map[string]int64, allowRuntimeArrays bool) ([]cDeclItem, map[string]int64, bool, bool, error) {
+func parseDeclItemsWithOptions(toks []Token, enumLookup map[string]int64, allowRuntimeArrays bool, allowIncompleteArray bool) ([]cDeclItem, map[string]int64, bool, bool, error) {
 	toks = trimTokens(toks)
 	if len(toks) == 0 {
 		return nil, nil, false, false, nil
@@ -4077,7 +4081,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64, allowRuntimeArray
 		if len(rest) == 0 {
 			return nil, enumConsts, hasExtern, hasTypedef, nil
 		}
-		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasTypedef, hasTypedef || hasExtern, rest, allowRuntimeArrays)
+		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, hasTypedef, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
 		if err != nil {
 			return nil, nil, false, false, err
 		}
@@ -4101,7 +4105,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64, allowRuntimeArray
 		}
 		return nil, nil, false, false, fmt.Errorf("missing declarator in declaration")
 	}
-	items, err := parseDeclItemsWithBase(baseInfo, hasTypedef, hasTypedef || hasExtern, rest, allowRuntimeArrays)
+	items, err := parseDeclItemsWithBase(baseInfo, hasTypedef, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
 	if err != nil {
 		return nil, nil, false, false, err
 	}
@@ -4109,6 +4113,10 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64, allowRuntimeArray
 		return nil, nil, false, false, fmt.Errorf("empty declaration")
 	}
 	return items, nil, hasExtern, hasTypedef, nil
+}
+
+func parseDeclItems(toks []Token, enumLookup map[string]int64, allowRuntimeArrays bool) ([]cDeclItem, map[string]int64, bool, bool, error) {
+	return parseDeclItemsWithOptions(toks, enumLookup, allowRuntimeArrays, false)
 }
 
 func isTypeSpecifierKeyword(text string) bool {
