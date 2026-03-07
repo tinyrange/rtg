@@ -1,0 +1,30 @@
+#ifndef __RTG_LIMITS_H
+#define __RTG_LIMITS_H
+
+#define CHAR_BIT __CHAR_BIT__
+
+#define SCHAR_MAX __SCHAR_MAX__
+#define SCHAR_MIN (-SCHAR_MAX - 1)
+#define UCHAR_MAX 255
+
+#define SHRT_MAX __SHRT_MAX__
+#define SHRT_MIN (-SHRT_MAX - 1)
+#define USHRT_MAX 65535U
+
+#define INT_MAX __INT_MAX__
+#define INT_MIN (-INT_MAX - 1)
+#define UINT_MAX 4294967295U
+
+#if __SIZEOF_LONG__ == 8
+#define LONG_MAX 9223372036854775807L
+#define LONG_MIN (-LONG_MAX - 1L)
+#define ULONG_MAX 18446744073709551615UL
+#else
+#define LONG_MAX 2147483647L
+#define LONG_MIN (-LONG_MAX - 1L)
+#define ULONG_MAX 4294967295UL
+#endif
+
+#define MB_LEN_MAX 1
+
+#endif

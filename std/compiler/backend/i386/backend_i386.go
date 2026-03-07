@@ -8,6 +8,88 @@ import (
 	"j5.nz/rtg/std/compiler/ir"
 )
 
+func (g *CodeGen) funcABI_i386(name string) string {
+	if g.IRMod == nil || g.IRMod.FuncABIs == nil {
+		return ""
+	}
+	return g.IRMod.FuncABIs[name]
+}
+
+func (g *CodeGen) funcRetCount_i386(name string) int {
+	if g.IRMod == nil || g.IRMod.FuncRetCounts == nil {
+		return 0
+	}
+	return g.IRMod.FuncRetCounts[name]
+}
+
+func (g *CodeGen) isNativeCABI_i386(name string) bool {
+	return g.funcABI_i386(name) == "native-c-linux-386"
+}
+
+func (g *CodeGen) usesFrameOperandStack_i386(name string) bool {
+	return g.Target != nil && g.Target.RelocatableObject && g.isNativeCABI_i386(name)
+}
+
+func intrinsicRetCount_i386(name string) int {
+	switch name {
+	case "SysGetargc", "SysGetargv", "SysGetenvp":
+		return 3
+	case "SysArgcValue", "SysArgvBaseValue", "Alloc", "Sliceptr", "Makeslice", "Stringptr", "Makestring", "Tostring", "ReadPtr":
+		return 1
+	case "WritePtr", "WriteByte":
+		return 0
+	default:
+		return 0
+	}
+}
+
+func (g *CodeGen) nativeEvalStackSlots_i386(f *ir.IRFunc) int {
+	if f == nil {
+		return 0
+	}
+	depth := 0
+	maxDepth := 0
+	for _, inst := range f.Code {
+		switch inst.Op {
+		case ir.OP_CONST_I64, ir.OP_CONST_STR, ir.OP_CONST_BOOL, ir.OP_CONST_NIL:
+			depth++
+		case ir.OP_LOCAL_GET, ir.OP_GLOBAL_GET, ir.OP_LOCAL_ADDR, ir.OP_GLOBAL_ADDR:
+			depth++
+		case ir.OP_LOCAL_SET, ir.OP_GLOBAL_SET, ir.OP_DROP, ir.OP_JMP_IF, ir.OP_JMP_IF_NOT, ir.OP_PANIC:
+			depth--
+		case ir.OP_LOCAL_ADD_IMM, ir.OP_NEG, ir.OP_NOT, ir.OP_LOAD, ir.OP_OFFSET, ir.OP_LABEL, ir.OP_JMP, ir.OP_LEN, ir.OP_CAP, ir.OP_CONVERT, ir.OP_IFACE_BOX:
+		case ir.OP_DUP:
+			depth++
+		case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD, ir.OP_AND, ir.OP_OR, ir.OP_XOR, ir.OP_SHL, ir.OP_SHR, ir.OP_EQ, ir.OP_NEQ, ir.OP_LT, ir.OP_GT, ir.OP_LEQ, ir.OP_GEQ, ir.OP_INDEX_ADDR:
+			depth--
+		case ir.OP_STORE:
+			depth -= 2
+		case ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
+			depth -= 2
+		case ir.OP_CALL:
+			retCount := g.funcRetCount_i386(inst.Name)
+			if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
+				retCount = 1
+			}
+			depth += retCount - inst.Arg
+		case ir.OP_CALL_INTRINSIC:
+			depth += intrinsicRetCount_i386(inst.Name)
+		case ir.OP_RETURN:
+			depth -= inst.Arg
+		case ir.OP_IFACE_CALL:
+			depth -= inst.Arg
+			depth++
+		}
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+		if depth < 0 {
+			depth = 0
+		}
+	}
+	return maxDepth
+}
+
 func (g *CodeGen) slotBytes_i386() int {
 	return 4
 }
@@ -38,14 +120,21 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 	}
 	g.CurFunc = f
 	g.initOperandCache_i386()
+	slot := g.slotBytes_i386()
 	g.CurFrameSize = len(f.Locals)
 	if f.Params > g.CurFrameSize {
 		g.CurFrameSize = f.Params
 	}
+	g.CurNativeSavedOpStackOffset = 0
+	g.CurNativeEvalSlots = 0
+	if g.usesFrameOperandStack_i386(f.Name) {
+		g.CurNativeEvalSlots = g.nativeEvalStackSlots_i386(f)
+		g.CurNativeSavedOpStackOffset = (g.CurFrameSize + 1) * slot
+		g.CurFrameSize = g.CurFrameSize + 1 + g.CurNativeEvalSlots
+	}
 	g.LabelOffsets = make(map[int]int)
 	g.JumpFixups = nil
 
-	slot := g.slotBytes_i386()
 	// Prologue: push ebp; mov ebp, esp; sub esp, frameBytes
 	g.pushR32(REG32_EBP)
 	g.movRR32(REG32_EBP, REG32_ESP)
@@ -55,8 +144,21 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 		g.subRI32(REG32_ESP, int32(frameBytes))
 	}
 
-	// Pop params from operand stack (EDI) into local frame slots
-	if f.Params > 0 {
+	if g.usesFrameOperandStack_i386(f.Name) {
+		g.emitStoreLocal32(g.CurNativeSavedOpStackOffset, REG32_EDI)
+		g.emitLeaLocal32(g.CurNativeSavedOpStackOffset, REG32_EDI)
+	}
+
+	if g.isNativeCABI_i386(f.Name) {
+		i := 0
+		for i < f.Params {
+			g.loadMem32(REG32_EAX, REG32_EBP, 8+i*slot)
+			offset := (i + 1) * slot
+			g.emitStoreLocal32(offset, REG32_EAX)
+			i++
+		}
+	} else if f.Params > 0 {
+		// Pop params from operand stack (EDI) into local frame slots
 		i := f.Params - 1
 		for i >= 0 {
 			g.opPop(REG32_EAX)
@@ -443,7 +545,28 @@ func (g *CodeGen) compileCall_i386(inst ir.Inst) {
 		g.compileCompositeLitCall_i386(inst)
 		return
 	}
+	if g.isNativeCABI_i386(inst.Name) {
+		g.compileNativeCall_i386(inst)
+		return
+	}
 	g.emitCallPlaceholder(inst.Name)
+}
+
+func (g *CodeGen) compileNativeCall_i386(inst ir.Inst) {
+	g.flush()
+	i := 0
+	for i < inst.Arg {
+		g.opPop(REG32_EAX)
+		g.pushR32(REG32_EAX)
+		i++
+	}
+	g.emitCallPlaceholder(inst.Name)
+	if inst.Arg > 0 {
+		g.addRI32(REG32_ESP, int32(inst.Arg*g.slotBytes_i386()))
+	}
+	if g.funcRetCount_i386(inst.Name) > 0 {
+		g.opPush(REG32_EAX)
+	}
 }
 
 func (g *CodeGen) compileCompositeLitCall_i386(inst ir.Inst) {
@@ -481,7 +604,17 @@ func (g *CodeGen) compileCompositeLitCall_i386(inst ir.Inst) {
 }
 
 func (g *CodeGen) compileReturn_i386(inst ir.Inst) {
-	g.flush()
+	if g.CurFunc != nil && g.isNativeCABI_i386(g.CurFunc.Name) {
+		if g.CurFunc.RetCount > 0 {
+			g.opPop(REG32_EAX)
+		}
+		if g.usesFrameOperandStack_i386(g.CurFunc.Name) && g.CurNativeSavedOpStackOffset > 0 {
+			g.emitLoadLocal32(g.CurNativeSavedOpStackOffset, REG32_EDI)
+		}
+		g.clearOperandCache()
+	} else {
+		g.flush()
+	}
 	g.leave()
 	g.ret()
 }
@@ -497,6 +630,8 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	case "Syscall":
 		// Linux i386 syscall lowering.
 		g.compileSyscallIntrinsic_linux386(inst.Arg)
+	case "Alloc":
+		g.compileAllocIntrinsic_i386()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsic_i386()
 	case "Makeslice":
@@ -516,6 +651,12 @@ func (g *CodeGen) compileCallIntrinsic_i386(inst ir.Inst) {
 	default:
 		panic("ICE: unknown intrinsic '" + inst.Name + "' in compileCallIntrinsic_i386")
 	}
+}
+
+func (g *CodeGen) compileAllocIntrinsic_i386() {
+	g.emitLoadLocal32(1*g.slotBytes_i386(), REG32_EAX)
+	g.opPush(REG32_EAX)
+	g.emitCallPlaceholder("runtime.Alloc")
 }
 
 func (g *CodeGen) compileSliceptrIntrinsic_i386() {
@@ -830,11 +971,19 @@ func (g *CodeGen) compileLoad_i386(inst ir.Inst) {
 		return
 	}
 	g.testRR32(REG32_ECX, REG32_ECX)
+	if size == 0 {
+		size = 4
+	}
 	if size == 1 {
+		g.emitBytes(0x75, 0x04)                  // jnz +4
+		g.xorRR32(REG32_EAX, REG32_EAX)          // 2 bytes
+		g.emitBytes(0xeb, 0x03)                  // jmp +3
+		g.loadMemByte32(REG32_EAX, REG32_ECX, 0) // movzx eax, byte [ecx]
+	} else if size == 2 {
 		g.emitBytes(0x75, 0x04)         // jnz +4
 		g.xorRR32(REG32_EAX, REG32_EAX) // 2 bytes
 		g.emitBytes(0xeb, 0x03)         // jmp +3
-		g.loadMemByte32(REG32_EAX, REG32_ECX, offset)
+		g.emitBytes(0x0f, 0xb7, 0x01)   // movzx eax, word [ecx]
 	} else {
 		g.emitBytes(0x75, 0x04)         // jnz +4
 		g.xorRR32(REG32_EAX, REG32_EAX) // 2 bytes
@@ -849,8 +998,13 @@ func (g *CodeGen) compileStore_i386(inst ir.Inst) {
 	offset := int(inst.Val)
 	g.opPop(REG32_ECX) // addr
 	g.opPop(REG32_EAX) // value
+	if size == 0 {
+		size = 4
+	}
 	if size == 1 {
 		g.storeMemByte32(REG32_ECX, offset, REG32_EAX)
+	} else if size == 2 {
+		g.storeMem16(REG32_ECX, offset, REG32_EAX)
 	} else {
 		g.storeMem32(REG32_ECX, offset, REG32_EAX)
 	}

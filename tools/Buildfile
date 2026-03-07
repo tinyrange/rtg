@@ -99,7 +99,7 @@ selfhost-win386: build
 selfhost-exp: selfhost
   sh ./build/stage2 -strict -tags exp_ir_binary -o build/stage2_exp ./std/compiler/
   sh ./build/stage2_exp -strict -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend ./std/compiler/
-  sh ./build/stage2_exp -emit-ir-binary build/selfhost_exp_native.irb tests/types_int.go
+  sh ./build/stage2_exp -emit-ir-binary build/selfhost_exp_native.irb tests/go/types_int.go
   sh ./build/stage2_exp_backend -from-ir-binary build/selfhost_exp_native.irb -o build/selfhost_exp_native
   sh ./build/selfhost_exp_native >/dev/null
   sh echo "PASS: self-hosting experimental IR binary roundtrip OK"
@@ -107,7 +107,7 @@ selfhost-exp: selfhost
 selfhost-exp-i386: selfhost-i386
   sh ./build/stage2_i386 -strict -T linux/386 -tags exp_ir_binary -o build/stage2_i386_exp ./std/compiler/
   sh ./build/stage2_i386_exp -strict -T linux/386 -tags no_frontend,exp_ir_binary -o build/stage2_i386_exp_backend ./std/compiler/
-  sh ./build/stage2_i386_exp -T linux/386 -emit-ir-binary build/selfhost_exp_i386.irb tests/types_int.go
+  sh ./build/stage2_i386_exp -T linux/386 -emit-ir-binary build/selfhost_exp_i386.irb tests/go/types_int.go
   sh ./build/stage2_i386_exp_backend -T linux/386 -from-ir-binary build/selfhost_exp_i386.irb -o build/selfhost_exp_i386
   sh ./build/selfhost_exp_i386 >/dev/null
   sh echo "PASS: i386 experimental IR binary roundtrip OK"
@@ -117,7 +117,7 @@ selfhost-exp-c: selfhost-c
   sh ${CC:-cc} build/stage2_c_exp.c -o build/stage2_c_exp
   sh ./build/stage2_c_exp -strict -T c/64 -tags no_frontend,exp_ir_binary -o build/stage2_c_exp_backend.c ./std/compiler/
   sh ${CC:-cc} build/stage2_c_exp_backend.c -o build/stage2_c_exp_backend
-  sh ./build/stage2_c_exp -T c/64 -emit-ir-binary build/selfhost_exp_c.irb tests/types_int.go
+  sh ./build/stage2_c_exp -T c/64 -emit-ir-binary build/selfhost_exp_c.irb tests/go/types_int.go
   sh ./build/stage2_c_exp_backend -T c/64 -from-ir-binary build/selfhost_exp_c.irb -o build/selfhost_exp_c_out.c
   sh ${CC:-cc} build/selfhost_exp_c_out.c -o build/selfhost_exp_c_out
   sh ./build/selfhost_exp_c_out >/dev/null
@@ -126,7 +126,7 @@ selfhost-exp-c: selfhost-c
 selfhost-exp-wasm: selfhost-wasm
   sh wasmtime --dir=. build/stage2.wasm -strict -T wasi/wasm32 -tags exp_ir_binary -o build/stage2_exp.wasm ./std/compiler/
   sh wasmtime --dir=. build/stage2_exp.wasm -strict -T wasi/wasm32 -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend.wasm ./std/compiler/
-  sh wasmtime --dir=. build/stage2_exp.wasm -T wasi/wasm32 -emit-ir-binary build/selfhost_exp_wasm.irb tests/types_int.go
+  sh wasmtime --dir=. build/stage2_exp.wasm -T wasi/wasm32 -emit-ir-binary build/selfhost_exp_wasm.irb tests/go/types_int.go
   sh wasmtime --dir=. build/stage2_exp_backend.wasm -T wasi/wasm32 -from-ir-binary build/selfhost_exp_wasm.irb -o build/selfhost_exp_wasm_out.wasm
   sh wasmtime --dir=. build/selfhost_exp_wasm_out.wasm >/dev/null
   sh echo "PASS: wasm experimental IR binary roundtrip OK"
@@ -134,7 +134,7 @@ selfhost-exp-wasm: selfhost-wasm
 selfhost-exp-winarm64: selfhost-winarm64
   sh ./build/stage2_winarm64.exe -strict -T windows/arm64 -tags exp_ir_binary -o build/stage2_winarm64_exp.exe ./std/compiler/
   sh ./build/stage2_winarm64_exp.exe -strict -T windows/arm64 -tags no_frontend,exp_ir_binary -o build/stage2_winarm64_exp_backend.exe ./std/compiler/
-  sh ./build/stage2_winarm64_exp.exe -T windows/arm64 -emit-ir-binary build/selfhost_exp_winarm64.irb tests/types_int.go
+  sh ./build/stage2_winarm64_exp.exe -T windows/arm64 -emit-ir-binary build/selfhost_exp_winarm64.irb tests/go/types_int.go
   sh ./build/stage2_winarm64_exp_backend.exe -T windows/arm64 -from-ir-binary build/selfhost_exp_winarm64.irb -o build/selfhost_exp_winarm64.exe
   sh chmod +x build/selfhost_exp_winarm64.exe
   sh ./build/selfhost_exp_winarm64.exe >/dev/null
@@ -143,7 +143,7 @@ selfhost-exp-winarm64: selfhost-winarm64
 selfhost-exp-winamd64: selfhost-winamd64
   sh ./build/stage2_winamd64.exe -strict -T windows/amd64 -tags exp_ir_binary -o build/stage2_winamd64_exp.exe ./std/compiler/
   sh ./build/stage2_winamd64_exp.exe -strict -T windows/amd64 -tags no_frontend,exp_ir_binary -o build/stage2_winamd64_exp_backend.exe ./std/compiler/
-  sh ./build/stage2_winamd64_exp.exe -T windows/amd64 -emit-ir-binary build/selfhost_exp_winamd64.irb tests/types_int.go
+  sh ./build/stage2_winamd64_exp.exe -T windows/amd64 -emit-ir-binary build/selfhost_exp_winamd64.irb tests/go/types_int.go
   sh ./build/stage2_winamd64_exp_backend.exe -T windows/amd64 -from-ir-binary build/selfhost_exp_winamd64.irb -o build/selfhost_exp_winamd64.exe
   sh chmod +x build/selfhost_exp_winamd64.exe
   sh ./build/selfhost_exp_winamd64.exe >/dev/null
@@ -152,7 +152,7 @@ selfhost-exp-winamd64: selfhost-winamd64
 selfhost-exp-win386: selfhost-win386
   sh wine build/stage2.exe -strict -T windows/386 -tags exp_ir_binary -o build/stage2_exp.exe ./std/compiler/
   sh wine build/stage2_exp.exe -strict -T windows/386 -tags no_frontend,exp_ir_binary -o build/stage2_exp_backend.exe ./std/compiler/
-  sh wine build/stage2_exp.exe -T windows/386 -emit-ir-binary build/selfhost_exp_win386.irb tests/types_int.go
+  sh wine build/stage2_exp.exe -T windows/386 -emit-ir-binary build/selfhost_exp_win386.irb tests/go/types_int.go
   sh wine build/stage2_exp_backend.exe -T windows/386 -from-ir-binary build/selfhost_exp_win386.irb -o build/selfhost_exp_win386.exe
   sh wine build/selfhost_exp_win386.exe >/dev/null
   sh echo "PASS: windows/386 experimental IR binary roundtrip OK"
@@ -178,7 +178,7 @@ crosscompile-wasm-native: build
   sh wasmtime --dir=. build/cross_stage1.wasm -T linux/amd64 -o build/cross_stage2 ./std/compiler/
   sh chmod +x build/cross_stage2
   sh ./build/cross_stage2 -h >/dev/null
-  sh ./build/cross_stage2 -o build/cross_smoke tests/func_variadic.go
+  sh ./build/cross_stage2 -o build/cross_smoke tests/go/func_variadic.go
   sh ./build/cross_smoke >/dev/null
   sh ./build/cross_stage2 -o build/cross_stage3 ./std/compiler/
   sh ./build/cross_stage3 -o build/cross_stage4 ./std/compiler/
@@ -216,22 +216,65 @@ test-dosbox-smoke: build
   sh bash tools/test_dosbox_dos16.sh
 
 test-dosbox-challenge: build
-  sh RTG_DOS_TESTS=tests/recover_basic.go,tests/func_method.go,tests/flow_switch.go,tests/panic_basic.go bash tools/test_dosbox_dos16.sh
+  sh RTG_DOS_TESTS=tests/go/recover_basic.go,tests/go/func_method.go,tests/go/flow_switch.go,tests/go/panic_basic.go bash tools/test_dosbox_dos16.sh
 
 test-dosbox-stress: build
-  sh RTG_DOS_TESTS=tests/func_basic.go,tests/ops_arithmetic.go,tests/flow_if.go,tests/func_recursion.go,tests/func_closure.go,tests/iface_typeassert.go,tests/recover_basic.go,tests/func_method.go,tests/flow_switch.go,tests/panic_basic.go bash tools/test_dosbox_dos16.sh
+  sh RTG_DOS_TESTS=tests/go/func_basic.go,tests/go/ops_arithmetic.go,tests/go/flow_if.go,tests/go/func_recursion.go,tests/go/func_closure.go,tests/go/iface_typeassert.go,tests/go/recover_basic.go,tests/go/func_method.go,tests/go/flow_switch.go,tests/go/panic_basic.go bash tools/test_dosbox_dos16.sh
 
 test-comemu-dos16: build
   sh bash tools/test_comemu_dos16.sh
 
 test-comemu-challenge: build
-  sh RTG_DOS_TESTS=tests/func_recursion.go,tests/func_closure.go,tests/iface_basic.go,tests/iface_typeassert.go,tests/map_basic.go,tests/recover_basic.go bash tools/test_comemu_dos16.sh
+  sh RTG_DOS_TESTS=tests/go/func_recursion.go,tests/go/func_closure.go,tests/go/iface_basic.go,tests/go/iface_typeassert.go,tests/go/map_basic.go,tests/go/recover_basic.go bash tools/test_comemu_dos16.sh
 
 test-comemu-stress: build
-  sh RTG_DOS_TESTS=tests/iface_multi.go,tests/map_range.go,tests/slice_nested.go,tests/struct_embedding.go,tests/func_method.go,tests/flow_switch.go,tests/panic_basic.go bash tools/test_comemu_dos16.sh
+  sh RTG_DOS_TESTS=tests/go/iface_multi.go,tests/go/map_range.go,tests/go/slice_nested.go,tests/go/struct_embedding.go,tests/go/func_method.go,tests/go/flow_switch.go,tests/go/panic_basic.go bash tools/test_comemu_dos16.sh
 
 test-compiler-bugs: build
   sh bash tools/test_compiler_bugs.sh
+
+test-c-frontend: build
+  sh go run ./tools/cfronttest
+
+test-c-native-object-link: build
+  sh test "$(uname -s)" = Darwin
+  sh test "$(uname -m)" = arm64
+  sh ./build/rtg -x c99 -c -o build/native_link_export.o tests/c/object/native_link_export.c
+  sh ${CC:-cc} -c -arch arm64 -o build/native_link_host_main.o tests/c/object/native_link_host_main.c
+  sh ${CC:-cc} -arch arm64 -o build/native_link_export build/native_link_host_main.o build/native_link_export.o
+  sh ./build/native_link_export
+  sh ./build/rtg -x c99 -c -o build/native_link_import.o tests/c/object/native_link_import.c
+  sh ${CC:-cc} -c -arch arm64 -o build/native_link_host_helper.o tests/c/object/native_link_host_helper.c
+  sh ${CC:-cc} -arch arm64 -o build/native_link_import build/native_link_host_helper.o build/native_link_import.o
+  sh ./build/native_link_import
+  sh echo "PASS: native darwin/arm64 C object linking OK"
+
+test-c-linux386-object-abi: build
+  sh ./build/rtg -x c99 -T linux/386 -c -o build/i386_obj_add.o tests/c/object/native_link_export.c
+  sh objdump -dr build/i386_obj_add.o > build/i386_obj_add.txt
+  sh grep '8b.*45.*08' build/i386_obj_add.txt
+  sh grep '8b.*45.*0c' build/i386_obj_add.txt
+  sh grep '89.*7d.*f4' build/i386_obj_add.txt
+  sh ./build/rtg -x c99 -T linux/386 -c -o build/i386_call_host.o tests/c/object/native_link_import.c
+  sh objdump -dr build/i386_call_host.o > build/i386_call_host.txt
+  sh grep 'pushl.*%eax' build/i386_call_host.txt
+  sh grep 'R_386_PC32.*host_mul2' build/i386_call_host.txt
+  sh grep 'addl.*0x4.*%esp' build/i386_call_host.txt
+  sh echo "PASS: linux/386 C object ABI smoke OK"
+
+test-asm-linux386-object: build
+  sh ./build/rtg -x c99 -T linux/386 -c -o build/linux386_add.o tests/c/object/linux386_add.S
+  sh objdump -dr build/linux386_add.o > build/linux386_add.txt
+  sh grep 'asm_add' build/linux386_add.txt
+  sh grep 'movl.*0x8.*%ebp.*%eax' build/linux386_add.txt
+  sh grep 'addl.*0xc.*%ebp.*%eax' build/linux386_add.txt
+  sh echo "PASS: linux/386 .S object assembly OK"
+
+test-c-frontend-ioccc: build
+  sh go run ./tools/iocccscan
+
+test-c-frontend-ioccc-pilot: build
+  sh go run ./tools/iocccscan -years 2024 -limit 10
 
 make-dos-floppy: build
   sh bash tools/make_dos_floppy.sh

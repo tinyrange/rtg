@@ -9,11 +9,13 @@ import (
 	"runtime"
 	"strings"
 
+	"j5.nz/rtg/std/buildtool"
 	"j5.nz/rtg/std/compiler/backend"
 	"j5.nz/rtg/std/compiler/backend/irprint"
 	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/binary"
 	"j5.nz/rtg/std/compiler/common"
+	cfrontend "j5.nz/rtg/std/compiler/frontend/c"
 	frontend "j5.nz/rtg/std/compiler/frontend/go"
 	"j5.nz/rtg/std/compiler/ir"
 	"j5.nz/rtg/std/compiler/stdlib"
@@ -80,10 +82,49 @@ func pathSep() string {
 	return "/"
 }
 
-func readStdinSourceToTemp() error {
+func isCAssemblySource(path string) bool {
+	return strings.HasSuffix(path, ".S") || strings.HasSuffix(path, ".s")
+}
+
+func compileExternalAssemblyObject(tgt common.Target, inputPath string, outputPath string, includePaths []string, systemIncludePaths []string, defines []string, undefs []string) error {
+	var cmdName string
+	var args []string
+	switch {
+	case tgt.GOOS == "darwin" && tgt.GOARCH == "arm64":
+		cmdName = "cc"
+		args = []string{"-c", "-arch", "arm64", "-x", "assembler-with-cpp"}
+	case tgt.GOOS == "linux" && tgt.GOARCH == "386":
+		cmdName = "clang"
+		args = []string{"-target", "i386-unknown-linux-gnu", "-c", "-x", "assembler-with-cpp"}
+	default:
+		return fmt.Errorf("assembly object compilation is not yet supported for %s/%s", tgt.GOOS, tgt.GOARCH)
+	}
+	for _, p := range includePaths {
+		args = append(args, "-I", p)
+	}
+	for _, p := range systemIncludePaths {
+		args = append(args, "-isystem", p)
+	}
+	for _, d := range defines {
+		args = append(args, "-D", d)
+	}
+	for _, u := range undefs {
+		args = append(args, "-U", u)
+	}
+	args = append(args, "-o", outputPath, inputPath)
+	cmd := exec.Command(cmdName, args...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("assemble %s: %v", inputPath, err)
+	}
+	return nil
+}
+
+func readStdinSourceToTemp(ext string) error {
 	if runTmpSrc == "" {
 		pid := fmt.Sprintf("%d", os.Getpid())
-		runTmpSrc = tempDirPath() + pathSep() + "rtg-run-" + pid + ".go"
+		runTmpSrc = tempDirPath() + pathSep() + "rtg-run-" + pid + ext
 	}
 	var src []byte
 	buf := make([]byte, 4096)
@@ -100,6 +141,204 @@ func readStdinSourceToTemp() error {
 		return fmt.Errorf("no input on stdin")
 	}
 	return os.WriteFile(runTmpSrc, src, 0644)
+}
+
+func inferSourceLanguage(explicit string, entryFiles []string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	lang := ""
+	for _, path := range entryFiles {
+		if strings.HasSuffix(path, ".go") {
+			if lang != "" && lang != "go" {
+				return "", fmt.Errorf("mixed language inputs: both Go and C sources provided; pass -x to select one language")
+			}
+			lang = "go"
+		} else if strings.HasSuffix(path, ".c") {
+			if lang != "" && lang != "c99" {
+				return "", fmt.Errorf("mixed language inputs: both Go and C sources provided; pass -x to select one language")
+			}
+			lang = "c99"
+		}
+	}
+	if lang == "" {
+		return "go", nil
+	}
+	return lang, nil
+}
+
+func cModuleNeedsRuntime(irmod *ir.IRModule) bool {
+	if irmod == nil {
+		return false
+	}
+	for _, f := range irmod.Funcs {
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CALL_INTRINSIC && inst.Name == "Alloc" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compileCRuntimeSupportIR(baseDir string, target common.Target) (*ir.IRModule, error) {
+	path := tempDirPath() + pathSep() + "rtg-c-runtime-" + fmt.Sprintf("%d", os.Getpid()) + ".go"
+	defer os.RemoveAll(path)
+	if err := os.WriteFile(path, []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		return nil, err
+	}
+	mod := frontend.ResolveModule(&target, baseDir, []string{path})
+	if errs := frontend.ValidateModule(mod); len(errs) > 0 {
+		return nil, fmt.Errorf("runtime validation failed: %s", strings.Join(errs, "; "))
+	}
+	irmod, errs := frontend.CompileModule(target, mod)
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("runtime compile failed: %s", strings.Join(errs, "; "))
+	}
+	return irmod, nil
+}
+
+func mergeRuntimeSupportIR(dst *ir.IRModule, runtimeIR *ir.IRModule) {
+	if dst == nil || runtimeIR == nil {
+		return
+	}
+	globalMap := make(map[int]int)
+	for _, g := range runtimeIR.Globals {
+		if !strings.HasPrefix(g.Name, "runtime.") {
+			continue
+		}
+		ng := g
+		ng.Index = len(dst.Globals)
+		globalMap[g.Index] = ng.Index
+		dst.Globals = append(dst.Globals, ng)
+	}
+	for _, f := range runtimeIR.Funcs {
+		if !strings.HasPrefix(f.Name, "runtime.") {
+			continue
+		}
+		for i := range f.Code {
+			switch f.Code[i].Op {
+			case ir.OP_GLOBAL_GET, ir.OP_GLOBAL_SET, ir.OP_GLOBAL_ADDR:
+				if newIdx, ok := globalMap[f.Code[i].Arg]; ok {
+					f.Code[i].Arg = newIdx
+				}
+			}
+		}
+		dst.Funcs = append(dst.Funcs, f)
+	}
+	dst.Types = append(dst.Types, runtimeIR.Types...)
+	if len(runtimeIR.LinkStaticFuncs) > 0 {
+		if dst.LinkStaticFuncs == nil {
+			dst.LinkStaticFuncs = make(map[string]string)
+		}
+		for k, v := range runtimeIR.LinkStaticFuncs {
+			dst.LinkStaticFuncs[k] = v
+		}
+	}
+	if len(runtimeIR.ZeroCallFuncs) > 0 {
+		if dst.ZeroCallFuncs == nil {
+			dst.ZeroCallFuncs = make(map[string]bool)
+		}
+		for k, v := range runtimeIR.ZeroCallFuncs {
+			dst.ZeroCallFuncs[k] = v
+		}
+	}
+	if len(runtimeIR.TypeIDs) > 0 {
+		if dst.TypeIDs == nil {
+			dst.TypeIDs = make(map[string]int)
+		}
+		for k, v := range runtimeIR.TypeIDs {
+			dst.TypeIDs[k] = v
+		}
+	}
+	if len(runtimeIR.MethodTable) > 0 {
+		if dst.MethodTable == nil {
+			dst.MethodTable = make(map[string]string)
+		}
+		for k, v := range runtimeIR.MethodTable {
+			dst.MethodTable[k] = v
+		}
+	}
+	if len(runtimeIR.IfaceMethods) > 0 {
+		if dst.IfaceMethods == nil {
+			dst.IfaceMethods = make(map[string][]string)
+		}
+		for k, v := range runtimeIR.IfaceMethods {
+			dst.IfaceMethods[k] = append([]string{}, v...)
+		}
+	}
+	if len(runtimeIR.IfaceMethodRets) > 0 {
+		if dst.IfaceMethodRets == nil {
+			dst.IfaceMethodRets = make(map[string]int)
+		}
+		for k, v := range runtimeIR.IfaceMethodRets {
+			dst.IfaceMethodRets[k] = v
+		}
+	}
+	if len(runtimeIR.CallbackFuncs) > 0 {
+		if dst.CallbackFuncs == nil {
+			dst.CallbackFuncs = make(map[string]bool)
+		}
+		for k, v := range runtimeIR.CallbackFuncs {
+			dst.CallbackFuncs[k] = v
+		}
+	}
+}
+
+func isRecognizedSourceLanguage(lang string) bool {
+	return lang == "go" || lang == "c99"
+}
+
+func extForSourceLanguage(lang string) string {
+	if lang == "c99" {
+		return ".c"
+	}
+	return ".go"
+}
+
+func serializeCTokens(tokens []cfrontend.Token) string {
+	var out strings.Builder
+	for _, tok := range tokens {
+		if tok.Kind == cfrontend.TokEOF {
+			continue
+		}
+		out.WriteString(tok.Kind.String())
+		out.WriteByte(' ')
+		out.WriteString(quoteForDebug(tok.Text))
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+func quoteForDebug(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '\\':
+			b.WriteString("\\\\")
+		case '"':
+			b.WriteString("\\\"")
+		case '\n':
+			b.WriteString("\\n")
+		case '\r':
+			b.WriteString("\\r")
+		case '\t':
+			b.WriteString("\\t")
+		default:
+			if c < 32 || c > 126 {
+				hex := "0123456789abcdef"
+				b.WriteString("\\x")
+				b.WriteByte(hex[(c>>4)&0xf])
+				b.WriteByte(hex[c&0xf])
+			} else {
+				b.WriteByte(c)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func traceExit(code int) {
@@ -170,9 +409,17 @@ func main() {
 	}
 
 	outputPath := "output"
+	var outputPathExplicit bool
 	var entryFiles []string
 	var extraTags string
 	var parseOnly bool
+	var preprocessOnly bool
+	var sourceLangExplicit string
+	var sourceLang string
+	var rawDefineArgs []string
+	var cIncludePaths []string
+	var cSystemIncludePaths []string
+	var cUndefs []string
 	var buildTagsPath string
 	var emitIRPath string
 	var emitIRAndBinaryPath string
@@ -181,7 +428,10 @@ func main() {
 	var fromIRTextPath string
 	var profileReportPath string
 	var extractStdlibDest string
+	var buildFilePath string
+	var buildList bool
 	var runMode bool
+	var objectMode bool
 	var testMode bool
 	var stdinInput bool
 	var dashInputCount int
@@ -192,16 +442,58 @@ func main() {
 	i := 1
 	for i < len(args) {
 		arg := args[i]
+		if strings.HasPrefix(arg, "-I") && arg != "-I" {
+			val := common.NormalizePath(arg[2:])
+			if val == "" {
+				fmt.Fprintf(os.Stderr, "missing path after -I\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			cIncludePaths = append(cIncludePaths, val)
+			i = i + 1
+			continue
+		}
+		if strings.HasPrefix(arg, "-U") && arg != "-U" {
+			name := strings.TrimSpace(arg[2:])
+			if name == "" {
+				fmt.Fprintf(os.Stderr, "missing macro name after -U\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			cUndefs = append(cUndefs, name)
+			i = i + 1
+			continue
+		}
 		switch arg {
 		case "-h", "--help":
 			printHelp(args[0], os.Stdout)
 			os.Exit(0)
+		case "-x":
+			if i+1 < len(args) {
+				sourceLangExplicit = args[i+1]
+				if !isRecognizedSourceLanguage(sourceLangExplicit) {
+					fmt.Fprintf(os.Stderr, "invalid source language %q: expected go or c99\n", sourceLangExplicit)
+					runCleanup()
+					os.Exit(1)
+				}
+				i = i + 2
+				continue
+			}
+		case "-E":
+			preprocessOnly = true
+			i = i + 1
+			continue
 		case "-version", "--version":
 			showVersion = true
 			i = i + 1
 			continue
 		case "-run":
 			runMode = true
+			i = i + 1
+			continue
+		case "-c":
+			objectMode = true
+			compileTarget.RelocatableObject = true
 			i = i + 1
 			continue
 		case "-test":
@@ -212,6 +504,7 @@ func main() {
 		case "-o":
 			if i+1 < len(args) {
 				outputPath = args[i+1]
+				outputPathExplicit = true
 				i = i + 2
 				continue
 			}
@@ -307,13 +600,43 @@ func main() {
 			}
 		case "-D":
 			if i+1 < len(args) {
-				key, value, ok := parseDefineArg(args[i+1])
-				if !ok {
-					fmt.Fprintf(os.Stderr, "invalid -D value %q: expected key=value\n", args[i+1])
+				rawDefineArgs = append(rawDefineArgs, args[i+1])
+				i = i + 2
+				continue
+			}
+		case "-I":
+			if i+1 < len(args) {
+				val := common.NormalizePath(args[i+1])
+				if val == "" {
+					fmt.Fprintf(os.Stderr, "missing path after -I\n")
 					runCleanup()
 					os.Exit(1)
 				}
-				compileTarget.Defines[key] = value
+				cIncludePaths = append(cIncludePaths, val)
+				i = i + 2
+				continue
+			}
+		case "-isystem":
+			if i+1 < len(args) {
+				val := common.NormalizePath(args[i+1])
+				if val == "" {
+					fmt.Fprintf(os.Stderr, "missing path after -isystem\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				cSystemIncludePaths = append(cSystemIncludePaths, val)
+				i = i + 2
+				continue
+			}
+		case "-U":
+			if i+1 < len(args) {
+				name := strings.TrimSpace(args[i+1])
+				if name == "" {
+					fmt.Fprintf(os.Stderr, "missing macro name after -U\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				cUndefs = append(cUndefs, name)
 				i = i + 2
 				continue
 			}
@@ -340,6 +663,16 @@ func main() {
 				i = i + 2
 				continue
 			}
+		case "-buildfile":
+			if i+1 < len(args) {
+				buildFilePath = common.NormalizePath(args[i+1])
+				i = i + 2
+				continue
+			}
+		case "-build-list":
+			buildList = true
+			i = i + 1
+			continue
 		case "-debug":
 			compileTarget.CompilerDebug = true
 			i = i + 1
@@ -367,20 +700,14 @@ func main() {
 		fmt.Fprintf(os.Stdout, "%s\n", compilerStamp())
 		os.Exit(0)
 	}
-	if fromKind != "go" && fromKind != "ir" && fromKind != "c" {
-		fmt.Fprintf(os.Stderr, "invalid -F value %q: expected go, ir, or c\n", fromKind)
+	if buildFilePath != "" {
+		if err := buildtool.RunFile(buildFilePath, entryFiles, buildList); err != nil {
+			fmt.Fprintf(os.Stderr, "build error: %v\n", err)
+			runCleanup()
+			os.Exit(1)
+		}
 		runCleanup()
-		os.Exit(1)
-	}
-	if fromKind == "c" {
-		fmt.Fprintf(os.Stderr, "-F c is not implemented yet\n")
-		runCleanup()
-		os.Exit(1)
-	}
-	if fromKind == "ir" && fromIRBinaryPath != "" {
-		fmt.Fprintf(os.Stderr, "cannot combine -F ir with -from-ir-binary\n")
-		runCleanup()
-		os.Exit(1)
+		os.Exit(0)
 	}
 	if dashInputCount > 1 {
 		fmt.Fprintf(os.Stderr, "at most one '-' input is allowed\n")
@@ -399,10 +726,43 @@ func main() {
 			stdinInput = true
 		}
 	}
-	if stdinInput && len(entryFiles) > 0 {
-		fmt.Fprintf(os.Stderr, "cannot combine '-' stdin input with file path arguments\n")
+	sourceLang, err = inferSourceLanguage(sourceLangExplicit, entryFiles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rtg: %v\n", err)
 		runCleanup()
 		os.Exit(1)
+	}
+	if sourceLang == "go" {
+		for _, path := range entryFiles {
+			if strings.HasSuffix(path, ".c") {
+				fmt.Fprintf(os.Stderr, "C source %q provided with Go frontend; pass -x c99\n", path)
+				runCleanup()
+				os.Exit(1)
+			}
+		}
+	} else if sourceLang == "c99" {
+		for _, path := range entryFiles {
+			if strings.HasSuffix(path, ".go") {
+				fmt.Fprintf(os.Stderr, "Go source %q provided with C99 frontend; pass -x go\n", path)
+				runCleanup()
+				os.Exit(1)
+			}
+		}
+	}
+	if sourceLang == "go" {
+		for _, raw := range rawDefineArgs {
+			key, value, ok := parseDefineArg(raw)
+			if !ok {
+				fmt.Fprintf(os.Stderr, "invalid -D value %q: expected key=value for Go mode\n", raw)
+				runCleanup()
+				os.Exit(1)
+			}
+			compileTarget.Defines[key] = value
+		}
+	}
+	if sourceLang == "c99" && len(compileTarget.Defines) > 0 {
+		// C mode does not consume target symbol defines from -D key=value yet.
+		compileTarget.Defines = map[string]string{}
 	}
 	if stdinInput {
 		if fromIRBinaryPath != "" {
@@ -410,7 +770,7 @@ func main() {
 			runCleanup()
 			os.Exit(1)
 		}
-		err := readStdinSourceToTemp()
+		err := readStdinSourceToTemp(extForSourceLanguage(sourceLang))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "rtg: failed to read stdin source: %v\n", err)
 			runCleanup()
@@ -423,16 +783,16 @@ func main() {
 		sep := pathSep()
 		pid := fmt.Sprintf("%d", os.Getpid())
 		if runTmpSrc == "" {
-			runTmpSrc = tmpDir + sep + "rtg-run-" + pid + ".go"
+			runTmpSrc = tmpDir + sep + "rtg-run-" + pid + extForSourceLanguage(sourceLang)
 		}
 		runTmpBin = tmpDir + sep + "rtg-run-" + pid
 		if compileTarget.GOOS == "windows" {
 			runTmpBin = runTmpBin + ".exe"
 		}
 
-		// Read source from stdin in -run mode only when frontend input is used.
-		if len(entryFiles) == 0 && fromIRBinaryPath == "" && fromIRTextPath == "" {
-			err := readStdinSourceToTemp()
+		// Read from stdin if no entry files
+		if len(entryFiles) == 0 {
+			err := readStdinSourceToTemp(extForSourceLanguage(sourceLang))
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "rtg -run: failed to read stdin source: %v\n", err)
 				runCleanup()
@@ -449,8 +809,18 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
-	if targetIsIR && runMode {
-		fmt.Fprintf(os.Stderr, "-T ir cannot be combined with -run\n")
+	if preprocessOnly && runMode {
+		fmt.Fprintf(os.Stderr, "-E cannot be combined with -run\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if objectMode && runMode {
+		fmt.Fprintf(os.Stderr, "-c cannot be combined with -run\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if objectMode && compileTarget.Backend != "native" {
+		fmt.Fprintf(os.Stderr, "-c is currently only supported for native targets\n")
 		runCleanup()
 		os.Exit(1)
 	}
@@ -459,23 +829,8 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
-	if emitIRPath != "" && targetIsIR {
-		fmt.Fprintf(os.Stderr, "-emit-ir cannot be combined with -T ir\n")
-		runCleanup()
-		os.Exit(1)
-	}
-	if emitIRAndBinaryPath != "" && emitIRPath != "" {
-		fmt.Fprintf(os.Stderr, "-emit-codegen-debug cannot be combined with -emit-ir\n")
-		runCleanup()
-		os.Exit(1)
-	}
-	if emitIRAndBinaryPath != "" && emitIRBinaryPath != "" {
-		fmt.Fprintf(os.Stderr, "-emit-codegen-debug cannot be combined with -emit-ir-binary\n")
-		runCleanup()
-		os.Exit(1)
-	}
-	if emitIRAndBinaryPath != "" && targetIsIR {
-		fmt.Fprintf(os.Stderr, "-emit-codegen-debug cannot be combined with -T ir\n")
+	if preprocessOnly && (emitIRPath != "" || emitIRBinaryPath != "") {
+		fmt.Fprintf(os.Stderr, "-E cannot be combined with IR emission options\n")
 		runCleanup()
 		os.Exit(1)
 	}
@@ -507,8 +862,8 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
-	if fromIRTextPath != "" && testMode {
-		fmt.Fprintf(os.Stderr, "-test is not valid with -F ir\n")
+	if preprocessOnly && fromIRBinaryPath != "" {
+		fmt.Fprintf(os.Stderr, "-E is not valid with -from-ir-binary\n")
 		runCleanup()
 		os.Exit(1)
 	}
@@ -634,97 +989,241 @@ func main() {
 			}
 		}
 
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
-		}
-		frontend.ResetDiscoveredBuildTags()
-		mod := frontend.ResolveModule(&compileTarget, baseDir, entryFiles)
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
-		}
-		traceExit(20)
-
-		if buildTagsPath != "" {
-			tags := frontend.GetDiscoveredBuildTags()
-			var out string
-			for _, t := range tags {
-				out = out + t + "\n"
-			}
-			err := os.WriteFile(buildTagsPath, []byte(out), 0644)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
+		if sourceLang == "c99" {
+			if buildTagsPath != "" {
+				fmt.Fprintf(os.Stderr, "-list-build-tags is only supported for Go frontend\n")
 				runCleanup()
 				os.Exit(1)
 			}
-		}
-
-		if parseOnly {
-			if emitIRPath != "" {
+			if parseOnly && preprocessOnly {
+				fmt.Fprintf(os.Stderr, "cannot combine -parse-only with -E\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			if len(entryFiles) == 0 {
+				fmt.Fprintf(os.Stderr, "no C input files provided\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			asmCount := 0
+			for _, path := range entryFiles {
+				if isCAssemblySource(path) {
+					asmCount++
+				}
+			}
+			if asmCount > 0 {
+				if !objectMode {
+					fmt.Fprintf(os.Stderr, "assembly inputs currently require -c object mode\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				if len(entryFiles) != 1 || asmCount != len(entryFiles) {
+					fmt.Fprintf(os.Stderr, "assembly inputs currently support exactly one .S/.s source per invocation with no mixed C sources\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				if preprocessOnly || parseOnly {
+					fmt.Fprintf(os.Stderr, "assembly inputs do not support -E or -parse-only\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				err := compileExternalAssemblyObject(compileTarget, entryFiles[0], outputPath, cIncludePaths, cSystemIncludePaths, rawDefineArgs, cUndefs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
+					runCleanup()
+					os.Exit(1)
+				}
+				runCleanup()
+				os.Exit(0)
+			}
+			if parseOnly && emitIRPath != "" {
 				fmt.Fprintf(os.Stderr, "-emit-ir is not valid with -parse-only\n")
 				runCleanup()
 				os.Exit(1)
 			}
-			if emitIRAndBinaryPath != "" {
-				fmt.Fprintf(os.Stderr, "-emit-codegen-debug is not valid with -parse-only\n")
+			ppOpts := cfrontend.Options{
+				IncludePaths:       cIncludePaths,
+				SystemIncludePaths: cSystemIncludePaths,
+				Defines:            rawDefineArgs,
+				Undefs:             cUndefs,
+				TargetOS:           compileTarget.GOOS,
+				TargetArch:         compileTarget.GOARCH,
+				PtrSize:            compileTarget.PtrSize,
+				Hosted:             len(cSystemIncludePaths) > 0,
+			}
+			var preprocessOut strings.Builder
+			var parseOut strings.Builder
+			parseErrors := false
+			var cUnits []cfrontend.Unit
+			for _, path := range entryFiles {
+				if !strings.HasSuffix(path, ".c") {
+					fmt.Fprintf(os.Stderr, "unsupported C99 input path %q (expected .c source file)\n", path)
+					runCleanup()
+					os.Exit(1)
+				}
+				pp := cfrontend.NewPreprocessor(ppOpts)
+				tokens, err := pp.ProcessFile(path)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "preprocess error: %v\n", err)
+					runCleanup()
+					os.Exit(1)
+				}
+				if preprocessOnly {
+					preprocessOut.WriteString(serializeCTokens(tokens))
+					continue
+				}
+				parser := cfrontend.NewParser(tokens)
+				tu := parser.ParseTranslationUnit()
+				if errs := parser.Errors(); len(errs) > 0 {
+					parseErrors = true
+					fmt.Fprintf(os.Stderr, "\n%d parse errors in %s:\n", len(errs), path)
+					for _, pe := range errs {
+						fmt.Fprintf(os.Stderr, "  %s\n", pe)
+					}
+					continue
+				}
+				if parseOnly {
+					if outputPathExplicit {
+						if len(entryFiles) > 1 {
+							parseOut.WriteString("== ")
+							parseOut.WriteString(path)
+							parseOut.WriteString(" ==\n")
+						}
+						parseOut.WriteString(cfrontend.FormatNode(tu))
+					}
+					continue
+				}
+				cUnits = append(cUnits, cfrontend.Unit{File: path, Root: tu})
+			}
+			if parseErrors {
 				runCleanup()
 				os.Exit(1)
 			}
-			runCleanup()
-			os.Exit(0)
-		}
-
-		// Validate cross-package references
-		valErrs := frontend.ValidateModule(mod)
-		if len(valErrs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d validation errors:\n", len(valErrs))
-			for _, e := range valErrs {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
+			if preprocessOnly || parseOnly {
+				if outputPathExplicit {
+					content := ""
+					if preprocessOnly {
+						content = preprocessOut.String()
+					} else if parseOnly {
+						content = parseOut.String()
+					}
+					err := os.WriteFile(outputPath, []byte(content), 0644)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error writing output: %v\n", err)
+						runCleanup()
+						os.Exit(1)
+					}
+				} else if preprocessOnly {
+					fmt.Fprintf(os.Stdout, "%s", preprocessOut.String())
+				}
+				runCleanup()
+				os.Exit(0)
 			}
-			runCleanup()
-			os.Exit(1)
-		}
-		compileAsSpecs, compileAsErrs := frontend.CollectCompileAsSpecs(mod)
-		if len(compileAsErrs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(compileAsErrs))
-			for _, e := range compileAsErrs {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: compiling C99 translation units to IR (%d files)\n", len(cUnits))
 			}
-			runCleanup()
-			os.Exit(1)
-		}
-		if len(compileAsSpecs) > 0 {
-			artifacts, err := buildCompileAsArtifacts(&compileTarget, baseDir, entryFiles, extraTags, compileAsSpecs)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "compileas error: %v\n", err)
+			var errs []string
+			irmod, errs = cfrontend.CompileUnits(compileTarget, cUnits)
+			if len(errs) > 0 {
+				fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
+				for _, e := range errs {
+					fmt.Fprintf(os.Stderr, "  %s\n", e)
+				}
 				runCleanup()
 				os.Exit(1)
 			}
-			compileTarget.CompileAsArtifacts = artifacts
-		}
-
-		// Compile to IR
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
-		}
-		var errs []string
-		irmod, errs = frontend.CompileModule(compileTarget, mod)
-
-		if len(errs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
-			for _, e := range errs {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
+			if cModuleNeedsRuntime(irmod) {
+				if compileTarget.CompilerDebug {
+					fmt.Fprintf(os.Stderr, "debug: merging runtime support into C99 IR\n")
+				}
+				runtimeIR, err := compileCRuntimeSupportIR(baseDir, compileTarget)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error preparing C runtime support: %v\n", err)
+					runCleanup()
+					os.Exit(1)
+				}
+				mergeRuntimeSupportIR(irmod, runtimeIR)
 			}
-			runCleanup()
-			os.Exit(1)
+			traceExit(20)
+		} else {
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
+			}
+			frontend.ResetDiscoveredBuildTags()
+			mod := frontend.ResolveModule(&compileTarget, baseDir, entryFiles)
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
+			}
+			traceExit(20)
+
+			if buildTagsPath != "" {
+				tags := frontend.GetDiscoveredBuildTags()
+				var out string
+				for _, t := range tags {
+					out = out + t + "\n"
+				}
+				err := os.WriteFile(buildTagsPath, []byte(out), 0644)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
+					runCleanup()
+					os.Exit(1)
+				}
+			}
+
+			if preprocessOnly {
+				fmt.Fprintf(os.Stderr, "-E is only supported for C99 frontend; pass -x c99\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			if parseOnly {
+				if emitIRPath != "" {
+					fmt.Fprintf(os.Stderr, "-emit-ir is not valid with -parse-only\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				runCleanup()
+				os.Exit(0)
+			}
+
+			// Validate cross-package references
+			valErrs := frontend.ValidateModule(mod)
+			if len(valErrs) > 0 {
+				fmt.Fprintf(os.Stderr, "\n%d validation errors:\n", len(valErrs))
+				for _, e := range valErrs {
+					fmt.Fprintf(os.Stderr, "  %s\n", e)
+				}
+				runCleanup()
+				os.Exit(1)
+			}
+
+			// Compile to IR
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
+			}
+			var errs []string
+			irmod, errs = frontend.CompileModule(compileTarget, mod)
+
+			if len(errs) > 0 {
+				fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
+				for _, e := range errs {
+					fmt.Fprintf(os.Stderr, "  %s\n", e)
+				}
+				runCleanup()
+				os.Exit(1)
+			}
 		}
 
 		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 		traceExit(30)
-		ir.EliminateDeadFunctions(irmod, common.EntryFuncName(&compileTarget))
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
+		if !compileTarget.RelocatableObject {
+			ir.EliminateDeadFunctions(irmod)
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
+			}
+		} else if compileTarget.CompilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: skipping DCE for relocatable object output\n")
 		}
 		traceExit(40)
 		if emitIRBinaryPath != "" {
@@ -1088,7 +1587,7 @@ func buildCompileAsArtifacts(baseTarget *common.Target, baseDir string, entryFil
 		if len(compileErrs) > 0 {
 			return nil, fmt.Errorf("id=%s target=%s compile failed: %s", spec.ID, spec.Target, summarizeErrors(compileErrs))
 		}
-		ir.EliminateDeadFunctions(innerIR, common.EntryFuncName(innerTarget))
+		ir.EliminateDeadFunctions(innerIR)
 
 		outPath := fmt.Sprintf("%s/%03d_%s%s", tmpDir, i, sanitizeCompileAsName(spec.ID), compileAsOutputExt(innerTarget))
 		if err := backend.Generate(innerTarget, innerIR, outPath); err != nil {
@@ -1104,17 +1603,23 @@ func buildCompileAsArtifacts(baseTarget *common.Target, baseDir string, entryFil
 }
 
 func printHelp(program string, out *os.File) {
-	fmt.Fprintf(out, "Usage: %s [options] <input>\n", program)
+	fmt.Fprintf(out, "Usage: %s [options] <file.go|file.c> [more files...]\n", program)
 	fmt.Fprintf(out, "\nOptions:\n")
-	fmt.Fprintf(out, "  -F, --from <kind>      Input kind: go, ir, c (default: go)\n")
-	fmt.Fprintf(out, "  -o <path>              Output path (default: output, use '-' with -T ir for stdout)\n")
-	fmt.Fprintf(out, "  -T, --to <target>      Target triple/backend mode, or ir for canonical text IR output\n")
+	fmt.Fprintf(out, "  -o <path>              Output path (default: output)\n")
+	fmt.Fprintf(out, "  -x <go|c99>            Select source frontend (default: inferred from file extension, fallback go)\n")
+	fmt.Fprintf(out, "  -E                     C99 mode: preprocess only and emit tokens (stdout unless -o is set)\n")
+	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -emit-ir <path>        Emit textual IR for the selected target instead of native/C/VM output\n")
-	fmt.Fprintf(out, "  -emit-codegen-debug <p> Emit separate backend debug text (per-IR-instruction machine bytes where supported)\n")
+	fmt.Fprintf(out, "  -c                     Emit a relocatable object for supported native targets\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
-	fmt.Fprintf(out, "  -D <key=value>         Set a string value for a global variable symbol\n")
+	fmt.Fprintf(out, "  -D <v>                 Go mode: key=value global define; C99 mode: macro define NAME or NAME=VALUE\n")
+	fmt.Fprintf(out, "  -U <name>              C99 mode: undefine macro\n")
+	fmt.Fprintf(out, "  -I<dir>, -I <dir>      C99 mode: add quote include search path\n")
+	fmt.Fprintf(out, "  -isystem <dir>         C99 mode: add system include search path\n")
 	fmt.Fprintf(out, "  -target-file <path>    Load a single-file target definition before -T resolution\n")
 	fmt.Fprintf(out, "  -target-root <path>    Recursively load *.go target definitions from a directory\n")
+	fmt.Fprintf(out, "  -buildfile <path>      Run build targets from a build file instead of compiling sources\n")
+	fmt.Fprintf(out, "  -build-list            List targets from -buildfile and exit\n")
 	fmt.Fprintf(out, "  -include <path|->      Add stdlib search root; first -include disables default embedded stdlib, -include - re-enables it\n")
 	fmt.Fprintf(out, "  -extract-stdlib <dest> Extract standard library files into destination directory and exit\n")
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")

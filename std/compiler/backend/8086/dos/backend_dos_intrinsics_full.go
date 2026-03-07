@@ -6,6 +6,10 @@ func (g *CodeGen) callIntrinsic(name string) {
 	switch name {
 	case "Syscall":
 		g.compileSyscallIntrinsic()
+	case "Alloc":
+		g.loadLocal(2, REG16_AX)
+		g.opPush(REG16_AX)
+		g.emitCallPlaceholder("runtime.Alloc")
 	case "Sliceptr":
 		g.loadLocal(2, REG16_BX)
 		g.emitLoadRM16(REG16_AX, EA16_BX, 0)

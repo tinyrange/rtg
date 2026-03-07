@@ -105,11 +105,19 @@ func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 		}
 	}
 
-	// Call entry function.
-	g.EmitCallPlaceholder(entryFunc)
+	// Call entrypoint
+	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 
-	// ExitProcess(0)
-	g.XorRR(core.REG_RCX, core.REG_RCX) // uExitCode = 0
+	// ExitProcess(entryRet0OrZero)
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.OpPop(core.REG_RCX)
+		for i := 1; i < entryRet; i++ {
+			g.OpPop(core.REG_RAX)
+		}
+	} else {
+		g.XorRR(core.REG_RCX, core.REG_RCX) // uExitCode = 0
+	}
 	emitCallIAT(g, "ExitProcess")
 }
 
@@ -121,6 +129,8 @@ func compileCallIntrinsicWin64(g *core.CodeGen, inst ir.Inst) {
 		return
 	}
 	switch inst.Name {
+	case "Alloc":
+		g.CompileAllocIntrinsic()
 	case "Sliceptr":
 		g.CompileSliceptrIntrinsic()
 	case "Makeslice":

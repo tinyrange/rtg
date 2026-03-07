@@ -17,7 +17,7 @@ import (
 func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 	// _start:
 	//   mmap 1MB for operand stack → R15
-	//   call main.main
+	//   call program entrypoint
 	//   mov rdi, 0    ; exit code
 	//   mov rax, 231  ; SYS_EXIT_GROUP
 	//   syscall
@@ -50,14 +50,23 @@ func emitStart(g *core.CodeGen, irmod *ir.IRModule, entryFunc string) {
 		}
 	}
 
-	// Call entry function.
-	g.EmitCallPlaceholder(entryFunc)
+	// Call entrypoint.
+	g.EmitCallPlaceholder(ir.EntryFuncName(irmod))
 
-	// exit(0)
-	g.XorRR(core.REG_RDI, core.REG_RDI) // exit code 0
-	g.EmitByte(0xb8)                    // mov eax, 231
-	g.EmitU32(231)                      // SYS_EXIT_GROUP
-	g.EmitBytes(0x0f, 0x05)             // syscall
+	// If the entrypoint returns a value, use it as process exit status.
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.OpPop(core.REG_RDI)
+		for i := 1; i < entryRet; i++ {
+			g.OpPop(core.REG_RAX)
+		}
+	} else {
+		g.XorRR(core.REG_RDI, core.REG_RDI) // exit code 0
+	}
+
+	g.EmitByte(0xb8)        // mov eax, 231
+	g.EmitU32(231)          // SYS_EXIT_GROUP
+	g.EmitBytes(0x0f, 0x05) // syscall
 }
 
 func compileSyscallIntrinsic(g *core.CodeGen, paramCount int) {
@@ -162,6 +171,8 @@ func compileCallIntrinsicLinux(g *core.CodeGen, inst ir.Inst) {
 	switch inst.Name {
 	case "Syscall":
 		compileSyscallIntrinsic(g, inst.Arg)
+	case "Alloc":
+		g.CompileAllocIntrinsic()
 	case "Sliceptr":
 		g.CompileSliceptrIntrinsic()
 	case "Makeslice":

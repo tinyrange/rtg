@@ -616,6 +616,12 @@ func (g *CodeGen) CompileSliceptrIntrinsic() {
 	g.OpPush(REG_RAX)
 }
 
+func (g *CodeGen) CompileAllocIntrinsic() {
+	g.EmitLoadLocal(1*8, REG_RAX)
+	g.OpPush(REG_RAX)
+	g.EmitCallPlaceholder("runtime.Alloc")
+}
+
 func (g *CodeGen) CompileMakesliceIntrinsic() {
 	// Params: ptr (local 0), len (local 1), cap (local 2)
 	// Allocate 32 bytes for header, fill {ptr, len, cap, elem_size=1}, push header addr
@@ -984,11 +990,24 @@ func (g *CodeGen) compileLoad(inst ir.Inst) {
 		return
 	}
 	g.TestRR(REG_RCX, REG_RCX)
+	if size == 0 {
+		size = 8
+	}
 	if size == 1 {
 		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.XorRR(REG_RAX, REG_RAX)
-		g.EmitBytes(0xeb, 0x04) // jmp +4 (skip load)
-		g.loadMemByte(REG_RAX, REG_RCX, offset)
+		g.EmitBytes(0xeb, 0x04)            // jmp +4 (skip load)
+		g.loadMemByte(REG_RAX, REG_RCX, 0) // movzx rax, byte [rcx]
+	} else if size == 2 {
+		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
+		g.XorRR(REG_RAX, REG_RAX)
+		g.EmitBytes(0xeb, 0x04)             // jmp +4 (skip load)
+		g.EmitBytes(0x48, 0x0f, 0xb7, 0x01) // movzx rax, word [rcx]
+	} else if size == 4 {
+		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
+		g.XorRR(REG_RAX, REG_RAX)
+		g.EmitBytes(0xeb, 0x02) // jmp +2 (skip load)
+		g.EmitBytes(0x8b, 0x01) // mov eax, [rcx]
 	} else {
 		g.EmitBytes(0x75, 0x05) // jnz +5 (skip zero case)
 		g.XorRR(REG_RAX, REG_RAX)
@@ -1004,8 +1023,15 @@ func (g *CodeGen) compileStore(inst ir.Inst) {
 	// stack: ... value addr  → pop addr into rcx, pop value into rax, store
 	g.OpPop(REG_RCX) // addr
 	g.OpPop(REG_RAX) // value
+	if size == 0 {
+		size = 8
+	}
 	if size == 1 {
 		g.storeMemByte(REG_RCX, offset, REG_RAX)
+	} else if size == 2 {
+		g.storeMem16(REG_RCX, offset, REG_RAX)
+	} else if size == 4 {
+		g.storeMem32(REG_RCX, offset, REG_RAX)
 	} else {
 		g.storeMem(REG_RCX, offset, REG_RAX)
 	}

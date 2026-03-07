@@ -51,6 +51,8 @@ func compileCallIntrinsicTarget(g *CodeGen, inst ir.Inst) {
 		g.OpPush(REG_RAX) // r1
 		g.OpPush(REG_RCX) // r2
 		g.OpPush(REG_RDX) // err
+	case "Alloc":
+		g.CompileAllocIntrinsic()
 	case "Sliceptr":
 		g.CompileSliceptrIntrinsic()
 	case "Makeslice":

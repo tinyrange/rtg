@@ -19,13 +19,13 @@ if [[ -n "${RTG_DOS_TESTS:-}" ]]; then
   read -r -a TESTS <<<"$RTG_DOS_TESTS"
 else
   TESTS=(
-    tests/func_basic.go
-    tests/ops_arithmetic.go
-    tests/flow_if.go
-    tests/slice_basic.go
-    tests/struct_basic.go
-    tests/string_builder.go
-    tests/dos_cases/method_file_io.go
+    tests/go/func_basic.go
+    tests/go/ops_arithmetic.go
+    tests/go/flow_if.go
+    tests/go/slice_basic.go
+    tests/go/struct_basic.go
+    tests/go/string_builder.go
+    tests/go/dos_cases/method_file_io.go
   )
 fi
 
@@ -91,8 +91,8 @@ func main() {
 }
 EOF
 
-./build/rtg -T dos/8086 tests/dos_tiny/dos_tiny_parser.go -o "$tiny_parser_com"
-./build/rtg -T dos/8086 -tags tiny_dos_backend,no_size_analysis tests/dos_tiny/dos_tiny_backend.go -o "$tiny_backend_com"
+./build/rtg -T dos/8086 tests/go/dos_tiny/dos_tiny_parser.go -o "$tiny_parser_com"
+./build/rtg -T dos/8086 -tags tiny_dos_backend,no_size_analysis tests/go/dos_tiny/dos_tiny_backend.go -o "$tiny_backend_com"
 tiny_parser_size="$(wc -c <"$tiny_parser_com" | tr -d ' ')"
 tiny_backend_size="$(wc -c <"$tiny_backend_com" | tr -d ' ')"
 

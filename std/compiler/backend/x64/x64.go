@@ -435,6 +435,44 @@ func (g *CodeGen) storeMemByte(base, off, src int) {
 	}
 }
 
+// storeMem16 emits `mov word [base+off], src_lo16`
+func (g *CodeGen) storeMem16(base, off, src int) {
+	rex := byte(0x40)
+	if src >= 8 {
+		rex |= 0x04
+	}
+	if base >= 8 {
+		rex |= 0x01
+	}
+	if off == 0 && (base&7) != REG_RBP {
+		g.EmitBytes(0x66, rex, 0x89, byte((src&7)<<3|(base&7)))
+	} else if off >= -128 && off <= 127 {
+		g.EmitBytes(0x66, rex, 0x89, byte(0x40|(src&7)<<3|(base&7)), byte(off))
+	} else {
+		g.EmitBytes(0x66, rex, 0x89, byte(0x80|(src&7)<<3|(base&7)))
+		g.EmitU32(uint32(int32(off)))
+	}
+}
+
+// storeMem32 emits `mov dword [base+off], src_lo32`
+func (g *CodeGen) storeMem32(base, off, src int) {
+	rex := byte(0x40)
+	if src >= 8 {
+		rex |= 0x04
+	}
+	if base >= 8 {
+		rex |= 0x01
+	}
+	if off == 0 && (base&7) != REG_RBP {
+		g.EmitBytes(rex, 0x89, byte((src&7)<<3|(base&7)))
+	} else if off >= -128 && off <= 127 {
+		g.EmitBytes(rex, 0x89, byte(0x40|(src&7)<<3|(base&7)), byte(off))
+	} else {
+		g.EmitBytes(rex, 0x89, byte(0x80|(src&7)<<3|(base&7)))
+		g.EmitU32(uint32(int32(off)))
+	}
+}
+
 // === Extend/truncate ===
 
 // movzxB emits `movzx reg, reg_lo8`

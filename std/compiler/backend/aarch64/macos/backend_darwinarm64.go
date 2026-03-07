@@ -18,6 +18,9 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 
 // GenerateDarwin compiles an IRModule to a macOS ARM64 Mach-O binary.
 func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	if target.RelocatableObject {
+		return GenerateDarwinObject(target, irmod, outputPath)
+	}
 	g := aarch64.NewCodeGen(target, irmod, 0x100000000, 3, true)
 
 	// Emit entry point
@@ -110,9 +113,17 @@ func emitStartArm64(g *aarch64.CodeGen, irmod *ir.IRModule, entryFunc string) {
 			g.EmitCallPlaceholderArm64(f.Name)
 		}
 	}
-	g.EmitCallPlaceholderArm64(entryFunc)
+	g.EmitCallPlaceholderArm64(ir.EntryFuncName(irmod))
 
-	g.EmitMovZ(aarch64.REG_X0, 0, 0)
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.OpPop(aarch64.REG_X0)
+		for i := 1; i < entryRet; i++ {
+			g.OpPop(aarch64.REG_X1)
+		}
+	} else {
+		g.EmitMovZ(aarch64.REG_X0, 0, 0)
+	}
 	g.EmitCallGOT("_exit")
 
 	g.EmitMovRRArm64(aarch64.REG_SP, aarch64.REG_FP)

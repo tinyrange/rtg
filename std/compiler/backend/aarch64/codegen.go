@@ -40,12 +40,10 @@ type CodeGen struct {
 
 	// Number of locals (slots) in current function frame
 	curFrameSize int
-	// True while compiling a function that should share one epilogue across
-	// multiple RETURN instructions.
-	shareReturnEpilogue bool
-	// Code offset of the shared function epilogue for multi-return functions.
-	// -1 means the shared epilogue has not been emitted yet.
-	returnEpilogueOffset int
+	// Native-ABI functions save the caller's operand stack pointer and use
+	// a frame-local eval stack for internal stack-machine operations.
+	curNativeSavedOpStackOffset int
+	curNativeEvalSlots          int
 
 	// ELF layout constants
 	baseAddr  uint64
@@ -403,22 +401,26 @@ func (g *CodeGen) emitBytes(bytes ...byte) {
 }
 
 func (g *CodeGen) emitU32(v uint32) {
-	start := len(g.code)
-	g.code = append(g.code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
-	g.traceRecordCode(start, len(g.code))
+	g.emitByte(byte(v))
+	g.emitByte(byte(v >> 8))
+	g.emitByte(byte(v >> 16))
+	g.emitByte(byte(v >> 24))
 }
 
 func (g *CodeGen) emitU16(v uint16) {
-	start := len(g.code)
-	g.code = append(g.code, byte(v), byte(v>>8))
-	g.traceRecordCode(start, len(g.code))
+	g.emitByte(byte(v))
+	g.emitByte(byte(v >> 8))
 }
 
 func (g *CodeGen) emitU64(v uint64) {
-	start := len(g.code)
-	g.code = append(g.code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
-		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
-	g.traceRecordCode(start, len(g.code))
+	g.emitByte(byte(v))
+	g.emitByte(byte(v >> 8))
+	g.emitByte(byte(v >> 16))
+	g.emitByte(byte(v >> 24))
+	g.emitByte(byte(v >> 32))
+	g.emitByte(byte(v >> 40))
+	g.emitByte(byte(v >> 48))
+	g.emitByte(byte(v >> 56))
 }
 
 func (g *CodeGen) emitRodataU64(v uint64) {
@@ -1049,11 +1051,23 @@ func (g *CodeGen) EmitCallGOT(funcName string) {
 	g.EmitBlr(REG_X16)
 }
 
+// EmitLoadGOT loads the address stored in a GOT slot into rd.
+func (g *CodeGen) EmitLoadGOT(symbolName string, rd int) {
+	g.Flush()
+	slot := g.gotSlot(symbolName)
+	g.emitAdrpLdr(rd, "$got_addr$", uint64(slot*8))
+}
+
 // EmitCallPlaceholderArm64 emits a BL with placeholder for later fixup.
 func (g *CodeGen) EmitCallPlaceholderArm64(target string) {
 	g.Flush()
 	g.callFixups = append(g.callFixups, CallFixup{len(g.code), target, 0})
 	g.EmitArm64(0x94000000) // BL #0 (placeholder)
+}
+
+// OpPop pops one operand-stack word into the selected register.
+func (g *CodeGen) OpPop(reg int) {
+	g.opPop(reg)
 }
 
 // emitCallIAT emits `call dword ptr [abs32]` for calling Windows IAT entries.

@@ -147,11 +147,11 @@ async function main() {
   const generatedCompilerModule = await WebAssembly.compile(compilerOutBytes);
   const fsStage2 = new VirtualFS();
   addStdLib(fsStage2);
-  fsStage2.addFile("tests/types_int.go", fs.readFileSync(path.join(repoRoot, "tests", "types_int.go"), "utf8"));
+  fsStage2.addFile("tests/go/types_int.go", fs.readFileSync(path.join(repoRoot, "tests", "go", "types_int.go"), "utf8"));
   const stage2 = await runWasiModule(
     generatedCompilerModule,
     fsStage2,
-    ["rtg", "-T", "wasi/wasm32", "-o", args.smokeOut, "tests/types_int.go"],
+    ["rtg", "-T", "wasi/wasm32", "-o", args.smokeOut, "tests/go/types_int.go"],
     { createWASI, WASIExit }
   );
   if (stage2.exitCode !== 0) {

@@ -113,13 +113,21 @@ func (g *CodeGen) emitStartArm64Windows(irmod *ir.IRModule, entryFunc string) {
 
 	emitDebugMarkerArm64(g, 'C')
 
-	// Call entry function.
-	g.EmitCallPlaceholderArm64(entryFunc)
+	// Call entrypoint
+	g.EmitCallPlaceholderArm64(ir.EntryFuncName(irmod))
 
 	emitDebugMarkerArm64(g, 'D')
 
-	// ExitProcess(0)
-	g.EmitMovZ(REG_X0, 0, 0)
+	// ExitProcess(entryRet0OrZero)
+	entryRet := ir.EntryFuncRetCount(irmod)
+	if entryRet > 0 {
+		g.opPop(REG_X0)
+		for i := 1; i < entryRet; i++ {
+			g.opPop(REG_X1)
+		}
+	} else {
+		g.EmitMovZ(REG_X0, 0, 0)
+	}
 	g.emitCallIATArm64("ExitProcess")
 
 	// Epilogue (won't reach here)
@@ -245,6 +253,8 @@ func (g *CodeGen) compileCallIntrinsicArm64Windows(inst ir.Inst) {
 		return
 	}
 	switch inst.Name {
+	case "Alloc":
+		g.compileAllocIntrinsicArm64()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsicArm64()
 	case "Makeslice":

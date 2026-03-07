@@ -299,13 +299,24 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		}
 	}
 
-	// Run entry function.
-	entryFuncName := common.EntryFuncName(target)
-	mainFunc, ok := vm.funcs[entryFuncName]
+	// Run entrypoint
+	entryName := ir.EntryFuncName(irmod)
+	mainFunc, ok := vm.funcs[entryName]
 	if !ok {
-		return fmt.Errorf("%s not found", entryFuncName)
+		return fmt.Errorf("entrypoint %q not found", entryName)
 	}
 	vm.execFunc(mainFunc)
+	if !vm.exited {
+		if mainFunc.RetCount > 0 {
+			code := int(vm.signExtend(vm.pop()))
+			for i := 1; i < mainFunc.RetCount; i++ {
+				vm.pop()
+			}
+			ExitCode = code
+		} else {
+			ExitCode = 0
+		}
+	}
 
 	// Always print VM summary on exit
 	fmt.Fprintf(os.Stderr, "vm: %s steps, %s calls, %s memory, %s frame hwm, %s stack hwm\n",
@@ -2400,6 +2411,9 @@ func (vm *VM) execIntrinsic(name string, localsAddr uint64, ws uint64) {
 		vm.push(vm.vmAsmByteSlice(vm.vmAsmFixupBytes(), "asm-fixups"))
 
 	// Memory intrinsics
+	case "Alloc":
+		vm.push(vm.alloc(vm.localGet(localsAddr, ws, 0), "intrinsic-alloc"))
+
 	case "Sliceptr":
 		a := vm.localGet(localsAddr, ws, 0)
 		if a == 0 {

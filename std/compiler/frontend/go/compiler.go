@@ -221,6 +221,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		entryFunc:             entryFunc,
 		deferRecoverWrapFuncs: make(map[string]bool),
 	}
+	c.irmod.EntryFunc = ir.DefaultEntryFunc
 	c.initBuiltinTypes()
 
 	// Pre-pass: collect interface and method declarations for all packages so

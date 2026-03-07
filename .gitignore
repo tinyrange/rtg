@@ -1,5 +1,8 @@
 tests/*/*
 !tests/*/*.go
+!tests/c/object/
+!tests/c/object/*.c
+!tests/c/object/*.S
 !tests/compiler_bugs/README.md
 !tests/compiler_bugs/_exit_harness.inc
 !tests/compiler_bugs/manifest.txt

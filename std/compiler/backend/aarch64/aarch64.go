@@ -375,14 +375,27 @@ func (g *CodeGen) emitLdrb(rt, rn int, offset int) {
 	}
 }
 
-// emitLdr32 emits LDR Wt, [Xn, #offset] (zero-extend 32-bit word)
-func (g *CodeGen) emitLdr32(rt, rn int, offset int) {
-	if offset == 0 {
-		inst := uint32(0xB9400000) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+// emitLdrh emits LDRH Wt, [Xn, #offset] (zero-extend halfword)
+func (g *CodeGen) emitLdrh(rt, rn int, offset int) {
+	if offset >= 0 && offset%2 == 0 && offset/2 < 4096 {
+		inst := uint32(0x79400000) | (uint32((offset/2)&0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
 		g.EmitArm64(inst)
-	} else if offset > 0 && offset%4 == 0 && offset/4 < 4096 {
-		uimm := uint32(offset / 4)
-		inst := uint32(0xB9400000) | (uimm << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+	} else if offset >= -256 && offset <= 255 {
+		simm9 := uint32(offset) & 0x1FF
+		inst := uint32(0x78400000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	} else {
+		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
+		g.EmitAddRR(REG_X16, rn, REG_X16)
+		inst := uint32(0x79400000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	}
+}
+
+// emitLdrw emits LDR Wt, [Xn, #offset] (zero-extend word)
+func (g *CodeGen) emitLdrw(rt, rn int, offset int) {
+	if offset >= 0 && offset%4 == 0 && offset/4 < 4096 {
+		inst := uint32(0xB9400000) | (uint32((offset/4)&0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
 		g.EmitArm64(inst)
 	} else if offset >= -256 && offset <= 255 {
 		simm9 := uint32(offset) & 0x1FF
@@ -413,14 +426,27 @@ func (g *CodeGen) emitStrb(rt, rn int, offset int) {
 	}
 }
 
-// emitStr32 emits STR Wt, [Xn, #offset]
-func (g *CodeGen) emitStr32(rt, rn int, offset int) {
-	if offset == 0 {
-		inst := uint32(0xB9000000) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+// emitStrh emits STRH Wt, [Xn, #offset]
+func (g *CodeGen) emitStrh(rt, rn int, offset int) {
+	if offset >= 0 && offset%2 == 0 && offset/2 < 4096 {
+		inst := uint32(0x79000000) | (uint32((offset/2)&0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
 		g.EmitArm64(inst)
-	} else if offset > 0 && offset%4 == 0 && offset/4 < 4096 {
-		uimm := uint32(offset / 4)
-		inst := uint32(0xB9000000) | (uimm << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+	} else if offset >= -256 && offset <= 255 {
+		simm9 := uint32(offset) & 0x1FF
+		inst := uint32(0x78000000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	} else {
+		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
+		g.EmitAddRR(REG_X16, rn, REG_X16)
+		inst := uint32(0x79000000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	}
+}
+
+// emitStrw emits STR Wt, [Xn, #offset]
+func (g *CodeGen) emitStrw(rt, rn int, offset int) {
+	if offset >= 0 && offset%4 == 0 && offset/4 < 4096 {
+		inst := uint32(0xB9000000) | (uint32((offset/4)&0xFFF) << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
 		g.EmitArm64(inst)
 	} else if offset >= -256 && offset <= 255 {
 		simm9 := uint32(offset) & 0x1FF

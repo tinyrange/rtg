@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // ============================================================================
@@ -557,7 +556,7 @@ func isWSL() bool {
 	paths := []string{"/proc/version", "/proc/sys/kernel/osrelease"}
 	for _, p := range paths {
 		if b, err := os.ReadFile(p); err == nil {
-			if strings.Contains(strings.ToLower(string(b)), "microsoft") {
+			if strings.Contains(toLowerASCII(string(b)), "microsoft") {
 				return true
 			}
 		}
@@ -566,12 +565,14 @@ func isWSL() bool {
 }
 
 func wslPathToWindows(path string) (string, error) {
-	if !filepath.IsAbs(path) {
-		if cwd, err := os.Getwd(); err == nil {
+	if !isAbsPathCompat(path) {
+		cwd, err := os.Getwd()
+		if err == nil {
 			path = filepath.Join(cwd, path)
 		}
 	}
-	out, err := exec.Command("wslpath", "-m", path).Output()
+	cmd := exec.Command("wslpath", "-m", path)
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("wslpath -m %s failed: %w", path, err)
 	}
@@ -579,7 +580,7 @@ func wslPathToWindows(path string) (string, error) {
 }
 
 func quoteForCmd(arg string) string {
-	if strings.ContainsAny(arg, " \t") {
+	if containsSpaceOrTab(arg) {
 		return `"` + arg + `"`
 	}
 	return arg
@@ -590,7 +591,8 @@ func trimCommandOutput(out []byte) string {
 }
 
 func detectRTGCompilerPath() (string, error) {
-	if p := os.Getenv("RTG_COMPILER"); p != "" {
+	p := os.Getenv("RTG_COMPILER")
+	if p != "" {
 		return p, nil
 	}
 	candidates := []string{"./build/rtg"}
@@ -598,7 +600,7 @@ func detectRTGCompilerPath() (string, error) {
 		candidates = []string{"./build/rtg.exe", "./build/rtg"}
 	}
 	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
+		if pathExists(c) {
 			return c, nil
 		}
 	}
@@ -610,10 +612,11 @@ func (e *Executor) runAndCapture(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("%s %s failed: %s", name, strings.Join(args, " "), trimCommandOutput(ee.Stderr))
+		msg := trimCommandOutput(out)
+		if msg == "" {
+			msg = err.Error()
 		}
-		return "", err
+		return "", fmt.Errorf("%s %s failed: %s", name, strings.Join(args, " "), msg)
 	}
 	return trimCommandOutput(out), nil
 }
@@ -621,9 +624,13 @@ func (e *Executor) runAndCapture(name string, args ...string) (string, error) {
 func (e *Executor) runAndCaptureCombined(name string, args ...string) (string, error) {
 	fmt.Fprintf(os.Stderr, "running %s %s\n", name, strings.Join(args, " "))
 	cmd := exec.Command(name, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("%s %s failed: %s", name, strings.Join(args, " "), trimCommandOutput(out))
+		msg := trimCommandOutput(out)
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("%s %s failed: %s", name, strings.Join(args, " "), msg)
 	}
 	return trimCommandOutput(out), nil
 }
@@ -681,6 +688,57 @@ func equalFoldASCII(a, b string) bool {
 		}
 		i++
 	}
+	return true
+}
+
+func toLowerASCII(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch >= 'A' && ch <= 'Z' {
+			ch = ch + ('a' - 'A')
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
+func isAbsPathCompat(path string) bool {
+	if path == "" {
+		return false
+	}
+	if path[0] == '/' || path[0] == '\\' {
+		return true
+	}
+	return len(path) >= 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\')
+}
+
+func absPathCompat(path string) (string, error) {
+	if isAbsPathCompat(path) {
+		return path, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cwd, path), nil
+}
+
+func containsSpaceOrTab(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' {
+			return true
+		}
+	}
+	return false
+}
+
+func pathExists(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	f.Close()
 	return true
 }
 
@@ -756,71 +814,30 @@ func (e *Executor) runFullCompilerRTGRenodeParallel(tests []string, rtgCompiler 
 	}
 
 	jobCount := parsePositiveIntEnv("RTG_FULLCOMPILER_JOBS", 4)
-	if jobCount > len(jobs) {
-		jobCount = len(jobs)
+	if jobCount < 1 {
+		jobCount = 1
 	}
-	fmt.Printf("INFO: running armv8m Renode fullcompiler with %d parallel job(s)\n", jobCount)
-
-	type testResult struct {
-		index int
-		err   error
-	}
-	jobCh := make(chan testJob, len(jobs))
-	resultCh := make(chan testResult, len(jobs))
-	var wg sync.WaitGroup
-
-	worker := func() {
-		defer wg.Done()
-		for job := range jobCh {
-			out := filepath.Join("build", "fullcompiler_"+job.name)
-			compileArgs := []string{}
-			if rtgTarget != "" {
-				compileArgs = append(compileArgs, "-T", rtgTarget)
-			}
-			compileArgs = append(compileArgs, job.testPath, "-o", out)
-			if _, err := e.runAndCapture(rtgCompiler, compileArgs...); err != nil {
-				resultCh <- testResult{index: job.index, err: err}
-				continue
-			}
-			got, err := e.runArmv8mWithRenode(renodePath, out, targetOS)
-			if err != nil {
-				resultCh <- testResult{index: job.index, err: err}
-				continue
-			}
-			if got != "PASS" {
-				resultCh <- testResult{
-					index: job.index,
-					err:   fmt.Errorf("FAIL: %s/%s expected %q got %q", "rtg", job.name, "PASS", got),
-				}
-				continue
-			}
-			fmt.Printf("PASS: %s/%s\n", "rtg", job.name)
-			resultCh <- testResult{index: job.index}
-		}
-	}
-
-	wg.Add(jobCount)
-	i := 0
-	for i < jobCount {
-		go worker()
-		i++
-	}
+	fmt.Printf("INFO: running armv8m Renode fullcompiler sequentially (parallelism %d ignored in selfhost mode)\n", jobCount)
 	for _, job := range jobs {
-		jobCh <- job
-	}
-	close(jobCh)
-	wg.Wait()
-	close(resultCh)
-
-	var firstErr error
-	firstErrIndex := len(tests) + 1
-	for result := range resultCh {
-		if result.err != nil && result.index < firstErrIndex {
-			firstErr = result.err
-			firstErrIndex = result.index
+		out := filepath.Join("build", "fullcompiler_"+job.name)
+		compileArgs := []string{}
+		if rtgTarget != "" {
+			compileArgs = append(compileArgs, "-T", rtgTarget)
 		}
+		compileArgs = append(compileArgs, job.testPath, "-o", out)
+		if _, err := e.runAndCapture(rtgCompiler, compileArgs...); err != nil {
+			return err
+		}
+		got, err := e.runArmv8mWithRenode(renodePath, out, targetOS)
+		if err != nil {
+			return err
+		}
+		if got != "PASS" {
+			return fmt.Errorf("FAIL: %s/%s expected %q got %q", "rtg", job.name, "PASS", got)
+		}
+		fmt.Printf("PASS: %s/%s\n", "rtg", job.name)
 	}
-	return firstErr
+	return nil
 }
 
 // handleFullCompiler runs the top-level fullcompiler suite for a backend.
@@ -843,13 +860,13 @@ func (e *Executor) handleFullCompiler(args []string) error {
 		}
 	}
 
-	tests, err := listGoFilesInDir("tests")
+	tests, err := listGoFilesInDir("tests/go")
 	if err != nil {
 		return err
 	}
 	sort.Strings(tests)
 	if len(tests) == 0 {
-		return fmt.Errorf("no tests found under tests/*.go")
+		return fmt.Errorf("no tests found under tests/go/*.go")
 	}
 
 	rtgCompiler, err := detectRTGCompilerPath()
@@ -1014,16 +1031,16 @@ func resolveRenodeExecutable(path string) (string, error) {
 		return "", fmt.Errorf("RENODE_PATH is empty")
 	}
 	candidates := []string{path, filepath.Join(path, "renode")}
-	if entries, err := os.ReadDir(path); err == nil {
+	entries, err := os.ReadDir(path)
+	if err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() {
-				candidates = append(candidates, filepath.Join(path, entry.Name(), "renode"))
+				candidates = append(candidates, filepath.Join(filepath.Join(path, entry.Name()), "renode"))
 			}
 		}
 	}
 	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && !info.IsDir() {
+		if pathExists(candidate) {
 			return candidate, nil
 		}
 	}
@@ -1068,17 +1085,17 @@ func (e *Executor) runArmv8mWithRenode(renodePath string, elfPath string, target
 	if err := os.WriteFile(replPath, []byte(renodeArmv8mRepl()), 0644); err != nil {
 		return "", err
 	}
-	replAbs, err := filepath.Abs(replPath)
+	replAbs, err := absPathCompat(replPath)
 	if err != nil {
 		return "", err
 	}
-	elfAbs, err := filepath.Abs(elfPath)
+	elfAbs, err := absPathCompat(elfPath)
 	if err != nil {
 		return "", err
 	}
 	logPath := filepath.Join("build", baseName+".renode.uart.log")
-	_ = os.Remove(logPath)
-	logAbs, err := filepath.Abs(logPath)
+	_ = os.RemoveAll(logPath)
+	logAbs, err := absPathCompat(logPath)
 	if err != nil {
 		return "", err
 	}
@@ -1211,9 +1228,9 @@ func (e *Executor) handleRun(args []string) error {
 	binary := args[0]
 	if runtime.GOOS == "windows" && !equalFoldASCII(fileExt(binary), ".exe") {
 		// If caller passed a suffix-less path, prefer an existing ".exe" peer.
-		if _, err := os.Stat(binary); err != nil {
+		if !pathExists(binary) {
 			candidate := binary + ".exe"
-			if _, statErr := os.Stat(candidate); statErr == nil {
+			if pathExists(candidate) {
 				binary = candidate
 			}
 		}
@@ -1281,7 +1298,7 @@ func shShell(cmdStr string) (name string, args []string) {
 		if candidate == "" {
 			continue
 		}
-		if _, err := os.Stat(candidate); err == nil {
+		if pathExists(candidate) {
 			return candidate, []string{"-c", cmdStr}
 		}
 	}

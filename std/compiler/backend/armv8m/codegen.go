@@ -635,6 +635,11 @@ func (g *CodeGen) compileInst(inst ir.Inst) error {
 
 func (g *CodeGen) compileIntrinsic(inst ir.Inst) error {
 	switch inst.Name {
+	case "Alloc":
+		g.loadLocal(0, 0)
+		g.opPush(0)
+		g.EmitCallPlaceholder("runtime.Alloc")
+		return nil
 	case "Sliceptr", "Stringptr":
 		g.loadLocal(0, 0)
 		g.asm.EmitCmpImm(0, 0)

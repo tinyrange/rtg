@@ -13,9 +13,91 @@ import (
 // Uses X0-X3 as working registers, X28 as operand stack pointer,
 // X29 (FP) as frame pointer, X30 (LR) as link register.
 
-// initOperandCacheArm64 configures the two-entry operand cache registers.
 func (g *CodeGen) initOperandCacheArm64() {
 	g.configureOperandCache(REG_X26, REG_X27)
+}
+
+func (g *CodeGen) funcABIArm64(name string) string {
+	if g.irmod == nil || g.irmod.FuncABIs == nil {
+		return ""
+	}
+	return g.irmod.FuncABIs[name]
+}
+
+func (g *CodeGen) funcRetCountArm64(name string) int {
+	if g.irmod == nil || g.irmod.FuncRetCounts == nil {
+		return 0
+	}
+	return g.irmod.FuncRetCounts[name]
+}
+
+func (g *CodeGen) isNativeCABIArm64(name string) bool {
+	return g.funcABIArm64(name) == "native-c-darwin-arm64"
+}
+
+func (g *CodeGen) usesFrameOperandStackArm64(name string) bool {
+	return g.target != nil && g.target.RelocatableObject && g.isNativeCABIArm64(name)
+}
+
+func arm64IntrinsicRetCount(name string) int {
+	switch name {
+	case "SysGetargc", "SysGetargv", "SysGetenvp":
+		return 3
+	case "SysArgcValue", "SysArgvBaseValue", "Alloc", "Sliceptr", "Makeslice", "Stringptr", "Makestring", "Tostring", "ReadPtr":
+		return 1
+	case "WritePtr", "WriteByte":
+		return 0
+	default:
+		return 0
+	}
+}
+
+func (g *CodeGen) nativeEvalStackSlotsArm64(f *ir.IRFunc) int {
+	if f == nil {
+		return 0
+	}
+	depth := 0
+	maxDepth := 0
+	for _, inst := range f.Code {
+		switch inst.Op {
+		case ir.OP_CONST_I64, ir.OP_CONST_STR, ir.OP_CONST_BOOL, ir.OP_CONST_NIL:
+			depth++
+		case ir.OP_LOCAL_GET, ir.OP_GLOBAL_GET, ir.OP_LOCAL_ADDR, ir.OP_GLOBAL_ADDR:
+			depth++
+		case ir.OP_LOCAL_SET, ir.OP_GLOBAL_SET, ir.OP_DROP, ir.OP_JMP_IF, ir.OP_JMP_IF_NOT, ir.OP_PANIC:
+			depth--
+		case ir.OP_LOCAL_ADD_IMM, ir.OP_NEG, ir.OP_NOT, ir.OP_LOAD, ir.OP_OFFSET, ir.OP_LABEL, ir.OP_JMP, ir.OP_LEN, ir.OP_CAP, ir.OP_CONVERT, ir.OP_IFACE_BOX:
+			// Net-zero stack effect.
+		case ir.OP_DUP:
+			depth++
+		case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD, ir.OP_AND, ir.OP_OR, ir.OP_XOR, ir.OP_SHL, ir.OP_SHR, ir.OP_EQ, ir.OP_NEQ, ir.OP_LT, ir.OP_GT, ir.OP_LEQ, ir.OP_GEQ, ir.OP_INDEX_ADDR:
+			depth--
+		case ir.OP_STORE:
+			depth -= 2
+		case ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
+			depth -= 2
+		case ir.OP_CALL:
+			retCount := g.funcRetCountArm64(inst.Name)
+			if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
+				retCount = 1
+			}
+			depth += retCount - inst.Arg
+		case ir.OP_CALL_INTRINSIC:
+			depth += arm64IntrinsicRetCount(inst.Name)
+		case ir.OP_RETURN:
+			depth -= inst.Arg
+		case ir.OP_IFACE_CALL:
+			depth -= inst.Arg
+			depth++
+		}
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+		if depth < 0 {
+			depth = 0
+		}
+	}
+	return maxDepth
 }
 
 // CompileFuncArm64 generates ARM64 code for a single IR function.
@@ -40,16 +122,15 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	if f.Params > g.curFrameSize {
 		g.curFrameSize = f.Params
 	}
-	if g.labelOffsets == nil {
-		g.labelOffsets = make(map[int]int)
-	} else {
-		for key := range g.labelOffsets {
-			delete(g.labelOffsets, key)
-		}
+	g.curNativeSavedOpStackOffset = 0
+	g.curNativeEvalSlots = 0
+	if g.usesFrameOperandStackArm64(f.Name) {
+		g.curNativeEvalSlots = g.nativeEvalStackSlotsArm64(f)
+		g.curNativeSavedOpStackOffset = (g.curFrameSize + 1) * 8
+		g.curFrameSize = g.curFrameSize + 1 + g.curNativeEvalSlots
 	}
-	g.jumpFixups = g.jumpFixups[:0]
-	g.shareReturnEpilogue = shouldShareReturnEpilogueArm64(f.Code)
-	g.returnEpilogueOffset = -1
+	g.labelOffsets = make(map[int]int)
+	g.jumpFixups = nil
 
 	// Prologue: STP X29, X30, [SP, #-16]!; MOV X29, SP; SUB SP, SP, #frameBytes
 	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
@@ -69,14 +150,38 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 		}
 	}
 
-	// Pop params from operand stack (X28) into local frame slots
-	if f.Params > 0 {
-		i := f.Params - 1
-		for i >= 0 {
-			g.opPop(REG_X0)
+	if g.usesFrameOperandStackArm64(f.Name) {
+		g.EmitStr(REG_X28, REG_FP, -g.curNativeSavedOpStackOffset)
+		if g.curNativeSavedOpStackOffset < 4096 {
+			g.emitSubImm(REG_X28, REG_FP, uint32(g.curNativeSavedOpStackOffset))
+		} else {
+			g.EmitLoadImm64Compact(REG_X16, uint64(g.curNativeSavedOpStackOffset))
+			g.emitSubRR(REG_X28, REG_FP, REG_X16)
+		}
+	}
+
+	if g.isNativeCABIArm64(f.Name) {
+		i := 0
+		for i < f.Params {
 			offset := (i + 1) * 8
-			g.emitStoreLocalArm64(offset, REG_X0)
-			i = i - 1
+			if i < 8 {
+				g.emitStoreLocalArm64(offset, REG_X0+i)
+			} else {
+				g.emitLdr(REG_X16, REG_FP, 16+(i-8)*8)
+				g.emitStoreLocalArm64(offset, REG_X16)
+			}
+			i++
+		}
+	} else {
+		// Pop params from operand stack (X28) into local frame slots
+		if f.Params > 0 {
+			i := f.Params - 1
+			for i >= 0 {
+				g.opPop(REG_X0)
+				offset := (i + 1) * 8
+				g.emitStoreLocalArm64(offset, REG_X0)
+				i = i - 1
+			}
 		}
 	}
 
@@ -131,8 +236,6 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	}
 
 	g.curFunc = nil
-	g.shareReturnEpilogue = false
-	g.returnEpilogueOffset = -1
 }
 
 // compileInstArm64 generates ARM64 code for a single IR instruction.
@@ -639,7 +742,43 @@ func (g *CodeGen) compileCallArm64(inst ir.Inst) {
 		g.compileCompositeLitCallArm64(inst)
 		return
 	}
+	if g.isNativeCABIArm64(inst.Name) {
+		g.compileNativeCallArm64(inst)
+		return
+	}
 	g.EmitCallPlaceholderArm64(inst.Name)
+}
+
+func (g *CodeGen) compileNativeCallArm64(inst ir.Inst) {
+	g.Flush()
+	stackArgs := 0
+	if inst.Arg > 8 {
+		stackArgs = inst.Arg - 8
+	}
+	frame := stackArgs * 8
+	if frame%16 != 0 {
+		frame += 8
+	}
+	if frame > 0 {
+		g.emitSubImm(REG_SP, REG_SP, uint32(frame))
+	}
+	i := inst.Arg - 1
+	for i >= 8 {
+		g.opPop(REG_X16)
+		g.EmitStr(REG_X16, REG_SP, (i-8)*8)
+		i--
+	}
+	for i >= 0 {
+		g.opPop(REG_X0 + i)
+		i--
+	}
+	g.EmitCallPlaceholderArm64(inst.Name)
+	if frame > 0 {
+		g.emitAddImm(REG_SP, REG_SP, uint32(frame))
+	}
+	if g.funcRetCountArm64(inst.Name) > 0 {
+		g.opPush(REG_X0)
+	}
 }
 
 func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
@@ -696,35 +835,17 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 }
 
 func (g *CodeGen) compileReturnArm64(inst ir.Inst) {
-	g.Flush()
-	if g.curFunc != nil && g.shareReturnEpilogue {
-		if g.returnEpilogueOffset >= 0 {
-			fixup := g.emitB()
-			g.PatchArm64BAt(fixup, g.returnEpilogueOffset)
-			return
+	if g.curFunc != nil && g.isNativeCABIArm64(g.curFunc.Name) {
+		if g.curFunc.RetCount > 0 {
+			g.opPop(REG_X0)
 		}
-		g.returnEpilogueOffset = len(g.code)
-		g.emitFuncEpilogueArm64()
-		return
+		if g.usesFrameOperandStackArm64(g.curFunc.Name) && g.curNativeSavedOpStackOffset > 0 {
+			g.emitLdr(REG_X28, REG_FP, -g.curNativeSavedOpStackOffset)
+		}
+		g.ClearOperandCache()
+	} else {
+		g.Flush()
 	}
-	g.emitFuncEpilogueArm64()
-}
-
-func shouldShareReturnEpilogueArm64(code []ir.Inst) bool {
-	returns := 0
-	for _, inst := range code {
-		if inst.Op != ir.OP_RETURN {
-			continue
-		}
-		returns++
-		if returns > 1 {
-			return true
-		}
-	}
-	return false
-}
-
-func (g *CodeGen) emitFuncEpilogueArm64() {
 	// Epilogue: MOV SP, FP; LDP FP, LR, [SP], #16; RET
 	g.EmitMovRRArm64(REG_SP, REG_FP)
 	g.EmitLdp(REG_FP, REG_LR, REG_SP, 16)
@@ -751,6 +872,11 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
 		g.ClearOperandCache()
+	case "SysArgcValue":
+		argcOff := len(g.irmod.Globals) * 8
+		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argcOff))
+		g.rawPush(REG_X0)
+		g.ClearOperandCache()
 	case "SysGetargv":
 		argvOff := (len(g.irmod.Globals) + 1) * 8
 		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argvOff))
@@ -758,6 +884,11 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.EmitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
+		g.ClearOperandCache()
+	case "SysArgvBaseValue":
+		argvOff := (len(g.irmod.Globals) + 1) * 8
+		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argvOff))
+		g.rawPush(REG_X0)
 		g.ClearOperandCache()
 	case "SysGetenvp":
 		envpOff := (len(g.irmod.Globals) + 2) * 8
@@ -769,6 +900,8 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.ClearOperandCache()
 	case "Syscall":
 		g.compileSyscallIntrinsicArm64(inst.Arg)
+	case "Alloc":
+		g.compileAllocIntrinsicArm64()
 	case "Sliceptr":
 		g.compileSliceptrIntrinsicArm64()
 	case "Makeslice":
@@ -788,6 +921,12 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 	default:
 		panic("ICE: unknown intrinsic '" + inst.Name + "' in compileCallIntrinsicArm64")
 	}
+}
+
+func (g *CodeGen) compileAllocIntrinsicArm64() {
+	g.emitLoadLocalArm64(1*8, REG_X0)
+	g.opPush(REG_X0)
+	g.EmitCallPlaceholderArm64("runtime.Alloc")
 }
 
 func (g *CodeGen) compileSliceptrIntrinsicArm64() {
@@ -1122,7 +1261,7 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 		if size == 1 {
 			g.emitLdrb(REG_X0, REG_X1, offset)
 		} else if size == 4 {
-			g.emitLdr32(REG_X0, REG_X1, offset)
+			g.emitLdrw(REG_X0, REG_X1, offset)
 		} else {
 			g.emitLdr(REG_X0, REG_X1, offset)
 		}
@@ -1136,10 +1275,15 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 	doneFixup := g.emitB()
 	// load case:
 	g.patchArm64BCondAt(loadFixup, len(g.code))
+	if size == 0 {
+		size = 8
+	}
 	if size == 1 {
 		g.emitLdrb(REG_X0, REG_X1, offset)
+	} else if size == 2 {
+		g.emitLdrh(REG_X0, REG_X1, offset)
 	} else if size == 4 {
-		g.emitLdr32(REG_X0, REG_X1, offset)
+		g.emitLdrw(REG_X0, REG_X1, offset)
 	} else {
 		g.emitLdr(REG_X0, REG_X1, offset)
 	}
@@ -1152,10 +1296,15 @@ func (g *CodeGen) compileStoreArm64(inst ir.Inst) {
 	offset := int(inst.Val)
 	g.opPop(REG_X1) // addr
 	g.opPop(REG_X0) // value
+	if size == 0 {
+		size = 8
+	}
 	if size == 1 {
 		g.emitStrb(REG_X0, REG_X1, offset)
+	} else if size == 2 {
+		g.emitStrh(REG_X0, REG_X1, offset)
 	} else if size == 4 {
-		g.emitStr32(REG_X0, REG_X1, offset)
+		g.emitStrw(REG_X0, REG_X1, offset)
 	} else {
 		g.EmitStr(REG_X0, REG_X1, offset)
 	}
@@ -1474,6 +1623,164 @@ func mul10CheckedArm64(v uint64) (uint64, bool) {
 	return v * 10, true
 }
 
+func hexDigitValueArm64(ch byte) (uint64, bool) {
+	switch {
+	case ch >= '0' && ch <= '9':
+		return uint64(ch - '0'), true
+	case ch >= 'a' && ch <= 'f':
+		return uint64(ch-'a') + 10, true
+	case ch >= 'A' && ch <= 'F':
+		return uint64(ch-'A') + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func highestBitIndexArm64(v uint64) int {
+	i := -1
+	for v != 0 {
+		v = v >> 1
+		i++
+	}
+	return i
+}
+
+func parseHexFloatLiteralBitsArm64(sign uint64, s string, i int) (uint64, bool) {
+	if i+2 > len(s) || s[i] != '0' || (s[i+1] != 'x' && s[i+1] != 'X') {
+		return 0, false
+	}
+	i += 2
+	mant := uint64(0)
+	exp2 := 0
+	sawDigit := false
+	sawDot := false
+	for i < len(s) {
+		ch := s[i]
+		if ch == '_' {
+			i++
+			continue
+		}
+		if ch == '.' {
+			if sawDot {
+				return 0, false
+			}
+			sawDot = true
+			i++
+			continue
+		}
+		if ch == 'p' || ch == 'P' {
+			break
+		}
+		digit, ok := hexDigitValueArm64(ch)
+		if !ok {
+			return 0, false
+		}
+		if mant > (^uint64(0) >> 4) {
+			return 0, false
+		}
+		mant = (mant << 4) | digit
+		if sawDot {
+			exp2 -= 4
+		}
+		sawDigit = true
+		i++
+	}
+	if !sawDigit || i >= len(s) || (s[i] != 'p' && s[i] != 'P') {
+		return 0, false
+	}
+	i++
+	if i >= len(s) {
+		return 0, false
+	}
+	expNeg := false
+	if s[i] == '+' || s[i] == '-' {
+		expNeg = s[i] == '-'
+		i++
+	}
+	if i >= len(s) {
+		return 0, false
+	}
+	exp := 0
+	haveExpDigit := false
+	for i < len(s) {
+		ch := s[i]
+		if ch == '_' {
+			i++
+			continue
+		}
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		exp = exp*10 + int(ch-'0')
+		haveExpDigit = true
+		i++
+	}
+	if !haveExpDigit {
+		return 0, false
+	}
+	if expNeg {
+		exp2 -= exp
+	} else {
+		exp2 += exp
+	}
+	if mant == 0 {
+		return sign, true
+	}
+
+	msb := highestBitIndexArm64(mant)
+	unbiased := exp2 + msb
+	if unbiased > 1023 {
+		return sign | (uint64(0x7FF) << 52), true
+	}
+	if unbiased < -1075 {
+		return sign, true
+	}
+	if unbiased >= -1022 {
+		shift := msb - 52
+		mant53 := mant
+		if shift > 0 {
+			mant53 = mant >> uint(shift)
+			mask := (uint64(1) << uint(shift)) - 1
+			rem := mant & mask
+			half := uint64(1) << uint(shift-1)
+			if rem > half || (rem == half && (mant53&1) != 0) {
+				mant53++
+				if mant53 == (uint64(1) << 53) {
+					mant53 = mant53 >> 1
+					unbiased++
+					if unbiased > 1023 {
+						return sign | (uint64(0x7FF) << 52), true
+					}
+				}
+			}
+		} else if shift < 0 {
+			mant53 = mant << uint(-shift)
+		}
+		return sign | (uint64(unbiased+1023) << 52) | (mant53 & ((uint64(1) << 52) - 1)), true
+	}
+
+	subShift := -1074 - exp2
+	if subShift < 0 {
+		return sign, true
+	}
+	if subShift >= 64 {
+		return sign, true
+	}
+	mantBits := mant >> uint(subShift)
+	if subShift > 0 {
+		mask := (uint64(1) << uint(subShift)) - 1
+		rem := mant & mask
+		half := uint64(1) << uint(subShift-1)
+		if rem > half || (rem == half && (mantBits&1) != 0) {
+			mantBits++
+		}
+	}
+	if mantBits >= (uint64(1) << 52) {
+		return sign | (uint64(1) << 52), true
+	}
+	return sign | mantBits, true
+}
+
 func parseFloatLiteralBitsArm64(s string) (uint64, bool) {
 	if len(s) == 0 {
 		return 0, false
@@ -1488,6 +1795,9 @@ func parseFloatLiteralBitsArm64(s string) (uint64, bool) {
 		if i >= len(s) {
 			return 0, false
 		}
+	}
+	if i+2 <= len(s) && s[i] == '0' && (s[i+1] == 'x' || s[i+1] == 'X') {
+		return parseHexFloatLiteralBitsArm64(sign, s, i)
 	}
 
 	mant := uint64(0)

@@ -296,6 +296,18 @@ func (g *CodeGen) storeMemByte32(base, off, src int) {
 	}
 }
 
+// storeMem16 emits `mov word [base+off], src_lo16`
+func (g *CodeGen) storeMem16(base, off, src int) {
+	if off == 0 && (base&7) != REG32_EBP {
+		g.emitBytes(0x66, 0x89, byte((src&7)<<3|(base&7)))
+	} else if off >= -128 && off <= 127 {
+		g.emitBytes(0x66, 0x89, byte(0x40|(src&7)<<3|(base&7)), byte(off))
+	} else {
+		g.emitBytes(0x66, 0x89, byte(0x80|(src&7)<<3|(base&7)))
+		g.emitU32(uint32(int32(off)))
+	}
+}
+
 // === Extend/truncate (32-bit) ===
 
 // movzxB32 emits `movzx reg, reg_lo8`

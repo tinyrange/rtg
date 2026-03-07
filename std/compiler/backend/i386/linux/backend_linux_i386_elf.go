@@ -13,6 +13,9 @@ import (
 
 // GenerateELF compiles an IRModule to an i386 (32-bit) ELF binary.
 func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	if target.RelocatableObject {
+		return GenerateObjectELF(target, irmod, outputPath)
+	}
 	g := core.NewCodeGen(target, irmod, 0x08048000)
 
 	EmitStart(g, irmod, common.EntryFuncName(target))
