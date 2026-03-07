@@ -40,7 +40,7 @@ type Preprocessor struct {
 	once                map[string]bool
 	headerGuards        map[string]string
 	included            map[string]bool
-	activeFiles         map[string]bool
+	activeFiles         map[string]int
 	maxIncludeDepth     int
 }
 
@@ -69,7 +69,7 @@ func NewPreprocessor(opts Options) *Preprocessor {
 		once:                make(map[string]bool),
 		headerGuards:        make(map[string]string),
 		included:            make(map[string]bool),
-		activeFiles:         make(map[string]bool),
+		activeFiles:         make(map[string]int),
 		maxIncludeDepth:     maxDepth,
 	}
 	for _, d := range builtinPredefineSpecs(targetOS, targetArch, ptrSize, opts.Hosted) {
@@ -258,7 +258,7 @@ func (p *Preprocessor) resolveInclude(include string, quoted bool, currentFile s
 	return "", fmt.Errorf("include not found: %s", include)
 }
 
-func (p *Preprocessor) processPath(path string, depth int) ([]Token, error) {
+func (p *Preprocessor) processPath(path string, depth int, allowReentry bool) ([]Token, error) {
 	if depth > p.maxIncludeDepth {
 		return nil, fmt.Errorf("preprocessor: include depth exceeded (%d)", p.maxIncludeDepth)
 	}
@@ -267,16 +267,18 @@ func (p *Preprocessor) processPath(path string, depth int) ([]Token, error) {
 		if p.once[path] && p.included[path] {
 			return nil, nil
 		}
-		if p.activeFiles[path] {
-			if guard := p.headerGuardFor(path, src); guard != "" && p.isDefined(guard) {
-				return nil, nil
+		if p.activeFiles[path] > 0 {
+			if !allowReentry {
+				if guard := p.headerGuardFor(path, src); guard != "" && p.isDefined(guard) {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", path)
 			}
-			return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", path)
 		}
-		p.activeFiles[path] = true
+		p.activeFiles[path]++
 		p.included[path] = true
 		out, procErr := p.processSource(path, src, depth)
-		p.activeFiles[path] = false
+		p.activeFiles[path]--
 		return out, procErr
 	}
 	abs, err := absPath(path)
@@ -291,22 +293,24 @@ func (p *Preprocessor) processPath(path string, depth int) ([]Token, error) {
 	if p.once[abs] && p.included[abs] {
 		return nil, nil
 	}
-	if p.activeFiles[abs] {
-		if guard := p.headerGuardFor(abs, src); guard != "" && p.isDefined(guard) {
-			return nil, nil
+	if p.activeFiles[abs] > 0 {
+		if !allowReentry {
+			if guard := p.headerGuardFor(abs, src); guard != "" && p.isDefined(guard) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", abs)
 		}
-		return nil, fmt.Errorf("preprocessor: recursive include cycle: %s", abs)
 	}
-	p.activeFiles[abs] = true
+	p.activeFiles[abs]++
 	p.included[abs] = true
 	out, procErr := p.processSource(abs, src, depth)
-	p.activeFiles[abs] = false
+	p.activeFiles[abs]--
 	return out, procErr
 }
 
 // ProcessFile preprocesses a C source file and emits tokens.
 func (p *Preprocessor) ProcessFile(path string) ([]Token, error) {
-	toks, err := p.processPath(path, 0)
+	toks, err := p.processPath(path, 0, false)
 	if err != nil {
 		return nil, err
 	}
@@ -714,7 +718,7 @@ func (p *Preprocessor) handleInclude(file string, args []Token, depth int) ([]To
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", file, err)
 	}
-	return p.processPath(resolved, depth)
+	return p.processPath(resolved, depth, resolved == cleanPath(file))
 }
 
 func (p *Preprocessor) isDefined(name string) bool {
