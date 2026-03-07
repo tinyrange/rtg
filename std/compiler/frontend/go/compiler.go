@@ -683,7 +683,6 @@ func (c *Compiler) resolveStructSize(qualifiedType string) int {
 
 // typeElemSize returns storage size in bytes for values of typeName when used as
 // slice elements in this compiler's lowered representation.
-// Non-byte elements are pointer-sized handles to values.
 func (c *Compiler) typeElemSize(typeName string) int {
 	if typeName == "" {
 		return c.target.PtrSize
@@ -691,7 +690,10 @@ func (c *Compiler) typeElemSize(typeName string) int {
 	if typeName == "byte" {
 		return 1
 	}
-	if isFloatTypeName(typeName) {
+	if typeName == "float32" {
+		return 4
+	}
+	if typeName == "float64" {
 		return 8
 	}
 	return c.target.PtrSize
@@ -847,6 +849,17 @@ func (c *Compiler) resolveFieldSliceElemType(qualifiedType string, fieldName str
 }
 
 func splitBracketType(typeName string) (string, bool) {
+	if len(typeName) >= 3 && typeName[0] != '[' {
+		dotIdx := -1
+		for i := 0; i < len(typeName); i++ {
+			if typeName[i] == '.' {
+				dotIdx = i
+			}
+		}
+		if dotIdx >= 0 && dotIdx+1 < len(typeName) && typeName[dotIdx+1] == '[' {
+			typeName = typeName[dotIdx+1:]
+		}
+	}
 	if len(typeName) < 3 || typeName[0] != '[' {
 		return "", false
 	}
@@ -1424,7 +1437,7 @@ func (c *Compiler) convertSourceKind(node *Node) int64 {
 	if typeName == "" {
 		typeName = c.exprConcreteType(node)
 	}
-	if typeName == "" && node.Kind == NFloatLit {
+	if typeName == "" && c.isConstFloatExpr(node) {
 		typeName = "float64"
 	}
 	switch c.resolveStorageTypeName(typeName, 0) {
@@ -9934,7 +9947,8 @@ func (c *Compiler) decodeComptimeValue(raw uint64, typeNode *Node, eval *vm.Eval
 
 // qualifyTypeName qualifies a type name with a package path if not already qualified.
 func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
-	if typeName == "" || typeName == "string" || typeName == "int" || typeName == "bool" || typeName == "byte" || typeName == "error" || typeName == "interface{}" {
+	if typeName == "" || typeName == "string" || typeName == "int" || typeName == "bool" || typeName == "byte" ||
+		typeName == "float32" || typeName == "float64" || typeName == "error" || typeName == "interface{}" {
 		return typeName
 	}
 	// Unqualified names (pkgPath=="") are resolved relative to c.curPkg.
@@ -9989,6 +10003,7 @@ func (c *Compiler) qualifyTypeNameInner(typeName string, pkgPath string) string 
 	if len(typeName) > 1 && typeName[0] == '*' {
 		inner := typeName[1:len(typeName)]
 		if inner == "string" || inner == "int" || inner == "bool" || inner == "byte" ||
+			inner == "float32" || inner == "float64" ||
 			inner == "int8" || inner == "uint8" || inner == "int16" || inner == "uint16" ||
 			inner == "int32" || inner == "uint32" || inner == "int64" || inner == "uint64" ||
 			inner == "uint" || inner == "uintptr" || inner == "error" || inner == "interface{}" {
@@ -10645,6 +10660,16 @@ func (c *Compiler) compileIndexExpr(node *Node) {
 		return
 	}
 	elemSize := c.exprElemSize(node.X)
+	if node.X != nil && node.X.Kind == NIdent {
+		if idx, ok := c.lookupLocal(node.X.Name); ok && idx >= 0 && idx < len(c.curFunc.Locals) {
+			switch c.curFunc.Locals[idx].FloatKind {
+			case ir.TY_FLOAT32:
+				elemSize = 4
+			case ir.TY_FLOAT64:
+				elemSize = 8
+			}
+		}
+	}
 	c.compileExpr(node.X)
 	c.compileExpr(node.Y)
 	c.emit(ir.Inst{Op: ir.OP_INDEX_ADDR, Arg: elemSize})
