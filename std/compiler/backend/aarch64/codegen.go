@@ -40,12 +40,10 @@ type CodeGen struct {
 
 	// Number of locals (slots) in current function frame
 	curFrameSize int
-	// True while compiling a function that should share one epilogue across
-	// multiple RETURN instructions.
-	shareReturnEpilogue bool
-	// Code offset of the shared function epilogue for multi-return functions.
-	// -1 means the shared epilogue has not been emitted yet.
-	returnEpilogueOffset int
+	// Native-ABI functions save the caller's operand stack pointer and use
+	// a frame-local eval stack for internal stack-machine operations.
+	curNativeSavedOpStackOffset int
+	curNativeEvalSlots          int
 
 	// ELF layout constants
 	baseAddr  uint64

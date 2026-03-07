@@ -31,6 +31,71 @@ func (g *CodeGen) isNativeCABIArm64(name string) bool {
 	return g.funcABIArm64(name) == "native-c-darwin-arm64"
 }
 
+func (g *CodeGen) usesFrameOperandStackArm64(name string) bool {
+	return g.target != nil && g.target.RelocatableObject && g.isNativeCABIArm64(name)
+}
+
+func arm64IntrinsicRetCount(name string) int {
+	switch name {
+	case "SysGetargc", "SysGetargv", "SysGetenvp":
+		return 3
+	case "SysArgcValue", "SysArgvBaseValue", "Alloc", "Sliceptr", "Makeslice", "Stringptr", "Makestring", "Tostring", "ReadPtr":
+		return 1
+	case "WritePtr", "WriteByte":
+		return 0
+	default:
+		return 0
+	}
+}
+
+func (g *CodeGen) nativeEvalStackSlotsArm64(f *ir.IRFunc) int {
+	if f == nil {
+		return 0
+	}
+	depth := 0
+	maxDepth := 0
+	for _, inst := range f.Code {
+		switch inst.Op {
+		case ir.OP_CONST_I64, ir.OP_CONST_STR, ir.OP_CONST_BOOL, ir.OP_CONST_NIL:
+			depth++
+		case ir.OP_LOCAL_GET, ir.OP_GLOBAL_GET, ir.OP_LOCAL_ADDR, ir.OP_GLOBAL_ADDR:
+			depth++
+		case ir.OP_LOCAL_SET, ir.OP_GLOBAL_SET, ir.OP_DROP, ir.OP_JMP_IF, ir.OP_JMP_IF_NOT, ir.OP_PANIC:
+			depth--
+		case ir.OP_LOCAL_ADD_IMM, ir.OP_NEG, ir.OP_NOT, ir.OP_LOAD, ir.OP_OFFSET, ir.OP_LABEL, ir.OP_JMP, ir.OP_LEN, ir.OP_CAP, ir.OP_CONVERT, ir.OP_IFACE_BOX:
+			// Net-zero stack effect.
+		case ir.OP_DUP:
+			depth++
+		case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD, ir.OP_AND, ir.OP_OR, ir.OP_XOR, ir.OP_SHL, ir.OP_SHR, ir.OP_EQ, ir.OP_NEQ, ir.OP_LT, ir.OP_GT, ir.OP_LEQ, ir.OP_GEQ, ir.OP_INDEX_ADDR:
+			depth--
+		case ir.OP_STORE:
+			depth -= 2
+		case ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
+			depth -= 2
+		case ir.OP_CALL:
+			retCount := g.funcRetCountArm64(inst.Name)
+			if len(inst.Name) > 18 && inst.Name[0:18] == "builtin.composite." {
+				retCount = 1
+			}
+			depth += retCount - inst.Arg
+		case ir.OP_CALL_INTRINSIC:
+			depth += arm64IntrinsicRetCount(inst.Name)
+		case ir.OP_RETURN:
+			depth -= inst.Arg
+		case ir.OP_IFACE_CALL:
+			depth -= inst.Arg
+			depth++
+		}
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+		if depth < 0 {
+			depth = 0
+		}
+	}
+	return maxDepth
+}
+
 // CompileFuncArm64 generates ARM64 code for a single IR function.
 func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	if f.Native != nil {
@@ -53,16 +118,15 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	if f.Params > g.curFrameSize {
 		g.curFrameSize = f.Params
 	}
-	if g.labelOffsets == nil {
-		g.labelOffsets = make(map[int]int)
-	} else {
-		for key := range g.labelOffsets {
-			delete(g.labelOffsets, key)
-		}
+	g.curNativeSavedOpStackOffset = 0
+	g.curNativeEvalSlots = 0
+	if g.usesFrameOperandStackArm64(f.Name) {
+		g.curNativeEvalSlots = g.nativeEvalStackSlotsArm64(f)
+		g.curNativeSavedOpStackOffset = (g.curFrameSize + 1) * 8
+		g.curFrameSize = g.curFrameSize + 1 + g.curNativeEvalSlots
 	}
-	g.jumpFixups = g.jumpFixups[:0]
-	g.shareReturnEpilogue = shouldShareReturnEpilogueArm64(f.Code)
-	g.returnEpilogueOffset = -1
+	g.labelOffsets = make(map[int]int)
+	g.jumpFixups = nil
 
 	// Prologue: STP X29, X30, [SP, #-16]!; MOV X29, SP; SUB SP, SP, #frameBytes
 	g.EmitStp(REG_FP, REG_LR, REG_SP, -16)
@@ -79,6 +143,16 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 		} else {
 			g.EmitLoadImm64Compact(REG_X16, uint64(frameBytes))
 			g.emitSubRR(REG_SP, REG_SP, REG_X16)
+		}
+	}
+
+	if g.usesFrameOperandStackArm64(f.Name) {
+		g.EmitStr(REG_X28, REG_FP, -g.curNativeSavedOpStackOffset)
+		if g.curNativeSavedOpStackOffset < 4096 {
+			g.emitSubImm(REG_X28, REG_FP, uint32(g.curNativeSavedOpStackOffset))
+		} else {
+			g.EmitLoadImm64Compact(REG_X16, uint64(g.curNativeSavedOpStackOffset))
+			g.emitSubRR(REG_X28, REG_FP, REG_X16)
 		}
 	}
 
@@ -762,6 +836,9 @@ func (g *CodeGen) compileReturnArm64(inst ir.Inst) {
 	if g.curFunc != nil && g.isNativeCABIArm64(g.curFunc.Name) {
 		if g.curFunc.RetCount > 0 {
 			g.opPop(REG_X0)
+		}
+		if g.usesFrameOperandStackArm64(g.curFunc.Name) && g.curNativeSavedOpStackOffset > 0 {
+			g.emitLdr(REG_X28, REG_FP, -g.curNativeSavedOpStackOffset)
 		}
 		g.ClearOperandCache()
 	} else {

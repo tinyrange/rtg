@@ -236,6 +236,19 @@ test-compiler-bugs: build
 test-c-frontend: build
   sh go run ./tools/cfronttest
 
+test-c-native-object-link: build
+  sh test "$(uname -s)" = Darwin
+  sh test "$(uname -m)" = arm64
+  sh ./build/rtg -x c99 -c -o build/native_link_export.o tests/c/object/native_link_export.c
+  sh ${CC:-cc} -c -arch arm64 -o build/native_link_host_main.o tests/c/object/native_link_host_main.c
+  sh ${CC:-cc} -arch arm64 -o build/native_link_export build/native_link_host_main.o build/native_link_export.o
+  sh ./build/native_link_export
+  sh ./build/rtg -x c99 -c -o build/native_link_import.o tests/c/object/native_link_import.c
+  sh ${CC:-cc} -c -arch arm64 -o build/native_link_host_helper.o tests/c/object/native_link_host_helper.c
+  sh ${CC:-cc} -arch arm64 -o build/native_link_import build/native_link_host_helper.o build/native_link_import.o
+  sh ./build/native_link_import
+  sh echo "PASS: native darwin/arm64 C object linking OK"
+
 test-c-frontend-ioccc: build
   sh go run ./tools/iocccscan
 

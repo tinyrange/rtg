@@ -478,8 +478,7 @@ func (c *compiler) useNativeFunctionABI() bool {
 	return c != nil && c.target != nil &&
 		c.target.Backend == "native" &&
 		c.target.GOOS == "darwin" &&
-		c.target.GOARCH == "arm64" &&
-		!c.target.RelocatableObject
+		c.target.GOARCH == "arm64"
 }
 
 func (c *compiler) registerNativeFunctionMetadata() {
@@ -496,7 +495,10 @@ func (c *compiler) registerNativeFunctionMetadata() {
 		return
 	}
 	for _, sig := range c.funcOrder {
-		if sig == nil || !sig.Defined || sig.Variadic {
+		if sig == nil || sig.Variadic {
+			continue
+		}
+		if !sig.Defined && !c.objectMode() {
 			continue
 		}
 		c.irmod.FuncABIs[sig.IRName] = "native-c-darwin-arm64"
