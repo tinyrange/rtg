@@ -1027,11 +1027,11 @@ func (g *CodeGen) compileStore(inst ir.Inst) {
 		size = 8
 	}
 	if size == 1 {
-		g.EmitBytes(0x88, 0x01) // mov [rcx], al
+		g.storeMemByte(REG_RCX, offset, REG_RAX)
 	} else if size == 2 {
-		g.EmitBytes(0x66, 0x89, 0x01) // mov [rcx], ax
+		g.storeMem16(REG_RCX, offset, REG_RAX)
 	} else if size == 4 {
-		g.EmitBytes(0x89, 0x01) // mov [rcx], eax
+		g.storeMem32(REG_RCX, offset, REG_RAX)
 	} else {
 		g.storeMem(REG_RCX, offset, REG_RAX)
 	}

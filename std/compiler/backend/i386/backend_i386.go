@@ -1002,9 +1002,9 @@ func (g *CodeGen) compileStore_i386(inst ir.Inst) {
 		size = 4
 	}
 	if size == 1 {
-		g.storeMemByte32(REG32_ECX, 0, REG32_EAX)
+		g.storeMemByte32(REG32_ECX, offset, REG32_EAX)
 	} else if size == 2 {
-		g.emitBytes(0x66, 0x89, 0x01) // mov [ecx], ax
+		g.storeMem16(REG32_ECX, offset, REG32_EAX)
 	} else {
 		g.storeMem32(REG32_ECX, offset, REG32_EAX)
 	}
