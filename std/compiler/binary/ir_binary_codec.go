@@ -253,6 +253,7 @@ func WriteIRBinary(irmod *ir.IRModule, path string) error {
 			w.writeInt(typeIndex(typeIdx, l.Type))
 			w.writeInt(l.Index)
 			w.writeBool(l.Is64)
+			w.writeInt(int(l.FloatKind))
 			w.writeInt(l.Width)
 		}
 
@@ -528,6 +529,11 @@ func readIRFuncs(r *irBinReader, types []*ir.TypeInfo) ([]*ir.IRFunc, error) {
 			if err != nil {
 				return nil, err
 			}
+			floatKind, err := r.readInt()
+			if err != nil {
+				return nil, err
+			}
+			l.FloatKind = ir.TypeKind(floatKind)
 			l.Width, err = r.readInt()
 			if err != nil {
 				return nil, err

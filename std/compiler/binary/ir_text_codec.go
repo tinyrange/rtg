@@ -21,6 +21,7 @@ var typeKindNames = []string{
 	"BYTE",
 	"INT32",
 	"INT",
+	"FLOAT32",
 	"FLOAT64",
 	"UINTPTR",
 	"STRING",
@@ -36,6 +37,7 @@ var typeKindByName = map[string]ir.TypeKind{}
 
 var opcodeNames = []string{
 	"CONST_I64",
+	"CONST_F32",
 	"CONST_F64",
 	"CONST_STR",
 	"CONST_BOOL",
@@ -140,7 +142,7 @@ func opRequiresVal(op ir.Opcode) bool {
 
 func opRequiresName(op ir.Opcode) bool {
 	switch op {
-	case ir.OP_CONST_F64, ir.OP_CONST_STR, ir.OP_CALL, ir.OP_CALL_INTRINSIC, ir.OP_CONVERT, ir.OP_IFACE_CALL:
+	case ir.OP_CONST_F32, ir.OP_CONST_F64, ir.OP_CONST_STR, ir.OP_CALL, ir.OP_CALL_INTRINSIC, ir.OP_CONVERT, ir.OP_IFACE_CALL:
 		return true
 	}
 	return false
@@ -520,6 +522,12 @@ func WriteIRText(irmod *ir.IRModule, path string) error {
 				w.WriteString("true")
 			} else {
 				w.WriteString("false")
+			}
+			w.WriteString(" float_kind=")
+			if int(l.FloatKind) >= 0 && int(l.FloatKind) < len(typeKindNames) {
+				w.WriteString(typeKindNames[int(l.FloatKind)])
+			} else {
+				w.WriteString("VOID")
 			}
 			w.WriteString(" width=")
 			writeInt(w, l.Width)
@@ -1311,16 +1319,25 @@ func (d *textDecoder) consumeLocals(tokens []string) error {
 	if err != nil {
 		return err
 	}
+	floatKindRaw, err := requireAttr(attrs, "float_kind")
+	if err != nil {
+		return err
+	}
+	floatKind, ok := typeKindByName[floatKindRaw]
+	if !ok {
+		return fmt.Errorf("unknown float kind %q", floatKindRaw)
+	}
 	width, err := parseIntAttr(attrs, "width")
 	if err != nil {
 		return err
 	}
 	d.curFunc.locals = append(d.curFunc.locals, textLocalRec{
 		local: ir.IRLocal{
-			Name:  name,
-			Index: index,
-			Is64:  is64,
-			Width: width,
+			Name:      name,
+			Index:     index,
+			Is64:      is64,
+			FloatKind: floatKind,
+			Width:     width,
 		},
 		typeIdx: typeIdx,
 	})

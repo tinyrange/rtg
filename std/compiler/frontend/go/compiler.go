@@ -261,13 +261,11 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 					global.Type = t
 				}
 			} else if sym.Node != nil && sym.Node.X != nil {
-				switch sym.Node.X.Kind {
-				case NFloatLit:
+				switch c.exprConcreteType(sym.Node.X) {
+				case "float32":
+					global.Type = c.types["float32"]
+				case "float64":
 					global.Type = c.types["float64"]
-				case NIdent:
-					if sym2, ok := pkg.Symbols[sym.Node.X.Name]; ok && sym2.Kind == SymConst && sym2.Node != nil && c.isConstFloatExpr(sym2.Node.X) {
-						global.Type = c.types["float64"]
-					}
 				}
 			}
 			c.irmod.Globals = append(c.irmod.Globals, global)
@@ -353,6 +351,7 @@ func (c *Compiler) initBuiltinTypes() {
 	c.types["uint16"] = &ir.TypeInfo{Kind: ir.TY_INT32, Name: "uint16", Size: 2, Align: 2}
 	c.types["int32"] = &ir.TypeInfo{Kind: ir.TY_INT32, Name: "int32", Size: 4, Align: 4}
 	c.types["int"] = &ir.TypeInfo{Kind: ir.TY_INT, Name: "int", Size: 8, Align: 8}
+	c.types["float32"] = &ir.TypeInfo{Kind: ir.TY_FLOAT32, Name: "float32", Size: 4, Align: 4}
 	c.types["float64"] = &ir.TypeInfo{Kind: ir.TY_FLOAT64, Name: "float64", Size: 8, Align: 8}
 	c.types["uintptr"] = &ir.TypeInfo{Kind: ir.TY_UINTPTR, Name: "uintptr", Size: 8, Align: 8}
 	c.types["string"] = &ir.TypeInfo{Kind: ir.TY_STRING, Name: "string", Size: 16, Align: 8}
@@ -526,6 +525,9 @@ func (c *Compiler) lookupStructField(qualifiedType string, fieldName string) (*N
 
 func (c *Compiler) storageSizeForTypeName(typeName string) int {
 	typeName = c.resolveStorageTypeName(typeName, 0)
+	if typeName == "float32" {
+		return 4
+	}
 	if typeName == "int64" || typeName == "uint64" || typeName == "float64" {
 		return 8
 	}
@@ -541,6 +543,10 @@ func (c *Compiler) structFieldStorageSize(field *Node, pkgPath string) int {
 
 func (c *Compiler) emitZeroValueForTypeName(typeName string) {
 	typeName = c.resolveStorageTypeName(typeName, 0)
+	if typeName == "float32" {
+		c.emit(makeInst(ir.OP_CONST_F32, 0, 4, 0, "0.0"))
+		return
+	}
 	if typeName == "float64" {
 		c.emit(makeInst(ir.OP_CONST_F64, 0, 8, 0, "0.0"))
 		return
@@ -887,7 +893,7 @@ func (c *Compiler) resolveExprType(node *Node) string {
 	}
 	if node.Kind == NIdent {
 		if sym, ok := c.curPkg.Symbols[node.Name]; ok && sym.Kind == SymConst && sym.Node != nil && c.isConstFloatExpr(sym.Node.X) {
-			return "float64"
+			return c.exprConcreteType(sym.Node.X)
 		}
 		if ct, ok := c.localConcreteTypes[node.Name]; ok {
 			return ct
@@ -984,7 +990,7 @@ func (c *Compiler) resolveExprType(node *Node) string {
 		}
 		if node.X != nil && node.X.Kind == NIdent {
 			switch node.X.Name {
-			case "int", "uintptr", "uint", "byte", "int8", "uint8", "int16", "int32", "int64", "uint16", "uint32", "uint64", "float64":
+			case "int", "uintptr", "uint", "byte", "int8", "uint8", "int16", "int32", "int64", "uint16", "uint32", "uint64", "float32", "float64":
 				return node.X.Name
 			}
 		}
@@ -1139,7 +1145,7 @@ func isFloatTypeName(name string) bool {
 		}
 		i--
 	}
-	return name == "float64"
+	return name == "float32" || name == "float64"
 }
 
 // typeWidth returns the byte width for a named type.
@@ -1150,7 +1156,7 @@ func typeWidth(name string) int {
 		return 1
 	case "int16", "uint16":
 		return 2
-	case "int32", "uint32":
+	case "int32", "uint32", "float32":
 		return 4
 	case "int64", "uint64", "float64":
 		return 8
@@ -1169,6 +1175,12 @@ func (c *Compiler) setLocalTypeFlags(idx int, typeName string) {
 	}
 	c.curFunc.Locals[idx].Is64 = typeName == "uint64" || typeName == "int64"
 	c.curFunc.Locals[idx].IsFloat64 = typeName == "float64"
+	c.curFunc.Locals[idx].FloatKind = ir.TY_VOID
+	if typeName == "float32" {
+		c.curFunc.Locals[idx].FloatKind = ir.TY_FLOAT32
+	} else if typeName == "float64" {
+		c.curFunc.Locals[idx].FloatKind = ir.TY_FLOAT64
+	}
 }
 
 func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
@@ -1256,6 +1268,8 @@ func (c *Compiler) irResultKindForTypeNode(node *Node) ir.TypeKind {
 		return ir.TY_INT32
 	case "int", "int64", "uint", "uint64":
 		return ir.TY_INT
+	case "float32":
+		return ir.TY_FLOAT32
 	case "float64":
 		return ir.TY_FLOAT64
 	case "uintptr":
@@ -1346,9 +1360,50 @@ func (c *Compiler) isFloatExpr(node *Node) bool {
 	return isFloatTypeName(typ)
 }
 
-func floatInstName(typeName string) string {
-	if isFloatTypeName(typeName) {
+func (c *Compiler) floatExprTypeName(node *Node) string {
+	if node == nil {
+		return ""
+	}
+	if node.Kind == NFloatLit {
+		// Untyped float literals default to float64 unless a surrounding typed
+		// context narrows them explicitly.
+		return ""
+	}
+	typ := c.resolveExprType(node)
+	if typ == "" {
+		typ = c.exprConcreteType(node)
+	}
+	return floatInstName(c.resolveStorageTypeName(typ, 0))
+}
+
+func mergeFloatTypeNames(left string, right string) string {
+	if left == "float64" || right == "float64" {
 		return "float64"
+	}
+	if left == "float32" || right == "float32" {
+		return "float32"
+	}
+	return "float64"
+}
+
+func floatInstName(typeName string) string {
+	typeName = strings.TrimSpace(typeName)
+	if typeName == "" {
+		return ""
+	}
+	for len(typeName) > 0 && typeName[0] == '*' {
+		typeName = typeName[1:]
+	}
+	i := len(typeName) - 1
+	for i >= 0 {
+		if typeName[i] == '.' {
+			typeName = typeName[i+1:]
+			break
+		}
+		i--
+	}
+	if typeName == "float32" || typeName == "float64" {
+		return typeName
 	}
 	return ""
 }
@@ -1357,9 +1412,46 @@ func (c *Compiler) floatInstNameForTypeName(typeName string) string {
 	return floatInstName(c.resolveStorageTypeName(typeName, 0))
 }
 
+func (c *Compiler) resolvedFloatInstName(node *Node) string {
+	return mergeFloatTypeNames(c.floatExprTypeName(node), "")
+}
+
+func (c *Compiler) convertSourceKind(node *Node) int64 {
+	if node == nil {
+		return ir.CONVERT_SRC_UNKNOWN
+	}
+	typeName := c.resolveExprType(node)
+	if typeName == "" {
+		typeName = c.exprConcreteType(node)
+	}
+	if typeName == "" && node.Kind == NFloatLit {
+		typeName = "float64"
+	}
+	switch c.resolveStorageTypeName(typeName, 0) {
+	case "float32":
+		return ir.CONVERT_SRC_FLOAT32
+	case "float64":
+		return ir.CONVERT_SRC_FLOAT64
+	case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
+		return ir.CONVERT_SRC_UINT
+	case "bool", "int", "int8", "int16", "int32", "int64", "rune":
+		return ir.CONVERT_SRC_INT
+	default:
+		return ir.CONVERT_SRC_UNKNOWN
+	}
+}
+
+func (c *Compiler) emitConvertForExpr(node *Node, targetType string) {
+	c.emit(makeInst(ir.OP_CONVERT, 0, c.exprWidth(node), c.convertSourceKind(node), targetType))
+}
+
 func (c *Compiler) maybeConvertArgForParamType(arg *Node, paramType string) {
-	if isFloatTypeName(paramType) && !c.isFloatExpr(arg) {
-		c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, "float64"))
+	paramType = c.resolveStorageTypeName(paramType, 0)
+	if isFloatTypeName(paramType) {
+		argType := c.floatExprTypeName(arg)
+		if argType == "" || argType != paramType {
+			c.emitConvertForExpr(arg, paramType)
+		}
 	}
 }
 
@@ -1622,7 +1714,7 @@ func (c *Compiler) isConstFloatExpr(node *Node) bool {
 		return ok && sym.Kind == SymConst && sym.Node != nil && c.isConstFloatExpr(sym.Node.X)
 	case NCallExpr:
 		if node.X != nil && node.X.Kind == NIdent && len(node.Nodes) > 0 {
-			return node.X.Name == "float64" || c.isConstFloatExpr(node.Nodes[0])
+			return node.X.Name == "float32" || node.X.Name == "float64" || c.isConstFloatExpr(node.Nodes[0])
 		}
 	}
 	return false
@@ -3852,7 +3944,7 @@ func (c *Compiler) resolvedCallRetCount(callName string) int {
 
 func (c *Compiler) instStackDelta(inst ir.Inst) int {
 	switch inst.Op {
-	case ir.OP_CONST_I64, ir.OP_CONST_F64, ir.OP_CONST_STR, ir.OP_CONST_BOOL, ir.OP_CONST_NIL:
+	case ir.OP_CONST_I64, ir.OP_CONST_F32, ir.OP_CONST_F64, ir.OP_CONST_STR, ir.OP_CONST_BOOL, ir.OP_CONST_NIL:
 		return 1
 	case ir.OP_LOCAL_GET, ir.OP_GLOBAL_GET, ir.OP_LOCAL_ADDR, ir.OP_GLOBAL_ADDR:
 		return 1
@@ -4332,10 +4424,19 @@ func (c *Compiler) compileCompoundAssign(node *Node, op ir.Opcode) {
 		c.strictCheckPointerArithmetic("+", node.X, node.Y)
 	}
 	w := c.exprWidth(node.X)
+	floatType := c.floatInstNameForTypeName(c.resolveExprType(node.X))
 	c.compileLValueGet(node.X)
 	c.compileExpr(node.Y)
+	if floatType != "" {
+		rhsFloatType := c.floatExprTypeName(node.Y)
+		if rhsFloatType == "" || rhsFloatType != floatType {
+			c.emitConvertForExpr(node.Y, floatType)
+		}
+	}
 	inst := ir.Inst{Op: op, Width: w}
-	if (op == ir.OP_ADD || op == ir.OP_SUB || op == ir.OP_MUL || op == ir.OP_SHR || op == ir.OP_DIV || op == ir.OP_MOD) && c.isUnsignedExpr(node.X) {
+	if floatType != "" {
+		inst.Name = floatType
+	} else if (op == ir.OP_ADD || op == ir.OP_SUB || op == ir.OP_MUL || op == ir.OP_SHR || op == ir.OP_DIV || op == ir.OP_MOD) && c.isUnsignedExpr(node.X) {
 		inst.Name = "unsigned"
 	}
 	c.emit(inst)
@@ -4466,6 +4567,9 @@ func (c *Compiler) compileVarDecl(node *Node) {
 				c.maybeBoxValueForInterface(node.X)
 			}
 		}
+		if node.Type != nil {
+			c.maybeConvertArgForParamType(node.X, nodeTypeName(node.Type))
+		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: c.curFunc.Locals[idx].Width})
 	} else {
 		// Fixed-size arrays are represented as slice-header handles with a fixed
@@ -4504,8 +4608,12 @@ func (c *Compiler) compileVarDecl(node *Node) {
 				return
 			}
 		}
-		// Zero-initialize the local to avoid stack garbage
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		// Zero-initialize the local to avoid stack garbage.
+		if node.Type != nil {
+			c.emitZeroValueForTypeName(nodeTypeName(node.Type))
+		} else {
+			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 	}
 }
@@ -4515,7 +4623,7 @@ func isBuiltinTypeName(t string) bool {
 	case "bool",
 		"int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64",
-		"float64",
+		"float32", "float64",
 		"uintptr", "byte", "rune",
 		"string", "error", "interface{}":
 		return true
@@ -4603,10 +4711,7 @@ func (c *Compiler) compileAssign(node *Node) {
 						c.localTypes[lhsName] = assertedType
 					}
 					if idx, ok := c.lookupLocal(lhsName); ok {
-						storageType := c.resolveStorageTypeName(assertedType, 0)
-						c.curFunc.Locals[idx].Width = c.storageSizeForTypeName(assertedType)
-						c.curFunc.Locals[idx].Is64 = storageType == "int64" || storageType == "uint64"
-						c.curFunc.Locals[idx].IsFloat64 = storageType == "float64"
+						c.setLocalTypeFlags(idx, assertedType)
 					}
 					if elemType, ok := splitBracketType(assertedType); ok {
 						c.localElemSizes[lhsName] = c.typeElemSize(elemType)
@@ -4689,8 +4794,16 @@ func (c *Compiler) compileAssign(node *Node) {
 		if w != 0 {
 			c.curFunc.Locals[idx].Width = w
 			c.curFunc.Locals[idx].Is64 = false
-			c.curFunc.Locals[idx].IsFloat64 = c.isFloatExpr(node.Y)
-			if w == 8 && !c.curFunc.Locals[idx].IsFloat64 {
+			c.curFunc.Locals[idx].IsFloat64 = false
+			c.curFunc.Locals[idx].FloatKind = ir.TY_VOID
+			switch c.resolvedFloatInstName(node.Y) {
+			case "float32":
+				c.curFunc.Locals[idx].FloatKind = ir.TY_FLOAT32
+			case "float64":
+				c.curFunc.Locals[idx].FloatKind = ir.TY_FLOAT64
+				c.curFunc.Locals[idx].IsFloat64 = true
+			}
+			if w == 8 && c.curFunc.Locals[idx].FloatKind == ir.TY_VOID {
 				c.curFunc.Locals[idx].Is64 = true
 			}
 		}
@@ -4788,6 +4901,9 @@ func (c *Compiler) compileAssign(node *Node) {
 			return
 		}
 		c.compileExpr(node.Y)
+		if lhsType := c.resolveExprType(node.X); isFloatTypeName(lhsType) {
+			c.maybeConvertArgForParamType(node.Y, lhsType)
+		}
 		if ct, ok := c.localConcreteTypes[node.X.Name]; ok {
 			c.maybeCloneArrayForTypeName(ct)
 		}
@@ -4836,6 +4952,9 @@ func (c *Compiler) compileAssign(node *Node) {
 		c.compileExpr(node.X.X) // push map
 		c.compileExpr(node.X.Y) // push key
 		c.compileExpr(node.Y)   // push value
+		if isFloatTypeName(mapValueTypeQualified) || isFloatTypeName(mapValueType) {
+			c.maybeConvertArgForParamType(node.Y, mapValueTypeQualified)
+		}
 		if mapValueIsInterface {
 			c.maybeBoxValueForInterface(node.Y)
 		}
@@ -4850,6 +4969,9 @@ func (c *Compiler) compileAssign(node *Node) {
 		return
 	}
 	c.compileExpr(node.Y)
+	if lhsType := c.resolveExprType(node.X); isFloatTypeName(lhsType) {
+		c.maybeConvertArgForParamType(node.Y, lhsType)
+	}
 	if _, ok := c.lvalueInterfaceType(node.X); ok {
 		c.maybeBoxValueForInterface(node.Y)
 	}
@@ -5866,7 +5988,7 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 		}
 		if expr.X != nil && expr.X.Kind == NIdent {
 			switch expr.X.Name {
-			case "int", "uintptr", "uint", "byte", "int8", "uint8", "int16", "int32", "int64", "uint16", "uint32", "uint64", "float64":
+			case "int", "uintptr", "uint", "byte", "int8", "uint8", "int16", "int32", "int64", "uint16", "uint32", "uint64", "float32", "float64":
 				return expr.X.Name
 			}
 		}
@@ -5926,7 +6048,7 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 	// Variable reference: check localConcreteTypes
 	if expr.Kind == NIdent {
 		if sym, ok := c.curPkg.Symbols[expr.Name]; ok && sym.Kind == SymConst && sym.Node != nil && c.isConstFloatExpr(sym.Node.X) {
-			return "float64"
+			return c.exprConcreteType(sym.Node.X)
 		}
 		if ct, ok := c.localConcreteTypes[expr.Name]; ok {
 			return ct
@@ -6072,6 +6194,10 @@ func (c *Compiler) invertCmpOp(op string) string {
 func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
 	var irOp ir.Opcode
 	isFloat := c.isFloatExpr(node.X) || c.isFloatExpr(node.Y)
+	floatType := ""
+	if isFloat {
+		floatType = mergeFloatTypeNames(c.floatExprTypeName(node.X), c.floatExprTypeName(node.Y))
+	}
 	switch op {
 	case "==":
 		irOp = ir.OP_JMP_EQ
@@ -6089,16 +6215,22 @@ func (c *Compiler) emitCmpJump(op string, node *Node, targetLabel int) bool {
 		return false
 	}
 	c.compileExpr(node.X)
-	if isFloat && !c.isFloatExpr(node.X) {
-		c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, "float64"))
+	if floatType != "" {
+		leftFloatType := c.floatExprTypeName(node.X)
+		if leftFloatType == "" || leftFloatType != floatType {
+			c.emitConvertForExpr(node.X, floatType)
+		}
 	}
 	c.compileExpr(node.Y)
-	if isFloat && !c.isFloatExpr(node.Y) {
-		c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, "float64"))
+	if floatType != "" {
+		rightFloatType := c.floatExprTypeName(node.Y)
+		if rightFloatType == "" || rightFloatType != floatType {
+			c.emitConvertForExpr(node.Y, floatType)
+		}
 	}
 	inst := ir.Inst{Op: irOp, Arg: targetLabel, Width: c.exprWidth(node)}
-	if isFloat {
-		inst.Name = "float64"
+	if floatType != "" {
+		inst.Name = floatType
 	} else if c.isUnsignedComparison(node) {
 		inst.Name = "unsigned"
 	}
@@ -6693,10 +6825,8 @@ func (c *Compiler) compileTypeAssert(node *Node, commaOk bool) {
 		ifaceIdx := c.addLocal("$typeassert_iface")
 		valIdx := c.addLocal("$typeassert_val")
 		okIdx := c.addLocal("$typeassert_ok")
-		storageType := c.resolveStorageTypeName(assertedType, 0)
+		c.setLocalTypeFlags(valIdx, assertedType)
 		c.curFunc.Locals[valIdx].Width = payloadSize
-		c.curFunc.Locals[valIdx].Is64 = storageType == "int64" || storageType == "uint64"
-		c.curFunc.Locals[valIdx].IsFloat64 = storageType == "float64"
 
 		c.compileExpr(node.X)
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: ifaceIdx})
@@ -6734,10 +6864,8 @@ func (c *Compiler) compileTypeAssert(node *Node, commaOk bool) {
 
 	ifaceIdx := c.addLocal("$typeassert_iface")
 	valIdx := c.addLocal("$typeassert_val")
-	storageType := c.resolveStorageTypeName(assertedType, 0)
+	c.setLocalTypeFlags(valIdx, assertedType)
 	c.curFunc.Locals[valIdx].Width = payloadSize
-	c.curFunc.Locals[valIdx].Is64 = storageType == "int64" || storageType == "uint64"
-	c.curFunc.Locals[valIdx].IsFloat64 = storageType == "float64"
 
 	c.compileExpr(node.X)
 	c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: ifaceIdx})
@@ -7384,11 +7512,15 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 		return
 	}
 	isFloat := c.isFloatExpr(node.X) || c.isFloatExpr(node.Y)
+	floatType := ""
+	if isFloat {
+		floatType = mergeFloatTypeNames(c.floatExprTypeName(node.X), c.floatExprTypeName(node.Y))
+	}
 	if isFloat {
 		switch node.Name {
 		case "%", "&", "|", "^", "<<", ">>":
-			c.errorf("%s: operator %s is not supported for float64", c.curFunc.Name, node.Name)
-			c.emit(makeInst(ir.OP_CONST_F64, 0, 8, 0, "0.0"))
+			c.errorf("%s: operator %s is not supported for %s", c.curFunc.Name, node.Name, floatType)
+			c.emitZeroValueForTypeName(floatType)
 			return
 		}
 	}
@@ -7409,7 +7541,19 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	}
 
 	c.compileExpr(node.X)
+	if floatType != "" {
+		leftFloatType := c.floatExprTypeName(node.X)
+		if leftFloatType == "" || leftFloatType != floatType {
+			c.emitConvertForExpr(node.X, floatType)
+		}
+	}
 	c.compileExpr(node.Y)
+	if floatType != "" {
+		rightFloatType := c.floatExprTypeName(node.Y)
+		if rightFloatType == "" || rightFloatType != floatType {
+			c.emitConvertForExpr(node.Y, floatType)
+		}
+	}
 
 	w := c.exprWidth(node)
 
@@ -7417,7 +7561,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "+":
 		inst := ir.Inst{Op: ir.OP_ADD, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedExpr(node.X) {
 			inst.Name = "unsigned"
 		}
@@ -7425,7 +7569,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "-":
 		inst := ir.Inst{Op: ir.OP_SUB, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedExpr(node.X) {
 			inst.Name = "unsigned"
 		}
@@ -7433,7 +7577,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "*":
 		inst := ir.Inst{Op: ir.OP_MUL, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedExpr(node.X) {
 			inst.Name = "unsigned"
 		}
@@ -7441,7 +7585,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "/":
 		inst := ir.Inst{Op: ir.OP_DIV, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedExpr(node.X) {
 			inst.Name = "unsigned"
 		}
@@ -7469,7 +7613,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "==":
 		inst := ir.Inst{Op: ir.OP_EQ, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedComparison(node) {
 			inst.Name = "unsigned"
 		}
@@ -7477,7 +7621,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "!=":
 		inst := ir.Inst{Op: ir.OP_NEQ, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedComparison(node) {
 			inst.Name = "unsigned"
 		}
@@ -7485,7 +7629,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "<":
 		inst := ir.Inst{Op: ir.OP_LT, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedComparison(node) {
 			inst.Name = "unsigned"
 		}
@@ -7493,7 +7637,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case ">":
 		inst := ir.Inst{Op: ir.OP_GT, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedComparison(node) {
 			inst.Name = "unsigned"
 		}
@@ -7501,7 +7645,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case "<=":
 		inst := ir.Inst{Op: ir.OP_LEQ, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedComparison(node) {
 			inst.Name = "unsigned"
 		}
@@ -7509,7 +7653,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	case ">=":
 		inst := ir.Inst{Op: ir.OP_GEQ, Width: w}
 		if isFloat {
-			inst.Name = "float64"
+			inst.Name = floatType
 		} else if c.isUnsignedComparison(node) {
 			inst.Name = "unsigned"
 		}
@@ -7529,7 +7673,7 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 		c.compileExpr(node.X)
 		inst := makeInst(ir.OP_NEG, 0, w, 0, "")
 		if c.isFloatExpr(node.X) {
-			inst.Name = "float64"
+			inst.Name = c.resolvedFloatInstName(node.X)
 		}
 		c.emit(inst)
 	case "*":
@@ -7546,8 +7690,9 @@ func (c *Compiler) compileUnaryExpr(node *Node) {
 		c.compileAddrOf(node.X)
 	case "^":
 		if c.isFloatExpr(node.X) {
-			c.errorf("%s: operator ^ is not supported for float64", c.curFunc.Name)
-			c.emit(makeInst(ir.OP_CONST_F64, 0, 8, 0, "0.0"))
+			floatType := c.resolvedFloatInstName(node.X)
+			c.errorf("%s: operator ^ is not supported for %s", c.curFunc.Name, floatType)
+			c.emitZeroValueForTypeName(floatType)
 			return
 		}
 		w := c.exprWidth(node.X)
@@ -7636,7 +7781,7 @@ func (c *Compiler) isPointerToStructDeref(node *Node) bool {
 	if pointeeType == "int" || pointeeType == "int16" || pointeeType == "int32" || pointeeType == "int64" ||
 		pointeeType == "uint" || pointeeType == "uint16" || pointeeType == "uint32" || pointeeType == "uint64" ||
 		pointeeType == "uintptr" || pointeeType == "byte" || pointeeType == "bool" || pointeeType == "string" ||
-		pointeeType == "float64" {
+		pointeeType == "float32" || pointeeType == "float64" {
 		return false
 	}
 	typeNode, _ := c.lookupStructTypeNode(pointeeType)
@@ -8690,11 +8835,6 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
 			return
 		}
-		if name == "float32" {
-			c.errorf("%s: %s conversion is not supported (floating-point support is not implemented)", c.curFunc.Name, name)
-			c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
-			return
-		}
 		if name == "len" {
 			if len(node.Nodes) != 1 {
 				c.errorf("%s: len expects exactly one argument", c.curFunc.Name)
@@ -8832,14 +8972,14 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			return
 		}
 		// Type conversions: int(), uintptr(), byte(), string(), int16(), int32()
-		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "int8" || name == "uint8" || name == "string" || name == "int16" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" || name == "float64" {
+		if name == "int" || name == "uintptr" || name == "uint" || name == "byte" || name == "int8" || name == "uint8" || name == "string" || name == "int16" || name == "int32" || name == "int64" || name == "uint16" || name == "uint32" || name == "uint64" || name == "float32" || name == "float64" {
 			arg := node.Nodes[0]
 			c.compileExpr(arg)
 			if name == "string" {
 				if c.isExprByte(arg) {
 					c.emitKnownCall("runtime.ByteToString", 1, 1)
 				} else if c.isExprByteSlice(arg) {
-					c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, name))
+					c.emitConvertForExpr(arg, name)
 				} else if c.isStringTypedExpr(arg) {
 					// string(string) is a no-op.
 				} else if c.isExprIntegerLike(arg) {
@@ -8847,10 +8987,10 @@ func (c *Compiler) compileCallExpr(node *Node) {
 					c.emitKnownCall("runtime.RuneToString", 1, 1)
 				} else {
 					// Prefer slice->string semantics unless we know this is integer-like.
-					c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, name))
+					c.emitConvertForExpr(arg, name)
 				}
 			} else {
-				c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, name))
+				c.emitConvertForExpr(arg, name)
 			}
 			return
 		}
@@ -8867,7 +9007,11 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent && len(node.Nodes) == 1 {
 		if _, ok := c.lookupCurrentTypeDecl(node.X.Name); ok {
 			c.compileExpr(node.Nodes[0])
-			c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, node.X.Name))
+			targetType := c.resolveStorageTypeName(node.X.Name, 0)
+			if targetType == "" {
+				targetType = node.X.Name
+			}
+			c.emitConvertForExpr(node.Nodes[0], targetType)
 			return
 		}
 	}
@@ -8880,7 +9024,11 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		if impPkg != nil {
 			if sym, ok := impPkg.Symbols[typeName]; ok && sym.Kind == SymType {
 				c.compileExpr(node.Nodes[0])
-				c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, typeName))
+				targetType := c.resolveStorageTypeName(impPkg.QualName(typeName), 0)
+				if targetType == "" {
+					targetType = typeName
+				}
+				c.emitConvertForExpr(node.Nodes[0], targetType)
 				return
 			}
 		}
@@ -10595,7 +10743,7 @@ func isDefinitelyScalarTypeName(t string) bool {
 	case "bool",
 		"int", "int16", "int32", "int64",
 		"uint", "uint16", "uint32", "uint64",
-		"uintptr", "byte", "rune", "float64":
+		"uintptr", "byte", "rune", "float32", "float64":
 		return true
 	}
 	return false

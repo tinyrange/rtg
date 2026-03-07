@@ -84,6 +84,52 @@ func cMethodNamesSorted(m map[string]string) []string {
 	return out
 }
 
+func cModuleNeedsFloatKinds(irmod *ir.IRModule) (bool, bool) {
+	needF32 := false
+	needF64 := false
+	markKind := func(kind ir.TypeKind) {
+		if kind == ir.TY_FLOAT32 {
+			needF32 = true
+		}
+		if kind == ir.TY_FLOAT64 {
+			needF64 = true
+		}
+	}
+	for _, g := range irmod.Globals {
+		if g.Type != nil {
+			markKind(g.Type.Kind)
+		}
+	}
+	for _, t := range irmod.Types {
+		if t != nil {
+			markKind(t.Kind)
+		}
+	}
+	for _, f := range irmod.Funcs {
+		for _, k := range f.ResultKinds {
+			markKind(k)
+		}
+		for _, l := range f.Locals {
+			markKind(l.FloatKind)
+		}
+		for _, in := range f.Code {
+			switch in.Op {
+			case ir.OP_CONST_F32:
+				needF32 = true
+			case ir.OP_CONST_F64:
+				needF64 = true
+			}
+			if in.Name == "float32" {
+				needF32 = true
+			}
+			if in.Name == "float64" {
+				needF64 = true
+			}
+		}
+	}
+	return needF32, needF64
+}
+
 func cMangleSymbol(name string) string {
 	hex := "0123456789abcdef"
 	bp := &strings.Builder{}
@@ -301,6 +347,91 @@ func cEmitSignedCompareJump(bp *strings.Builder, op ir.Opcode, label int) bool {
 	return true
 }
 
+func cFloatBitsHelpers(floatName string) (ctype string, unpack string, pack string, ok bool) {
+	switch floatName {
+	case "float32":
+		return "float", "rtg_bits_f32", "rtg_f32_bits", true
+	case "float64":
+		return "double", "rtg_bits_f64", "rtg_f64_bits", true
+	default:
+		return "", "", "", false
+	}
+}
+
+func cEmitFloatBinaryOp(bp *strings.Builder, op ir.Opcode, floatName string) bool {
+	ctype, unpack, pack, ok := cFloatBitsHelpers(floatName)
+	if !ok {
+		return false
+	}
+	var tok string
+	switch op {
+	case ir.OP_ADD:
+		tok = "+"
+	case ir.OP_SUB:
+		tok = "-"
+	case ir.OP_MUL:
+		tok = "*"
+	case ir.OP_DIV:
+		tok = "/"
+	default:
+		return false
+	}
+	cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_push(%s((%s)%s(c) %s (%s)%s(a)));\n", pack, ctype, unpack, tok, ctype, unpack)
+	return true
+}
+
+func cEmitFloatComparePush(bp *strings.Builder, op ir.Opcode, floatName string) bool {
+	_, unpack, _, ok := cFloatBitsHelpers(floatName)
+	if !ok {
+		return false
+	}
+	var tok string
+	switch op {
+	case ir.OP_EQ:
+		tok = "=="
+	case ir.OP_NEQ:
+		tok = "!="
+	case ir.OP_LT:
+		tok = "<"
+	case ir.OP_GT:
+		tok = ">"
+	case ir.OP_LEQ:
+		tok = "<="
+	case ir.OP_GEQ:
+		tok = ">="
+	default:
+		return false
+	}
+	cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(%s(c) %s %s(a)));\n", unpack, tok, unpack)
+	return true
+}
+
+func cEmitFloatCompareJump(bp *strings.Builder, op ir.Opcode, label int, floatName string) bool {
+	_, unpack, _, ok := cFloatBitsHelpers(floatName)
+	if !ok {
+		return false
+	}
+	var tok string
+	switch op {
+	case ir.OP_JMP_EQ:
+		tok = "=="
+	case ir.OP_JMP_NEQ:
+		tok = "!="
+	case ir.OP_JMP_LT:
+		tok = "<"
+	case ir.OP_JMP_GT:
+		tok = ">"
+	case ir.OP_JMP_LEQ:
+		tok = "<="
+	case ir.OP_JMP_GEQ:
+		tok = ">="
+	default:
+		return false
+	}
+	cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); if (%s(c) %s %s(a)) goto L_%d;\n", unpack, tok, unpack, label)
+	return true
+}
+
 const cRuntimeIntrinsicPtr = "  a = locals[0]; rtg_push((a == 0) ? 0 : rtg_load(a, RTG_WORD_BYTES));\n"
 
 const cRuntimeIntrinsicMakeSlice = `  {
@@ -362,7 +493,15 @@ func cEmitCallOp(bp *strings.Builder, in ir.Inst, funcIdx map[string]int, funcSy
 	return nil
 }
 
-func cEmitConvertOp(bp *strings.Builder, name string, funcSyms []string, bytesToStringIdx int, stringToBytesIdx int) {
+func cEmitConvertOp(bp *strings.Builder, in ir.Inst, funcSyms []string, bytesToStringIdx int, stringToBytesIdx int) {
+	name := in.Name
+	floatSrcExpr := ""
+	switch in.Val {
+	case ir.CONVERT_SRC_FLOAT32:
+		floatSrcExpr = "rtg_bits_f32(a)"
+	case ir.CONVERT_SRC_FLOAT64:
+		floatSrcExpr = "rtg_bits_f64(a)"
+	}
 	switch name {
 	case "string":
 		if bytesToStringIdx >= 0 {
@@ -372,18 +511,76 @@ func cEmitConvertOp(bp *strings.Builder, name string, funcSyms []string, bytesTo
 		if stringToBytesIdx >= 0 {
 			cEmitSymbolCall(bp, funcSyms[stringToBytesIdx])
 		}
+	case "float32":
+		switch in.Val {
+		case ir.CONVERT_SRC_FLOAT32:
+			bp.WriteString("  /* no-op conversion */\n")
+		case ir.CONVERT_SRC_FLOAT64:
+			bp.WriteString("  a = rtg_pop(); rtg_push(rtg_f32_bits((float)rtg_bits_f64(a)));\n")
+		case ir.CONVERT_SRC_UINT:
+			bp.WriteString("  a = rtg_pop(); rtg_push(rtg_f32_bits((float)(rtg_word)a));\n")
+		default:
+			bp.WriteString("  a = rtg_pop(); rtg_push(rtg_f32_bits((float)(rtg_sword)a));\n")
+		}
+	case "float64":
+		switch in.Val {
+		case ir.CONVERT_SRC_FLOAT64:
+			bp.WriteString("  /* no-op conversion */\n")
+		case ir.CONVERT_SRC_FLOAT32:
+			bp.WriteString("  a = rtg_pop(); rtg_push(rtg_f64_bits((double)rtg_bits_f32(a)));\n")
+		case ir.CONVERT_SRC_UINT:
+			bp.WriteString("  a = rtg_pop(); rtg_push(rtg_f64_bits((double)(rtg_word)a));\n")
+		default:
+			bp.WriteString("  a = rtg_pop(); rtg_push(rtg_f64_bits((double)(rtg_sword)a));\n")
+		}
 	case "byte", "uint8":
-		bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
+		if floatSrcExpr != "" {
+			cWritef(bp, "  a = rtg_pop(); rtg_push((rtg_word)(unsigned char)(%s));\n", floatSrcExpr)
+		} else {
+			bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffu);\n")
+		}
 	case "int8":
-		bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(signed char)(unsigned char)a);\n")
+		if floatSrcExpr != "" {
+			cWritef(bp, "  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(signed char)(%s));\n", floatSrcExpr)
+		} else {
+			bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(signed char)(unsigned char)a);\n")
+		}
 	case "uint16":
-		bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffffu);\n")
+		if floatSrcExpr != "" {
+			cWritef(bp, "  a = rtg_pop(); rtg_push((rtg_word)(rtg_u16)(%s));\n", floatSrcExpr)
+		} else {
+			bp.WriteString("  a = rtg_pop(); rtg_push(a & 0xffffu);\n")
+		}
 	case "int16":
-		bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i16)(rtg_u16)a);\n")
+		if floatSrcExpr != "" {
+			cWritef(bp, "  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i16)(%s));\n", floatSrcExpr)
+		} else {
+			bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i16)(rtg_u16)a);\n")
+		}
 	case "int32":
-		bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i32)(rtg_u32)a);\n")
+		if floatSrcExpr != "" {
+			cWritef(bp, "  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i32)(%s));\n", floatSrcExpr)
+		} else {
+			bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i32)(rtg_u32)a);\n")
+		}
 	case "uint32":
-		bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_u32)a);\n")
+		if floatSrcExpr != "" {
+			cWritef(bp, "  a = rtg_pop(); rtg_push((rtg_word)(rtg_u32)(%s));\n", floatSrcExpr)
+		} else {
+			bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(rtg_u32)a);\n")
+		}
+	case "int", "int64":
+		if floatSrcExpr != "" {
+			cWritef(bp, "  a = rtg_pop(); rtg_push((rtg_word)(rtg_sword)(rtg_i64)(%s));\n", floatSrcExpr)
+		} else {
+			bp.WriteString("  /* no-op conversion */\n")
+		}
+	case "uint", "uint64", "uintptr":
+		if floatSrcExpr != "" {
+			cWritef(bp, "  a = rtg_pop(); rtg_push((rtg_word)(rtg_u64)(%s));\n", floatSrcExpr)
+		} else {
+			bp.WriteString("  /* no-op conversion */\n")
+		}
 	default:
 		bp.WriteString("  /* no-op conversion */\n")
 	}
@@ -756,7 +953,7 @@ static rtg_word rtg_load(rtg_word addr, int size) {
     int i;
     unsigned char* p = (unsigned char*)(rtg_size)addr;
     unsigned char* out = (unsigned char*)&v;
-    for (i = 0; i < RTG_WORD_BYTES; i++) out[i] = p[i];
+    for (i = 0; i < size; i++) out[i] = p[i];
     return v;
   }
 }
@@ -774,8 +971,32 @@ static void rtg_store(rtg_word addr, rtg_word v, int size) {
     int i;
     unsigned char* p = (unsigned char*)(rtg_size)addr;
     unsigned char* in = (unsigned char*)&v;
-    for (i = 0; i < RTG_WORD_BYTES; i++) p[i] = in[i];
+    for (i = 0; i < size; i++) p[i] = in[i];
   }
+}
+
+static rtg_word rtg_f32_bits(float v) {
+  union { float f; rtg_u32 u; } bits;
+  bits.f = v;
+  return (rtg_word)bits.u;
+}
+
+static float rtg_bits_f32(rtg_word v) {
+  union { float f; rtg_u32 u; } bits;
+  bits.u = (rtg_u32)v;
+  return bits.f;
+}
+
+static rtg_word rtg_f64_bits(double v) {
+  union { double f; rtg_u64 u; } bits;
+  bits.f = v;
+  return (rtg_word)bits.u;
+}
+
+static double rtg_bits_f64(rtg_word v) {
+  union { double f; rtg_u64 u; } bits;
+  bits.u = (rtg_u64)v;
+  return bits.f;
 }
 
 static int rtg_prefix(const char* s, const char* p) {
@@ -872,6 +1093,13 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	}
 	if bits != 16 && bits != 32 && bits != 64 {
 		return fmt.Errorf("invalid C profile: %d", bits)
+	}
+	needF32, needF64 := cModuleNeedsFloatKinds(irmod)
+	if needF32 && bits < 32 {
+		return fmt.Errorf("c/%d backend does not support float32 values; use c/32 or c/64", bits)
+	}
+	if needF64 && bits < 64 {
+		return fmt.Errorf("c/%d backend does not support float64 values; use c/64", bits)
 	}
 
 	wordBytes := bits / 8
@@ -1028,6 +1256,8 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	bp.WriteString("#endif\n")
 	cWritef(bp, "typedef %s rtg_sword;\n", signedWord)
 	cWritef(bp, "typedef %s rtg_word;\n", unsignedWord)
+	bp.WriteString("typedef signed long long rtg_i64;\n")
+	bp.WriteString("typedef unsigned long long rtg_u64;\n")
 	bp.WriteString("typedef signed short rtg_i16;\n")
 	bp.WriteString("typedef unsigned short rtg_u16;\n")
 	cWritef(bp, "typedef %s rtg_i32;\n", i32Type)
@@ -1210,7 +1440,9 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				needC = true
 				needT = true
 			case ir.OP_CONVERT:
-				if in.Name == "byte" || in.Name == "uint16" || in.Name == "int16" || in.Name == "int32" || in.Name == "uint32" {
+				if in.Name == "byte" || in.Name == "uint16" || in.Name == "int16" || in.Name == "int32" || in.Name == "uint32" ||
+					in.Name == "int" || in.Name == "uint" || in.Name == "int64" || in.Name == "uint64" || in.Name == "uintptr" ||
+					in.Name == "float32" || in.Name == "float64" || in.Val == ir.CONVERT_SRC_FLOAT32 || in.Val == ir.CONVERT_SRC_FLOAT64 {
 					needA = true
 				}
 			case ir.OP_IFACE_BOX:
@@ -1283,6 +1515,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			switch in.Op {
 			case ir.OP_CONST_I64:
 				cWritef(bp, "  rtg_push((rtg_word)((rtg_sword)%s));\n", cSignedLiteral(in.Val, bits))
+			case ir.OP_CONST_F32:
+				cWritef(bp, "  rtg_push(rtg_f32_bits((float)(%s)));\n", in.Name)
+			case ir.OP_CONST_F64:
+				cWritef(bp, "  rtg_push(rtg_f64_bits((double)(%s)));\n", in.Name)
 			case ir.OP_CONST_STR:
 				lit := becommon.DecodeStringLiteral(in.Name)
 				idx := litIdx[lit]
@@ -1315,17 +1551,29 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				bp.WriteString("  t = rtg_pop(); rtg_push(t); rtg_push(t);\n")
 
 			case ir.OP_ADD:
-				cEmitSignedBinaryOp(bp, in.Op)
+				if !cEmitFloatBinaryOp(bp, in.Op, in.Name) {
+					cEmitSignedBinaryOp(bp, in.Op)
+				}
 			case ir.OP_SUB:
-				cEmitSignedBinaryOp(bp, in.Op)
+				if !cEmitFloatBinaryOp(bp, in.Op, in.Name) {
+					cEmitSignedBinaryOp(bp, in.Op)
+				}
 			case ir.OP_MUL:
-				cEmitSignedBinaryOp(bp, in.Op)
+				if !cEmitFloatBinaryOp(bp, in.Op, in.Name) {
+					cEmitSignedBinaryOp(bp, in.Op)
+				}
 			case ir.OP_DIV:
-				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((a == 0) ? 0 : (rtg_word)((rtg_sword)c / (rtg_sword)a));\n")
+				if !cEmitFloatBinaryOp(bp, in.Op, in.Name) {
+					bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((a == 0) ? 0 : (rtg_word)((rtg_sword)c / (rtg_sword)a));\n")
+				}
 			case ir.OP_MOD:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((a == 0) ? 0 : (rtg_word)((rtg_sword)c % (rtg_sword)a));\n")
 			case ir.OP_NEG:
-				bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(-(rtg_sword)a));\n")
+				if _, unpack, pack, ok := cFloatBitsHelpers(in.Name); ok {
+					cWritef(bp, "  a = rtg_pop(); rtg_push(%s(-%s(a)));\n", pack, unpack)
+				} else {
+					bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(-(rtg_sword)a));\n")
+				}
 			case ir.OP_AND:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push(c & a);\n")
 			case ir.OP_OR:
@@ -1337,17 +1585,29 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			case ir.OP_SHR:
 				bp.WriteString("  a = rtg_pop(); c = rtg_pop(); rtg_push((rtg_word)(((rtg_sword)c) >> (a & RTG_SHIFT_MASK)));\n")
 			case ir.OP_EQ:
-				cEmitSignedComparePush(bp, in.Op)
+				if !cEmitFloatComparePush(bp, in.Op, in.Name) {
+					cEmitSignedComparePush(bp, in.Op)
+				}
 			case ir.OP_NEQ:
-				cEmitSignedComparePush(bp, in.Op)
+				if !cEmitFloatComparePush(bp, in.Op, in.Name) {
+					cEmitSignedComparePush(bp, in.Op)
+				}
 			case ir.OP_LT:
-				cEmitSignedComparePush(bp, in.Op)
+				if !cEmitFloatComparePush(bp, in.Op, in.Name) {
+					cEmitSignedComparePush(bp, in.Op)
+				}
 			case ir.OP_GT:
-				cEmitSignedComparePush(bp, in.Op)
+				if !cEmitFloatComparePush(bp, in.Op, in.Name) {
+					cEmitSignedComparePush(bp, in.Op)
+				}
 			case ir.OP_LEQ:
-				cEmitSignedComparePush(bp, in.Op)
+				if !cEmitFloatComparePush(bp, in.Op, in.Name) {
+					cEmitSignedComparePush(bp, in.Op)
+				}
 			case ir.OP_GEQ:
-				cEmitSignedComparePush(bp, in.Op)
+				if !cEmitFloatComparePush(bp, in.Op, in.Name) {
+					cEmitSignedComparePush(bp, in.Op)
+				}
 			case ir.OP_NOT:
 				bp.WriteString("  a = rtg_pop(); rtg_push((rtg_word)(a == 0));\n")
 
@@ -1391,17 +1651,29 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			case ir.OP_JMP_IF_NOT:
 				cWritef(bp, "  a = rtg_pop(); if (a == 0) goto L_%d;\n", in.Arg)
 			case ir.OP_JMP_EQ:
-				cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				if !cEmitFloatCompareJump(bp, in.Op, in.Arg, in.Name) {
+					cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				}
 			case ir.OP_JMP_NEQ:
-				cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				if !cEmitFloatCompareJump(bp, in.Op, in.Arg, in.Name) {
+					cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				}
 			case ir.OP_JMP_LT:
-				cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				if !cEmitFloatCompareJump(bp, in.Op, in.Arg, in.Name) {
+					cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				}
 			case ir.OP_JMP_GT:
-				cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				if !cEmitFloatCompareJump(bp, in.Op, in.Arg, in.Name) {
+					cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				}
 			case ir.OP_JMP_LEQ:
-				cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				if !cEmitFloatCompareJump(bp, in.Op, in.Arg, in.Name) {
+					cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				}
 			case ir.OP_JMP_GEQ:
-				cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				if !cEmitFloatCompareJump(bp, in.Op, in.Arg, in.Name) {
+					cEmitSignedCompareJump(bp, in.Op, in.Arg)
+				}
 
 			case ir.OP_CALL:
 				if err := cEmitCallOp(bp, in, funcIdx, funcSyms); err != nil {
@@ -1420,7 +1692,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 				bp.WriteString("  return;\n")
 
 			case ir.OP_CONVERT:
-				cEmitConvertOp(bp, in.Name, funcSyms, bytesToStringIdx, stringToBytesIdx)
+				cEmitConvertOp(bp, in, funcSyms, bytesToStringIdx, stringToBytesIdx)
 
 			case ir.OP_IFACE_BOX:
 				cWritef(bp, "  a = rtg_pop(); c = rtg_alloc((rtg_word)(2 * RTG_WORD_BYTES)); rtg_store(c, (rtg_word)%d, RTG_WORD_BYTES); rtg_store(c + RTG_WORD_BYTES, a, RTG_WORD_BYTES); rtg_push(c);\n", in.Arg)
