@@ -72,6 +72,8 @@ const btnMobileOutput = document.getElementById("btn-mobile-output");
 const mainPanels = document.getElementById("main-panels");
 const entryPathEl = document.getElementById("entry-path");
 const compilerStampEl = document.getElementById("compiler-stamp");
+const toolbar = document.getElementById("toolbar");
+const mobileViewToggle = document.getElementById("mobile-view-toggle");
 
 // --- Init ---
 function init() {
@@ -149,6 +151,17 @@ function isMobileViewport() {
   return window.innerWidth <= 768;
 }
 
+function updateFloatingPanelOffset() {
+  if (!toolbar) return;
+
+  const toolbarBottom = toolbar.getBoundingClientRect().bottom;
+  const mobileToggleBottom =
+    mobileViewToggle && isMobileViewport() ? mobileViewToggle.getBoundingClientRect().bottom : 0;
+  const panelTop = Math.ceil(Math.max(toolbarBottom, mobileToggleBottom) + 4);
+
+  document.documentElement.style.setProperty("--floating-panel-top", `${panelTop}px`);
+}
+
 function setMobilePanel(panel) {
   if (!mainPanels) return;
   if (!isMobileViewport()) {
@@ -168,7 +181,14 @@ function setupMobilePanels() {
   btnMobileOutput.addEventListener("click", () => setMobilePanel("output"));
   window.addEventListener("resize", () => {
     setMobilePanel(mainPanels.classList.contains("mobile-view-output") ? "output" : "editor");
+    updateFloatingPanelOffset();
   });
+  if (window.ResizeObserver) {
+    const observer = new ResizeObserver(() => updateFloatingPanelOffset());
+    observer.observe(toolbar);
+    if (mobileViewToggle) observer.observe(mobileViewToggle);
+  }
+  updateFloatingPanelOffset();
   setMobilePanel("editor");
 }
 
