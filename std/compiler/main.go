@@ -82,6 +82,45 @@ func pathSep() string {
 	return "/"
 }
 
+func isCAssemblySource(path string) bool {
+	return strings.HasSuffix(path, ".S") || strings.HasSuffix(path, ".s")
+}
+
+func compileExternalAssemblyObject(tgt common.Target, inputPath string, outputPath string, includePaths []string, systemIncludePaths []string, defines []string, undefs []string) error {
+	var cmdName string
+	var args []string
+	switch {
+	case tgt.GOOS == "darwin" && tgt.GOARCH == "arm64":
+		cmdName = "cc"
+		args = []string{"-c", "-arch", "arm64", "-x", "assembler-with-cpp"}
+	case tgt.GOOS == "linux" && tgt.GOARCH == "386":
+		cmdName = "clang"
+		args = []string{"-target", "i386-unknown-linux-gnu", "-c", "-x", "assembler-with-cpp"}
+	default:
+		return fmt.Errorf("assembly object compilation is not yet supported for %s/%s", tgt.GOOS, tgt.GOARCH)
+	}
+	for _, p := range includePaths {
+		args = append(args, "-I", p)
+	}
+	for _, p := range systemIncludePaths {
+		args = append(args, "-isystem", p)
+	}
+	for _, d := range defines {
+		args = append(args, "-D", d)
+	}
+	for _, u := range undefs {
+		args = append(args, "-U", u)
+	}
+	args = append(args, "-o", outputPath, inputPath)
+	cmd := exec.Command(cmdName, args...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("assemble %s: %v", inputPath, err)
+	}
+	return nil
+}
+
 func readStdinSourceToTemp(ext string) error {
 	if runTmpSrc == "" {
 		pid := fmt.Sprintf("%d", os.Getpid())
@@ -948,6 +987,37 @@ func main() {
 				fmt.Fprintf(os.Stderr, "no C input files provided\n")
 				runCleanup()
 				os.Exit(1)
+			}
+			asmCount := 0
+			for _, path := range entryFiles {
+				if isCAssemblySource(path) {
+					asmCount++
+				}
+			}
+			if asmCount > 0 {
+				if !objectMode {
+					fmt.Fprintf(os.Stderr, "assembly inputs currently require -c object mode\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				if len(entryFiles) != 1 || asmCount != len(entryFiles) {
+					fmt.Fprintf(os.Stderr, "assembly inputs currently support exactly one .S/.s source per invocation with no mixed C sources\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				if preprocessOnly || parseOnly {
+					fmt.Fprintf(os.Stderr, "assembly inputs do not support -E or -parse-only\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				err := compileExternalAssemblyObject(compileTarget, entryFiles[0], outputPath, cIncludePaths, cSystemIncludePaths, rawDefineArgs, cUndefs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
+					runCleanup()
+					os.Exit(1)
+				}
+				runCleanup()
+				os.Exit(0)
 			}
 			if parseOnly && emitIRPath != "" {
 				fmt.Fprintf(os.Stderr, "-emit-ir is not valid with -parse-only\n")

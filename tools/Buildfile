@@ -262,6 +262,14 @@ test-c-linux386-object-abi: build
   sh grep 'addl.*0x4.*%esp' build/i386_call_host.txt
   sh echo "PASS: linux/386 C object ABI smoke OK"
 
+test-asm-linux386-object: build
+  sh ./build/rtg -x c99 -T linux/386 -c -o build/linux386_add.o tests/c/object/linux386_add.S
+  sh objdump -dr build/linux386_add.o > build/linux386_add.txt
+  sh grep 'asm_add' build/linux386_add.txt
+  sh grep 'movl.*0x8.*%ebp.*%eax' build/linux386_add.txt
+  sh grep 'addl.*0xc.*%ebp.*%eax' build/linux386_add.txt
+  sh echo "PASS: linux/386 .S object assembly OK"
+
 test-c-frontend-ioccc: build
   sh go run ./tools/iocccscan
 
