@@ -138,21 +138,20 @@ type compiledFuncSignature struct {
 
 // NewCodeGen creates an ARM64 code generator with initialized global/data layout.
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64, extraGlobals int, withGOT bool) *CodeGen {
-	g := &CodeGen{
-		target:          target,
-		funcOffsets:     make(map[string]int),
-		labelOffsets:    make(map[int]int),
-		stringMap:       make(map[string]int),
-		globalOffsets:   make([]int, len(irmod.Globals)),
-		baseAddr:        baseAddr,
-		irmod:           irmod,
-		wordSize:        8,
-		isArm64:         true,
-		pendingOwn:      -1,
-		traceEnabled:    target.EmitIRAndBinaryPath != "",
-		traceCurInst:    -1,
-		traceForcedInst: -1,
-	}
+	g := &CodeGen{}
+	g.target = target
+	g.funcOffsets = make(map[string]int)
+	g.labelOffsets = make(map[int]int)
+	g.stringMap = make(map[string]int)
+	g.globalOffsets = make([]int, len(irmod.Globals))
+	g.baseAddr = baseAddr
+	g.irmod = irmod
+	g.wordSize = 8
+	g.isArm64 = true
+	g.pendingOwn = -1
+	g.traceEnabled = target.EmitIRAndBinaryPath != ""
+	g.traceCurInst = -1
+	g.traceForcedInst = -1
 	if g.traceEnabled {
 		g.traceByFunc = make(map[string][]InstByteTrace)
 	}
@@ -241,7 +240,7 @@ func (g *CodeGen) traceRecordCode(start int, end int) {
 			return
 		}
 	}
-	segments = append(segments, InstByteSegment{Start: start, End: end})
+	segments = append(segments, InstByteSegment{start, end})
 	g.traceCurFuncInsts[owner].Segments = segments
 }
 
@@ -299,7 +298,7 @@ func (g *CodeGen) CompileModuleFuncs(irmod *ir.IRModule) {
 			g.funcOffsets[f.Name] = prior.start
 			continue
 		}
-		seen[sig] = compiledFuncSignature{start: start}
+		seen[sig] = compiledFuncSignature{start}
 	}
 }
 
@@ -371,7 +370,7 @@ func (g *CodeGen) CallFixupAt(i int) (int, string, uint64) {
 
 // AddCallFixup records a call fixup entry.
 func (g *CodeGen) AddCallFixup(codeOffset int, target string, value uint64) {
-	g.callFixups = append(g.callFixups, CallFixup{CodeOffset: codeOffset, Target: target, Value: value})
+	g.callFixups = append(g.callFixups, CallFixup{codeOffset, target, value})
 }
 
 // StringMap returns deduplicated string-header offsets by string content.
@@ -438,17 +437,11 @@ func (g *CodeGen) emitCallPlaceholder(target string) {
 	g.Flush()
 	if g.target.GOOS == "dos" && g.wordSize == 2 {
 		g.emitBytes(0xe8) // call rel16
-		g.callFixups = append(g.callFixups, CallFixup{
-			CodeOffset: len(g.code),
-			Target:     target,
-		})
+		g.callFixups = append(g.callFixups, CallFixup{len(g.code), target, 0})
 		g.emitU16(0)
 	} else {
 		g.emitBytes(0xe8) // call rel32
-		g.callFixups = append(g.callFixups, CallFixup{
-			CodeOffset: len(g.code),
-			Target:     target,
-		})
+		g.callFixups = append(g.callFixups, CallFixup{len(g.code), target, 0})
 		g.emitU32(0) // placeholder
 	}
 }
@@ -1059,10 +1052,7 @@ func (g *CodeGen) EmitCallGOT(funcName string) {
 // EmitCallPlaceholderArm64 emits a BL with placeholder for later fixup.
 func (g *CodeGen) EmitCallPlaceholderArm64(target string) {
 	g.Flush()
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code),
-		Target:     target,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.code), target, 0})
 	g.EmitArm64(0x94000000) // BL #0 (placeholder)
 }
 
@@ -1070,10 +1060,7 @@ func (g *CodeGen) EmitCallPlaceholderArm64(target string) {
 func (g *CodeGen) emitCallIAT(funcName string) {
 	g.Flush()
 	g.emitBytes(0xFF, 0x15) // call dword ptr [abs32]
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code),
-		Target:     "$iat$" + funcName,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.code), "$iat$" + funcName, 0})
 	g.emitU32(0) // placeholder
 }
 
@@ -1081,10 +1068,7 @@ func (g *CodeGen) emitCallIAT(funcName string) {
 func (g *CodeGen) emitJmpIAT(funcName string) {
 	g.Flush()
 	g.emitBytes(0xFF, 0x25) // jmp dword ptr [abs32]
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.code),
-		Target:     "$iat$" + funcName,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.code), "$iat$" + funcName, 0})
 	g.emitU32(0) // placeholder
 }
 

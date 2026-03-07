@@ -75,18 +75,17 @@ type CodeGen struct {
 }
 
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *CodeGen {
-	g := &CodeGen{
-		target:        target,
-		irmod:         irmod,
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		stringDataMap: make(map[int]int),
-		intLitMap:     make(map[int64]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		wordSize:      target.WordSize,
-		baseAddr:      baseAddr,
-	}
+	g := &CodeGen{}
+	g.target = target
+	g.irmod = irmod
+	g.funcOffsets = make(map[string]int)
+	g.labelOffsets = make(map[int]int)
+	g.stringMap = make(map[string]int)
+	g.stringDataMap = make(map[int]int)
+	g.intLitMap = make(map[int64]int)
+	g.globalOffsets = make([]int, len(irmod.Globals))
+	g.wordSize = target.WordSize
+	g.baseAddr = baseAddr
 	for i := range irmod.Globals {
 		g.globalOffsets[i] = i * g.wordSize
 	}
@@ -95,10 +94,10 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *Cod
 }
 
 func (g *CodeGen) Target() *common.Target { return g.target }
-func (g *CodeGen) BaseAddr() uint64        { return g.baseAddr }
-func (g *CodeGen) Code() []byte            { return g.code }
-func (g *CodeGen) Rodata() []byte          { return g.rodata }
-func (g *CodeGen) Data() []byte            { return g.data }
+func (g *CodeGen) BaseAddr() uint64       { return g.baseAddr }
+func (g *CodeGen) Code() []byte           { return g.code }
+func (g *CodeGen) Rodata() []byte         { return g.rodata }
+func (g *CodeGen) Data() []byte           { return g.data }
 func (g *CodeGen) FuncOffsets() map[string]int {
 	return g.funcOffsets
 }
@@ -170,17 +169,17 @@ func (g *CodeGen) emitAddiw(rd, rs1 int, imm int32) {
 	g.emit32(encI(imm, rs1, 0, rd, 0x1b))
 }
 
-func (g *CodeGen) emitAdd(rd, rs1, rs2 int) { g.emit32(encR(0x00, rs2, rs1, 0, rd, 0x33)) }
-func (g *CodeGen) emitSub(rd, rs1, rs2 int) { g.emit32(encR(0x20, rs2, rs1, 0, rd, 0x33)) }
-func (g *CodeGen) emitMul(rd, rs1, rs2 int) { g.emit32(encR(0x01, rs2, rs1, 0, rd, 0x33)) }
-func (g *CodeGen) emitDiv(rd, rs1, rs2 int) { g.emit32(encR(0x01, rs2, rs1, 4, rd, 0x33)) }
-func (g *CodeGen) emitRem(rd, rs1, rs2 int) { g.emit32(encR(0x01, rs2, rs1, 6, rd, 0x33)) }
-func (g *CodeGen) emitAnd(rd, rs1, rs2 int) { g.emit32(encR(0x00, rs2, rs1, 7, rd, 0x33)) }
-func (g *CodeGen) emitOr(rd, rs1, rs2 int)  { g.emit32(encR(0x00, rs2, rs1, 6, rd, 0x33)) }
-func (g *CodeGen) emitXor(rd, rs1, rs2 int) { g.emit32(encR(0x00, rs2, rs1, 4, rd, 0x33)) }
-func (g *CodeGen) emitSll(rd, rs1, rs2 int) { g.emit32(encR(0x00, rs2, rs1, 1, rd, 0x33)) }
-func (g *CodeGen) emitSra(rd, rs1, rs2 int) { g.emit32(encR(0x20, rs2, rs1, 5, rd, 0x33)) }
-func (g *CodeGen) emitSlt(rd, rs1, rs2 int) { g.emit32(encR(0x00, rs2, rs1, 2, rd, 0x33)) }
+func (g *CodeGen) emitAdd(rd, rs1, rs2 int)  { g.emit32(encR(0x00, rs2, rs1, 0, rd, 0x33)) }
+func (g *CodeGen) emitSub(rd, rs1, rs2 int)  { g.emit32(encR(0x20, rs2, rs1, 0, rd, 0x33)) }
+func (g *CodeGen) emitMul(rd, rs1, rs2 int)  { g.emit32(encR(0x01, rs2, rs1, 0, rd, 0x33)) }
+func (g *CodeGen) emitDiv(rd, rs1, rs2 int)  { g.emit32(encR(0x01, rs2, rs1, 4, rd, 0x33)) }
+func (g *CodeGen) emitRem(rd, rs1, rs2 int)  { g.emit32(encR(0x01, rs2, rs1, 6, rd, 0x33)) }
+func (g *CodeGen) emitAnd(rd, rs1, rs2 int)  { g.emit32(encR(0x00, rs2, rs1, 7, rd, 0x33)) }
+func (g *CodeGen) emitOr(rd, rs1, rs2 int)   { g.emit32(encR(0x00, rs2, rs1, 6, rd, 0x33)) }
+func (g *CodeGen) emitXor(rd, rs1, rs2 int)  { g.emit32(encR(0x00, rs2, rs1, 4, rd, 0x33)) }
+func (g *CodeGen) emitSll(rd, rs1, rs2 int)  { g.emit32(encR(0x00, rs2, rs1, 1, rd, 0x33)) }
+func (g *CodeGen) emitSra(rd, rs1, rs2 int)  { g.emit32(encR(0x20, rs2, rs1, 5, rd, 0x33)) }
+func (g *CodeGen) emitSlt(rd, rs1, rs2 int)  { g.emit32(encR(0x00, rs2, rs1, 2, rd, 0x33)) }
 func (g *CodeGen) emitSltu(rd, rs1, rs2 int) { g.emit32(encR(0x00, rs2, rs1, 3, rd, 0x33)) }
 
 func (g *CodeGen) emitLoadWord(rd, rs1 int, imm int32) {
@@ -199,10 +198,14 @@ func (g *CodeGen) emitStoreWord(rs2, rs1 int, imm int32) {
 	}
 }
 
-func (g *CodeGen) emitLoadByteU(rd, rs1 int, imm int32) { g.emit32(encI(imm, rs1, 4, rd, 0x03)) }
+func (g *CodeGen) emitLoadByteU(rd, rs1 int, imm int32)  { g.emit32(encI(imm, rs1, 4, rd, 0x03)) }
 func (g *CodeGen) emitStoreByte(rs2, rs1 int, imm int32) { g.emit32(encS(imm, rs2, rs1, 0, 0x23)) }
-func (g *CodeGen) emitAuipc(rd int, imm20 int32)         { g.emit32((uint32(imm20)&0xfffff)<<12 | (uint32(rd&31) << 7) | 0x17) }
-func (g *CodeGen) emitLui(rd int, imm20 int32)           { g.emit32((uint32(imm20)&0xfffff)<<12 | (uint32(rd&31) << 7) | 0x37) }
+func (g *CodeGen) emitAuipc(rd int, imm20 int32) {
+	g.emit32((uint32(imm20)&0xfffff)<<12 | (uint32(rd&31) << 7) | 0x17)
+}
+func (g *CodeGen) emitLui(rd int, imm20 int32) {
+	g.emit32((uint32(imm20)&0xfffff)<<12 | (uint32(rd&31) << 7) | 0x37)
+}
 func (g *CodeGen) emitJal(rd int, imm int32) int {
 	off := len(g.code)
 	g.emit32(encJ(imm, rd, 0x6f))
@@ -217,28 +220,28 @@ func (g *CodeGen) emitAddrFixup(rd int, target string, value uint64) {
 	off := len(g.code)
 	g.emitAuipc(rd, 0)
 	g.emitAddi(rd, rd, 0)
-	g.fixups = append(g.fixups, Fixup{Kind: FixupAddr, CodeOffset: off, Target: target, Value: value})
+	g.fixups = append(g.fixups, Fixup{FixupAddr, off, target, value})
 }
 
 func (g *CodeGen) emitLoadFixup(rd int, target string, value uint64) {
 	off := len(g.code)
 	g.emitAuipc(rd, 0)
 	g.emitLoadWord(rd, rd, 0)
-	g.fixups = append(g.fixups, Fixup{Kind: FixupLoad, CodeOffset: off, Target: target, Value: value})
+	g.fixups = append(g.fixups, Fixup{FixupLoad, off, target, value})
 }
 
 func (g *CodeGen) emitCallPlaceholder(name string) {
 	off := len(g.code)
 	g.emitAuipc(REG_T0, 0)
 	g.emitJalr(REG_RA, REG_T0, 0)
-	g.fixups = append(g.fixups, Fixup{Kind: FixupCall, CodeOffset: off, Target: name})
+	g.fixups = append(g.fixups, Fixup{FixupCall, off, name, 0})
 }
 
 func (g *CodeGen) emitFuncAddrPlaceholder(name string) {
 	off := len(g.code)
 	g.emitAuipc(REG_T0, 0)
 	g.emitAddi(REG_T0, REG_T0, 0)
-	g.fixups = append(g.fixups, Fixup{Kind: FixupFuncAddr, CodeOffset: off, Target: name})
+	g.fixups = append(g.fixups, Fixup{FixupFuncAddr, off, name, 0})
 	g.rawPush(REG_T0)
 }
 
@@ -468,10 +471,10 @@ func (g *CodeGen) CompileModuleFuncs() {
 	}
 }
 
-func (g *CodeGen) EmitImmToReg(rd int, val int64)        { g.emitImmToReg(rd, val) }
-func (g *CodeGen) EmitEcall()                            { g.emitEcall() }
-func (g *CodeGen) EmitAdd(rd, rs1, rs2 int)              { g.emitAdd(rd, rs1, rs2) }
-func (g *CodeGen) EmitCallPlaceholder(name string)       { g.emitCallPlaceholder(name) }
+func (g *CodeGen) EmitImmToReg(rd int, val int64)  { g.emitImmToReg(rd, val) }
+func (g *CodeGen) EmitEcall()                      { g.emitEcall() }
+func (g *CodeGen) EmitAdd(rd, rs1, rs2 int)        { g.emitAdd(rd, rs1, rs2) }
+func (g *CodeGen) EmitCallPlaceholder(name string) { g.emitCallPlaceholder(name) }
 func (g *CodeGen) PatchSectionFixups(textV, rodataV, dataV uint64) {
 	g.patchSectionFixups(textV, rodataV, dataV)
 }
@@ -484,7 +487,7 @@ func sortedDispatchEntries(irmod *ir.IRModule, methodSuffix string) []becommon.D
 	for typeName, tid := range irmod.TypeIDs {
 		cand := typeName + methodSuffix
 		if _, ok := irmod.MethodTable[cand]; ok {
-			entries = append(entries, becommon.DispatchEntry{TypeID: tid, FuncName: cand})
+			entries = append(entries, becommon.DispatchEntry{tid, cand})
 		}
 	}
 	for i := 1; i < len(entries); i++ {

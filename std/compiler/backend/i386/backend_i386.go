@@ -32,10 +32,7 @@ func (g *CodeGen) compileFunc_i386(f *ir.IRFunc) {
 			if fx.Kind != ir.NativeFixupCallRel32 {
 				continue
 			}
-			g.CallFixups = append(g.CallFixups, CallFixup{
-				CodeOffset: funcStart + fx.Off,
-				Target:     fx.Target,
-			})
+			g.CallFixups = append(g.CallFixups, CallFixup{funcStart + fx.Off, fx.Target, 0})
 		}
 		return
 	}
@@ -199,31 +196,17 @@ func (g *CodeGen) compileInst_i386(inst ir.Inst) {
 	case ir.OP_JMP:
 		g.flush()
 		fixup := g.jmpRel32()
-		g.JumpFixups = append(g.JumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJmpRel32,
-		})
+		g.JumpFixups = append(g.JumpFixups, JumpFixup{fixup, inst.Arg, jumpFixupJmpRel32, 0})
 	case ir.OP_JMP_IF:
 		g.opPop(REG32_EAX)
 		g.testRR32(REG32_EAX, REG32_EAX)
 		fixup := g.jccRel32(CC32_NE)
-		g.JumpFixups = append(g.JumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJccRel32,
-			CC:         CC32_NE,
-		})
+		g.JumpFixups = append(g.JumpFixups, JumpFixup{fixup, inst.Arg, jumpFixupJccRel32, CC32_NE})
 	case ir.OP_JMP_IF_NOT:
 		g.opPop(REG32_EAX)
 		g.testRR32(REG32_EAX, REG32_EAX)
 		fixup := g.jccRel32(CC32_E)
-		g.JumpFixups = append(g.JumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJccRel32,
-			CC:         CC32_E,
-		})
+		g.JumpFixups = append(g.JumpFixups, JumpFixup{fixup, inst.Arg, jumpFixupJccRel32, CC32_E})
 	case ir.OP_JMP_EQ:
 		g.compileCompareJump_i386(CC32_E, inst.Arg)
 	case ir.OP_JMP_NEQ:
@@ -303,10 +286,7 @@ func (g *CodeGen) compileFuncAddr_i386(marker string) {
 		thunkName = "$callback_thunk$" + funcName
 	}
 	g.emitMovRegImm32(REG32_EAX, 0) // placeholder imm32
-	g.CallFixups = append(g.CallFixups, CallFixup{
-		CodeOffset: len(g.Code) - 4,
-		Target:     "$funcaddr$" + thunkName,
-	})
+	g.CallFixups = append(g.CallFixups, CallFixup{len(g.Code) - 4, "$funcaddr$" + thunkName, 0})
 	g.opPush(REG32_EAX)
 }
 
@@ -332,10 +312,7 @@ func (g *CodeGen) compileConstStr_i386(s string) {
 
 	// Push header address onto operand stack: mov eax, imm32
 	g.emitMovRegImm32(REG32_EAX, uint32(headerOff))
-	g.CallFixups = append(g.CallFixups, CallFixup{
-		CodeOffset: len(g.Code) - 4,
-		Target:     "$rodata_header$",
-	})
+	g.CallFixups = append(g.CallFixups, CallFixup{len(g.Code) - 4, "$rodata_header$", 0})
 	g.opPush(REG32_EAX)
 }
 
@@ -373,10 +350,7 @@ func (g *CodeGen) compileLocalAddr_i386(idx int) {
 func (g *CodeGen) compileGlobalGet_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX, REG32_ECX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
-	g.CallFixups = append(g.CallFixups, CallFixup{
-		CodeOffset: len(g.Code) - 4,
-		Target:     "$data_addr$",
-	})
+	g.CallFixups = append(g.CallFixups, CallFixup{len(g.Code) - 4, "$data_addr$", 0})
 	g.loadMem32(REG32_EAX, REG32_ECX, 0)
 	g.opPush(REG32_EAX)
 }
@@ -384,20 +358,14 @@ func (g *CodeGen) compileGlobalGet_i386(inst ir.Inst) {
 func (g *CodeGen) compileGlobalSet_i386(inst ir.Inst) {
 	g.opPop(REG32_EAX)
 	g.emitMovRegImm32(REG32_ECX, uint32(inst.Arg*g.slotBytes_i386()))
-	g.CallFixups = append(g.CallFixups, CallFixup{
-		CodeOffset: len(g.Code) - 4,
-		Target:     "$data_addr$",
-	})
+	g.CallFixups = append(g.CallFixups, CallFixup{len(g.Code) - 4, "$data_addr$", 0})
 	g.storeMem32(REG32_ECX, 0, REG32_EAX)
 }
 
 func (g *CodeGen) compileGlobalAddr_i386(inst ir.Inst) {
 	g.prepareForClobber(REG32_EAX)
 	g.emitMovRegImm32(REG32_EAX, uint32(inst.Arg*g.slotBytes_i386()))
-	g.CallFixups = append(g.CallFixups, CallFixup{
-		CodeOffset: len(g.Code) - 4,
-		Target:     "$data_addr$",
-	})
+	g.CallFixups = append(g.CallFixups, CallFixup{len(g.Code) - 4, "$data_addr$", 0})
 	g.opPush(REG32_EAX)
 }
 
@@ -465,12 +433,7 @@ func (g *CodeGen) compileCompareJump_i386(cc byte, label int) {
 	g.opPop(REG32_ECX)
 	g.cmpRR32(REG32_ECX, REG32_EAX)
 	fixup := g.jccRel32(cc)
-	g.JumpFixups = append(g.JumpFixups, JumpFixup{
-		CodeOffset: fixup,
-		LabelID:    label,
-		Kind:       jumpFixupJccRel32,
-		CC:         cc,
-	})
+	g.JumpFixups = append(g.JumpFixups, JumpFixup{fixup, label, jumpFixupJccRel32, cc})
 }
 
 // === Function calls (i386) ===
@@ -657,16 +620,17 @@ func (g *CodeGen) compileTostringIntrinsicBody_i386() {
 	if g.IRMod != nil && g.IRMod.TypeIDs != nil {
 		for typeName, tid := range g.IRMod.TypeIDs {
 			candidate := typeName + ".Error"
-			if _, ok := g.IRMod.MethodTable[candidate]; ok {
-				entries = append(entries, becommon.DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.IRMod.MethodTable, candidate); ok {
+				entries = append(entries, becommon.DispatchEntry{tid, fnName})
 				continue
 			}
 			candidate = typeName + ".String"
-			if _, ok := g.IRMod.MethodTable[candidate]; ok {
-				entries = append(entries, becommon.DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.IRMod.MethodTable, candidate); ok {
+				entries = append(entries, becommon.DispatchEntry{tid, fnName})
 			}
 		}
 	}
+	becommon.SortDispatchEntries(entries)
 
 	g.popR32(REG32_ECX) // type_id
 
@@ -816,11 +780,12 @@ func (g *CodeGen) compileIfaceCall_i386(inst ir.Inst) {
 	if g.IRMod != nil && g.IRMod.TypeIDs != nil {
 		for typeName, tid := range g.IRMod.TypeIDs {
 			candidate := typeName + "." + bareMethod
-			if _, ok := g.IRMod.MethodTable[candidate]; ok {
-				entries = append(entries, becommon.DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.IRMod.MethodTable, candidate); ok {
+				entries = append(entries, becommon.DispatchEntry{tid, fnName})
 			}
 		}
 	}
+	becommon.SortDispatchEntries(entries)
 
 	g.popR32(REG32_ECX) // type_id
 

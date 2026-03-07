@@ -490,11 +490,7 @@ func (g *CodeGen) EmitAdrp(rd int) int {
 func (g *CodeGen) EmitAdrpAdd(rd int, target string, rawOff uint64) {
 	off := g.EmitAdrp(rd)
 	g.emitAddImm(rd, rd, 0) // placeholder pageoff
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: off,
-		Target:     target,
-		Value:      rawOff,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{off, target, rawOff})
 }
 
 // emitAdrpLdr emits ADRP+LDR pair for loading a 64-bit value from a PC-relative address.
@@ -504,11 +500,7 @@ func (g *CodeGen) emitAdrpLdr(rd int, target string, rawOff uint64) {
 	// LDR Xt, [Xn, #0] — unsigned offset scaled by 8, placeholder
 	inst := uint32(0xF9400000) | (uint32(rd&0x1f) << 5) | uint32(rd&0x1f)
 	g.EmitArm64(inst)
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: off,
-		Target:     target,
-		Value:      rawOff,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{off, target, rawOff})
 }
 
 // === Fixup helpers ===

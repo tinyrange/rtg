@@ -40,10 +40,7 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 			if fx.Kind != ir.NativeFixupCallRel32 {
 				continue
 			}
-			g.callFixups = append(g.callFixups, CallFixup{
-				CodeOffset: funcStart + fx.Off,
-				Target:     fx.Target,
-			})
+			g.callFixups = append(g.callFixups, CallFixup{funcStart + fx.Off, fx.Target, 0})
 		}
 		return
 	}
@@ -217,33 +214,19 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 	case ir.OP_JMP:
 		g.Flush()
 		fixup := g.JmpRel32()
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJmpRel32,
-		})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, inst.Arg, jumpFixupJmpRel32, 0})
 	case ir.OP_JMP_IF:
 		// pop value, test, jnz
 		g.OpPop(REG_RAX)
 		g.TestRR(REG_RAX, REG_RAX)
 		fixup := g.JccRel32(CC_NE)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJccRel32,
-			CC:         CC_NE,
-		})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, inst.Arg, jumpFixupJccRel32, CC_NE})
 	case ir.OP_JMP_IF_NOT:
 		// pop value, test, jz
 		g.OpPop(REG_RAX)
 		g.TestRR(REG_RAX, REG_RAX)
 		fixup := g.JccRel32(CC_E)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-			Kind:       jumpFixupJccRel32,
-			CC:         CC_E,
-		})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, inst.Arg, jumpFixupJccRel32, CC_E})
 	case ir.OP_JMP_EQ:
 		g.compileCompareJump(inst, CC_E, inst.Arg)
 	case ir.OP_JMP_NEQ:
@@ -322,10 +305,7 @@ func (g *CodeGen) compileFuncAddr(marker string) {
 		thunkName = "$callback_thunk$" + funcName
 	}
 	g.EmitMovRegImm64(REG_RAX, 0) // placeholder imm64
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.Code) - 8,
-		Target:     "$funcaddr$" + thunkName,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.Code) - 8, "$funcaddr$" + thunkName, 0})
 	g.OpPush(REG_RAX)
 }
 
@@ -374,10 +354,7 @@ func (g *CodeGen) CompileConstStr(s string) {
 
 	// Push header address onto operand stack
 	g.EmitMovRegImm64(REG_RAX, uint64(headerOff))
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.Code) - 8,
-		Target:     "$rodata_header$",
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.Code) - 8, "$rodata_header$", 0})
 	g.OpPush(REG_RAX)
 }
 
@@ -421,10 +398,7 @@ func (g *CodeGen) compileLocalAddr(idx int) {
 func (g *CodeGen) compileGlobalGet(inst ir.Inst) {
 	g.prepareForClobber(REG_RAX, REG_RCX)
 	g.EmitMovRegImm64(REG_RCX, uint64(inst.Arg*8)) // offset placeholder
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.Code) - 8,
-		Target:     "$data_addr$",
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.Code) - 8, "$data_addr$", 0})
 	g.LoadMem(REG_RAX, REG_RCX, 0)
 	g.OpPush(REG_RAX)
 }
@@ -432,20 +406,14 @@ func (g *CodeGen) compileGlobalGet(inst ir.Inst) {
 func (g *CodeGen) compileGlobalSet(inst ir.Inst) {
 	g.OpPop(REG_RAX)
 	g.EmitMovRegImm64(REG_RCX, uint64(inst.Arg*8)) // offset placeholder
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.Code) - 8,
-		Target:     "$data_addr$",
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.Code) - 8, "$data_addr$", 0})
 	g.storeMem(REG_RCX, 0, REG_RAX)
 }
 
 func (g *CodeGen) compileGlobalAddr(inst ir.Inst) {
 	g.prepareForClobber(REG_RAX)
 	g.EmitMovRegImm64(REG_RAX, uint64(inst.Arg*8)) // offset placeholder
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.Code) - 8,
-		Target:     "$data_addr$",
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.Code) - 8, "$data_addr$", 0})
 	g.OpPush(REG_RAX)
 }
 
@@ -565,12 +533,7 @@ func (g *CodeGen) compileCompareJump(inst ir.Inst, cc byte, label int) {
 	}
 	g.CmpRR(REG_RCX, REG_RAX)
 	fixup := g.JccRel32(cc)
-	g.jumpFixups = append(g.jumpFixups, JumpFixup{
-		CodeOffset: fixup,
-		LabelID:    label,
-		Kind:       jumpFixupJccRel32,
-		CC:         cc,
-	})
+	g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, label, jumpFixupJccRel32, cc})
 }
 
 // === Function calls ===
@@ -768,13 +731,13 @@ func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 		for typeName, tid := range g.irmod.TypeIDs {
 			// Check for Error method first, then String
 			candidate := typeName + ".Error"
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
+				entries = append(entries, DispatchEntry{tid, fnName})
 				continue
 			}
 			candidate = typeName + ".String"
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
+				entries = append(entries, DispatchEntry{tid, fnName})
 			}
 		}
 	}
@@ -952,8 +915,8 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 		for typeName, tid := range g.irmod.TypeIDs {
 			// Check if typeName.Method exists in methodTable
 			candidate := typeName + "." + bareMethod
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
+				entries = append(entries, DispatchEntry{tid, fnName})
 			}
 		}
 	}

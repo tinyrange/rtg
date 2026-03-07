@@ -8,16 +8,15 @@ import (
 )
 
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *CodeGen {
-	g := &CodeGen{
-		Target:        target,
-		FuncOffsets:   make(map[string]int),
-		LabelOffsets:  make(map[int]int),
-		StringMap:     make(map[string]int),
-		GlobalOffsets: make([]int, len(irmod.Globals)),
-		BaseAddr:      baseAddr,
-		IRMod:         irmod,
-		WordSize:      4,
-	}
+	g := &CodeGen{}
+	g.Target = target
+	g.FuncOffsets = make(map[string]int)
+	g.LabelOffsets = make(map[int]int)
+	g.StringMap = make(map[string]int)
+	g.GlobalOffsets = make([]int, len(irmod.Globals))
+	g.BaseAddr = baseAddr
+	g.IRMod = irmod
+	g.WordSize = 4
 	slot := g.slotBytes_i386()
 	for i := range irmod.Globals {
 		g.GlobalOffsets[i] = i * slot

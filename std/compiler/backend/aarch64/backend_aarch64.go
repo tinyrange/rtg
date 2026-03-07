@@ -30,10 +30,7 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 			if fx.Kind != ir.NativeFixupCallRel32 {
 				continue
 			}
-			g.callFixups = append(g.callFixups, CallFixup{
-				CodeOffset: funcStart + fx.Off,
-				Target:     fx.Target,
-			})
+			g.callFixups = append(g.callFixups, CallFixup{funcStart + fx.Off, fx.Target, 0})
 		}
 		return
 	}
@@ -210,28 +207,19 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 	case ir.OP_JMP:
 		g.Flush()
 		fixup := g.emitB()
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-		})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, inst.Arg, 0, 0})
 	case ir.OP_JMP_IF:
 		g.opPop(REG_X0)
 		g.emitCmpImm(REG_X0, 0)
 		g.Flush()
 		fixup := g.emitBCond(COND_NE)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-		})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, inst.Arg, 0, 0})
 	case ir.OP_JMP_IF_NOT:
 		g.opPop(REG_X0)
 		g.emitCmpImm(REG_X0, 0)
 		g.Flush()
 		fixup := g.emitBCond(COND_EQ)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{
-			CodeOffset: fixup,
-			LabelID:    inst.Arg,
-		})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, inst.Arg, 0, 0})
 	case ir.OP_JMP_EQ:
 		g.compileCompareJumpArm64(COND_EQ, inst.Arg)
 	case ir.OP_JMP_NEQ:
@@ -446,10 +434,7 @@ func (g *CodeGen) compileCompareJumpArm64(cond int, label int) {
 	g.emitCmpRR(REG_X1, REG_X0)
 	g.Flush()
 	fixup := g.emitBCond(cond)
-	g.jumpFixups = append(g.jumpFixups, JumpFixup{
-		CodeOffset: fixup,
-		LabelID:    label,
-	})
+	g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, label, 0, 0})
 }
 
 // === Function calls ===
@@ -706,13 +691,13 @@ func (g *CodeGen) compileTostringIntrinsicBodyArm64() {
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + ".Error"
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, becommon.DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
+				entries = append(entries, becommon.DispatchEntry{tid, fnName})
 				continue
 			}
 			candidate = typeName + ".String"
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, becommon.DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
+				entries = append(entries, becommon.DispatchEntry{tid, fnName})
 			}
 		}
 	}
@@ -880,8 +865,8 @@ func (g *CodeGen) compileIfaceCallArm64(inst ir.Inst) {
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + "." + bareMethod
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				entries = append(entries, becommon.DispatchEntry{tid, candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
+				entries = append(entries, becommon.DispatchEntry{tid, fnName})
 			}
 		}
 	}

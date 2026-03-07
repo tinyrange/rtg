@@ -65,16 +65,15 @@ type CodeGen struct {
 }
 
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *CodeGen {
-	g := &CodeGen{
-		target:        target,
-		funcOffsets:   make(map[string]int),
-		labelOffsets:  make(map[int]int),
-		stringMap:     make(map[string]int),
-		globalOffsets: make([]int, len(irmod.Globals)),
-		BaseAddr:      0x400000,
-		irmod:         irmod,
-		wordSize:      8,
-	}
+	g := &CodeGen{}
+	g.target = target
+	g.funcOffsets = make(map[string]int)
+	g.labelOffsets = make(map[int]int)
+	g.stringMap = make(map[string]int)
+	g.globalOffsets = make([]int, len(irmod.Globals))
+	g.BaseAddr = 0x400000
+	g.irmod = irmod
+	g.wordSize = 8
 
 	// Allocate .data space for globals (8 bytes each)
 	for i := range irmod.Globals {
@@ -166,17 +165,11 @@ func (g *CodeGen) CallFixups() []CallFixup {
 }
 
 func (g *CodeGen) AddCallFixup(target string) {
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.Code),
-		Target:     target,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.Code), target, 0})
 }
 
 func (g *CodeGen) AddCallFixupAt(target string, offset int) {
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: offset,
-		Target:     target,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{offset, target, 0})
 }
 
 func (g *CodeGen) ResolveLinuxCallFixups() []string {
@@ -279,10 +272,7 @@ func (g *CodeGen) EmitRodataU64(v uint64) {
 func (g *CodeGen) EmitCallPlaceholder(target string) {
 	g.Flush()
 	g.EmitBytes(0xe8) // call rel32
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: len(g.Code),
-		Target:     target,
-	})
+	g.callFixups = append(g.callFixups, CallFixup{len(g.Code), target, 0})
 	g.EmitU32(0) // placeholder
 }
 
