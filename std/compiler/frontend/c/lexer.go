@@ -226,7 +226,7 @@ func (l *Lexer) scanPunct() (Token, error) {
 	}
 
 	ch := l.peek()
-	single := "(){}[];:,?~!%^&*-=+|<>./#"
+	single := "(){}[];:,?~!%^&*-=+|<>./#\\@`"
 	i := 0
 	for i < len(single) {
 		if single[i] == ch {
