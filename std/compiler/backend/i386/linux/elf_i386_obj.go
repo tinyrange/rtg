@@ -9,7 +9,6 @@ import (
 	core "j5.nz/rtg/std/compiler/backend/i386"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
-	objelf "j5.nz/rtg/std/compiler/object/elf"
 )
 
 const (
@@ -206,15 +205,15 @@ func BuildELF32Object(g *core.CodeGen, irmod *ir.IRModule) ([]byte, error) {
 	relRodataBytes := buildELF32Relocs(relRodata)
 
 	elfHeaderSize := 52
-	textOffset := objelf.AlignUp(elfHeaderSize, 16)
-	rodataOffset := objelf.AlignUp(textOffset+len(code), 4)
-	dataOffset := objelf.AlignUp(rodataOffset+len(rodata), 4)
-	relTextOffset := objelf.AlignUp(dataOffset+len(data), 4)
-	relRodataOffset := objelf.AlignUp(relTextOffset+len(relTextBytes), 4)
-	symtabOffset := objelf.AlignUp(relRodataOffset+len(relRodataBytes), 4)
-	strtabOffset := objelf.AlignUp(symtabOffset+len(symtab), 4)
+	textOffset := common.AlignUp(elfHeaderSize, 16)
+	rodataOffset := common.AlignUp(textOffset+len(code), 4)
+	dataOffset := common.AlignUp(rodataOffset+len(rodata), 4)
+	relTextOffset := common.AlignUp(dataOffset+len(data), 4)
+	relRodataOffset := common.AlignUp(relTextOffset+len(relTextBytes), 4)
+	symtabOffset := common.AlignUp(relRodataOffset+len(relRodataBytes), 4)
+	strtabOffset := common.AlignUp(symtabOffset+len(symtab), 4)
 	shstrtabOffset := strtabOffset + len(strtab)
-	shdrOffset := objelf.AlignUp(shstrtabOffset+len(shstrtab), 4)
+	shdrOffset := common.AlignUp(shstrtabOffset+len(shstrtab), 4)
 
 	sectionCount := 9
 	shdrSize := 40
@@ -322,6 +321,18 @@ func addELF32UndefinedFunc(undef map[string]int, globalSyms *[]elf32Sym, strtab 
 	undef[name] = idx
 	*globalSyms = append(*globalSyms, sym)
 	return idx
+}
+
+func putU16(buf []byte, v uint16) {
+	buf[0] = byte(v)
+	buf[1] = byte(v >> 8)
+}
+
+func putU32(buf []byte, v uint32) {
+	buf[0] = byte(v)
+	buf[1] = byte(v >> 8)
+	buf[2] = byte(v >> 16)
+	buf[3] = byte(v >> 24)
 }
 
 func sortStringSliceByI386Offset(names []string, offsets map[string]int) {

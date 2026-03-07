@@ -363,6 +363,23 @@ func (g *WasmGen) pushType(t byte) {
 	g.valTypes = append(g.valTypes, t)
 }
 
+func (g *WasmGen) restoreTypes(saved []byte) {
+	if len(saved) == 0 {
+		g.valTypes = g.valTypes[:0]
+		return
+	}
+	if cap(g.valTypes) < len(saved) {
+		g.valTypes = make([]byte, len(saved))
+	} else {
+		g.valTypes = g.valTypes[:len(saved)]
+	}
+	i := 0
+	for i < len(saved) {
+		g.valTypes[i] = saved[i]
+		i++
+	}
+}
+
 func (g *WasmGen) popType() byte {
 	if len(g.valTypes) == 0 {
 		return WASM_TYPE_I32
@@ -738,6 +755,15 @@ func (g *WasmGen) compileStart() []byte {
 	if entryRet > 0 {
 		for i := 1; i < entryRet; i++ {
 			g.w.drop()
+		}
+		if entryFn := ir.EntryFunc(g.irmod); entryFn != nil {
+			switch g.wasmResultType(entryFn, 0) {
+			case WASM_TYPE_I64:
+				g.w.i32WrapI64()
+			case WASM_TYPE_F64:
+				g.w.drop()
+				g.w.i32Const(0)
+			}
 		}
 	} else {
 		g.w.i32Const(0)
@@ -1120,11 +1146,12 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 				g.w.i32Const(int32(code[targetPos+1].Arg))
 				// else: right side
 				g.w.elseOp()
-				g.valTypes = savedTypes
+				g.restoreTypes(savedTypes)
 				g.emitStructured(code, i+1, jmpToEndPos, loopHeaders, blockTargets, panicTargets)
 				// end if
 				g.w.end()
 				g.blockStack = g.blockStack[0 : len(g.blockStack)-1]
+				g.restoreTypes(savedTypes)
 				g.pushType(WASM_TYPE_I32) // if/else produces i32
 				// Skip past LABEL endLabel
 				i = targetPos + 3
@@ -1177,11 +1204,12 @@ func (g *WasmGen) emitStructured(code []ir.Inst, start int, end int, loopHeaders
 				g.emitStructured(code, i+1, jmpToEndPos, loopHeaders, blockTargets, panicTargets)
 				// else: short-circuit value
 				g.w.elseOp()
-				g.valTypes = savedTypes
+				g.restoreTypes(savedTypes)
 				g.w.i32Const(int32(code[targetPos+1].Arg))
 				// end if
 				g.w.end()
 				g.blockStack = g.blockStack[0 : len(g.blockStack)-1]
+				g.restoreTypes(savedTypes)
 				g.pushType(WASM_TYPE_I32) // if/else produces i32
 				// Skip past LABEL endLabel
 				i = targetPos + 3
@@ -1287,7 +1315,6 @@ func (g *WasmGen) compilePanicUnwindCheckBranch(targetLabel int, dropCount int) 
 		}
 		i++
 	}
-
 	offsets := make([]int32, dropCount)
 	spillAddr := g.scratchAddr + 128
 	i = 0

@@ -401,22 +401,26 @@ func (g *CodeGen) emitBytes(bytes ...byte) {
 }
 
 func (g *CodeGen) emitU32(v uint32) {
-	start := len(g.code)
-	g.code = append(g.code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
-	g.traceRecordCode(start, len(g.code))
+	g.emitByte(byte(v))
+	g.emitByte(byte(v >> 8))
+	g.emitByte(byte(v >> 16))
+	g.emitByte(byte(v >> 24))
 }
 
 func (g *CodeGen) emitU16(v uint16) {
-	start := len(g.code)
-	g.code = append(g.code, byte(v), byte(v>>8))
-	g.traceRecordCode(start, len(g.code))
+	g.emitByte(byte(v))
+	g.emitByte(byte(v >> 8))
 }
 
 func (g *CodeGen) emitU64(v uint64) {
-	start := len(g.code)
-	g.code = append(g.code, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
-		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
-	g.traceRecordCode(start, len(g.code))
+	g.emitByte(byte(v))
+	g.emitByte(byte(v >> 8))
+	g.emitByte(byte(v >> 16))
+	g.emitByte(byte(v >> 24))
+	g.emitByte(byte(v >> 32))
+	g.emitByte(byte(v >> 40))
+	g.emitByte(byte(v >> 48))
+	g.emitByte(byte(v >> 56))
 }
 
 func (g *CodeGen) emitRodataU64(v uint64) {

@@ -709,6 +709,23 @@ func main() {
 		runCleanup()
 		os.Exit(0)
 	}
+	if dashInputCount > 1 {
+		fmt.Fprintf(os.Stderr, "at most one '-' input is allowed\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if dashInputCount == 1 {
+		if fromKind == "ir" {
+			if len(entryFiles) > 0 {
+				fmt.Fprintf(os.Stderr, "cannot combine -F ir stdin input with IR text file path\n")
+				runCleanup()
+				os.Exit(1)
+			}
+			fromIRTextPath = "-"
+		} else {
+			stdinInput = true
+		}
+	}
 	sourceLang, err = inferSourceLanguage(sourceLangExplicit, entryFiles)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rtg: %v\n", err)
@@ -850,7 +867,7 @@ func main() {
 		runCleanup()
 		os.Exit(1)
 	}
-	if extractStdlibDest == "" && profileReportPath == "" && fromIRBinaryPath == "" && len(entryFiles) == 0 {
+	if extractStdlibDest == "" && profileReportPath == "" && fromIRBinaryPath == "" && fromIRTextPath == "" && len(entryFiles) == 0 {
 		printHelp(os.Args[0], os.Stderr)
 		os.Exit(1)
 	}
@@ -1570,7 +1587,7 @@ func buildCompileAsArtifacts(baseTarget *common.Target, baseDir string, entryFil
 		if len(compileErrs) > 0 {
 			return nil, fmt.Errorf("id=%s target=%s compile failed: %s", spec.ID, spec.Target, summarizeErrors(compileErrs))
 		}
-		ir.EliminateDeadFunctions(innerIR, common.EntryFuncName(innerTarget))
+		ir.EliminateDeadFunctions(innerIR)
 
 		outPath := fmt.Sprintf("%s/%03d_%s%s", tmpDir, i, sanitizeCompileAsName(spec.ID), compileAsOutputExt(innerTarget))
 		if err := backend.Generate(innerTarget, innerIR, outPath); err != nil {

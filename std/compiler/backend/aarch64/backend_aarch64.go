@@ -13,6 +13,10 @@ import (
 // Uses X0-X3 as working registers, X28 as operand stack pointer,
 // X29 (FP) as frame pointer, X30 (LR) as link register.
 
+func (g *CodeGen) initOperandCacheArm64() {
+	g.configureOperandCache(REG_X26, REG_X27)
+}
+
 func (g *CodeGen) funcABIArm64(name string) string {
 	if g.irmod == nil || g.irmod.FuncABIs == nil {
 		return ""
@@ -232,8 +236,6 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 	}
 
 	g.curFunc = nil
-	g.shareReturnEpilogue = false
-	g.returnEpilogueOffset = -1
 }
 
 // compileInstArm64 generates ARM64 code for a single IR instruction.
