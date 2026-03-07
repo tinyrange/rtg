@@ -145,10 +145,7 @@ func loadFdAsHandle(g *core.CodeGen, localOffset int) {
 func emitSaveEDI(g *core.CodeGen) {
 	// mov eax, <ediSaveSlot offset>  (patched to data VA by PE builder)
 	g.EmitMovRegImm32(core.REG32_EAX, uint32(ediSaveSlot))
-	g.CallFixups = append(g.CallFixups, core.CallFixup{
-		CodeOffset: len(g.Code) - 4,
-		Target:     "$data_addr$",
-	})
+	g.CallFixups = append(g.CallFixups, core.CallFixup{len(g.Code) - 4, "$data_addr$", 0})
 	// mov [eax], edi
 	g.EmitBytes(0x89, 0x38)
 }
@@ -157,10 +154,7 @@ func emitSaveEDI(g *core.CodeGen) {
 func emitLoadEDI(g *core.CodeGen) {
 	// mov eax, <ediSaveSlot offset>  (patched to data VA by PE builder)
 	g.EmitMovRegImm32(core.REG32_EAX, uint32(ediSaveSlot))
-	g.CallFixups = append(g.CallFixups, core.CallFixup{
-		CodeOffset: len(g.Code) - 4,
-		Target:     "$data_addr$",
-	})
+	g.CallFixups = append(g.CallFixups, core.CallFixup{len(g.Code) - 4, "$data_addr$", 0})
 	// mov edi, [eax]
 	g.EmitBytes(0x8b, 0x38)
 }

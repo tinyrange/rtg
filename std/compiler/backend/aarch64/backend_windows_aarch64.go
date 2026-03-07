@@ -142,10 +142,7 @@ func (g *CodeGen) emitCallIATArm64InLib(libName string, funcName string) {
 	// LDR X16, [X16, #0] — placeholder
 	inst := uint32(0xF9400000) | (uint32(REG_X16&0x1f) << 5) | uint32(REG_X16&0x1f)
 	g.EmitArm64(inst)
-	g.callFixups = append(g.callFixups, CallFixup{
-		CodeOffset: off,
-		Target:     encodeIATFixupTargetArm64(libName, funcName),
-	})
+	g.callFixups = append(g.callFixups, CallFixup{off, encodeIATFixupTargetArm64(libName, funcName), 0})
 	g.EmitBlr(REG_X16)
 	g.emitAddImm(REG_SP, REG_SP, 32)
 }

@@ -74,3 +74,34 @@ type DispatchEntry struct {
 	TypeID   int
 	FuncName string
 }
+
+func SortDispatchEntries(entries []DispatchEntry) {
+	i := 1
+	for i < len(entries) {
+		key := entries[i]
+		j := i - 1
+		for j >= 0 {
+			if entries[j].TypeID < key.TypeID {
+				break
+			}
+			if entries[j].TypeID == key.TypeID && entries[j].FuncName <= key.FuncName {
+				break
+			}
+			entries[j+1] = entries[j]
+			j = j - 1
+		}
+		entries[j+1] = key
+		i = i + 1
+	}
+}
+
+// LookupStringMapLinear avoids relying on direct map indexing for synthesized
+// string keys in self-hosted backends.
+func LookupStringMapLinear(m map[string]string, key string) (string, bool) {
+	for k, v := range m {
+		if k == key {
+			return v, true
+		}
+	}
+	return "", false
+}

@@ -2772,7 +2772,7 @@ func (g *WasmGen) compileTostringDispatch(typeIDLocal uint32) {
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + ".Error"
-			if fnName, ok := g.irmod.MethodTable[candidate]; ok {
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
 				fn := findFunc(fnName)
 				if fn != nil && fn.Params == 1 && fn.RetCount == 1 {
 					entries = append(entries, becommon.DispatchEntry{tid, fnName})
@@ -2780,7 +2780,7 @@ func (g *WasmGen) compileTostringDispatch(typeIDLocal uint32) {
 				continue
 			}
 			candidate = typeName + ".String"
-			if fnName, ok := g.irmod.MethodTable[candidate]; ok {
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
 				fn := findFunc(fnName)
 				if fn != nil && fn.Params == 1 && fn.RetCount == 1 {
 					entries = append(entries, becommon.DispatchEntry{tid, fnName})
@@ -3495,7 +3495,7 @@ func (g *WasmGen) compileIfaceCall(inst ir.Inst) {
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + "." + bareMethod
-			funcName, ok := g.irmod.MethodTable[candidate]
+			funcName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate)
 			if !ok {
 				continue
 			}

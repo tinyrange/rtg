@@ -177,17 +177,17 @@ func (g *CodeGen) compileInst(inst ir.Inst) {
 		g.labelOffsets[inst.Arg] = len(g.code)
 	case ir.OP_JMP:
 		off := g.emitJalPlaceholder(REG_ZERO)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{CodeOffset: off, LabelID: inst.Arg})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{off, inst.Arg})
 	case ir.OP_JMP_IF:
 		g.rawPop(REG_T0)
 		g.emitBeq(REG_T0, REG_ZERO, 8)
 		off := g.emitJalPlaceholder(REG_ZERO)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{CodeOffset: off, LabelID: inst.Arg})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{off, inst.Arg})
 	case ir.OP_JMP_IF_NOT:
 		g.rawPop(REG_T0)
 		g.emitBne(REG_T0, REG_ZERO, 8)
 		off := g.emitJalPlaceholder(REG_ZERO)
-		g.jumpFixups = append(g.jumpFixups, JumpFixup{CodeOffset: off, LabelID: inst.Arg})
+		g.jumpFixups = append(g.jumpFixups, JumpFixup{off, inst.Arg})
 	case ir.OP_JMP_EQ, ir.OP_JMP_NEQ, ir.OP_JMP_LT, ir.OP_JMP_GT, ir.OP_JMP_LEQ, ir.OP_JMP_GEQ:
 		g.compileCompareJump(inst.Op, inst.Arg)
 
@@ -303,7 +303,7 @@ func (g *CodeGen) compileCompareJump(op ir.Opcode, label int) {
 		g.emitBne(REG_T2, REG_ZERO, 8)
 	}
 	off := g.emitJalPlaceholder(REG_ZERO)
-	g.jumpFixups = append(g.jumpFixups, JumpFixup{CodeOffset: off, LabelID: label})
+	g.jumpFixups = append(g.jumpFixups, JumpFixup{off, label})
 }
 
 func (g *CodeGen) compileCall(inst ir.Inst) {
@@ -518,7 +518,7 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 		for typeName, tid := range g.irmod.TypeIDs {
 			cand := typeName + "." + bare
 			if _, ok := g.irmod.MethodTable[cand]; ok {
-				entries = append(entries, becommon.DispatchEntry{TypeID: tid, FuncName: cand})
+				entries = append(entries, becommon.DispatchEntry{tid, cand})
 			}
 		}
 	}

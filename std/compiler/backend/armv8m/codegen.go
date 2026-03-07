@@ -1080,8 +1080,8 @@ func (g *CodeGen) collectDispatch(methodName string) []becommon.DispatchEntry {
 	if g.irmod != nil && g.irmod.TypeIDs != nil {
 		for typeName, tid := range g.irmod.TypeIDs {
 			candidate := typeName + "." + bareMethod
-			if _, ok := g.irmod.MethodTable[candidate]; ok {
-				out = append(out, becommon.DispatchEntry{TypeID: tid, FuncName: candidate})
+			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
+				out = append(out, becommon.DispatchEntry{TypeID: tid, FuncName: fnName})
 			}
 		}
 	}

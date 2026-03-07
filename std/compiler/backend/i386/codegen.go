@@ -145,10 +145,7 @@ func (g *CodeGen) emitRodataU32(v uint32) {
 func (g *CodeGen) emitCallPlaceholder(target string) {
 	g.flush()
 	g.emitBytes(0xe8) // call rel32
-	g.CallFixups = append(g.CallFixups, CallFixup{
-		CodeOffset: len(g.Code),
-		Target:     target,
-	})
+	g.CallFixups = append(g.CallFixups, CallFixup{len(g.Code), target, 0})
 	g.emitU32(0) // placeholder
 }
 
@@ -526,10 +523,7 @@ func (g *CodeGen) emitCallIAT(funcName string) {
 func (g *CodeGen) emitCallIATInLib(libName string, funcName string) {
 	g.flush()
 	g.emitBytes(0xFF, 0x15) // call dword ptr [abs32]
-	g.CallFixups = append(g.CallFixups, CallFixup{
-		CodeOffset: len(g.Code),
-		Target:     encodeIATFixupTarget(libName, funcName),
-	})
+	g.CallFixups = append(g.CallFixups, CallFixup{len(g.Code), encodeIATFixupTarget(libName, funcName), 0})
 	g.emitU32(0) // placeholder
 }
 
@@ -541,9 +535,6 @@ func (g *CodeGen) emitJmpIAT(funcName string) {
 func (g *CodeGen) emitJmpIATInLib(libName string, funcName string) {
 	g.flush()
 	g.emitBytes(0xFF, 0x25) // jmp dword ptr [abs32]
-	g.CallFixups = append(g.CallFixups, CallFixup{
-		CodeOffset: len(g.Code),
-		Target:     encodeIATFixupTarget(libName, funcName),
-	})
+	g.CallFixups = append(g.CallFixups, CallFixup{len(g.Code), encodeIATFixupTarget(libName, funcName), 0})
 	g.emitU32(0) // placeholder
 }

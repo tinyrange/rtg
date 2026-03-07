@@ -71,7 +71,7 @@ func collectWinImportsFromFixups(callFixups []core.CallFixup) []winImport {
 			continue
 		}
 		seen[key] = true
-		imports = append(imports, winImport{Library: lib, Symbol: sym})
+		imports = append(imports, winImport{lib, sym})
 	}
 
 	i := 1
@@ -97,10 +97,7 @@ func groupWinImports(imports []winImport) []winImportGroup {
 	var groups []winImportGroup
 	for _, imp := range imports {
 		if len(groups) == 0 || groups[len(groups)-1].Library != imp.Library {
-			groups = append(groups, winImportGroup{
-				Library: imp.Library,
-				Symbols: []string{imp.Symbol},
-			})
+			groups = append(groups, winImportGroup{imp.Library, []string{imp.Symbol}})
 			continue
 		}
 		groups[len(groups)-1].Symbols = append(groups[len(groups)-1].Symbols, imp.Symbol)
