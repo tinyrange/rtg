@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	irTextMagicLine = "rtgir 2"
+	irTextMagicLine = "rtgir 3"
 )
 
 var typeKindNames = []string{
@@ -1563,9 +1563,15 @@ func (d *textDecoder) consumeMapEntry(block string, tokens []string) error {
 
 func (d *textDecoder) consumeTokens(tokens []string) error {
 	if !d.seenHeader {
-		if len(tokens) == 2 && tokens[0] == "rtgir" && tokens[1] == "2" {
-			d.seenHeader = true
-			return nil
+		if len(tokens) == 2 && tokens[0] == "rtgir" {
+			if tokens[1] == "3" {
+				d.seenHeader = true
+				return nil
+			}
+			if tokens[1] == "2" {
+				return fmt.Errorf("unsupported text IR version %q: local float_kind metadata requires %q", tokens[1], irTextMagicLine)
+			}
+			return fmt.Errorf("unsupported text IR version %q", tokens[1])
 		}
 		return fmt.Errorf("expected %q header", irTextMagicLine)
 	}

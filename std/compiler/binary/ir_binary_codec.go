@@ -11,7 +11,8 @@ import (
 
 const IrBinaryEnabled = true
 
-var irBinaryMagic = []byte{'R', 'T', 'G', 'I', 'R', 'B', '1', 0}
+var irBinaryMagic = []byte{'R', 'T', 'G', 'I', 'R', 'B', '2', 0}
+var irBinaryLegacyMagic = []byte{'R', 'T', 'G', 'I', 'R', 'B', '1', 0}
 
 type irBinWriter struct {
 	buf []byte
@@ -306,12 +307,19 @@ func WriteIRBinary(irmod *ir.IRModule, path string) error {
 }
 
 func readIRMagic(r *irBinReader) error {
+	legacyMatch := true
 	for i := 0; i < len(irBinaryMagic); i++ {
 		b, err := r.readByte()
 		if err != nil {
 			return err
 		}
+		if legacyMatch && b != irBinaryLegacyMagic[i] {
+			legacyMatch = false
+		}
 		if b != irBinaryMagic[i] {
+			if legacyMatch && i == len(irBinaryMagic)-1 {
+				return fmt.Errorf("unsupported IR binary version 1: local float_kind metadata requires version 2")
+			}
 			return fmt.Errorf("invalid IR binary magic")
 		}
 	}
