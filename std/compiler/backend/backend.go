@@ -72,12 +72,14 @@ func Generate(tgt *common.Target, irmod *ir.IRModule, outputPath string) error {
 	if tgt.Backend == "ir" {
 		return irprint.Generate(irmod, outputPath)
 	}
-	if handled, err := targetcfg.Generate(triple, tgt, irmod, outputPath); handled {
-		return err
-	}
-	if spec, ok := targetcfg.Lookup(triple); ok {
-		if handled, err := generateRegisteredProfile(spec, tgt, irmod, outputPath); handled {
+	if !tgt.RelocatableObject {
+		if handled, err := targetcfg.Generate(triple, tgt, irmod, outputPath); handled {
 			return err
+		}
+		if spec, ok := targetcfg.Lookup(triple); ok {
+			if handled, err := generateRegisteredProfile(spec, tgt, irmod, outputPath); handled {
+				return err
+			}
 		}
 	}
 	switch tgt.GOARCH {

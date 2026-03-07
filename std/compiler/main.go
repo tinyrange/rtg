@@ -392,6 +392,7 @@ func main() {
 	var buildFilePath string
 	var buildList bool
 	var runMode bool
+	var objectMode bool
 	var testMode bool
 	var stdinInput bool
 	var dashInputCount int
@@ -449,6 +450,11 @@ func main() {
 			continue
 		case "-run":
 			runMode = true
+			i = i + 1
+			continue
+		case "-c":
+			objectMode = true
+			compileTarget.RelocatableObject = true
 			i = i + 1
 			continue
 		case "-test":
@@ -749,6 +755,16 @@ func main() {
 	}
 	if preprocessOnly && runMode {
 		fmt.Fprintf(os.Stderr, "-E cannot be combined with -run\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if objectMode && runMode {
+		fmt.Fprintf(os.Stderr, "-c cannot be combined with -run\n")
+		runCleanup()
+		os.Exit(1)
+	}
+	if objectMode && compileTarget.Backend != "native" {
+		fmt.Fprintf(os.Stderr, "-c is currently only supported for native targets\n")
 		runCleanup()
 		os.Exit(1)
 	}
@@ -1114,9 +1130,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 		}
 		traceExit(30)
-		ir.EliminateDeadFunctions(irmod, common.EntryFuncName(&compileTarget))
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
+		if !compileTarget.RelocatableObject {
+			ir.EliminateDeadFunctions(irmod)
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
+			}
+		} else if compileTarget.CompilerDebug {
+			fmt.Fprintf(os.Stderr, "debug: skipping DCE for relocatable object output\n")
 		}
 		traceExit(40)
 		if emitIRBinaryPath != "" {
@@ -1503,7 +1523,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -E                     C99 mode: preprocess only and emit tokens (stdout unless -o is set)\n")
 	fmt.Fprintf(out, "  -T <target>            Target triple or backend mode\n")
 	fmt.Fprintf(out, "  -emit-ir <path>        Emit textual IR for the selected target instead of native/C/VM output\n")
-	fmt.Fprintf(out, "  -emit-codegen-debug <p> Emit separate backend debug text (per-IR-instruction machine bytes where supported)\n")
+	fmt.Fprintf(out, "  -c                     Emit a relocatable object for supported native targets\n")
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -D <v>                 Go mode: key=value global define; C99 mode: macro define NAME or NAME=VALUE\n")
 	fmt.Fprintf(out, "  -U <name>              C99 mode: undefine macro\n")

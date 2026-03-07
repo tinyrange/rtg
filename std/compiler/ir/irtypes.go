@@ -218,6 +218,8 @@ type IRModule struct {
 	Funcs           []*IRFunc
 	Globals         []IRGlobal
 	Types           []*TypeInfo
+	FuncABIs        map[string]string   // function name -> ABI tag (for backend call/entry lowering)
+	FuncRetCounts   map[string]int      // function name -> declared return count, including extern metadata
 	LinkStaticFuncs map[string]string   // intrinsic name → "library,symbol,mode"
 	ZeroCallFuncs   map[string]bool     // function/method name → true when calls must be inlined
 	TypeIDs         map[string]int      // concrete type → type ID

@@ -10,6 +10,7 @@ type Target struct {
 	Backend               string // native, c, ir, or vm
 	CModel                int    // 16/32/64 when targetBackend==c
 	WordSize              int    // word size in bytes
+	RelocatableObject     bool
 	BuildTags             []string
 	Defines               map[string]string
 	Strict                bool

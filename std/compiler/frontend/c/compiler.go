@@ -351,6 +351,8 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		units:  units,
 		irmod: &ir.IRModule{
 			EntryFunc:       ir.DefaultEntryFunc,
+			FuncABIs:        make(map[string]string),
+			FuncRetCounts:   make(map[string]int),
 			TypeIDs:         make(map[string]int),
 			MethodTable:     make(map[string]string),
 			IfaceMethods:    make(map[string][]string),
@@ -397,6 +399,7 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		return nil, c.errors
 	}
 	c.assignFunctionIDs()
+	c.registerNativeFunctionMetadata()
 
 	c.finalizeTentativeGlobals()
 	c.emitGlobalInit()
@@ -406,7 +409,9 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		}
 		c.compileFunction(sig)
 	}
-	c.emitEntryWrapper()
+	if !c.objectMode() {
+		c.emitEntryWrapper()
+	}
 
 	if len(c.errors) > 0 {
 		cTypedefLookupCompiler = prevTypedefLookupCompiler
@@ -456,6 +461,47 @@ type compiler struct {
 	externDataTypes map[string]cTypeInfo
 
 	nextLabelSeq int
+}
+
+func (c *compiler) objectMode() bool {
+	return c != nil && c.target != nil && c.target.RelocatableObject
+}
+
+func (c *compiler) cSymbolName(name string) string {
+	if c.objectMode() {
+		return name
+	}
+	return "c." + name
+}
+
+func (c *compiler) useNativeFunctionABI() bool {
+	return c != nil && c.target != nil &&
+		c.target.Backend == "native" &&
+		c.target.GOOS == "darwin" &&
+		c.target.GOARCH == "arm64" &&
+		!c.target.RelocatableObject
+}
+
+func (c *compiler) registerNativeFunctionMetadata() {
+	if c.irmod == nil {
+		return
+	}
+	if c.irmod.FuncABIs == nil {
+		c.irmod.FuncABIs = make(map[string]string)
+	}
+	if c.irmod.FuncRetCounts == nil {
+		c.irmod.FuncRetCounts = make(map[string]int)
+	}
+	if !c.useNativeFunctionABI() {
+		return
+	}
+	for _, sig := range c.funcOrder {
+		if sig == nil || !sig.Defined || sig.Variadic {
+			continue
+		}
+		c.irmod.FuncABIs[sig.IRName] = "native-c-darwin-arm64"
+		c.irmod.FuncRetCounts[sig.IRName] = sig.RetCount
+	}
 }
 
 func (c *compiler) errorf(file string, line int, col int, format string, args ...interface{}) {
@@ -948,6 +994,7 @@ func (c *compiler) collectFunctionDef(file string, n *Node) {
 		c.errorf(file, n.Line, n.Col, "%v", err)
 		return
 	}
+	sig.IRName = c.cSymbolName(sig.Name)
 	sig.Defined = true
 	if len(n.Children) > 0 {
 		sig.Body = n.Children[0]
@@ -1015,6 +1062,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 	if !hasTypedef && fnLPar > 0 && toks[fnLPar-1].Kind == TokIdent && !isDeclarationKeyword(toks[fnLPar-1]) && looksLikeStandaloneFunctionDecl(toks, fnLPar) {
 		sig, err := parseFunctionSignature(file, n.Line, n.Col, toks)
 		if err == nil {
+			sig.IRName = c.cSymbolName(sig.Name)
 			if _, ok := c.funcs[sig.Name]; !ok {
 				sig.Defined = false
 				c.funcs[sig.Name] = sig
@@ -1082,7 +1130,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		if it.FuncSig != nil && it.Kind == cDeclScalar && it.PtrDepth == 0 {
 			sig := &cFuncSig{
 				Name:             it.Name,
-				IRName:           "c." + it.Name,
+				IRName:           c.cSymbolName(it.Name),
 				RetByPtr:         it.FuncSig.RetByPtr,
 				RetKind:          it.FuncSig.RetKind,
 				RetBase:          it.FuncSig.RetBase,
@@ -1240,7 +1288,7 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			continue
 		}
 		idx := len(c.irmod.Globals)
-		irName := "c." + it.Name
+		irName := c.cSymbolName(it.Name)
 		c.irmod.Globals = append(c.irmod.Globals, ir.IRGlobal{Name: irName, Index: idx})
 		c.globalIndex[it.Name] = idx
 		c.globalHasInit[it.Name] = len(it.Init) > 0
@@ -7809,6 +7857,13 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				fc.emitExpr(a)
 			}
 			if !sig.Defined {
+				if fc.c.objectMode() {
+					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: callArgCount})
+					if sig.RetCount == 0 {
+						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+					}
+					return
+				}
 				if fc.c.canCallExternOnTarget(sig.Name, sig.RetCount) {
 					wrap := fc.c.ensureExternWrapper(sig.Name, callArgCount, sig.RetCount)
 					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgCount})
@@ -7950,6 +8005,14 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				}
 			}
 			if !sig.Defined {
+				if fc.c.objectMode() {
+					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: callArgs})
+					if sig.RetCount == 0 {
+						fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+					}
+					fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
+					continue
+				}
 				if fc.c.canCallExternOnTarget(sig.Name, sig.RetCount) {
 					wrap := fc.c.ensureExternWrapper(sig.Name, callArgs, sig.RetCount)
 					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgs})

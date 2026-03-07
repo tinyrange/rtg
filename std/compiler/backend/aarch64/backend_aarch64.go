@@ -13,9 +13,22 @@ import (
 // Uses X0-X3 as working registers, X28 as operand stack pointer,
 // X29 (FP) as frame pointer, X30 (LR) as link register.
 
-// initOperandCacheArm64 configures the two-entry operand cache registers.
-func (g *CodeGen) initOperandCacheArm64() {
-	g.configureOperandCache(REG_X26, REG_X27)
+func (g *CodeGen) funcABIArm64(name string) string {
+	if g.irmod == nil || g.irmod.FuncABIs == nil {
+		return ""
+	}
+	return g.irmod.FuncABIs[name]
+}
+
+func (g *CodeGen) funcRetCountArm64(name string) int {
+	if g.irmod == nil || g.irmod.FuncRetCounts == nil {
+		return 0
+	}
+	return g.irmod.FuncRetCounts[name]
+}
+
+func (g *CodeGen) isNativeCABIArm64(name string) bool {
+	return g.funcABIArm64(name) == "native-c-darwin-arm64"
 }
 
 // CompileFuncArm64 generates ARM64 code for a single IR function.
@@ -69,14 +82,28 @@ func (g *CodeGen) CompileFuncArm64(f *ir.IRFunc) {
 		}
 	}
 
-	// Pop params from operand stack (X28) into local frame slots
-	if f.Params > 0 {
-		i := f.Params - 1
-		for i >= 0 {
-			g.opPop(REG_X0)
+	if g.isNativeCABIArm64(f.Name) {
+		i := 0
+		for i < f.Params {
 			offset := (i + 1) * 8
-			g.emitStoreLocalArm64(offset, REG_X0)
-			i = i - 1
+			if i < 8 {
+				g.emitStoreLocalArm64(offset, REG_X0+i)
+			} else {
+				g.emitLdr(REG_X16, REG_FP, 16+(i-8)*8)
+				g.emitStoreLocalArm64(offset, REG_X16)
+			}
+			i++
+		}
+	} else {
+		// Pop params from operand stack (X28) into local frame slots
+		if f.Params > 0 {
+			i := f.Params - 1
+			for i >= 0 {
+				g.opPop(REG_X0)
+				offset := (i + 1) * 8
+				g.emitStoreLocalArm64(offset, REG_X0)
+				i = i - 1
+			}
 		}
 	}
 
@@ -639,7 +666,43 @@ func (g *CodeGen) compileCallArm64(inst ir.Inst) {
 		g.compileCompositeLitCallArm64(inst)
 		return
 	}
+	if g.isNativeCABIArm64(inst.Name) {
+		g.compileNativeCallArm64(inst)
+		return
+	}
 	g.EmitCallPlaceholderArm64(inst.Name)
+}
+
+func (g *CodeGen) compileNativeCallArm64(inst ir.Inst) {
+	g.Flush()
+	stackArgs := 0
+	if inst.Arg > 8 {
+		stackArgs = inst.Arg - 8
+	}
+	frame := stackArgs * 8
+	if frame%16 != 0 {
+		frame += 8
+	}
+	if frame > 0 {
+		g.emitSubImm(REG_SP, REG_SP, uint32(frame))
+	}
+	i := inst.Arg - 1
+	for i >= 8 {
+		g.opPop(REG_X16)
+		g.EmitStr(REG_X16, REG_SP, (i-8)*8)
+		i--
+	}
+	for i >= 0 {
+		g.opPop(REG_X0 + i)
+		i--
+	}
+	g.EmitCallPlaceholderArm64(inst.Name)
+	if frame > 0 {
+		g.emitAddImm(REG_SP, REG_SP, uint32(frame))
+	}
+	if g.funcRetCountArm64(inst.Name) > 0 {
+		g.opPush(REG_X0)
+	}
 }
 
 func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
@@ -696,35 +759,14 @@ func (g *CodeGen) compileCompositeLitCallArm64(inst ir.Inst) {
 }
 
 func (g *CodeGen) compileReturnArm64(inst ir.Inst) {
-	g.Flush()
-	if g.curFunc != nil && g.shareReturnEpilogue {
-		if g.returnEpilogueOffset >= 0 {
-			fixup := g.emitB()
-			g.PatchArm64BAt(fixup, g.returnEpilogueOffset)
-			return
+	if g.curFunc != nil && g.isNativeCABIArm64(g.curFunc.Name) {
+		if g.curFunc.RetCount > 0 {
+			g.opPop(REG_X0)
 		}
-		g.returnEpilogueOffset = len(g.code)
-		g.emitFuncEpilogueArm64()
-		return
+		g.ClearOperandCache()
+	} else {
+		g.Flush()
 	}
-	g.emitFuncEpilogueArm64()
-}
-
-func shouldShareReturnEpilogueArm64(code []ir.Inst) bool {
-	returns := 0
-	for _, inst := range code {
-		if inst.Op != ir.OP_RETURN {
-			continue
-		}
-		returns++
-		if returns > 1 {
-			return true
-		}
-	}
-	return false
-}
-
-func (g *CodeGen) emitFuncEpilogueArm64() {
 	// Epilogue: MOV SP, FP; LDP FP, LR, [SP], #16; RET
 	g.EmitMovRRArm64(REG_SP, REG_FP)
 	g.EmitLdp(REG_FP, REG_LR, REG_SP, 16)

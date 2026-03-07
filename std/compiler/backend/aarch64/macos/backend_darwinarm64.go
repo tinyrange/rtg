@@ -18,6 +18,9 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 
 // GenerateDarwin compiles an IRModule to a macOS ARM64 Mach-O binary.
 func GenerateDarwin(target *common.Target, irmod *ir.IRModule, outputPath string) error {
+	if target.RelocatableObject {
+		return GenerateDarwinObject(target, irmod, outputPath)
+	}
 	g := aarch64.NewCodeGen(target, irmod, 0x100000000, 3, true)
 
 	// Emit entry point
