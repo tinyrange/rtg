@@ -17,5 +17,6 @@ char *strcat(char *dst, const char *src);
 char *strchr(const char *s, int ch);
 char *strrchr(const char *s, int ch);
 char *strstr(const char *haystack, const char *needle);
+char *strdup(const char *s);
 
 #endif

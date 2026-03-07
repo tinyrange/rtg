@@ -10,6 +10,12 @@ typedef struct __rtg_FILE FILE;
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+#define BUFSIZ 1024
+#define _IOFBF 0
+#define _IOLBF 1
+#define _IONBF 2
+#define L_tmpnam 1024
+#define TMP_MAX 238328
 
 extern FILE *stdin;
 extern FILE *stdout;

@@ -9,6 +9,8 @@
 #define O_NONBLOCK 4
 #define O_BINARY 0x8000
 #define _O_BINARY O_BINARY
+#define F_TLOCK 2
+#define F_TEST 3
 
 int fcntl(int fd, int cmd, ...);
 int _setmode(int fd, int mode);

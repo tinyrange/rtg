@@ -21,5 +21,6 @@ struct sockaddr_in {
 
 #define AF_INET 2
 #define INADDR_ANY ((in_addr_t)0)
+#define IPPROTO_TCP 6
 
 #endif

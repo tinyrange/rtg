@@ -241,6 +241,22 @@ func lookupBuiltinTypedefAlias(name string) (cTypeInfo, bool) {
 	switch name {
 	case "__builtin_va_list":
 		return cTypeInfo{Kind: cDeclPointer, PtrDepth: 1, IsVoid: true}, true
+	case "int8_t":
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarChar}, true
+	case "uint8_t":
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarUChar}, true
+	case "int16_t":
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarShort}, true
+	case "uint16_t":
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarUShort}, true
+	case "int32_t":
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
+	case "uint32_t":
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarUInt}, true
+	case "int64_t":
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarLong}, true
+	case "uint64_t":
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarULong}, true
 	default:
 		return cTypeInfo{}, false
 	}
@@ -1607,6 +1623,23 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		if i < len(sig.ParamFuncSigs) {
 			pfunc = sig.ParamFuncSigs[i]
 		}
+		if isAggregateObjectDecl(kind, ptrDepth, opaqueAggregate, aggregateKeyword, aggregateTag) {
+			addrName := fmt.Sprintf("$p%d$addr", i)
+			addrIdx := fc.addLocalDecl(addrName, cDeclPointer, cScalarInt, 1, int64(fc.c.target.PtrSize), 0, nil, nil, false, "", "", sig.File, sig.Line, sig.Col)
+			info := cTypeInfo{
+				Kind:             kind,
+				PtrDepth:         ptrDepth,
+				Base:             base,
+				FuncSig:          cloneFuncTypeSig(pfunc),
+				OpaqueAggregate:  opaqueAggregate,
+				AggregateKeyword: aggregateKeyword,
+				AggregateTag:     aggregateTag,
+			}
+			objIdx := fc.addLocalDecl(name, kind, base, ptrDepth, int64(fc.c.target.PtrSize), 0, nil, pfunc, opaqueAggregate, aggregateKeyword, aggregateTag, sig.File, sig.Line, sig.Col)
+			fc.initLocalAggregateObject(name, objIdx, info, nil, sig.File, sig.Line, sig.Col)
+			fc.emitCopyAggregateBytes(objIdx, addrIdx, fc.typeByteSize(info))
+			continue
+		}
 		fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, nil, pfunc, opaqueAggregate, aggregateKeyword, aggregateTag, sig.File, sig.Line, sig.Col)
 	}
 	if sig.Variadic {
@@ -1947,9 +1980,6 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				if pinfo.IsVoid && pinfo.Kind == cDeclScalar {
 					return nil, fmt.Errorf("function parameter %q cannot have type void", pname)
 				}
-				if isAggregateObjectType(pinfo) {
-					return nil, fmt.Errorf("function parameter %q passing %s %q by value is not yet supported", pname, pinfo.AggregateKeyword, pinfo.AggregateTag)
-				}
 				paramNames = append(paramNames, pname)
 				paramKinds = append(paramKinds, pinfo.Kind)
 				paramBases = append(paramBases, pinfo.Base)
@@ -2063,9 +2093,6 @@ func parseKNRFunctionParams(paramNameTokens []Token, declTokens []Token) ([]stri
 				info := declItemTypeInfo(it)
 				if info.IsVoid && info.Kind == cDeclScalar {
 					return nil, nil, nil, nil, nil, nil, nil, nil, false, fmt.Errorf("function parameter %q cannot have type void", it.Name)
-				}
-				if isAggregateObjectType(info) {
-					return nil, nil, nil, nil, nil, nil, nil, nil, false, fmt.Errorf("function parameter %q passing %s %q by value is not yet supported", it.Name, info.AggregateKeyword, info.AggregateTag)
 				}
 				paramTypes[it.Name] = info
 			}
@@ -2354,6 +2381,50 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 			return nil, 0, 0, nil, fmt.Errorf("%s does not allow typedef members", dctx)
 		}
 		if len(rest) == 0 {
+			if baseInfo.AggregateKeyword != "" && baseInfo.AggregateTag != "" && !baseInfo.OpaqueAggregate {
+				size, align, err := cTypeLayout(baseInfo)
+				if err != nil {
+					return nil, 0, 0, nil, fmt.Errorf("%s anonymous %s has unsupported type: %v", dctx, baseInfo.AggregateKeyword, err)
+				}
+				if align <= 0 {
+					align = 1
+				}
+				agg, ok := lookupAggregateAlias(baseInfo.AggregateKeyword, baseInfo.AggregateTag)
+				if !ok || len(agg.Fields) == 0 {
+					return nil, 0, 0, nil, fmt.Errorf("%s anonymous %s is incomplete", dctx, baseInfo.AggregateKeyword)
+				}
+				baseOffset := int64(0)
+				if keyword == "union" {
+					if size > maxSize {
+						maxSize = size
+					}
+				} else {
+					bitfieldOpen = false
+					bitfieldBitsUsed = 0
+					nextOffset = alignTo(nextOffset, align)
+					baseOffset = nextOffset
+					nextOffset += size
+					if nextOffset > maxSize {
+						maxSize = nextOffset
+					}
+				}
+				if align > maxAlign {
+					maxAlign = align
+				}
+				for _, nested := range agg.Fields {
+					if nested.Name == "" {
+						continue
+					}
+					if used[nested.Name] {
+						return nil, 0, 0, nil, fmt.Errorf("%s has duplicate member name %q", dctx, nested.Name)
+					}
+					field := nested
+					field.Offset += baseOffset
+					used[field.Name] = true
+					fields = append(fields, field)
+				}
+				continue
+			}
 			return nil, 0, 0, nil, fmt.Errorf("%s requires at least one declarator", dctx)
 		}
 		parts := splitTopLevel(rest, ",")
@@ -3368,9 +3439,6 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 				return nil, nil, nil, nil, nil, nil, nil, false, false, nil
 			}
 			return nil, nil, nil, nil, nil, nil, nil, false, false, fmt.Errorf("%s parameter %q cannot have type void", context, pname)
-		}
-		if isAggregateObjectType(pinfo) {
-			return nil, nil, nil, nil, nil, nil, nil, false, false, fmt.Errorf("%s does not support %s %q parameters passed by value", context, pinfo.AggregateKeyword, pinfo.AggregateTag)
 		}
 		if pfnSig != nil {
 			pfn := cloneFuncTypeSig(pfnSig)
@@ -4480,7 +4548,14 @@ func parseDeclItemsWithOptions(toks []Token, enumLookup map[string]int64, allowR
 		if len(rest) == 0 {
 			return nil, enumConsts, hasExtern, hasTypedef, nil
 		}
-		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, enumLookup, hasTypedef, hasTypedef || hasExtern, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
+		mergedEnumLookup := make(map[string]int64, len(enumLookup)+len(enumConsts))
+		for k, v := range enumLookup {
+			mergedEnumLookup[k] = v
+		}
+		for k, v := range enumConsts {
+			mergedEnumLookup[k] = v
+		}
+		items, err := parseDeclItemsWithBase(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, mergedEnumLookup, hasTypedef, hasTypedef || hasExtern, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
 		if err != nil {
 			return nil, nil, false, false, err
 		}
@@ -5632,7 +5707,25 @@ func (fc *funcCompiler) initLocalAggregateObject(name string, idx int, info cTyp
 	}
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: baseElem})
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
-	fc.emitAggregateObjectInitializer(name, idx, false, info, init, file, line, col)
+	init = trimTokens(init)
+	if len(init) == 0 {
+		return
+	}
+	if init[0].Kind == TokPunct && init[0].Text == "{" {
+		fc.emitAggregateObjectInitializer(name, idx, false, info, init, file, line, col)
+		return
+	}
+	ex := fc.parseExprTokens(file, line, col, init)
+	if ex == nil {
+		return
+	}
+	srcTmp := fc.allocTempLocal("$agg_init_src")
+	if !fc.emitAggregateExprAddress(ex) {
+		fc.errorf(file, line, col, "aggregate initializer for %s requires brace initializer or aggregate-valued expression", name)
+		return
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: srcTmp})
+	fc.emitCopyAggregateBytes(idx, srcTmp, size)
 }
 
 type cAggregateInitElem struct {
@@ -5857,7 +5950,17 @@ func (fc *funcCompiler) emitArrayInitializerAt(name string, baseIdx int, offset 
 				if isZeroInitializerExpr(part) {
 					continue
 				}
-				fc.errorf(file, line, col, "invalid aggregate initializer for %s: expected brace initializer list", name)
+				srcTmp := fc.allocTempLocal("$arr_agg_init_src")
+				ex := fc.parseExprTokens(file, line, col, part)
+				if ex == nil || !fc.emitAggregateExprAddress(ex) {
+					fc.errorf(file, line, col, "invalid aggregate initializer for %s: expected brace initializer list", name)
+					continue
+				}
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: srcTmp})
+				dstTmp := fc.allocTempLocal("$arr_agg_init_dst")
+				fc.emitBaseAddr(baseIdx, curOff)
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: dstTmp})
+				fc.emitCopyAggregateBytes(dstTmp, srcTmp, fc.typeByteSize(curInfo))
 				continue
 			}
 			fc.emitAggregateObjectInitializerAt(name, baseIdx, curOff, curInfo, part, file, line, col)
@@ -5948,6 +6051,23 @@ func (fc *funcCompiler) emitAggregateObjectInitializerAt(name string, baseIdx in
 			continue
 		}
 		if isAggregateObjectType(field.Type) {
+			if !isBraceInitializer(initElem.Init) {
+				if isZeroInitializerExpr(initElem.Init) {
+					continue
+				}
+				srcTmp := fc.allocTempLocal("$field_agg_init_src")
+				ex := fc.parseExprTokens(file, line, col, initElem.Init)
+				if ex == nil || !fc.emitAggregateExprAddress(ex) {
+					fc.errorf(file, line, col, "invalid aggregate initializer for %s: expected brace initializer list", name)
+					continue
+				}
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: srcTmp})
+				dstTmp := fc.allocTempLocal("$field_agg_init_dst")
+				fc.emitBaseAddr(baseIdx, fieldOff)
+				fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: dstTmp})
+				fc.emitCopyAggregateBytes(dstTmp, srcTmp, fc.typeByteSize(field.Type))
+				continue
+			}
 			fc.emitAggregateObjectInitializerAt(name, baseIdx, fieldOff, field.Type, initElem.Init, file, line, col)
 			continue
 		}
@@ -6672,6 +6792,18 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 			return true
 		}
 		if info.Kind == cDeclArray {
+			if info.ArrayLen == cArrayLenUnspecified {
+				if n, ok, err := inferArrayLengthFromInit(info.Base, ex.initTok, fc.enumLookupMap()); err != nil {
+					fc.errorf(fc.sig.File, 0, 0, "invalid compound literal array bound: %v", err)
+					return false
+				} else if ok {
+					info.ArrayLen = n
+				}
+			}
+			if info.ArrayLen == cArrayLenUnspecified {
+				fc.errorf(fc.sig.File, 0, 0, "compound literal array bounds must not be empty")
+				return false
+			}
 			idx := fc.addLocalDecl(tmpName, info.Kind, info.Base, info.PtrDepth, fc.typeByteSize(arrayElementTypeInfo(info)), info.ArrayLen, info.ArrayDims, cloneFuncTypeSig(info.FuncSig), info.OpaqueAggregate, info.AggregateKeyword, info.AggregateTag, fc.sig.File, 0, 0)
 			totalBytes := fc.typeByteSize(info)
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: totalBytes})
@@ -6692,6 +6824,14 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: idx})
 		return true
+	case exprAssign:
+		if info, ok := fc.exprTypeInfo(ex); ok && isAggregateObjectType(info) {
+			fc.emitExpr(ex)
+			return true
+		}
+		return false
+	case exprCall, exprConditional, exprComma:
+		return fc.emitAggregateExprAddress(ex)
 	default:
 		return false
 	}
@@ -7671,6 +7811,11 @@ func (fc *funcCompiler) checkCallArgsByType(calleeName string, paramCount int, p
 			ok = false
 			continue
 		}
+		if i < paramCount {
+			if got, ok := fc.exprTypeInfo(arg); ok && isAggregateObjectType(got) {
+				continue
+			}
+		}
 		if gotPtr {
 			// Preserve old C compatibility for pointer-to-integer parameter
 			// calls; later lowering keeps both as plain machine values.
@@ -7735,8 +7880,26 @@ func (fc *funcCompiler) callArgTargetType(sig *cFuncSig, argIdx int) (cTypeInfo,
 	return cTypeInfo{}, false
 }
 
+func (fc *funcCompiler) callArgRuntimeType(sig *cFuncSig, argIdx int) (cTypeInfo, bool) {
+	target, ok := fc.callArgTargetType(sig, argIdx)
+	if !ok {
+		return cTypeInfo{}, false
+	}
+	if isAggregateObjectType(target) {
+		return cTypeInfo{Kind: cDeclPointer, PtrDepth: 1, Base: cScalarInt}, true
+	}
+	return target, true
+}
+
 func (fc *funcCompiler) emitCallArgValue(sig *cFuncSig, arg *expr, argIdx int) {
 	if target, ok := fc.callArgTargetType(sig, argIdx); ok {
+		if isAggregateObjectType(target) {
+			if !fc.emitAggregateExprAddress(arg) {
+				fc.errorf(fc.sig.File, 0, 0, "aggregate argument %d must be addressable", argIdx+1)
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			}
+			return
+		}
 		fc.emitExprValueCast(arg, target)
 		return
 	}
@@ -7756,7 +7919,7 @@ func (fc *funcCompiler) emitCallArgValue(sig *cFuncSig, arg *expr, argIdx int) {
 }
 
 func (fc *funcCompiler) callArgValueType(sig *cFuncSig, arg *expr, argIdx int) (cTypeInfo, bool) {
-	if target, ok := fc.callArgTargetType(sig, argIdx); ok {
+	if target, ok := fc.callArgRuntimeType(sig, argIdx); ok {
 		return target, true
 	}
 	if sig != nil && sig.Variadic {
@@ -7838,8 +8001,8 @@ func (fc *funcCompiler) emitAggregateCallAddress(sig *cFuncSig, ex *expr) bool {
 	}
 	tmpIdx := fc.allocLocalAggregateTemp(retInfo, fmt.Sprintf("$call$ret$%d", fc.c.nextLabel()))
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
-	for _, a := range ex.args {
-		fc.emitExpr(a)
+	for i, a := range ex.args {
+		fc.emitCallArgValue(sig, a, i)
 	}
 	fc.emit(ir.Inst{Op: ir.OP_CALL, Name: sig.IRName, Arg: sig.ParamCount + 1})
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: tmpIdx})
@@ -7853,6 +8016,12 @@ func (fc *funcCompiler) emitAggregateExprAddress(ex *expr) bool {
 	switch ex.kind {
 	case exprComma:
 		return fc.emitAggregateExprAddress(ex.right)
+	case exprAssign:
+		if info, ok := fc.exprTypeInfo(ex); ok && isAggregateObjectType(info) {
+			fc.emitExpr(ex)
+			return true
+		}
+		return false
 	case exprConditional:
 		info, ok := fc.exprTypeInfo(ex)
 		if !ok || !isAggregateObjectType(info) || len(ex.args) < 2 {
@@ -8005,6 +8174,15 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		if v, ok := fc.lookupEnumConst(ex.name); ok {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
 			return
+		}
+		if _, ok := fc.c.funcs[ex.name]; ok {
+			if _, haveID := fc.c.funcIDs[ex.name]; !haveID {
+				fc.c.assignFunctionIDs()
+			}
+			if id, ok := fc.c.funcIDs[ex.name]; ok {
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: id})
+				return
+			}
 		}
 		if id, ok := fc.c.funcIDs[ex.name]; ok {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: id})
@@ -8563,8 +8741,11 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		fc.emitExprValueCast(ex.left, ex.typeInfo)
 	case exprCompoundLit:
 		if isAggregateObjectType(ex.typeInfo) || ex.typeInfo.Kind == cDeclArray {
-			fc.errorf(fc.sig.File, 0, 0, "compound literal value use for aggregate objects is not yet supported")
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			if !fc.emitAddressOf(ex) {
+				fc.errorf(fc.sig.File, 0, 0, "invalid compound literal")
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				break
+			}
 			break
 		}
 		if !fc.emitAddressOf(ex) {
