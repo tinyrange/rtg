@@ -40,6 +40,10 @@ type CodeGen struct {
 
 	// Number of locals (slots) in current function frame
 	CurFrameSize int
+	// Native-ABI object functions preserve the caller's EDI operand stack
+	// pointer and use a frame-local eval stack internally.
+	CurNativeSavedOpStackOffset int
+	CurNativeEvalSlots          int
 
 	// ELF layout constants
 	BaseAddr  uint64

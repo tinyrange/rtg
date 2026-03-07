@@ -249,6 +249,19 @@ test-c-native-object-link: build
   sh ./build/native_link_import
   sh echo "PASS: native darwin/arm64 C object linking OK"
 
+test-c-linux386-object-abi: build
+  sh ./build/rtg -x c99 -T linux/386 -c -o build/i386_obj_add.o tests/c/object/native_link_export.c
+  sh objdump -dr build/i386_obj_add.o > build/i386_obj_add.txt
+  sh grep '8b.*45.*08' build/i386_obj_add.txt
+  sh grep '8b.*45.*0c' build/i386_obj_add.txt
+  sh grep '89.*7d.*f4' build/i386_obj_add.txt
+  sh ./build/rtg -x c99 -T linux/386 -c -o build/i386_call_host.o tests/c/object/native_link_import.c
+  sh objdump -dr build/i386_call_host.o > build/i386_call_host.txt
+  sh grep 'pushl.*%eax' build/i386_call_host.txt
+  sh grep 'R_386_PC32.*host_mul2' build/i386_call_host.txt
+  sh grep 'addl.*0x4.*%esp' build/i386_call_host.txt
+  sh echo "PASS: linux/386 C object ABI smoke OK"
+
 test-c-frontend-ioccc: build
   sh go run ./tools/iocccscan
 

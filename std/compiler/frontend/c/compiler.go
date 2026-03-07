@@ -474,11 +474,17 @@ func (c *compiler) cSymbolName(name string) string {
 	return "c." + name
 }
 
-func (c *compiler) useNativeFunctionABI() bool {
-	return c != nil && c.target != nil &&
-		c.target.Backend == "native" &&
-		c.target.GOOS == "darwin" &&
-		c.target.GOARCH == "arm64"
+func (c *compiler) nativeFunctionABITag() string {
+	if c == nil || c.target == nil || c.target.Backend != "native" {
+		return ""
+	}
+	if c.target.GOOS == "darwin" && c.target.GOARCH == "arm64" {
+		return "native-c-darwin-arm64"
+	}
+	if c.target.GOOS == "linux" && c.target.GOARCH == "386" && c.target.RelocatableObject {
+		return "native-c-linux-386"
+	}
+	return ""
 }
 
 func (c *compiler) registerNativeFunctionMetadata() {
@@ -491,7 +497,8 @@ func (c *compiler) registerNativeFunctionMetadata() {
 	if c.irmod.FuncRetCounts == nil {
 		c.irmod.FuncRetCounts = make(map[string]int)
 	}
-	if !c.useNativeFunctionABI() {
+	abiTag := c.nativeFunctionABITag()
+	if abiTag == "" {
 		return
 	}
 	for _, sig := range c.funcOrder {
@@ -501,7 +508,7 @@ func (c *compiler) registerNativeFunctionMetadata() {
 		if !sig.Defined && !c.objectMode() {
 			continue
 		}
-		c.irmod.FuncABIs[sig.IRName] = "native-c-darwin-arm64"
+		c.irmod.FuncABIs[sig.IRName] = abiTag
 		c.irmod.FuncRetCounts[sig.IRName] = sig.RetCount
 	}
 }
