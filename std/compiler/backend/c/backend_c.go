@@ -376,6 +376,7 @@ func cEmitFloatBinaryOp(bp *strings.Builder, op ir.Opcode, floatName string) boo
 	default:
 		return false
 	}
+	// The IR pushes lhs then rhs, so rtg_pop() yields rhs before lhs.
 	cWritef(bp, "  a = rtg_pop(); c = rtg_pop(); rtg_push(%s((%s)%s(c) %s (%s)%s(a)));\n", pack, ctype, unpack, tok, ctype, unpack)
 	return true
 }
