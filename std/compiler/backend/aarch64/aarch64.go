@@ -36,6 +36,75 @@ const (
 	REG_XZR = 31 // zero register (context-dependent)
 )
 
+// Floating-point register constants (S0-S31 / D0-D31 share the same indices).
+const (
+	REG_S0  = 0
+	REG_S1  = 1
+	REG_S2  = 2
+	REG_S3  = 3
+	REG_S4  = 4
+	REG_S5  = 5
+	REG_S6  = 6
+	REG_S7  = 7
+	REG_S8  = 8
+	REG_S9  = 9
+	REG_S10 = 10
+	REG_S11 = 11
+	REG_S12 = 12
+	REG_S13 = 13
+	REG_S14 = 14
+	REG_S15 = 15
+	REG_S16 = 16
+	REG_S17 = 17
+	REG_S18 = 18
+	REG_S19 = 19
+	REG_S20 = 20
+	REG_S21 = 21
+	REG_S22 = 22
+	REG_S23 = 23
+	REG_S24 = 24
+	REG_S25 = 25
+	REG_S26 = 26
+	REG_S27 = 27
+	REG_S28 = 28
+	REG_S29 = 29
+	REG_S30 = 30
+	REG_S31 = 31
+
+	REG_D0  = 0
+	REG_D1  = 1
+	REG_D2  = 2
+	REG_D3  = 3
+	REG_D4  = 4
+	REG_D5  = 5
+	REG_D6  = 6
+	REG_D7  = 7
+	REG_D8  = 8
+	REG_D9  = 9
+	REG_D10 = 10
+	REG_D11 = 11
+	REG_D12 = 12
+	REG_D13 = 13
+	REG_D14 = 14
+	REG_D15 = 15
+	REG_D16 = 16
+	REG_D17 = 17
+	REG_D18 = 18
+	REG_D19 = 19
+	REG_D20 = 20
+	REG_D21 = 21
+	REG_D22 = 22
+	REG_D23 = 23
+	REG_D24 = 24
+	REG_D25 = 25
+	REG_D26 = 26
+	REG_D27 = 27
+	REG_D28 = 28
+	REG_D29 = 29
+	REG_D30 = 30
+	REG_D31 = 31
+)
+
 // Condition codes for B.cond / CSET
 const (
 	COND_EQ = 0x0 // equal
@@ -306,6 +375,27 @@ func (g *CodeGen) emitLdrb(rt, rn int, offset int) {
 	}
 }
 
+// emitLdr32 emits LDR Wt, [Xn, #offset] (zero-extend 32-bit word)
+func (g *CodeGen) emitLdr32(rt, rn int, offset int) {
+	if offset == 0 {
+		inst := uint32(0xB9400000) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	} else if offset > 0 && offset%4 == 0 && offset/4 < 4096 {
+		uimm := uint32(offset / 4)
+		inst := uint32(0xB9400000) | (uimm << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	} else if offset >= -256 && offset <= 255 {
+		simm9 := uint32(offset) & 0x1FF
+		inst := uint32(0xB8400000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	} else {
+		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
+		g.EmitAddRR(REG_X16, rn, REG_X16)
+		inst := uint32(0xB9400000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	}
+}
+
 // emitStrb emits STRB Wt, [Xn, #offset]
 func (g *CodeGen) emitStrb(rt, rn int, offset int) {
 	if offset >= 0 && offset < 4096 {
@@ -319,6 +409,27 @@ func (g *CodeGen) emitStrb(rt, rn int, offset int) {
 		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
 		g.EmitAddRR(REG_X16, rn, REG_X16)
 		inst := uint32(0x39000000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	}
+}
+
+// emitStr32 emits STR Wt, [Xn, #offset]
+func (g *CodeGen) emitStr32(rt, rn int, offset int) {
+	if offset == 0 {
+		inst := uint32(0xB9000000) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	} else if offset > 0 && offset%4 == 0 && offset/4 < 4096 {
+		uimm := uint32(offset / 4)
+		inst := uint32(0xB9000000) | (uimm << 10) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	} else if offset >= -256 && offset <= 255 {
+		simm9 := uint32(offset) & 0x1FF
+		inst := uint32(0xB8000000) | (simm9 << 12) | (uint32(rn&0x1f) << 5) | uint32(rt&0x1f)
+		g.EmitArm64(inst)
+	} else {
+		g.EmitLoadImm64Compact(REG_X16, uint64(int64(offset)))
+		g.EmitAddRR(REG_X16, rn, REG_X16)
+		inst := uint32(0xB9000000) | (uint32(REG_X16&0x1f) << 5) | uint32(rt&0x1f)
 		g.EmitArm64(inst)
 	}
 }
@@ -415,6 +526,12 @@ func (g *CodeGen) emitUxtb(rd, rn int) {
 	g.EmitArm64(inst)
 }
 
+// emitSxtb emits SXTB Xd, Xn (sign-extend byte)
+func (g *CodeGen) emitSxtb(rd, rn int) {
+	inst := uint32(0x93401C00) | (uint32(rn&0x1f) << 5) | uint32(rd&0x1f)
+	g.EmitArm64(inst)
+}
+
 // emitUxth emits UXTH Xd, Xn (zero-extend halfword)
 func (g *CodeGen) emitUxth(rd, rn int) {
 	// UXTH Wd, Wn = UBFM Wd, Wn, #0, #15
@@ -441,6 +558,142 @@ func (g *CodeGen) emitSxtw(rd, rn int) {
 func (g *CodeGen) emitUxtw(rd, rn int) {
 	// Use 32-bit ORR: MOV Wd, Wn = ORR Wd, WZR, Wn (zero-extends)
 	inst := uint32(0x2A0003E0) | (uint32(rn&0x1f) << 16) | uint32(rd&0x1f)
+	g.EmitArm64(inst)
+}
+
+// === Floating-point register moves ===
+
+func (g *CodeGen) emitFmovDFromX(fd, xn int) {
+	inst := uint32(0x9E670000) | (uint32(xn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFmovXFromD(xd, fn int) {
+	inst := uint32(0x9E660000) | (uint32(fn&0x1f) << 5) | uint32(xd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFmovSFromW(fs, wn int) {
+	inst := uint32(0x1E270000) | (uint32(wn&0x1f) << 5) | uint32(fs&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFmovWFromS(wd, fn int) {
+	inst := uint32(0x1E260000) | (uint32(fn&0x1f) << 5) | uint32(wd&0x1f)
+	g.EmitArm64(inst)
+}
+
+// === Floating-point arithmetic ===
+
+func (g *CodeGen) emitFaddD(fd, fn, fm int) {
+	inst := uint32(0x1E602800) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFaddS(fd, fn, fm int) {
+	inst := uint32(0x1E202800) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFsubD(fd, fn, fm int) {
+	inst := uint32(0x1E603800) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFsubS(fd, fn, fm int) {
+	inst := uint32(0x1E203800) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFmulD(fd, fn, fm int) {
+	inst := uint32(0x1E600800) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFmulS(fd, fn, fm int) {
+	inst := uint32(0x1E200800) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFdivD(fd, fn, fm int) {
+	inst := uint32(0x1E601800) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFdivS(fd, fn, fm int) {
+	inst := uint32(0x1E201800) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFnegD(fd, fn int) {
+	inst := uint32(0x1E614000) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFnegS(fd, fn int) {
+	inst := uint32(0x1E214000) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFcmpD(fn, fm int) {
+	inst := uint32(0x1E602000) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFcmpS(fn, fm int) {
+	inst := uint32(0x1E202000) | (uint32(fm&0x1f) << 16) | (uint32(fn&0x1f) << 5)
+	g.EmitArm64(inst)
+}
+
+// === Floating-point conversions ===
+
+func (g *CodeGen) emitScvtfDFromX(fd, xn int) {
+	inst := uint32(0x9E620000) | (uint32(xn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitUcvtfDFromX(fd, xn int) {
+	inst := uint32(0x9E630000) | (uint32(xn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitScvtfSFromW(fd, wn int) {
+	inst := uint32(0x1E220000) | (uint32(wn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitUcvtfSFromW(fd, wn int) {
+	inst := uint32(0x1E230000) | (uint32(wn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFcvtzsXFromD(xd, fn int) {
+	inst := uint32(0x9E780000) | (uint32(fn&0x1f) << 5) | uint32(xd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFcvtzuXFromD(xd, fn int) {
+	inst := uint32(0x9E790000) | (uint32(fn&0x1f) << 5) | uint32(xd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFcvtzsWFromS(wd, fn int) {
+	inst := uint32(0x1E380000) | (uint32(fn&0x1f) << 5) | uint32(wd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFcvtzuWFromS(wd, fn int) {
+	inst := uint32(0x1E390000) | (uint32(fn&0x1f) << 5) | uint32(wd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFcvtSToD(fd, fn int) {
+	inst := uint32(0x1E22C000) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
+	g.EmitArm64(inst)
+}
+
+func (g *CodeGen) emitFcvtDToS(fd, fn int) {
+	inst := uint32(0x1E624000) | (uint32(fn&0x1f) << 5) | uint32(fd&0x1f)
 	g.EmitArm64(inst)
 }
 

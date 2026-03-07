@@ -140,6 +140,10 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 	switch inst.Op {
 	case ir.OP_CONST_I64:
 		g.compileConstI64Arm64(inst.Val)
+	case ir.OP_CONST_F32:
+		g.compileConstF32Arm64(inst.Name)
+	case ir.OP_CONST_F64:
+		g.compileConstF64Arm64(inst.Name)
 	case ir.OP_CONST_BOOL:
 		if inst.Arg != 0 {
 			g.compileConstI64Arm64(1)
@@ -174,27 +178,59 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 		g.opPush(REG_X0)
 
 	case ir.OP_ADD, ir.OP_SUB, ir.OP_MUL, ir.OP_DIV, ir.OP_MOD:
-		g.compileBinOpArm64(inst.Op)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatBinOpArm64(inst.Op, inst.Name)
+		} else {
+			g.compileBinOpArm64(inst.Op)
+		}
 	case ir.OP_NEG:
-		g.opPop(REG_X0)
-		g.emitNeg(REG_X0, REG_X0)
-		g.opPush(REG_X0)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatNegArm64(inst.Name)
+		} else {
+			g.opPop(REG_X0)
+			g.emitNeg(REG_X0, REG_X0)
+			g.opPush(REG_X0)
+		}
 
 	case ir.OP_AND, ir.OP_OR, ir.OP_XOR, ir.OP_SHL, ir.OP_SHR:
 		g.compileBinOpArm64(inst.Op)
 
 	case ir.OP_EQ:
-		g.compileCompareArm64(COND_EQ)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareArm64(inst.Op, inst.Name)
+		} else {
+			g.compileCompareArm64(COND_EQ)
+		}
 	case ir.OP_NEQ:
-		g.compileCompareArm64(COND_NE)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareArm64(inst.Op, inst.Name)
+		} else {
+			g.compileCompareArm64(COND_NE)
+		}
 	case ir.OP_LT:
-		g.compileCompareArm64(COND_LT)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareArm64(inst.Op, inst.Name)
+		} else {
+			g.compileCompareArm64(COND_LT)
+		}
 	case ir.OP_GT:
-		g.compileCompareArm64(COND_GT)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareArm64(inst.Op, inst.Name)
+		} else {
+			g.compileCompareArm64(COND_GT)
+		}
 	case ir.OP_LEQ:
-		g.compileCompareArm64(COND_LE)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareArm64(inst.Op, inst.Name)
+		} else {
+			g.compileCompareArm64(COND_LE)
+		}
 	case ir.OP_GEQ:
-		g.compileCompareArm64(COND_GE)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareArm64(inst.Op, inst.Name)
+		} else {
+			g.compileCompareArm64(COND_GE)
+		}
 
 	case ir.OP_NOT:
 		g.opPop(REG_X0)
@@ -221,17 +257,41 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 		fixup := g.emitBCond(COND_EQ)
 		g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, inst.Arg, 0, 0})
 	case ir.OP_JMP_EQ:
-		g.compileCompareJumpArm64(COND_EQ, inst.Arg)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareJumpArm64(inst.Op, inst.Arg, inst.Name)
+		} else {
+			g.compileCompareJumpArm64(COND_EQ, inst.Arg)
+		}
 	case ir.OP_JMP_NEQ:
-		g.compileCompareJumpArm64(COND_NE, inst.Arg)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareJumpArm64(inst.Op, inst.Arg, inst.Name)
+		} else {
+			g.compileCompareJumpArm64(COND_NE, inst.Arg)
+		}
 	case ir.OP_JMP_LT:
-		g.compileCompareJumpArm64(COND_LT, inst.Arg)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareJumpArm64(inst.Op, inst.Arg, inst.Name)
+		} else {
+			g.compileCompareJumpArm64(COND_LT, inst.Arg)
+		}
 	case ir.OP_JMP_GT:
-		g.compileCompareJumpArm64(COND_GT, inst.Arg)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareJumpArm64(inst.Op, inst.Arg, inst.Name)
+		} else {
+			g.compileCompareJumpArm64(COND_GT, inst.Arg)
+		}
 	case ir.OP_JMP_LEQ:
-		g.compileCompareJumpArm64(COND_LE, inst.Arg)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareJumpArm64(inst.Op, inst.Arg, inst.Name)
+		} else {
+			g.compileCompareJumpArm64(COND_LE, inst.Arg)
+		}
 	case ir.OP_JMP_GEQ:
-		g.compileCompareJumpArm64(COND_GE, inst.Arg)
+		if isFloatTypeNameArm64(inst.Name) {
+			g.compileFloatCompareJumpArm64(inst.Op, inst.Arg, inst.Name)
+		} else {
+			g.compileCompareJumpArm64(COND_GE, inst.Arg)
+		}
 
 	case ir.OP_CALL:
 		g.compileCallArm64(inst)
@@ -254,7 +314,7 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 		g.compileCapArm64(inst)
 
 	case ir.OP_CONVERT:
-		g.compileConvertArm64(inst.Name)
+		g.compileConvertArm64(inst)
 
 	case ir.OP_IFACE_BOX:
 		g.compileIfaceBoxArm64(inst)
@@ -282,6 +342,26 @@ func (g *CodeGen) compileInstArm64(inst ir.Inst) {
 func (g *CodeGen) compileConstI64Arm64(val int64) {
 	g.prepareForClobber(REG_X0)
 	g.EmitLoadImm64Compact(REG_X0, uint64(val))
+	g.opPush(REG_X0)
+}
+
+func (g *CodeGen) compileConstF32Arm64(lit string) {
+	g.prepareForClobber(REG_X0)
+	bits, ok := parseFloatLiteralBitsArm64(lit)
+	if !ok {
+		bits = 0
+	}
+	g.EmitLoadImm64Compact(REG_X0, uint64(float32BitsFromFloat64Bits(bits)))
+	g.opPush(REG_X0)
+}
+
+func (g *CodeGen) compileConstF64Arm64(lit string) {
+	g.prepareForClobber(REG_X0)
+	bits, ok := parseFloatLiteralBitsArm64(lit)
+	if !ok {
+		bits = 0
+	}
+	g.EmitLoadImm64Compact(REG_X0, bits)
 	g.opPush(REG_X0)
 }
 
@@ -418,6 +498,86 @@ func (g *CodeGen) compileBinOpArm64(op ir.Opcode) {
 	g.opPush(REG_X1)
 }
 
+func isFloatTypeNameArm64(name string) bool {
+	return name == "float32" || name == "float64"
+}
+
+func floatCompareCondArm64(op ir.Opcode) int {
+	switch op {
+	case ir.OP_EQ, ir.OP_JMP_EQ:
+		return COND_EQ
+	case ir.OP_NEQ, ir.OP_JMP_NEQ:
+		return COND_NE
+	case ir.OP_LT, ir.OP_JMP_LT:
+		return COND_MI
+	case ir.OP_GT, ir.OP_JMP_GT:
+		return COND_GT
+	case ir.OP_LEQ, ir.OP_JMP_LEQ:
+		return COND_LS
+	case ir.OP_GEQ, ir.OP_JMP_GEQ:
+		return COND_GE
+	default:
+		panic("ICE: unsupported float compare opcode")
+	}
+}
+
+func (g *CodeGen) compileFloatBinOpArm64(op ir.Opcode, floatKind string) {
+	g.opPop(REG_X0)
+	g.opPop(REG_X1)
+
+	if floatKind == "float32" {
+		g.emitFmovSFromW(REG_S0, REG_X1)
+		g.emitFmovSFromW(REG_S1, REG_X0)
+		switch op {
+		case ir.OP_ADD:
+			g.emitFaddS(REG_S0, REG_S0, REG_S1)
+		case ir.OP_SUB:
+			g.emitFsubS(REG_S0, REG_S0, REG_S1)
+		case ir.OP_MUL:
+			g.emitFmulS(REG_S0, REG_S0, REG_S1)
+		case ir.OP_DIV:
+			g.emitFdivS(REG_S0, REG_S0, REG_S1)
+		default:
+			panic("ICE: unsupported float32 binop")
+		}
+		g.emitFmovWFromS(REG_X1, REG_S0)
+		g.opPush(REG_X1)
+		return
+	}
+
+	g.emitFmovDFromX(REG_D0, REG_X1)
+	g.emitFmovDFromX(REG_D1, REG_X0)
+	switch op {
+	case ir.OP_ADD:
+		g.emitFaddD(REG_D0, REG_D0, REG_D1)
+	case ir.OP_SUB:
+		g.emitFsubD(REG_D0, REG_D0, REG_D1)
+	case ir.OP_MUL:
+		g.emitFmulD(REG_D0, REG_D0, REG_D1)
+	case ir.OP_DIV:
+		g.emitFdivD(REG_D0, REG_D0, REG_D1)
+	default:
+		panic("ICE: unsupported float64 binop")
+	}
+	g.emitFmovXFromD(REG_X1, REG_D0)
+	g.opPush(REG_X1)
+}
+
+func (g *CodeGen) compileFloatNegArm64(floatKind string) {
+	g.opPop(REG_X0)
+	if floatKind == "float32" {
+		g.emitFmovSFromW(REG_S0, REG_X0)
+		g.emitFnegS(REG_S0, REG_S0)
+		g.emitFmovWFromS(REG_X0, REG_S0)
+		g.opPush(REG_X0)
+		return
+	}
+	g.emitFmovDFromX(REG_D0, REG_X0)
+	g.emitFnegD(REG_D0, REG_D0)
+	g.emitFmovXFromD(REG_X0, REG_D0)
+	g.opPush(REG_X0)
+}
+
 // === Comparison operations ===
 
 func (g *CodeGen) compileCompareArm64(cond int) {
@@ -434,6 +594,39 @@ func (g *CodeGen) compileCompareJumpArm64(cond int, label int) {
 	g.emitCmpRR(REG_X1, REG_X0)
 	g.Flush()
 	fixup := g.emitBCond(cond)
+	g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, label, 0, 0})
+}
+
+func (g *CodeGen) compileFloatCompareArm64(op ir.Opcode, floatKind string) {
+	g.opPop(REG_X0)
+	g.opPop(REG_X1)
+	if floatKind == "float32" {
+		g.emitFmovSFromW(REG_S0, REG_X1)
+		g.emitFmovSFromW(REG_S1, REG_X0)
+		g.emitFcmpS(REG_S0, REG_S1)
+	} else {
+		g.emitFmovDFromX(REG_D0, REG_X1)
+		g.emitFmovDFromX(REG_D1, REG_X0)
+		g.emitFcmpD(REG_D0, REG_D1)
+	}
+	g.emitCset(REG_X1, floatCompareCondArm64(op))
+	g.opPush(REG_X1)
+}
+
+func (g *CodeGen) compileFloatCompareJumpArm64(op ir.Opcode, label int, floatKind string) {
+	g.opPop(REG_X0)
+	g.opPop(REG_X1)
+	if floatKind == "float32" {
+		g.emitFmovSFromW(REG_S0, REG_X1)
+		g.emitFmovSFromW(REG_S1, REG_X0)
+		g.emitFcmpS(REG_S0, REG_S1)
+	} else {
+		g.emitFmovDFromX(REG_D0, REG_X1)
+		g.emitFmovDFromX(REG_D1, REG_X0)
+		g.emitFcmpD(REG_D0, REG_D1)
+	}
+	g.Flush()
+	fixup := g.emitBCond(floatCompareCondArm64(op))
 	g.jumpFixups = append(g.jumpFixups, JumpFixup{fixup, label, 0, 0})
 }
 
@@ -926,6 +1119,8 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 	if ir.IsNonNilMemoryBase(inst.Name) {
 		if size == 1 {
 			g.emitLdrb(REG_X0, REG_X1, offset)
+		} else if size == 4 {
+			g.emitLdr32(REG_X0, REG_X1, offset)
 		} else {
 			g.emitLdr(REG_X0, REG_X1, offset)
 		}
@@ -941,6 +1136,8 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 	g.patchArm64BCondAt(loadFixup, len(g.code))
 	if size == 1 {
 		g.emitLdrb(REG_X0, REG_X1, offset)
+	} else if size == 4 {
+		g.emitLdr32(REG_X0, REG_X1, offset)
 	} else {
 		g.emitLdr(REG_X0, REG_X1, offset)
 	}
@@ -955,6 +1152,8 @@ func (g *CodeGen) compileStoreArm64(inst ir.Inst) {
 	g.opPop(REG_X0) // value
 	if size == 1 {
 		g.emitStrb(REG_X0, REG_X1, offset)
+	} else if size == 4 {
+		g.emitStr32(REG_X0, REG_X1, offset)
 	} else {
 		g.EmitStr(REG_X0, REG_X1, offset)
 	}
@@ -1033,42 +1232,424 @@ func (g *CodeGen) compileCapArm64(inst ir.Inst) {
 
 // === Type conversions ===
 
-func (g *CodeGen) compileConvertArm64(typeName string) {
+func normalizeIntWidthArm64(g *CodeGen, reg int, width int, signed bool) {
+	switch width {
+	case 1:
+		if signed {
+			g.emitSxtb(reg, reg)
+		} else {
+			g.emitUxtb(reg, reg)
+		}
+	case 2:
+		if signed {
+			g.emitSxth(reg, reg)
+		} else {
+			g.emitUxth(reg, reg)
+		}
+	case 4:
+		if signed {
+			g.emitSxtw(reg, reg)
+		} else {
+			g.emitUxtw(reg, reg)
+		}
+	}
+}
+
+func lowerFloatSrcToDArm64(g *CodeGen, srcKind int64) {
+	switch srcKind {
+	case ir.CONVERT_SRC_FLOAT32:
+		g.emitFmovSFromW(REG_S0, REG_X0)
+		g.emitFcvtSToD(REG_D0, REG_S0)
+	case ir.CONVERT_SRC_FLOAT64:
+		g.emitFmovDFromX(REG_D0, REG_X0)
+	default:
+		panic("ICE: expected float conversion source")
+	}
+}
+
+func (g *CodeGen) compileConvertArm64(inst ir.Inst) {
+	typeName := inst.Name
 	switch typeName {
 	case "string":
 		g.EmitCallPlaceholderArm64("runtime.BytesToString")
 	case "[]byte":
 		g.EmitCallPlaceholderArm64("runtime.StringToBytes")
 	case "int", "uintptr", "uint", "int64", "uint64":
-		// No-op
+		if inst.Val == ir.CONVERT_SRC_FLOAT32 || inst.Val == ir.CONVERT_SRC_FLOAT64 {
+			g.opPop(REG_X0)
+			lowerFloatSrcToDArm64(g, inst.Val)
+			if typeName == "uint" || typeName == "uintptr" || typeName == "uint64" {
+				g.emitFcvtzuXFromD(REG_X0, REG_D0)
+			} else {
+				g.emitFcvtzsXFromD(REG_X0, REG_D0)
+			}
+			g.opPush(REG_X0)
+		}
 	case "byte":
 		g.opPop(REG_X0)
+		if inst.Val == ir.CONVERT_SRC_FLOAT32 || inst.Val == ir.CONVERT_SRC_FLOAT64 {
+			lowerFloatSrcToDArm64(g, inst.Val)
+			g.emitFcvtzuXFromD(REG_X0, REG_D0)
+		}
 		g.emitUxtb(REG_X0, REG_X0)
 		g.opPush(REG_X0)
 	case "uint8":
 		g.opPop(REG_X0)
+		if inst.Val == ir.CONVERT_SRC_FLOAT32 || inst.Val == ir.CONVERT_SRC_FLOAT64 {
+			lowerFloatSrcToDArm64(g, inst.Val)
+			g.emitFcvtzuXFromD(REG_X0, REG_D0)
+		}
 		g.emitUxtb(REG_X0, REG_X0)
 		g.opPush(REG_X0)
 	case "int8":
 		g.opPop(REG_X0)
-		// TODO: sign-ext byte helper can be added when needed; keep narrowing semantics.
-		g.emitUxtb(REG_X0, REG_X0)
+		if inst.Val == ir.CONVERT_SRC_FLOAT32 || inst.Val == ir.CONVERT_SRC_FLOAT64 {
+			lowerFloatSrcToDArm64(g, inst.Val)
+			g.emitFcvtzsXFromD(REG_X0, REG_D0)
+		}
+		g.emitSxtb(REG_X0, REG_X0)
 		g.opPush(REG_X0)
 	case "uint16":
 		g.opPop(REG_X0)
+		if inst.Val == ir.CONVERT_SRC_FLOAT32 || inst.Val == ir.CONVERT_SRC_FLOAT64 {
+			lowerFloatSrcToDArm64(g, inst.Val)
+			g.emitFcvtzuXFromD(REG_X0, REG_D0)
+		}
 		g.emitUxth(REG_X0, REG_X0)
 		g.opPush(REG_X0)
 	case "int16":
 		g.opPop(REG_X0)
+		if inst.Val == ir.CONVERT_SRC_FLOAT32 || inst.Val == ir.CONVERT_SRC_FLOAT64 {
+			lowerFloatSrcToDArm64(g, inst.Val)
+			g.emitFcvtzsXFromD(REG_X0, REG_D0)
+		}
 		g.emitSxth(REG_X0, REG_X0)
 		g.opPush(REG_X0)
 	case "int32":
 		g.opPop(REG_X0)
+		if inst.Val == ir.CONVERT_SRC_FLOAT32 || inst.Val == ir.CONVERT_SRC_FLOAT64 {
+			lowerFloatSrcToDArm64(g, inst.Val)
+			g.emitFcvtzsXFromD(REG_X0, REG_D0)
+		}
 		g.emitSxtw(REG_X0, REG_X0)
 		g.opPush(REG_X0)
 	case "uint32":
 		g.opPop(REG_X0)
+		if inst.Val == ir.CONVERT_SRC_FLOAT32 || inst.Val == ir.CONVERT_SRC_FLOAT64 {
+			lowerFloatSrcToDArm64(g, inst.Val)
+			g.emitFcvtzuXFromD(REG_X0, REG_D0)
+		}
 		g.emitUxtw(REG_X0, REG_X0)
 		g.opPush(REG_X0)
+	case "float32":
+		g.opPop(REG_X0)
+		switch inst.Val {
+		case ir.CONVERT_SRC_FLOAT32:
+			g.opPush(REG_X0)
+		case ir.CONVERT_SRC_FLOAT64:
+			g.emitFmovDFromX(REG_D0, REG_X0)
+			g.emitFcvtDToS(REG_S0, REG_D0)
+			g.emitFmovWFromS(REG_X0, REG_S0)
+			g.opPush(REG_X0)
+		default:
+			signed := inst.Val != ir.CONVERT_SRC_UINT
+			width := inst.Width
+			if width <= 0 {
+				width = 8
+			}
+			normalizeIntWidthArm64(g, REG_X0, width, signed)
+			if signed {
+				g.emitScvtfDFromX(REG_D0, REG_X0)
+			} else {
+				g.emitUcvtfDFromX(REG_D0, REG_X0)
+			}
+			g.emitFcvtDToS(REG_S0, REG_D0)
+			g.emitFmovWFromS(REG_X0, REG_S0)
+			g.opPush(REG_X0)
+		}
+	case "float64":
+		g.opPop(REG_X0)
+		switch inst.Val {
+		case ir.CONVERT_SRC_FLOAT64:
+			g.opPush(REG_X0)
+		case ir.CONVERT_SRC_FLOAT32:
+			g.emitFmovSFromW(REG_S0, REG_X0)
+			g.emitFcvtSToD(REG_D0, REG_S0)
+			g.emitFmovXFromD(REG_X0, REG_D0)
+			g.opPush(REG_X0)
+		default:
+			signed := inst.Val != ir.CONVERT_SRC_UINT
+			width := inst.Width
+			if width <= 0 {
+				width = 8
+			}
+			normalizeIntWidthArm64(g, REG_X0, width, signed)
+			if signed {
+				g.emitScvtfDFromX(REG_D0, REG_X0)
+			} else {
+				g.emitUcvtfDFromX(REG_D0, REG_X0)
+			}
+			g.emitFmovXFromD(REG_X0, REG_D0)
+			g.opPush(REG_X0)
+		}
 	}
+}
+
+func roundShiftNearestEvenArm64(v uint64, shift uint) uint64 {
+	if shift == 0 {
+		return v
+	}
+	if shift >= 64 {
+		return 0
+	}
+	half := uint64(1) << (shift - 1)
+	mask := (uint64(1) << shift) - 1
+	out := v >> shift
+	rem := v & mask
+	if rem > half || (rem == half && (out&1) != 0) {
+		out++
+	}
+	return out
+}
+
+func float32BitsFromFloat64Bits(bits uint64) uint32 {
+	sign := uint32(bits >> 63)
+	exp := int((bits >> 52) & 0x7FF)
+	frac := bits & ((uint64(1) << 52) - 1)
+	if exp == 0x7FF {
+		if frac == 0 {
+			return (sign << 31) | (0xFF << 23)
+		}
+		nan := uint32(frac >> 29)
+		if nan == 0 {
+			nan = 1
+		}
+		return (sign << 31) | (0xFF << 23) | nan
+	}
+	if exp == 0 && frac == 0 {
+		return sign << 31
+	}
+
+	mant := frac
+	unbiased := exp - 1023
+	if exp != 0 {
+		mant = mant | (uint64(1) << 52)
+	} else {
+		unbiased = -1022
+	}
+
+	if unbiased > 127 {
+		return (sign << 31) | (0xFF << 23)
+	}
+	if unbiased < -149 {
+		return sign << 31
+	}
+
+	if unbiased >= -126 {
+		mant24 := roundShiftNearestEvenArm64(mant, 29)
+		if mant24 >= (uint64(1) << 24) {
+			mant24 = mant24 >> 1
+			unbiased++
+		}
+		if unbiased > 127 {
+			return (sign << 31) | (0xFF << 23)
+		}
+		return (sign << 31) | (uint32(unbiased+127) << 23) | uint32(mant24&0x7FFFFF)
+	}
+
+	shift := uint(-unbiased - 97)
+	mant23 := roundShiftNearestEvenArm64(mant, shift)
+	if mant23 >= (uint64(1) << 23) {
+		return (sign << 31) | (1 << 23)
+	}
+	return (sign << 31) | uint32(mant23)
+}
+
+func mul10CheckedArm64(v uint64) (uint64, bool) {
+	if v > ^uint64(0)/10 {
+		return 0, false
+	}
+	return v * 10, true
+}
+
+func parseFloatLiteralBitsArm64(s string) (uint64, bool) {
+	if len(s) == 0 {
+		return 0, false
+	}
+	i := 0
+	sign := uint64(0)
+	if s[i] == '+' || s[i] == '-' {
+		if s[i] == '-' {
+			sign = uint64(1) << 63
+		}
+		i++
+		if i >= len(s) {
+			return 0, false
+		}
+	}
+
+	mant := uint64(0)
+	exp10 := 0
+	sawDigit := false
+	sawDot := false
+	for i < len(s) {
+		ch := s[i]
+		if ch == '_' {
+			i++
+			continue
+		}
+		if ch == '.' {
+			if sawDot {
+				return 0, false
+			}
+			sawDot = true
+			i++
+			continue
+		}
+		if ch == 'e' || ch == 'E' {
+			break
+		}
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		var ok bool
+		mant, ok = mul10CheckedArm64(mant)
+		if !ok {
+			return 0, false
+		}
+		mant = mant + uint64(ch-'0')
+		if sawDot {
+			exp10--
+		}
+		sawDigit = true
+		i++
+	}
+	if !sawDigit {
+		return 0, false
+	}
+
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i >= len(s) {
+			return 0, false
+		}
+		expNeg := false
+		if s[i] == '+' || s[i] == '-' {
+			expNeg = s[i] == '-'
+			i++
+		}
+		if i >= len(s) {
+			return 0, false
+		}
+		exp := 0
+		haveExpDigit := false
+		for i < len(s) {
+			ch := s[i]
+			if ch == '_' {
+				i++
+				continue
+			}
+			if ch < '0' || ch > '9' {
+				return 0, false
+			}
+			exp = exp*10 + int(ch-'0')
+			haveExpDigit = true
+			i++
+		}
+		if !haveExpDigit {
+			return 0, false
+		}
+		if expNeg {
+			exp10 = exp10 - exp
+		} else {
+			exp10 = exp10 + exp
+		}
+	}
+	if i != len(s) {
+		return 0, false
+	}
+	if mant == 0 {
+		return sign, true
+	}
+
+	num := mant
+	den := uint64(1)
+	for exp10 > 0 {
+		var ok bool
+		num, ok = mul10CheckedArm64(num)
+		if !ok {
+			return 0, false
+		}
+		exp10--
+	}
+	for exp10 < 0 {
+		var ok bool
+		den, ok = mul10CheckedArm64(den)
+		if !ok {
+			return 0, false
+		}
+		exp10++
+	}
+
+	exp2 := 0
+	for num < den {
+		if num > (^uint64(0) >> 1) {
+			return 0, false
+		}
+		num = num << 1
+		exp2--
+	}
+	for {
+		if den <= (^uint64(0) >> 1) {
+			if num >= (den << 1) {
+				den = den << 1
+				exp2++
+				continue
+			}
+		} else if (num >> 1) >= den {
+			num = (num + 1) >> 1
+			exp2++
+			continue
+		}
+		break
+	}
+
+	frac := num - den
+	mantBits := uint64(0)
+	bit := uint64(1) << 51
+	for bit != 0 {
+		if frac > (^uint64(0) >> 1) {
+			den = (den + 1) >> 1
+		} else {
+			frac = frac << 1
+		}
+		if frac >= den {
+			mantBits = mantBits | bit
+			frac = frac - den
+		}
+		bit = bit >> 1
+	}
+
+	round := frac
+	if round > (^uint64(0) >> 1) {
+		den = (den + 1) >> 1
+	} else {
+		round = round << 1
+	}
+	if round > den || (round == den && (mantBits&1) != 0) {
+		mantBits++
+		if mantBits == (uint64(1) << 52) {
+			mantBits = 0
+			exp2++
+		}
+	}
+
+	expBits := exp2 + 1023
+	if expBits <= 0 {
+		return sign, true
+	}
+	if expBits >= 0x7FF {
+		return sign | (uint64(0x7FF) << 52), true
+	}
+	return sign | (uint64(expBits) << 52) | mantBits, true
 }
