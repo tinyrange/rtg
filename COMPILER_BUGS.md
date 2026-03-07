@@ -55,18 +55,17 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 1. `#17` Fix indirect/function-value call lowering (`fn` unresolved family).
 2. `#18` Fix map-held function symbol resolution (`genA`/function values).
 3. `#16` Fix parser support for unnamed method receivers.
-4. `#15` Fix WASM `iface_typeassert` validator failure and remove skip.
-5. `#19` and `#20` fix unsigned ops and fixed-width overflow semantics.
-6. `#21` Root-cause the one-stage WASM->native convergence lag and restore `stage3 == stage4`.
-7. `#14` Diagnose RTG x64 runtime crash in `55_stdlib_additions_extended`.
-8. Re-audit watch items `#1` and `#7`; close or replace with narrow repros.
-9. `#24` Decide whether cross-targeting from host-shaped IR binaries is supported; either hard-fail early with a clear diagnostic or lower required intrinsics for `linux/arm64`.
-10. `#25` Root-cause selfhost `os.OpenFile`/`os.WriteFile` create-mode mismatch and remove chmod workarounds.
-11. `#26` Make WASM stackifier robust to equivalent CFG forms (or formalize and enforce IR shape constraints in one place).
-12. `#27` Revisit non-nil memory-base optimization expansion (`LEN/CAP`, `GLOBAL_ADDR`, C backend direct-load path) with proof/validation coverage.
-13. `#30` Make wasm stackification tolerant of shared non-void return epilogues.
-14. `#31` Make wasm stackification tolerate outlined panic-unwind slow paths (or preserve the inline form there).
-15. `#35` Fix struct-value copy semantics in RTG-compiled programs (current lowering aliases heap-backed struct objects).
+4. `#19` and `#20` fix unsigned ops and fixed-width overflow semantics.
+5. `#21` Root-cause the one-stage WASM->native convergence lag and restore `stage3 == stage4`.
+6. `#14` Diagnose RTG x64 runtime crash in `55_stdlib_additions_extended`.
+7. Re-audit watch items `#1` and `#7`; close or replace with narrow repros.
+8. `#24` Decide whether cross-targeting from host-shaped IR binaries is supported; either hard-fail early with a clear diagnostic or lower required intrinsics for `linux/arm64`.
+9. `#25` Root-cause selfhost `os.OpenFile`/`os.WriteFile` create-mode mismatch and remove chmod workarounds.
+10. `#26` Make WASM stackifier robust to equivalent CFG forms (or formalize and enforce IR shape constraints in one place).
+11. `#27` Revisit non-nil memory-base optimization expansion (`LEN/CAP`, `GLOBAL_ADDR`, C backend direct-load path) with proof/validation coverage.
+12. `#30` Make wasm stackification tolerant of shared non-void return epilogues.
+13. `#31` Make wasm stackification tolerate outlined panic-unwind slow paths (or preserve the inline form there).
+14. `#35` Fix struct-value copy semantics in RTG-compiled programs (current lowering aliases heap-backed struct objects).
 
 ### 23) Struct field tags are not accepted by parser in selfhost path
 
@@ -543,7 +542,8 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 **Validation**
 - `tests/54_stdlib_cli_core.go` PASS on `wasi/wasm32`.
 - `tests/55_stdlib_additions_extended.go` PASS on `wasi/wasm32`.
-- `./build/build test-fullcompiler-wasm` PASS with both `wasm/54_stdlib_cli_core` and `wasm/55_stdlib_additions_extended` executed (not skipped).
+- `tests/iface_typeassert.go` PASS on `wasi/wasm32`.
+- `./build/build test-fullcompiler-wasm` PASS with `wasm/54_stdlib_cli_core`, `wasm/55_stdlib_additions_extended`, and `wasm/iface_typeassert` executed (not skipped).
 
 ### 13) DOS/8086 COMEMU OOM on extended stdlib fixture
 
