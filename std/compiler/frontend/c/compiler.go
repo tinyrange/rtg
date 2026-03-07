@@ -168,6 +168,8 @@ const (
 	cScalarUShort
 	cScalarLong
 	cScalarULong
+	cScalarFloat
+	cScalarDouble
 )
 
 type cTypeInfo struct {
@@ -1298,7 +1300,20 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 		}
 		idx := len(c.irmod.Globals)
 		irName := c.cSymbolName(it.Name)
-		c.irmod.Globals = append(c.irmod.Globals, ir.IRGlobal{Name: irName, Index: idx})
+		global := ir.IRGlobal{Name: irName, Index: idx}
+		if it.Kind == cDeclScalar && it.PtrDepth == 0 && isFloatScalar(it.Base) {
+			typeName := "float64"
+			if it.Base == cScalarFloat {
+				typeName = "float32"
+			}
+			global.Type = &ir.TypeInfo{
+				Kind:  irFloatKindForCScalar(it.Base),
+				Name:  typeName,
+				Size:  int(scalarSizeForTarget(c.target, it.Base)),
+				Align: int(scalarSizeForTarget(c.target, it.Base)),
+			}
+		}
+		c.irmod.Globals = append(c.irmod.Globals, global)
 		c.globalIndex[it.Name] = idx
 		c.globalHasInit[it.Name] = len(it.Init) > 0
 		c.globalKind[it.Name] = it.Kind
@@ -1498,8 +1513,7 @@ func (c *compiler) emitGlobalInit() {
 			fc.emitArrayInitializerAt(g.Name, baseTmp, 0, arrInfo, g.Init, g.File, g.Line, g.Col)
 			continue
 		}
-		fc.emitExprTokens(g.File, g.Line, g.Col, g.Init)
-		fc.emitCastToType(cTypeInfo{
+		fc.emitExprTokensAsType(g.File, g.Line, g.Col, g.Init, cTypeInfo{
 			Kind:     g.Kind,
 			PtrDepth: g.PtrDepth,
 			Base:     g.Base,
@@ -1524,6 +1538,18 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 		paramSlots += 2
 	}
 	f := &ir.IRFunc{Name: sig.IRName, Params: paramSlots, RetCount: sig.RetCount}
+	if sig.RetCount > 0 && !sig.RetByPtr {
+		retInfo := cTypeInfo{
+			Kind:             sig.RetKind,
+			PtrDepth:         sig.RetPtrDepth,
+			Base:             sig.RetBase,
+			OpaqueAggregate:  sig.RetOpaque,
+			AggregateKeyword: sig.RetAggKeyword,
+			AggregateTag:     sig.RetAggTag,
+		}
+		f.ResultKinds = []ir.TypeKind{irResultKindForCType(retInfo)}
+		f.ResultIs64 = []bool{irResultIs64ForCType(c.target, retInfo)}
+	}
 	fc := &funcCompiler{
 		c:             c,
 		sig:           sig,
@@ -1598,7 +1624,14 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 	cAggregateLookupFunc = prevAggregateLookupFunc
 	if len(f.Code) == 0 || f.Code[len(f.Code)-1].Op != ir.OP_RETURN {
 		if sig.RetCount > 0 {
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+			fc.emitZeroValue(cTypeInfo{
+				Kind:             sig.RetKind,
+				PtrDepth:         sig.RetPtrDepth,
+				Base:             sig.RetBase,
+				OpaqueAggregate:  sig.RetOpaque,
+				AggregateKeyword: sig.RetAggKeyword,
+				AggregateTag:     sig.RetAggTag,
+			})
 			fc.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 1})
 		} else {
 			fc.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
@@ -2082,7 +2115,7 @@ func isTypeQualifierKeyword(text string) bool {
 
 func isUnsupportedCTypeKeyword(text string) bool {
 	switch text {
-	case "float", "double", "_Bool", "_Complex", "_Imaginary":
+	case "_Bool", "_Complex", "_Imaginary":
 		return true
 	default:
 		return false
@@ -2593,6 +2626,8 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 	var sawShort bool
 	var sawInt bool
 	var sawLongCount int
+	var sawFloat bool
+	var sawDouble bool
 	var sawSigned bool
 	var sawUnsigned bool
 	var sawPrefixOnly bool
@@ -2602,7 +2637,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 	for i := 0; i < len(spec); {
 		t := spec[i]
 		if t.Kind == TokIdent && (t.Text == "struct" || t.Text == "union") {
-			if aliasSet || sawEnum || sawAggregate || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
+			if aliasSet || sawEnum || sawAggregate || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawFloat || sawDouble || sawSigned || sawUnsigned {
 				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine %s with additional type specifiers", context, t.Text)
 			}
 			next, aggInfo, aggEnumConsts, err := parseAggregateTypeSpec(spec, i, t.Text, context)
@@ -2622,7 +2657,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			continue
 		}
 		if t.Kind == TokIdent && t.Text == "enum" {
-			if aliasSet || sawAggregate || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned || sawEnum {
+			if aliasSet || sawAggregate || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawFloat || sawDouble || sawSigned || sawUnsigned || sawEnum {
 				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine enum with additional type specifiers", context)
 			}
 			consumed, localEnumConsts, err := parseEnumSpecifierAndConstants(spec[i:], enumConsts)
@@ -2700,6 +2735,18 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 			if sawLongCount > 2 {
 				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid long type combination", context)
 			}
+		case "float":
+			if sawEnum || sawAggregate {
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with float", context)
+			}
+			sawType = true
+			sawFloat = true
+		case "double":
+			if sawEnum || sawAggregate {
+				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with double", context)
+			}
+			sawType = true
+			sawDouble = true
 		case "signed", "__signed":
 			if sawEnum || sawAggregate {
 				return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with signed", context)
@@ -2717,7 +2764,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 				if sawEnum || sawAggregate {
 					return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with typedef name %q", context, t.Text)
 				}
-				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
+				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawFloat || sawDouble || sawSigned || sawUnsigned {
 					return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
 				}
 				sawType = true
@@ -2729,7 +2776,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 				if sawEnum || sawAggregate {
 					return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine aggregate/enum with typedef name %q", context, t.Text)
 				}
-				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
+				if sawType || sawVoid || sawChar || sawShort || sawInt || sawLongCount > 0 || sawFloat || sawDouble || sawSigned || sawUnsigned {
 					return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine typedef name %q with builtin type specifiers", context, t.Text)
 				}
 				sawType = true
@@ -2761,6 +2808,9 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 	if sawSigned && sawUnsigned {
 		return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine signed and unsigned", context)
 	}
+	if sawFloat && sawDouble {
+		return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid floating-point type combination", context)
+	}
 	if sawAggregate {
 		return cTypeInfo{
 			Kind:             cDeclScalar,
@@ -2774,7 +2824,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawVoid {
-		if sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
+		if sawChar || sawShort || sawInt || sawLongCount > 0 || sawFloat || sawDouble || sawSigned || sawUnsigned {
 			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid void type combination", context)
 		}
 		if !allowVoid {
@@ -2783,7 +2833,7 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt, IsVoid: true}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawChar {
-		if sawShort || sawInt || sawLongCount > 0 {
+		if sawShort || sawInt || sawLongCount > 0 || sawFloat || sawDouble {
 			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid char type combination", context)
 		}
 		if sawUnsigned {
@@ -2792,13 +2842,22 @@ func parseScalarTypeSpec(spec []Token, context string, allowVoid bool) (cTypeInf
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarChar}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawShort {
-		if sawLongCount > 0 {
+		if sawLongCount > 0 || sawFloat || sawDouble {
 			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s cannot combine short and long", context)
 		}
 		if sawUnsigned {
 			return cTypeInfo{Kind: cDeclScalar, Base: cScalarUShort}, enumConsts, hasExtern, hasTypedef, nil
 		}
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarShort}, enumConsts, hasExtern, hasTypedef, nil
+	}
+	if sawFloat || sawDouble {
+		if sawChar || sawShort || sawInt || sawLongCount > 0 || sawSigned || sawUnsigned {
+			return cTypeInfo{}, nil, false, false, fmt.Errorf("%s has invalid floating-point type combination", context)
+		}
+		if sawDouble {
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarDouble}, enumConsts, hasExtern, hasTypedef, nil
+		}
+		return cTypeInfo{Kind: cDeclScalar, Base: cScalarFloat}, enumConsts, hasExtern, hasTypedef, nil
 	}
 	if sawLongCount > 0 {
 		if sawUnsigned {
@@ -4461,7 +4520,7 @@ func parseDeclItems(toks []Token, enumLookup map[string]int64, allowRuntimeArray
 
 func isTypeSpecifierKeyword(text string) bool {
 	switch text {
-	case "void", "char", "short", "int", "long", "signed", "unsigned", "__signed":
+	case "void", "char", "short", "int", "long", "signed", "unsigned", "__signed", "float", "double":
 		return true
 	default:
 		return false
@@ -5094,6 +5153,60 @@ func (fc *funcCompiler) addLocalTyped(name string, kind cDeclKind, base cScalarT
 	return fc.addLocalDecl(name, kind, base, ptrDepth, elemStep, 0, nil, funcSig, false, "", "", file, line, col)
 }
 
+func irFloatKindForCScalar(base cScalarType) ir.TypeKind {
+	switch base {
+	case cScalarFloat:
+		return ir.TY_FLOAT32
+	case cScalarDouble:
+		return ir.TY_FLOAT64
+	default:
+		return ir.TY_VOID
+	}
+}
+
+func irResultKindForCType(info cTypeInfo) ir.TypeKind {
+	if isFloatTypeInfo(info) {
+		return irFloatKindForCScalar(info.Base)
+	}
+	return ir.TY_VOID
+}
+
+func cLongSizeForTarget(target *common.Target) int64 {
+	if target.GOOS == "windows" {
+		return 4
+	}
+	return int64(target.PtrSize)
+}
+
+func scalarSizeForTarget(target *common.Target, base cScalarType) int64 {
+	switch base {
+	case cScalarChar, cScalarUChar:
+		return 1
+	case cScalarShort, cScalarUShort:
+		return 2
+	case cScalarInt, cScalarUInt:
+		return 4
+	case cScalarLong, cScalarULong:
+		return cLongSizeForTarget(target)
+	case cScalarFloat:
+		return 4
+	case cScalarDouble:
+		return 8
+	default:
+		return 4
+	}
+}
+
+func irResultIs64ForCType(target *common.Target, info cTypeInfo) bool {
+	if isFloatTypeInfo(info) {
+		return info.Base == cScalarDouble
+	}
+	if info.Kind == cDeclPointer || info.Kind == cDeclArray {
+		return target.PtrSize == 8
+	}
+	return scalarSizeForTarget(target, info.Base) == 8
+}
+
 func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarType, ptrDepth int, elemStep int64, arrayLen int64, arrayDims []int64, funcSig *cFuncTypeSig, opaqueAggregate bool, aggregateKeyword string, aggregateTag string, file string, line int, col int) int {
 	if len(fc.scopes) == 0 {
 		fc.pushScope()
@@ -5108,7 +5221,19 @@ func (fc *funcCompiler) addLocalDecl(name string, kind cDeclKind, base cScalarTy
 		}
 	}
 	idx := len(fc.fn.Locals)
-	fc.fn.Locals = append(fc.fn.Locals, ir.IRLocal{Name: name, Index: idx})
+	local := ir.IRLocal{Name: name, Index: idx}
+	if kind == cDeclPointer || kind == cDeclArray {
+		local.Width = fc.c.target.PtrSize
+		local.Is64 = fc.c.target.PtrSize == 8
+	} else if isFloatScalar(base) {
+		local.Width = int(fc.scalarSize(base))
+		local.FloatKind = irFloatKindForCScalar(base)
+		local.IsFloat64 = base == cScalarDouble
+	} else {
+		local.Width = int(fc.scalarSize(base))
+		local.Is64 = local.Width == 8
+	}
+	fc.fn.Locals = append(fc.fn.Locals, local)
 	if kind == cDeclPointer && ptrDepth == 0 {
 		ptrDepth = 1
 	}
@@ -5645,10 +5770,9 @@ func (fc *funcCompiler) emitScalarLikeInitializerAt(baseIdx int, offset int64, i
 		fc.errorf(file, line, col, "initializer target has unsupported type")
 		return
 	}
-	fc.emitExprTokens(file, line, col, init)
-	fc.emitCastToType(info)
+	fc.emitExprTokensAsType(file, line, col, init, info)
 	fc.emitBaseAddr(baseIdx, offset)
-	fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(width)})
+	fc.emitStoreForType(int(width), info)
 }
 
 func (fc *funcCompiler) emitArrayInitializerAt(name string, baseIdx int, offset int64, info cTypeInfo, init []Token, file string, line int, col int) {
@@ -5664,9 +5788,9 @@ func (fc *funcCompiler) emitArrayInitializerAt(name string, baseIdx int, offset 
 		elemStep := fc.typeByteSize(elemInfo)
 		for i, v := range vals {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: v})
-			fc.emitCastToType(elemInfo)
+			fc.emitCastValueToType(cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, elemInfo)
 			fc.emitBaseAddr(baseIdx, offset+int64(i)*elemStep)
-			fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: int(fc.typeByteSize(elemInfo))})
+			fc.emitStoreForType(int(fc.typeByteSize(elemInfo)), elemInfo)
 		}
 		return
 	}
@@ -5960,9 +6084,10 @@ func (fc *funcCompiler) compileDeclStmt(n *Node) {
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 			continue
 		}
-		fc.emitExprTokens(fc.sig.File, n.Line, n.Col, it.Init)
 		if it.Kind == cDeclScalar {
-			fc.emitCastToType(cTypeInfo{Kind: cDeclScalar, Base: it.Base})
+			fc.emitExprTokensAsType(fc.sig.File, n.Line, n.Col, it.Init, cTypeInfo{Kind: cDeclScalar, Base: it.Base})
+		} else {
+			fc.emitExprTokens(fc.sig.File, n.Line, n.Col, it.Init)
 		}
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 	}
@@ -6127,15 +6252,27 @@ func (fc *funcCompiler) compileReturnStmt(n *Node) {
 		return
 	}
 	if strings.TrimSpace(n.Text) == "" {
-		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		fc.emitZeroValue(cTypeInfo{Kind: fc.sig.RetKind, PtrDepth: fc.sig.RetPtrDepth, Base: fc.sig.RetBase})
 	} else {
-		fc.compileExprText(n.Text, n.Line, n.Col)
+		toks, err := lexSnippet(fc.sig.File, n.Text)
+		if err != nil {
+			fc.errorf(fc.sig.File, n.Line, n.Col, "invalid expression: %v", err)
+			fc.emitZeroValue(cTypeInfo{Kind: fc.sig.RetKind, PtrDepth: fc.sig.RetPtrDepth, Base: fc.sig.RetBase})
+		} else {
+			fc.emitExprTokensAsType(fc.sig.File, n.Line, n.Col, toks, cTypeInfo{
+				Kind:     fc.sig.RetKind,
+				PtrDepth: fc.sig.RetPtrDepth,
+				Base:     fc.sig.RetBase,
+			})
+		}
+		fc.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 1})
+		return
 	}
 	fc.emitCastToType(cTypeInfo{
-		Kind:     fc.sig.RetKind,
-		PtrDepth: fc.sig.RetPtrDepth,
-		Base:     fc.sig.RetBase,
-	})
+			Kind:     fc.sig.RetKind,
+			PtrDepth: fc.sig.RetPtrDepth,
+			Base:     fc.sig.RetBase,
+		})
 	fc.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 1})
 }
 
@@ -6250,9 +6387,10 @@ func (fc *funcCompiler) compileDeclTokens(file string, n *Node, toks []Token) {
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 			continue
 		}
-		fc.emitExprTokens(file, n.Line, n.Col, it.Init)
 		if it.Kind == cDeclScalar {
-			fc.emitCastToType(cTypeInfo{Kind: cDeclScalar, Base: it.Base})
+			fc.emitExprTokensAsType(file, n.Line, n.Col, it.Init, cTypeInfo{Kind: cDeclScalar, Base: it.Base})
+		} else {
+			fc.emitExprTokens(file, n.Line, n.Col, it.Init)
 		}
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 	}
@@ -6296,11 +6434,73 @@ func (fc *funcCompiler) shouldFallbackDeclToExpr(toks []Token, err error) bool {
 	return !looksLikeConcreteDeclStart(toks)
 }
 
+func (fc *funcCompiler) emitZeroValue(info cTypeInfo) {
+	if isFloatTypeInfo(info) {
+		if info.Base == cScalarFloat {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_F32, Width: 4, Name: "0.0"})
+		} else {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_F64, Width: 8, Name: "0.0"})
+		}
+		return
+	}
+	fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+}
+
+func (fc *funcCompiler) emitConditionValue(ex *expr) {
+	if ex == nil {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
+	fc.emitExpr(ex)
+	if t, ok := fc.exprTypeInfo(ex); ok && isFloatTypeInfo(t) {
+		fc.emitZeroValue(t)
+		if t.Base == cScalarFloat {
+			fc.emit(ir.Inst{Op: ir.OP_NEQ, Width: 4, Name: "float32"})
+		} else {
+			fc.emit(ir.Inst{Op: ir.OP_NEQ, Width: 8, Name: "float64"})
+		}
+	}
+}
+
+func (fc *funcCompiler) emitTypedBinaryInst(op string, info cTypeInfo) {
+	inst := ir.Inst{}
+	switch op {
+	case "+":
+		inst.Op = ir.OP_ADD
+	case "-":
+		inst.Op = ir.OP_SUB
+	case "*":
+		inst.Op = ir.OP_MUL
+	case "/":
+		inst.Op = ir.OP_DIV
+	case "==":
+		inst.Op = ir.OP_EQ
+	case "!=":
+		inst.Op = ir.OP_NEQ
+	case "<":
+		inst.Op = ir.OP_LT
+	case "<=":
+		inst.Op = ir.OP_LEQ
+	case ">":
+		inst.Op = ir.OP_GT
+	case ">=":
+		inst.Op = ir.OP_GEQ
+	default:
+		fc.errorf(fc.sig.File, 0, 0, "unsupported typed binary operator %q", op)
+		return
+	}
+	if isFloatTypeInfo(info) {
+		inst.Width = int(fc.typeByteSize(info))
+		inst.Name = fc.convertNameForScalar(info.Base)
+	}
+	fc.emit(inst)
+}
+
 func (fc *funcCompiler) emitCondJumpFalse(file string, line int, col int, cond []Token, falseLabel int) {
 	if len(cond) == 0 {
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
 	} else {
-		fc.emitExprTokens(file, line, col, cond)
+		fc.emitConditionValue(fc.parseExprTokens(file, line, col, cond))
 	}
 	fc.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: falseLabel})
 }
@@ -6309,7 +6509,7 @@ func (fc *funcCompiler) emitCondJumpTrue(file string, line int, col int, cond []
 	if len(cond) == 0 {
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
 	} else {
-		fc.emitExprTokens(file, line, col, cond)
+		fc.emitConditionValue(fc.parseExprTokens(file, line, col, cond))
 	}
 	fc.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: trueLabel})
 }
@@ -6328,18 +6528,45 @@ func (fc *funcCompiler) compileExprText(text string, line int, col int) {
 	fc.emitExprTokens(fc.sig.File, line, col, toks)
 }
 
-func (fc *funcCompiler) emitExprTokens(file string, line int, col int, toks []Token) {
+func (fc *funcCompiler) parseExprTokens(file string, line int, col int, toks []Token) *expr {
 	ep := &cExprParser{fc: fc, file: file, line: line, col: col, toks: trimTokens(toks)}
 	ex := ep.parseExpression()
 	if ex == nil {
-		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-		return
+		return nil
 	}
 	if ep.pos < len(ep.toks) {
 		got := ep.toks[ep.pos]
 		fc.errorf(file, line, col, "unexpected token in expression: %q", got.Text)
 	}
+	return ex
+}
+
+func (fc *funcCompiler) emitExprTokens(file string, line int, col int, toks []Token) {
+	ex := fc.parseExprTokens(file, line, col, toks)
+	if ex == nil {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		return
+	}
 	fc.emitExpr(ex)
+}
+
+func (fc *funcCompiler) emitExprValueCast(ex *expr, dst cTypeInfo) {
+	if ex == nil {
+		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		fc.emitCastToType(dst)
+		return
+	}
+	fc.emitExpr(ex)
+	if src, ok := fc.exprTypeInfo(ex); ok {
+		fc.emitCastValueToType(src, dst)
+		return
+	}
+	fc.emitCastToType(dst)
+}
+
+func (fc *funcCompiler) emitExprTokensAsType(file string, line int, col int, toks []Token, dst cTypeInfo) {
+	ex := fc.parseExprTokens(file, line, col, toks)
+	fc.emitExprValueCast(ex, dst)
 }
 
 func (fc *funcCompiler) emitIndexAddr(base *expr, index *expr) {
@@ -6349,6 +6576,39 @@ func (fc *funcCompiler) emitIndexAddr(base *expr, index *expr) {
 	fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
 	fc.emit(ir.Inst{Op: ir.OP_MUL})
 	fc.emit(ir.Inst{Op: ir.OP_ADD})
+}
+
+func (fc *funcCompiler) allocTempLocalForType(name string, info cTypeInfo) int {
+	if isAggregateObjectType(info) || info.Kind == cDeclArray {
+		return fc.allocTempLocal(name)
+	}
+	ptrDepth := info.PtrDepth
+	if info.Kind == cDeclPointer && ptrDepth == 0 {
+		ptrDepth = 1
+	}
+	elemStep := int64(fc.c.target.PtrSize)
+	if info.Kind == cDeclPointer || info.Kind == cDeclArray {
+		elemStep = fc.pointerStepForType(info)
+	} else {
+		elemStep = fc.typeByteSize(info)
+	}
+	return fc.addLocalDecl(fmt.Sprintf("%s$%d", name, fc.c.nextLabel()), info.Kind, info.Base, ptrDepth, elemStep, info.ArrayLen, info.ArrayDims, cloneFuncTypeSig(info.FuncSig), info.OpaqueAggregate, info.AggregateKeyword, info.AggregateTag, fc.sig.File, 0, 0)
+}
+
+func (fc *funcCompiler) emitLoadForType(width int, info cTypeInfo) {
+	inst := ir.Inst{Op: ir.OP_LOAD, Arg: width}
+	if isFloatTypeInfo(info) {
+		inst.Name = fc.convertNameForScalar(info.Base)
+	}
+	fc.emit(inst)
+}
+
+func (fc *funcCompiler) emitStoreForType(width int, info cTypeInfo) {
+	inst := ir.Inst{Op: ir.OP_STORE, Arg: width}
+	if isFloatTypeInfo(info) {
+		inst.Name = fc.convertNameForScalar(info.Base)
+	}
+	fc.emit(inst)
 }
 
 func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
@@ -6428,8 +6688,7 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 			fc.errorf(fc.sig.File, 0, 0, "invalid compound literal initializer")
 			return false
 		}
-		fc.emitExprTokens(fc.sig.File, 0, 0, parts[0])
-		fc.emitCastToType(info)
+		fc.emitExprTokensAsType(fc.sig.File, 0, 0, parts[0], info)
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: idx})
 		return true
@@ -6439,25 +6698,11 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 }
 
 func (fc *funcCompiler) longSize() int64 {
-	if fc.c.target.GOOS == "windows" {
-		return 4
-	}
-	return int64(fc.c.target.PtrSize)
+	return cLongSizeForTarget(fc.c.target)
 }
 
 func (fc *funcCompiler) scalarSize(base cScalarType) int64 {
-	switch base {
-	case cScalarChar, cScalarUChar:
-		return 1
-	case cScalarShort, cScalarUShort:
-		return 2
-	case cScalarInt, cScalarUInt:
-		return 4
-	case cScalarLong, cScalarULong:
-		return fc.longSize()
-	default:
-		return 4
-	}
+	return scalarSizeForTarget(fc.c.target, base)
 }
 
 func (fc *funcCompiler) typeScalarWidth(info cTypeInfo) int64 {
@@ -6510,6 +6755,28 @@ func (fc *funcCompiler) pointerStepForType(info cTypeInfo) int64 {
 	return fc.scalarSize(info.Base)
 }
 
+func isFloatScalar(base cScalarType) bool {
+	return base == cScalarFloat || base == cScalarDouble
+}
+
+func isUnsignedScalar(base cScalarType) bool {
+	switch base {
+	case cScalarUInt, cScalarUChar, cScalarUShort, cScalarULong:
+		return true
+	default:
+		return false
+	}
+}
+
+func isFloatTypeInfo(info cTypeInfo) bool {
+	return info.Kind == cDeclScalar &&
+		info.PtrDepth == 0 &&
+		!info.IsVoid &&
+		!info.OpaqueAggregate &&
+		info.AggregateKeyword == "" &&
+		isFloatScalar(info.Base)
+}
+
 func (fc *funcCompiler) convertNameForScalar(base cScalarType) string {
 	switch base {
 	case cScalarChar:
@@ -6534,15 +6801,38 @@ func (fc *funcCompiler) convertNameForScalar(base cScalarType) string {
 			return "uint32"
 		}
 		return "uint64"
+	case cScalarFloat:
+		return "float32"
+	case cScalarDouble:
+		return "float64"
 	default:
 		return ""
 	}
 }
 
-func (fc *funcCompiler) emitCastToType(info cTypeInfo) {
+func (fc *funcCompiler) convertSourceKindForType(info cTypeInfo) int64 {
+	if isFloatTypeInfo(info) {
+		if info.Base == cScalarFloat {
+			return ir.CONVERT_SRC_FLOAT32
+		}
+		return ir.CONVERT_SRC_FLOAT64
+	}
+	if info.Kind == cDeclPointer || info.Kind == cDeclArray {
+		return ir.CONVERT_SRC_UINT
+	}
+	if info.Kind == cDeclScalar && isUnsignedScalar(info.Base) {
+		return ir.CONVERT_SRC_UINT
+	}
+	if info.Kind == cDeclScalar {
+		return ir.CONVERT_SRC_INT
+	}
+	return ir.CONVERT_SRC_UNKNOWN
+}
+
+func (fc *funcCompiler) emitCastValueToType(src cTypeInfo, info cTypeInfo) {
 	switch info.Kind {
 	case cDeclPointer:
-		fc.emit(ir.Inst{Op: ir.OP_CONVERT, Name: "uintptr"})
+		fc.emit(ir.Inst{Op: ir.OP_CONVERT, Name: "uintptr", Width: int(fc.typeByteSize(src)), Val: fc.convertSourceKindForType(src)})
 		return
 	case cDeclArray:
 		return
@@ -6552,9 +6842,13 @@ func (fc *funcCompiler) emitCastToType(info cTypeInfo) {
 		}
 		name := fc.convertNameForScalar(info.Base)
 		if name != "" {
-			fc.emit(ir.Inst{Op: ir.OP_CONVERT, Name: name})
+			fc.emit(ir.Inst{Op: ir.OP_CONVERT, Name: name, Width: int(fc.typeByteSize(src)), Val: fc.convertSourceKindForType(src)})
 		}
 	}
+}
+
+func (fc *funcCompiler) emitCastToType(info cTypeInfo) {
+	fc.emitCastValueToType(cTypeInfo{}, info)
 }
 
 func (fc *funcCompiler) varTypeInfo(name string) (cTypeInfo, bool) {
@@ -6812,6 +7106,8 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 	switch ex.kind {
 	case exprIntLit:
 		return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
+	case exprFloatLit:
+		return ex.typeInfo, true
 	case exprStringLit:
 		return cTypeInfo{Kind: cDeclPointer, PtrDepth: 1, Base: cScalarChar}, true
 	case exprVar:
@@ -6826,6 +7122,12 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 				if rt, rok := fc.exprTypeInfo(ex.args[1]); rok {
 					if cTypeInfoEquivalent(lt, rt) {
 						return lt, true
+					}
+					if isFloatTypeInfo(lt) || isFloatTypeInfo(rt) {
+						if lt.Base == cScalarDouble || rt.Base == cScalarDouble {
+							return cTypeInfo{Kind: cDeclScalar, Base: cScalarDouble}, true
+						}
+						return cTypeInfo{Kind: cDeclScalar, Base: cScalarFloat}, true
 					}
 				}
 				return lt, true
@@ -6874,6 +7176,11 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 			return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 		case "++", "--":
 			return fc.exprTypeInfo(ex.left)
+		case "+", "-":
+			if t, ok := fc.exprTypeInfo(ex.left); ok && isFloatTypeInfo(t) {
+				return t, true
+			}
+			return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 		default:
 			return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
 		}
@@ -6882,6 +7189,21 @@ func (fc *funcCompiler) exprTypeInfo(ex *expr) (cTypeInfo, bool) {
 			return fc.exprTypeInfo(ex.left)
 		}
 	case exprBinary:
+		if lt, lok := fc.exprTypeInfo(ex.left); lok {
+			if rt, rok := fc.exprTypeInfo(ex.right); rok {
+				if isFloatTypeInfo(lt) || isFloatTypeInfo(rt) {
+					switch ex.op {
+					case "+", "-", "*", "/":
+						if lt.Base == cScalarDouble || rt.Base == cScalarDouble {
+							return cTypeInfo{Kind: cDeclScalar, Base: cScalarDouble}, true
+						}
+						return cTypeInfo{Kind: cDeclScalar, Base: cScalarFloat}, true
+					case "==", "!=", "<", "<=", ">", ">=":
+						return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
+					}
+				}
+			}
+		}
 		if ex.op == "+" || ex.op == "-" {
 			if t, ok := fc.exprTypeInfo(ex.left); ok && (t.Kind == cDeclPointer || t.Kind == cDeclArray) {
 				if t.Kind == cDeclArray {
@@ -7368,6 +7690,88 @@ func (fc *funcCompiler) checkCallArgs(sig *cFuncSig, call *expr) bool {
 	return fc.checkCallArgsByType(sig.Name, sig.ParamCount, sig.ParamUnspecified, sig.Variadic, sig.ParamKinds, sig.ParamFuncSigs, call)
 }
 
+func (fc *funcCompiler) callArgTargetType(sig *cFuncSig, argIdx int) (cTypeInfo, bool) {
+	if sig == nil || argIdx < 0 {
+		return cTypeInfo{}, false
+	}
+	if sig.ParamUnspecified {
+		return cTypeInfo{}, false
+	}
+	if argIdx < sig.ParamCount {
+		kind := cDeclScalar
+		if argIdx < len(sig.ParamKinds) {
+			kind = sig.ParamKinds[argIdx]
+		}
+		info := cTypeInfo{Kind: kind, Base: cScalarInt}
+		if argIdx < len(sig.ParamBases) {
+			info.Base = sig.ParamBases[argIdx]
+		}
+		if argIdx < len(sig.ParamPtrDepth) {
+			info.PtrDepth = sig.ParamPtrDepth[argIdx]
+		}
+		if argIdx < len(sig.ParamOpaque) {
+			info.OpaqueAggregate = sig.ParamOpaque[argIdx]
+		}
+		if argIdx < len(sig.ParamAggKey) {
+			info.AggregateKeyword = sig.ParamAggKey[argIdx]
+		}
+		if argIdx < len(sig.ParamAggTag) {
+			info.AggregateTag = sig.ParamAggTag[argIdx]
+		}
+		if argIdx < len(sig.ParamFuncSigs) {
+			info.FuncSig = cloneFuncTypeSig(sig.ParamFuncSigs[argIdx])
+		}
+		if info.Kind == cDeclArray {
+			info.Kind = cDeclPointer
+			if info.PtrDepth == 0 {
+				info.PtrDepth = 1
+			}
+		}
+		return info, true
+	}
+	if !sig.Variadic {
+		return cTypeInfo{}, false
+	}
+	return cTypeInfo{}, false
+}
+
+func (fc *funcCompiler) emitCallArgValue(sig *cFuncSig, arg *expr, argIdx int) {
+	if target, ok := fc.callArgTargetType(sig, argIdx); ok {
+		fc.emitExprValueCast(arg, target)
+		return
+	}
+	if sig != nil && sig.Variadic {
+		if argInfo, ok := fc.exprTypeInfo(arg); ok && argInfo.Kind == cDeclScalar {
+			if argInfo.Base == cScalarFloat {
+				fc.emitExprValueCast(arg, cTypeInfo{Kind: cDeclScalar, Base: cScalarDouble})
+				return
+			}
+			if argInfo.Base == cScalarChar || argInfo.Base == cScalarUChar || argInfo.Base == cScalarShort || argInfo.Base == cScalarUShort {
+				fc.emitExprValueCast(arg, cTypeInfo{Kind: cDeclScalar, Base: cScalarInt})
+				return
+			}
+		}
+	}
+	fc.emitExpr(arg)
+}
+
+func (fc *funcCompiler) callArgValueType(sig *cFuncSig, arg *expr, argIdx int) (cTypeInfo, bool) {
+	if target, ok := fc.callArgTargetType(sig, argIdx); ok {
+		return target, true
+	}
+	if sig != nil && sig.Variadic {
+		if argInfo, ok := fc.exprTypeInfo(arg); ok && argInfo.Kind == cDeclScalar {
+			if argInfo.Base == cScalarFloat {
+				return cTypeInfo{Kind: cDeclScalar, Base: cScalarDouble}, true
+			}
+			if argInfo.Base == cScalarChar || argInfo.Base == cScalarUChar || argInfo.Base == cScalarShort || argInfo.Base == cScalarUShort {
+				return cTypeInfo{Kind: cDeclScalar, Base: cScalarInt}, true
+			}
+		}
+	}
+	return fc.exprTypeInfo(arg)
+}
+
 func (fc *funcCompiler) allocTempLocal(name string) int {
 	return fc.addLocal(fmt.Sprintf("%s$%d", name, fc.c.nextLabel()), fc.sig.File, 0, 0)
 }
@@ -7460,7 +7864,7 @@ func (fc *funcCompiler) emitAggregateExprAddress(ex *expr) bool {
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: dstTmp})
 		falseLabel := fc.c.nextLabel()
 		endLabel := fc.c.nextLabel()
-		fc.emitExpr(ex.left)
+		fc.emitConditionValue(ex.left)
 		fc.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: falseLabel})
 		srcTmp := fc.allocTempLocal("$cond_src")
 		if fc.emitAggregateExprAddress(ex.args[0]) {
@@ -7507,40 +7911,55 @@ func (fc *funcCompiler) emitUpdateExpr(ex *expr, step int64, op string, postfix 
 	}
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: addrTmp})
 	width := fc.exprLValueWidth(ex)
+	valInfo, _ := fc.exprTypeInfo(ex)
 	if postfix {
-		oldTmp := fc.allocTempLocal("$lvalue_old")
+		oldTmp := fc.allocTempLocalForType("$lvalue_old", valInfo)
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
-		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: width})
+		fc.emitLoadForType(width, valInfo)
 		fc.emit(ir.Inst{Op: ir.OP_DUP})
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: oldTmp})
+		if isFloatTypeInfo(valInfo) {
+			if valInfo.Base == cScalarFloat {
+				fc.emit(ir.Inst{Op: ir.OP_CONST_F32, Width: 4, Name: "1.0"})
+			} else {
+				fc.emit(ir.Inst{Op: ir.OP_CONST_F64, Width: 8, Name: "1.0"})
+			}
+			fc.emitTypedBinaryInst(op[:1], valInfo)
+		} else {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
+			if op == "++" {
+				fc.emit(ir.Inst{Op: ir.OP_ADD})
+			} else {
+				fc.emit(ir.Inst{Op: ir.OP_SUB})
+			}
+		}
+		fc.emitCastValueToType(valInfo, valInfo)
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
+		fc.emitStoreForType(width, valInfo)
+		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: oldTmp})
+		return
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
+	fc.emitLoadForType(width, valInfo)
+	if isFloatTypeInfo(valInfo) {
+		if valInfo.Base == cScalarFloat {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_F32, Width: 4, Name: "1.0"})
+		} else {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_F64, Width: 8, Name: "1.0"})
+		}
+		fc.emitTypedBinaryInst(op[:1], valInfo)
+	} else {
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
 		if op == "++" {
 			fc.emit(ir.Inst{Op: ir.OP_ADD})
 		} else {
 			fc.emit(ir.Inst{Op: ir.OP_SUB})
 		}
-		if t, ok := fc.exprTypeInfo(ex); ok {
-			fc.emitCastToType(t)
-		}
-		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
-		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: width})
-		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: oldTmp})
-		return
 	}
-	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
-	fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: width})
-	fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: step})
-	if op == "++" {
-		fc.emit(ir.Inst{Op: ir.OP_ADD})
-	} else {
-		fc.emit(ir.Inst{Op: ir.OP_SUB})
-	}
-	if t, ok := fc.exprTypeInfo(ex); ok {
-		fc.emitCastToType(t)
-	}
+	fc.emitCastValueToType(valInfo, valInfo)
 	fc.emit(ir.Inst{Op: ir.OP_DUP})
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
-	fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: width})
+	fc.emitStoreForType(width, valInfo)
 }
 
 func (fc *funcCompiler) emitExpr(ex *expr) {
@@ -7551,6 +7970,12 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 	switch ex.kind {
 	case exprIntLit:
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: ex.intVal})
+	case exprFloatLit:
+		if ex.typeInfo.Base == cScalarFloat {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_F32, Width: 4, Name: ex.floatVal})
+		} else {
+			fc.emit(ir.Inst{Op: ir.OP_CONST_F64, Width: 8, Name: ex.floatVal})
+		}
 	case exprStringLit:
 		// C string literals are NUL-terminated arrays that decay to pointers.
 		fc.emit(ir.Inst{Op: ir.OP_CONST_STR, Name: encodeIRStringLiteral(ex.strVal + "\x00")})
@@ -7619,43 +8044,69 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			return
 		}
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: addrTmp})
+		lhsInfo, _ := fc.exprTypeInfo(ex.left)
+		resultInfo := lhsInfo
 		if ex.op != "" && ex.op != "=" {
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
-			fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprLValueWidth(ex.left)})
-			fc.emitExpr(ex.right)
-			switch ex.op {
-			case "+=":
-				fc.emit(ir.Inst{Op: ir.OP_ADD})
-			case "-=":
-				fc.emit(ir.Inst{Op: ir.OP_SUB})
-			case "*=":
-				fc.emit(ir.Inst{Op: ir.OP_MUL})
-			case "/=":
-				fc.emit(ir.Inst{Op: ir.OP_DIV})
-			case "%=":
-				fc.emit(ir.Inst{Op: ir.OP_MOD})
-			case "&=":
-				fc.emit(ir.Inst{Op: ir.OP_AND})
-			case "^=":
-				fc.emit(ir.Inst{Op: ir.OP_XOR})
-			case "|=":
-				fc.emit(ir.Inst{Op: ir.OP_OR})
-			case "<<=":
-				fc.emit(ir.Inst{Op: ir.OP_SHL})
-			case ">>=":
-				fc.emit(ir.Inst{Op: ir.OP_SHR})
-			default:
-				fc.errorf(fc.sig.File, 0, 0, "unsupported assignment operator %q", ex.op)
+			fc.emitLoadForType(fc.exprLValueWidth(ex.left), lhsInfo)
+			rhsInfo, _ := fc.exprTypeInfo(ex.right)
+			if isFloatTypeInfo(lhsInfo) || isFloatTypeInfo(rhsInfo) {
+				fc.emitExprValueCast(ex.right, lhsInfo)
+				switch ex.op {
+				case "+=":
+					fc.emitTypedBinaryInst("+", lhsInfo)
+				case "-=":
+					fc.emitTypedBinaryInst("-", lhsInfo)
+				case "*=":
+					fc.emitTypedBinaryInst("*", lhsInfo)
+				case "/=":
+					fc.emitTypedBinaryInst("/", lhsInfo)
+				default:
+					fc.errorf(fc.sig.File, 0, 0, "unsupported floating-point assignment operator %q", ex.op)
+				}
+			} else {
+				fc.emitExpr(ex.right)
+				switch ex.op {
+				case "+=":
+					fc.emit(ir.Inst{Op: ir.OP_ADD})
+				case "-=":
+					fc.emit(ir.Inst{Op: ir.OP_SUB})
+				case "*=":
+					fc.emit(ir.Inst{Op: ir.OP_MUL})
+				case "/=":
+					fc.emit(ir.Inst{Op: ir.OP_DIV})
+				case "%=":
+					fc.emit(ir.Inst{Op: ir.OP_MOD})
+				case "&=":
+					fc.emit(ir.Inst{Op: ir.OP_AND})
+				case "^=":
+					fc.emit(ir.Inst{Op: ir.OP_XOR})
+				case "|=":
+					fc.emit(ir.Inst{Op: ir.OP_OR})
+				case "<<=":
+					fc.emit(ir.Inst{Op: ir.OP_SHL})
+				case ">>=":
+					fc.emit(ir.Inst{Op: ir.OP_SHR})
+				default:
+					fc.errorf(fc.sig.File, 0, 0, "unsupported assignment operator %q", ex.op)
+				}
 			}
 		} else {
 			fc.emitExpr(ex.right)
+			if rhsInfo, ok := fc.exprTypeInfo(ex.right); ok {
+				resultInfo = rhsInfo
+			}
 		}
-		if t, ok := fc.exprTypeInfo(ex.left); ok {
-			fc.emitCastToType(t)
+		if ex.op != "" && ex.op != "=" {
+			fc.emitCastValueToType(resultInfo, lhsInfo)
+		} else if rhsInfo, ok := fc.exprTypeInfo(ex.right); ok {
+			fc.emitCastValueToType(rhsInfo, lhsInfo)
+		} else {
+			fc.emitCastToType(lhsInfo)
 		}
 		fc.emit(ir.Inst{Op: ir.OP_DUP})
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: addrTmp})
-		fc.emit(ir.Inst{Op: ir.OP_STORE, Arg: fc.exprLValueWidth(ex.left)})
+		fc.emitStoreForType(fc.exprLValueWidth(ex.left), lhsInfo)
 	case exprComma:
 		fc.emitExpr(ex.left)
 		fc.emit(ir.Inst{Op: ir.OP_DROP})
@@ -7667,12 +8118,20 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		}
 		falseLabel := fc.c.nextLabel()
 		endLabel := fc.c.nextLabel()
-		fc.emitExpr(ex.left)
+		fc.emitConditionValue(ex.left)
 		fc.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: falseLabel})
-		fc.emitExpr(ex.args[0])
+		if t, ok := fc.exprTypeInfo(ex); ok {
+			fc.emitExprValueCast(ex.args[0], t)
+		} else {
+			fc.emitExpr(ex.args[0])
+		}
 		fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
 		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: falseLabel})
-		fc.emitExpr(ex.args[1])
+		if t, ok := fc.exprTypeInfo(ex); ok {
+			fc.emitExprValueCast(ex.args[1], t)
+		} else {
+			fc.emitExpr(ex.args[1])
+		}
 		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: endLabel})
 	case exprUnary:
 		if ex.op == "++" || ex.op == "--" {
@@ -7700,16 +8159,26 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		case "+":
 			// no-op
 		case "-":
-			fc.emit(ir.Inst{Op: ir.OP_NEG})
+			if t, ok := fc.exprTypeInfo(ex.left); ok && isFloatTypeInfo(t) {
+				fc.emit(ir.Inst{Op: ir.OP_NEG, Width: int(fc.typeByteSize(t)), Name: fc.convertNameForScalar(t.Base)})
+			} else {
+				fc.emit(ir.Inst{Op: ir.OP_NEG})
+			}
 		case "*":
 			if t, ok := fc.exprTypeInfo(ex.left); ok && t.Kind == cDeclPointer && t.PtrDepth == 1 && t.FuncSig != nil {
 				// Function pointer dereference in value context remains a function designator.
 				break
 			}
-			fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprDerefWidth(ex.left)})
+			outInfo, _ := fc.exprTypeInfo(ex)
+			fc.emitLoadForType(fc.exprDerefWidth(ex.left), outInfo)
 		case "!":
-			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-			fc.emit(ir.Inst{Op: ir.OP_EQ})
+			if t, ok := fc.exprTypeInfo(ex.left); ok && isFloatTypeInfo(t) {
+				fc.emitZeroValue(t)
+				fc.emitTypedBinaryInst("==", t)
+			} else {
+				fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+				fc.emit(ir.Inst{Op: ir.OP_EQ})
+			}
 		case "~":
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: -1})
 			fc.emit(ir.Inst{Op: ir.OP_XOR})
@@ -7727,6 +8196,8 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emitLogicalExpr(ex)
 			return
 		}
+		leftInfo, _ := fc.exprTypeInfo(ex.left)
+		rightInfo, _ := fc.exprTypeInfo(ex.right)
 		if ex.op == "+" || ex.op == "-" {
 			leftPtr := fc.exprIsPointer(ex.left)
 			rightPtr := fc.exprIsPointer(ex.right)
@@ -7761,6 +8232,22 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				fc.emit(ir.Inst{Op: ir.OP_ADD})
 				return
 			}
+		}
+		if isFloatTypeInfo(leftInfo) || isFloatTypeInfo(rightInfo) {
+			floatInfo := cTypeInfo{Kind: cDeclScalar, Base: cScalarDouble}
+			if leftInfo.Base != cScalarDouble && rightInfo.Base != cScalarDouble {
+				floatInfo.Base = cScalarFloat
+			}
+			switch ex.op {
+			case "+", "-", "*", "/", "==", "!=", "<", "<=", ">", ">=":
+				fc.emitExprValueCast(ex.left, floatInfo)
+				fc.emitExprValueCast(ex.right, floatInfo)
+				fc.emitTypedBinaryInst(ex.op, floatInfo)
+			default:
+				fc.errorf(fc.sig.File, 0, 0, "unsupported floating-point binary operator %q", ex.op)
+				fc.emitZeroValue(floatInfo)
+			}
+			return
 		}
 		fc.emitExpr(ex.left)
 		fc.emitExpr(ex.right)
@@ -7805,7 +8292,8 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		if t, ok := fc.exprTypeInfo(ex); ok && t.Kind == cDeclArray {
 			return
 		}
-		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprDerefWidth(ex.left)})
+		outInfo, _ := fc.exprTypeInfo(ex)
+		fc.emitLoadForType(fc.exprDerefWidth(ex.left), outInfo)
 	case exprMember:
 		field, ok := fc.resolveMemberField(ex, true)
 		if !ok || !fc.emitMemberAddress(ex, true) {
@@ -7820,7 +8308,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			break
 		}
-		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: fc.exprLValueWidth(ex)})
+		fc.emitLoadForType(fc.exprLValueWidth(ex), field.Type)
 	case exprCall:
 		if fc.emitBuiltinVariadicCall(ex) {
 			return
@@ -7840,8 +8328,12 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				argLocals := make([]int, 0, len(ex.args))
 				i := 0
 				for i < len(ex.args) {
-					fc.emitExpr(ex.args[i])
-					argTmp := fc.addLocal(fmt.Sprintf("$call_arg$%d$%d", fc.c.nextLabel(), i), fc.sig.File, 0, 0)
+					fc.emitCallArgValue(sig, ex.args[i], i)
+					argInfo, ok := fc.callArgValueType(sig, ex.args[i], i)
+					argTmp := fc.allocTempLocal(fmt.Sprintf("$call_arg$%d$%d", fc.c.nextLabel(), i))
+					if ok {
+						argTmp = fc.allocTempLocalForType(fmt.Sprintf("$call_arg$%d$%d", fc.c.nextLabel(), i), argInfo)
+					}
 					fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: argTmp})
 					argLocals = append(argLocals, argTmp)
 					i++
@@ -7862,8 +8354,8 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			if sig.Variadic && !sig.Defined {
 				callArgCount = len(ex.args)
 			}
-			for _, a := range ex.args {
-				fc.emitExpr(a)
+			for i, a := range ex.args {
+				fc.emitCallArgValue(sig, a, i)
 			}
 			if !sig.Defined {
 				if fc.c.objectMode() {
@@ -7911,8 +8403,29 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 
 		argLocals := make([]int, 0, len(ex.args))
 		for i, a := range ex.args {
-			fc.emitExpr(a)
-			argTmp := fc.addLocal(fmt.Sprintf("$call_arg$%d$%d", fc.c.nextLabel(), i), fc.sig.File, 0, 0)
+			var indirectCallSig *cFuncSig
+			if indirectSig != nil {
+				indirectCallSig = &cFuncSig{
+					ParamCount:       indirectSig.ParamCount,
+					ParamUnspecified: indirectSig.ParamUnspecified,
+					Variadic:         indirectSig.Variadic,
+					ParamKinds:       indirectSig.ParamKinds,
+					ParamBases:       indirectSig.ParamBases,
+					ParamPtrDepth:    indirectSig.ParamPtrDepth,
+					ParamOpaque:      indirectSig.ParamOpaque,
+					ParamAggKey:      indirectSig.ParamAggKey,
+					ParamAggTag:      indirectSig.ParamAggTag,
+					ParamFuncSigs:    indirectSig.ParamFuncSigs,
+				}
+				fc.emitCallArgValue(indirectCallSig, a, i)
+			} else {
+				fc.emitExpr(a)
+			}
+			argInfo, ok := fc.callArgValueType(indirectCallSig, a, i)
+			argTmp := fc.allocTempLocal(fmt.Sprintf("$call_arg$%d$%d", fc.c.nextLabel(), i))
+			if ok {
+				argTmp = fc.allocTempLocalForType(fmt.Sprintf("$call_arg$%d$%d", fc.c.nextLabel(), i), argInfo)
+			}
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: argTmp})
 			argLocals = append(argLocals, argTmp)
 		}
@@ -8047,8 +8560,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: endLabel})
 	case exprCast:
-		fc.emitExpr(ex.left)
-		fc.emitCastToType(ex.typeInfo)
+		fc.emitExprValueCast(ex.left, ex.typeInfo)
 	case exprCompoundLit:
 		if isAggregateObjectType(ex.typeInfo) || ex.typeInfo.Kind == cDeclArray {
 			fc.errorf(fc.sig.File, 0, 0, "compound literal value use for aggregate objects is not yet supported")
@@ -8060,7 +8572,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			break
 		}
-		fc.emit(ir.Inst{Op: ir.OP_LOAD, Arg: int(fc.typeByteSize(ex.typeInfo))})
+		fc.emitLoadForType(int(fc.typeByteSize(ex.typeInfo)), ex.typeInfo)
 	case exprSizeof:
 		if ex.left == nil {
 			fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: fc.sizeofType(ex.typeInfo)})
@@ -8078,9 +8590,9 @@ func (fc *funcCompiler) emitLogicalExpr(ex *expr) {
 	trueLabel := fc.c.nextLabel()
 	endLabel := fc.c.nextLabel()
 	if ex.op == "&&" {
-		fc.emitExpr(ex.left)
+		fc.emitConditionValue(ex.left)
 		fc.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: falseLabel})
-		fc.emitExpr(ex.right)
+		fc.emitConditionValue(ex.right)
 		fc.emit(ir.Inst{Op: ir.OP_JMP_IF_NOT, Arg: falseLabel})
 		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: trueLabel})
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
@@ -8090,9 +8602,9 @@ func (fc *funcCompiler) emitLogicalExpr(ex *expr) {
 		fc.emit(ir.Inst{Op: ir.OP_LABEL, Arg: endLabel})
 		return
 	}
-	fc.emitExpr(ex.left)
+	fc.emitConditionValue(ex.left)
 	fc.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: trueLabel})
-	fc.emitExpr(ex.right)
+	fc.emitConditionValue(ex.right)
 	fc.emit(ir.Inst{Op: ir.OP_JMP_IF, Arg: trueLabel})
 	fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 	fc.emit(ir.Inst{Op: ir.OP_JMP, Arg: endLabel})
@@ -8105,6 +8617,7 @@ type exprKind int
 
 const (
 	exprIntLit exprKind = iota
+	exprFloatLit
 	exprStringLit
 	exprVar
 	exprAssign
@@ -8126,6 +8639,7 @@ type expr struct {
 	op   string
 
 	intVal int64
+	floatVal string
 	strVal string
 	name   string
 
@@ -8643,6 +9157,14 @@ func (p *cExprParser) parsePrimary() *expr {
 	t := p.advance()
 	switch t.Kind {
 	case TokNumber:
+		if lit, base, ok, err := parseCFloatLiteral(t.Text); ok {
+			if err != nil {
+				p.errorf("invalid floating-point literal %q: %v", t.Text, err)
+				lit = "0.0"
+				base = cScalarDouble
+			}
+			return &expr{kind: exprFloatLit, floatVal: lit, typeInfo: cTypeInfo{Kind: cDeclScalar, Base: base}}
+		}
 		v, err := parseCIntLiteral(t.Text)
 		if err != nil {
 			p.errorf("invalid integer literal %q: %v", t.Text, err)
@@ -8689,6 +9211,120 @@ func (p *cExprParser) parsePrimary() *expr {
 	}
 	p.errorf("unexpected token %q in expression", t.Text)
 	return &expr{kind: exprIntLit, intVal: 0}
+}
+
+func containsAnyByte(text string, chars string) bool {
+	for i := 0; i < len(text); i++ {
+		for j := 0; j < len(chars); j++ {
+			if text[i] == chars[j] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasHexPrefix(text string) bool {
+	return len(text) >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')
+}
+
+func isValidSimpleCFloatLiteral(text string) bool {
+	if len(text) == 0 {
+		return false
+	}
+	digits := 0
+	fracDigits := 0
+	i := 0
+	if i < len(text) && (text[i] == '+' || text[i] == '-') {
+		i++
+	}
+	for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+		digits++
+		i++
+	}
+	if i < len(text) && text[i] == '.' {
+		i++
+		for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+			fracDigits++
+			i++
+		}
+	}
+	if digits == 0 && fracDigits == 0 {
+		return false
+	}
+	if i < len(text) && (text[i] == 'e' || text[i] == 'E') {
+		i++
+		if i < len(text) && (text[i] == '+' || text[i] == '-') {
+			i++
+		}
+		expDigits := 0
+		for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+			expDigits++
+			i++
+		}
+		if expDigits == 0 {
+			return false
+		}
+	}
+	return i == len(text)
+}
+
+func parseCFloatLiteral(text string) (string, cScalarType, bool, error) {
+	s := text
+	if s == "" {
+		return "", cScalarDouble, false, nil
+	}
+	core := s
+	base := cScalarDouble
+	if hasHexPrefix(core) {
+		last := core[len(core)-1]
+		suffix := byte(0)
+		if last == 'f' || last == 'F' || last == 'l' || last == 'L' {
+			suffix = last
+			core = core[:len(core)-1]
+			if len(core) > 0 {
+				prev := core[len(core)-1]
+				if suffix == 'f' || suffix == 'F' {
+					if prev == 'u' || prev == 'U' {
+						return "", cScalarDouble, false, nil
+					}
+				} else {
+					if prev == 'u' || prev == 'U' || prev == 'l' || prev == 'L' {
+						return "", cScalarDouble, false, nil
+					}
+				}
+			}
+		}
+		if core == "" {
+			return "", cScalarDouble, true, fmt.Errorf("empty floating-point literal")
+		}
+		if !containsAnyByte(core, ".pP") {
+			return "", cScalarDouble, false, nil
+		}
+		if suffix == 'f' || suffix == 'F' {
+			base = cScalarFloat
+		} else if suffix == 'l' || suffix == 'L' {
+			return "", cScalarDouble, true, fmt.Errorf("long double literals are not supported")
+		}
+		return core, base, true, nil
+	}
+	if !containsAnyByte(core, ".eE") {
+		return "", cScalarDouble, false, nil
+	}
+	last := core[len(core)-1]
+	if last == 'f' || last == 'F' {
+		base = cScalarFloat
+		core = core[:len(core)-1]
+	} else if last == 'l' || last == 'L' {
+		return "", cScalarDouble, true, fmt.Errorf("long double literals are not supported")
+	}
+	if core == "" {
+		return "", cScalarDouble, true, fmt.Errorf("empty floating-point literal")
+	}
+	if !isValidSimpleCFloatLiteral(core) {
+		return "", cScalarDouble, true, fmt.Errorf("invalid floating-point literal")
+	}
+	return core, base, true, nil
 }
 
 func parseCIntLiteral(text string) (int64, error) {

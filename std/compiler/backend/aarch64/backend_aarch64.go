@@ -1261,7 +1261,7 @@ func (g *CodeGen) compileLoadArm64(inst ir.Inst) {
 		if size == 1 {
 			g.emitLdrb(REG_X0, REG_X1, offset)
 		} else if size == 4 {
-			g.emitLdr32(REG_X0, REG_X1, offset)
+			g.emitLdrw(REG_X0, REG_X1, offset)
 		} else {
 			g.emitLdr(REG_X0, REG_X1, offset)
 		}
@@ -1623,6 +1623,164 @@ func mul10CheckedArm64(v uint64) (uint64, bool) {
 	return v * 10, true
 }
 
+func hexDigitValueArm64(ch byte) (uint64, bool) {
+	switch {
+	case ch >= '0' && ch <= '9':
+		return uint64(ch - '0'), true
+	case ch >= 'a' && ch <= 'f':
+		return uint64(ch-'a') + 10, true
+	case ch >= 'A' && ch <= 'F':
+		return uint64(ch-'A') + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func highestBitIndexArm64(v uint64) int {
+	i := -1
+	for v != 0 {
+		v = v >> 1
+		i++
+	}
+	return i
+}
+
+func parseHexFloatLiteralBitsArm64(sign uint64, s string, i int) (uint64, bool) {
+	if i+2 > len(s) || s[i] != '0' || (s[i+1] != 'x' && s[i+1] != 'X') {
+		return 0, false
+	}
+	i += 2
+	mant := uint64(0)
+	exp2 := 0
+	sawDigit := false
+	sawDot := false
+	for i < len(s) {
+		ch := s[i]
+		if ch == '_' {
+			i++
+			continue
+		}
+		if ch == '.' {
+			if sawDot {
+				return 0, false
+			}
+			sawDot = true
+			i++
+			continue
+		}
+		if ch == 'p' || ch == 'P' {
+			break
+		}
+		digit, ok := hexDigitValueArm64(ch)
+		if !ok {
+			return 0, false
+		}
+		if mant > (^uint64(0) >> 4) {
+			return 0, false
+		}
+		mant = (mant << 4) | digit
+		if sawDot {
+			exp2 -= 4
+		}
+		sawDigit = true
+		i++
+	}
+	if !sawDigit || i >= len(s) || (s[i] != 'p' && s[i] != 'P') {
+		return 0, false
+	}
+	i++
+	if i >= len(s) {
+		return 0, false
+	}
+	expNeg := false
+	if s[i] == '+' || s[i] == '-' {
+		expNeg = s[i] == '-'
+		i++
+	}
+	if i >= len(s) {
+		return 0, false
+	}
+	exp := 0
+	haveExpDigit := false
+	for i < len(s) {
+		ch := s[i]
+		if ch == '_' {
+			i++
+			continue
+		}
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		exp = exp*10 + int(ch-'0')
+		haveExpDigit = true
+		i++
+	}
+	if !haveExpDigit {
+		return 0, false
+	}
+	if expNeg {
+		exp2 -= exp
+	} else {
+		exp2 += exp
+	}
+	if mant == 0 {
+		return sign, true
+	}
+
+	msb := highestBitIndexArm64(mant)
+	unbiased := exp2 + msb
+	if unbiased > 1023 {
+		return sign | (uint64(0x7FF) << 52), true
+	}
+	if unbiased < -1075 {
+		return sign, true
+	}
+	if unbiased >= -1022 {
+		shift := msb - 52
+		mant53 := mant
+		if shift > 0 {
+			mant53 = mant >> uint(shift)
+			mask := (uint64(1) << uint(shift)) - 1
+			rem := mant & mask
+			half := uint64(1) << uint(shift-1)
+			if rem > half || (rem == half && (mant53&1) != 0) {
+				mant53++
+				if mant53 == (uint64(1) << 53) {
+					mant53 = mant53 >> 1
+					unbiased++
+					if unbiased > 1023 {
+						return sign | (uint64(0x7FF) << 52), true
+					}
+				}
+			}
+		} else if shift < 0 {
+			mant53 = mant << uint(-shift)
+		}
+		return sign | (uint64(unbiased+1023) << 52) | (mant53 & ((uint64(1) << 52) - 1)), true
+	}
+
+	subShift := -1074 - exp2
+	if subShift < 0 {
+		return sign, true
+	}
+	if subShift >= 64 {
+		return sign, true
+	}
+	mantBits := mant >> uint(subShift)
+	if subShift > 0 {
+		mask := (uint64(1) << uint(subShift)) - 1
+		rem := mant & mask
+		half := uint64(1) << uint(subShift-1)
+		if rem > half || (rem == half && (mantBits&1) != 0) {
+			mantBits++
+		}
+	}
+	if mantBits >= (uint64(1) << 52) {
+		return sign | (uint64(1) << 52), true
+	}
+	return sign | mantBits, true
+}
+
 func parseFloatLiteralBitsArm64(s string) (uint64, bool) {
 	if len(s) == 0 {
 		return 0, false
@@ -1637,6 +1795,9 @@ func parseFloatLiteralBitsArm64(s string) (uint64, bool) {
 		if i >= len(s) {
 			return 0, false
 		}
+	}
+	if i+2 <= len(s) && s[i] == '0' && (s[i+1] == 'x' || s[i+1] == 'X') {
+		return parseHexFloatLiteralBitsArm64(sign, s, i)
 	}
 
 	mant := uint64(0)
