@@ -223,6 +223,9 @@ var cTypedefLookupCompiler *compiler
 var cTypedefLookupFunc *funcCompiler
 var cAggregateLookupCompiler *compiler
 var cAggregateLookupFunc *funcCompiler
+var cConstSizeLookupCompiler *compiler
+var cConstSizeLookupFunc *funcCompiler
+var cConstSizeLookupDecl map[string]int64
 var cAnonAggregateSeq int64
 
 func lookupTypedefAlias(name string) (cTypeInfo, bool) {
@@ -260,6 +263,23 @@ func lookupBuiltinTypedefAlias(name string) (cTypeInfo, bool) {
 	default:
 		return cTypeInfo{}, false
 	}
+}
+
+func lookupConstObjectSize(name string) (int64, bool) {
+	if cConstSizeLookupFunc != nil {
+		if n, ok := cConstSizeLookupFunc.lookupConstObjectSize(name); ok {
+			return n, true
+		}
+	}
+	if cConstSizeLookupDecl != nil {
+		if n, ok := cConstSizeLookupDecl[name]; ok {
+			return n, true
+		}
+	}
+	if cConstSizeLookupCompiler != nil {
+		return cConstSizeLookupCompiler.lookupConstObjectSize(name)
+	}
+	return 0, false
 }
 
 func lookupAggregateAlias(keyword string, tag string) (*cAggregateInfo, bool) {
@@ -403,10 +423,14 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 	prevTypedefLookupFunc := cTypedefLookupFunc
 	prevAggregateLookupCompiler := cAggregateLookupCompiler
 	prevAggregateLookupFunc := cAggregateLookupFunc
+	prevConstSizeLookupCompiler := cConstSizeLookupCompiler
+	prevConstSizeLookupFunc := cConstSizeLookupFunc
 	cTypedefLookupCompiler = c
 	cTypedefLookupFunc = nil
 	cAggregateLookupCompiler = c
 	cAggregateLookupFunc = nil
+	cConstSizeLookupCompiler = c
+	cConstSizeLookupFunc = nil
 
 	c.collectTopLevel()
 	if len(c.errors) > 0 {
@@ -414,6 +438,8 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		cTypedefLookupFunc = prevTypedefLookupFunc
 		cAggregateLookupCompiler = prevAggregateLookupCompiler
 		cAggregateLookupFunc = prevAggregateLookupFunc
+		cConstSizeLookupCompiler = prevConstSizeLookupCompiler
+		cConstSizeLookupFunc = prevConstSizeLookupFunc
 		return nil, c.errors
 	}
 	c.assignFunctionIDs()
@@ -436,12 +462,16 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		cTypedefLookupFunc = prevTypedefLookupFunc
 		cAggregateLookupCompiler = prevAggregateLookupCompiler
 		cAggregateLookupFunc = prevAggregateLookupFunc
+		cConstSizeLookupCompiler = prevConstSizeLookupCompiler
+		cConstSizeLookupFunc = prevConstSizeLookupFunc
 		return nil, c.errors
 	}
 	cTypedefLookupCompiler = prevTypedefLookupCompiler
 	cTypedefLookupFunc = prevTypedefLookupFunc
 	cAggregateLookupCompiler = prevAggregateLookupCompiler
 	cAggregateLookupFunc = prevAggregateLookupFunc
+	cConstSizeLookupCompiler = prevConstSizeLookupCompiler
+	cConstSizeLookupFunc = prevConstSizeLookupFunc
 	return c.irmod, nil
 }
 
@@ -701,6 +731,18 @@ func (c *compiler) pointerElemStep(kind cDeclKind, ptrDepth int, base cScalarTyp
 func (c *compiler) lookupEnumConst(name string) (int64, bool) {
 	v, ok := c.enumConsts[name]
 	return v, ok
+}
+
+func (c *compiler) lookupConstObjectSize(name string) (int64, bool) {
+	info, ok := c.globalTypeInfo(name)
+	if !ok {
+		return 0, false
+	}
+	size, _, err := cTypeLayout(info)
+	if err != nil {
+		return 0, false
+	}
+	return size, true
 }
 
 func (c *compiler) addGlobalEnumConst(name string, val int64, file string, line int, col int) {
@@ -1648,12 +1690,15 @@ func (c *compiler) compileFunction(sig *cFuncSig) {
 	}
 
 	prevTypedefLookupFunc := cTypedefLookupFunc
+	prevConstSizeLookupFunc := cConstSizeLookupFunc
 	prevAggregateLookupFunc := cAggregateLookupFunc
 	cTypedefLookupFunc = fc
+	cConstSizeLookupFunc = fc
 	cAggregateLookupFunc = fc
 	fc.indexUserLabels(sig.Body)
 	fc.compileCompound(sig.Body, true)
 	cTypedefLookupFunc = prevTypedefLookupFunc
+	cConstSizeLookupFunc = prevConstSizeLookupFunc
 	cAggregateLookupFunc = prevAggregateLookupFunc
 	if len(f.Code) == 0 || f.Code[len(f.Code)-1].Op != ir.OP_RETURN {
 		if sig.RetCount > 0 {
@@ -1869,7 +1914,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 	if err != nil {
 		return nil, err
 	}
-	name, retDeclKind, retDeclPtrDepth, _, _, _, _, err := parseDeclarator(decl, false)
+	name, retDeclKind, retDeclPtrDepth, _, _, _, _, err := parseDeclarator(decl, false, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1918,7 +1963,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 					if err == nil {
 						baseInfo, _, _, _, err := parseScalarTypeSpec(spec, "function parameter list", true)
 						if err == nil {
-							_, kind, ptrDepth, arrLen, arrDims, _, _, err := parseDeclarator(decl, true)
+							_, kind, ptrDepth, arrLen, arrDims, _, _, err := parseDeclarator(decl, true, nil)
 							if err == nil {
 								info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, false, "function parameter list")
 								if cerr == nil {
@@ -1952,7 +1997,7 @@ func parseFunctionSignature(file string, line int, col int, toks []Token) (*cFun
 				if err != nil {
 					return nil, err
 				}
-				pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, directFunc, err := parseDeclarator(decl, true)
+				pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, directFunc, err := parseDeclarator(decl, true, nil)
 				if err != nil {
 					return nil, err
 				}
@@ -2332,7 +2377,7 @@ func parseBitfieldWidth(tokens []Token) (int64, error) {
 	if len(tokens) == 0 {
 		return 0, fmt.Errorf("bitfield width is empty")
 	}
-	n, err := parseEnumConstExprTokens(tokens, nil)
+	n, err := parseEnumConstExprTokens(tokens, nil, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -2347,6 +2392,12 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 	fields := make([]cAggregateField, 0, len(decls))
 	used := make(map[string]bool)
 	var enumConsts map[string]int64
+	prevDeclSizes := cConstSizeLookupDecl
+	declSizes := make(map[string]int64)
+	cConstSizeLookupDecl = declSizes
+	defer func() {
+		cConstSizeLookupDecl = prevDeclSizes
+	}()
 	maxAlign := int64(1)
 	maxSize := int64(0)
 	nextOffset := int64(0)
@@ -2465,7 +2516,7 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 				var arrayDims []int64
 				var fnSig *cFuncTypeSig
 				var directFunc bool
-				name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err = parseDeclarator(lhs, false)
+				name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err = parseDeclarator(lhs, false, enumConsts)
 				if err != nil {
 					return nil, 0, 0, nil, fmt.Errorf("%s: %w (%s)", bctx, err, tokenSliceText(lhs))
 				}
@@ -2489,6 +2540,11 @@ func parseAggregateFields(tokens []Token, keyword string, tag string, context st
 				}
 			} else {
 				memberType = baseInfo
+			}
+			if name != "" {
+				if size, _, err := cTypeLayout(memberType); err == nil {
+					declSizes[name] = size
+				}
 			}
 			if colonIdx >= 0 {
 				if !isSupportedBitfieldType(memberType) {
@@ -3372,7 +3428,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 			if err == nil {
 				baseInfo, _, _, _, err := parseScalarTypeSpec(spec, context, true)
 				if err == nil {
-					_, kind, ptrDepth, arrLen, arrDims, _, _, err := parseDeclarator(decl, true)
+					_, kind, ptrDepth, arrLen, arrDims, _, _, err := parseDeclarator(decl, true, nil)
 					if err == nil {
 						info, cerr := combineTypeAndDeclarator(baseInfo, kind, ptrDepth, arrLen, false, context)
 						if cerr == nil {
@@ -3416,7 +3472,7 @@ func parseFunctionParamList(paramTokens []Token, context string) ([]cDeclKind, [
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, false, err
 		}
-		pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, directFunc, err := parseDeclarator(decl, true)
+		pname, pdeclKind, pdeclPtrDepth, parrLen, parrDims, pfnSig, directFunc, err := parseDeclarator(decl, true, nil)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, false, err
 		}
@@ -3464,7 +3520,7 @@ func parseTrailingArraySuffixes(tokens []Token) ([]Token, []int64, error) {
 		if arrOpen < 0 {
 			break
 		}
-		n, err := parseArrayLength(work[arrOpen+1 : len(work)-1])
+		n, err := parseArrayLength(work[arrOpen+1:len(work)-1], nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -3522,7 +3578,7 @@ func matchingBraceClose(tokens []Token, open int) int {
 	return -1
 }
 
-func parseDeclaratorNode(tokens []Token, allowAbstract bool) (*cDeclaratorNode, int, error) {
+func parseDeclaratorNode(tokens []Token, allowAbstract bool, enumLookup map[string]int64) (*cDeclaratorNode, int, error) {
 	node := &cDeclaratorNode{}
 	i := 0
 	for i < len(tokens) && tokens[i].Kind == TokPunct && tokens[i].Text == "*" {
@@ -3541,7 +3597,7 @@ func parseDeclaratorNode(tokens []Token, allowAbstract bool) (*cDeclaratorNode, 
 		if close < 0 {
 			return nil, 0, fmt.Errorf("unterminated parenthesized declarator")
 		}
-		sub, consumed, err := parseDeclaratorNode(tokens[i+1:close], allowAbstract)
+		sub, consumed, err := parseDeclaratorNode(tokens[i+1:close], allowAbstract, enumLookup)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -3564,7 +3620,7 @@ func parseDeclaratorNode(tokens []Token, allowAbstract bool) (*cDeclaratorNode, 
 			if close < 0 {
 				return nil, 0, fmt.Errorf("unterminated array declarator")
 			}
-			n, err := parseArrayLength(tokens[i+1 : close])
+			n, err := parseArrayLength(tokens[i+1:close], enumLookup)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -3781,7 +3837,7 @@ func flattenDeclaratorEntity(ent *cDeclaratorEntity) (cDeclKind, int, []int64, *
 	}
 }
 
-func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int, int64, []int64, *cFuncTypeSig, bool, error) {
+func parseDeclarator(tokens []Token, allowAbstract bool, enumLookup map[string]int64) (string, cDeclKind, int, int64, []int64, *cFuncTypeSig, bool, error) {
 	tokens = trimTrailingDeclaratorDecorators(tokens)
 	if len(tokens) == 0 {
 		if allowAbstract {
@@ -3789,7 +3845,7 @@ func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int
 		}
 		return "", cDeclScalar, 0, 0, nil, nil, false, fmt.Errorf("missing declarator")
 	}
-	node, consumed, err := parseDeclaratorNode(tokens, allowAbstract)
+	node, consumed, err := parseDeclaratorNode(tokens, allowAbstract, enumLookup)
 	if err != nil {
 		return "", cDeclScalar, 0, 0, nil, nil, false, err
 	}
@@ -3807,7 +3863,7 @@ func parseDeclarator(tokens []Token, allowAbstract bool) (string, cDeclKind, int
 	return declaratorNodeName(node), kind, ptrDepth, lens[0], lens[1:], fnSig, directFunc, nil
 }
 
-func parseArrayLength(tokens []Token) (int64, error) {
+func parseArrayLength(tokens []Token, lookup map[string]int64) (int64, error) {
 	tokens = trimTokens(tokens)
 	if len(tokens) == 0 {
 		return cArrayLenUnspecified, nil
@@ -3822,7 +3878,7 @@ func parseArrayLength(tokens []Token) (int64, error) {
 	if len(filtered) == 0 {
 		return cArrayLenUnspecified, nil
 	}
-	n, err := parseEnumConstExprTokens(filtered, nil)
+	n, err := parseEnumConstExprTokens(filtered, lookup, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -3837,7 +3893,7 @@ func parseArrayDesignatorIndex(tokens []Token, lookup map[string]int64) (int64, 
 	if len(tokens) == 0 {
 		return 0, fmt.Errorf("initializer designator index is empty")
 	}
-	n, err := parseEnumConstExprTokens(tokens, lookup)
+	n, err := parseEnumConstExprTokens(tokens, lookup, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -3851,6 +3907,7 @@ type enumConstParser struct {
 	toks   []Token
 	pos    int
 	lookup map[string]int64
+	sizes  map[string]int64
 }
 
 func (p *enumConstParser) atEnd() bool {
@@ -3882,6 +3939,59 @@ func (p *enumConstParser) matchPunct(op string) bool {
 		return true
 	}
 	return false
+}
+
+func (p *enumConstParser) findClosingParen(open int) int {
+	if open < 0 || open >= len(p.toks) || p.toks[open].Kind != TokPunct || p.toks[open].Text != "(" {
+		return -1
+	}
+	depth := 1
+	for i := open + 1; i < len(p.toks); i++ {
+		t := p.toks[i]
+		if t.Kind != TokPunct {
+			continue
+		}
+		switch t.Text {
+		case "(":
+			depth++
+		case ")":
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func lookupConstExprSize(name string, sizes map[string]int64) (int64, bool) {
+	if sizes != nil {
+		if n, ok := sizes[name]; ok {
+			return n, true
+		}
+	}
+	return lookupConstObjectSize(name)
+}
+
+func parseConstExprSizeofOperand(tokens []Token, sizes map[string]int64) (int64, bool, error) {
+	tokens = trimTokens(tokens)
+	if len(tokens) == 0 {
+		return 0, false, nil
+	}
+	if len(tokens) == 1 && tokens[0].Kind == TokIdent {
+		if n, ok := lookupConstExprSize(tokens[0].Text, sizes); ok {
+			return n, true, nil
+		}
+	}
+	info, err := parseCTypeInfo(tokens)
+	if err == nil {
+		n, _, err := cTypeLayout(info)
+		if err != nil {
+			return 0, true, err
+		}
+		return n, true, nil
+	}
+	return 0, false, nil
 }
 
 func isEnumConstCastToken(t Token) bool {
@@ -4041,6 +4151,32 @@ func (p *enumConstParser) parsePrimary() (int64, error) {
 }
 
 func (p *enumConstParser) parseUnary() (int64, error) {
+	if !p.atEnd() && p.peek().Kind == TokIdent && p.peek().Text == "sizeof" {
+		p.pos++
+		if p.matchPunct("(") {
+			open := p.pos - 1
+			close := p.findClosingParen(open)
+			if close < 0 {
+				return 0, fmt.Errorf("expected ')' after sizeof")
+			}
+			inner := p.toks[open+1 : close]
+			p.pos = close + 1
+			if n, ok, err := parseConstExprSizeofOperand(inner, p.sizes); ok || err != nil {
+				return n, err
+			}
+			return 0, fmt.Errorf("unsupported sizeof operand in constant expression")
+		}
+		if p.atEnd() {
+			return 0, fmt.Errorf("missing operand after sizeof")
+		}
+		tok := p.advance()
+		if tok.Kind == TokIdent {
+			if n, ok := lookupConstExprSize(tok.Text, p.sizes); ok {
+				return n, nil
+			}
+		}
+		return 0, fmt.Errorf("unsupported sizeof operand in constant expression")
+	}
 	if cast, ok := p.consumeSimpleCast(); ok {
 		v, err := p.parseUnary()
 		if err != nil {
@@ -4206,8 +4342,8 @@ func (p *enumConstParser) parseExpr() (int64, error) {
 	return p.parseOr()
 }
 
-func parseEnumConstExprTokens(toks []Token, lookup map[string]int64) (int64, error) {
-	p := &enumConstParser{toks: trimTokens(toks), lookup: lookup}
+func parseEnumConstExprTokens(toks []Token, lookup map[string]int64, sizes map[string]int64) (int64, error) {
+	p := &enumConstParser{toks: trimTokens(toks), lookup: lookup, sizes: sizes}
 	v, err := p.parseExpr()
 	if err != nil {
 		return 0, err
@@ -4305,7 +4441,7 @@ func parseEnumSpecifierAndConstants(toks []Token, enumLookup map[string]int64) (
 			for name, val := range vals {
 				resolver[name] = val
 			}
-			ev, err := parseEnumConstExprTokens(rhs, resolver)
+			ev, err := parseEnumConstExprTokens(rhs, resolver, nil)
 			if err != nil {
 				return 0, nil, fmt.Errorf("invalid value for enum constant %q: %v", name, err)
 			}
@@ -4320,6 +4456,12 @@ func parseEnumSpecifierAndConstants(toks []Token, enumLookup map[string]int64) (
 func parseDeclItemsWithBase(baseInfo cTypeInfo, enumLookup map[string]int64, hasTypedef bool, allowOpaqueObject bool, allowIncompleteArray bool, rest []Token, allowRuntimeArrays bool) ([]cDeclItem, error) {
 	parts := splitTopLevel(rest, ",")
 	items := make([]cDeclItem, 0, len(parts))
+	prevDeclSizes := cConstSizeLookupDecl
+	declSizes := make(map[string]int64)
+	cConstSizeLookupDecl = declSizes
+	defer func() {
+		cConstSizeLookupDecl = prevDeclSizes
+	}()
 	for _, part := range parts {
 		part = trimTokens(part)
 		if len(part) == 0 {
@@ -4388,7 +4530,7 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, enumLookup map[string]int64, has
 			}
 		}
 
-		name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(lhs, false)
+		name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(lhs, false, enumLookup)
 		if err != nil {
 			return nil, fmt.Errorf("%s (%s)", err, tokenSliceText(lhs))
 		}
@@ -4438,6 +4580,11 @@ func parseDeclItemsWithBase(baseInfo cTypeInfo, enumLookup map[string]int64, has
 			AggregateKeyword: info.AggregateKeyword,
 			AggregateTag:     info.AggregateTag,
 		})
+		if name != "" {
+			if size, _, err := cTypeLayout(info); err == nil {
+				declSizes[name] = size
+			}
+		}
 	}
 	return items, nil
 }
@@ -4467,12 +4614,12 @@ func tryParseRuntimeArrayDeclItem(baseInfo cTypeInfo, lhs []Token, init []Token)
 	if len(bound) == 0 {
 		return cDeclItem{}, false, nil
 	}
-	if _, err := parseArrayLength(bound); err == nil {
+	if _, err := parseArrayLength(bound, nil); err == nil {
 		return cDeclItem{}, false, nil
 	}
 
 	baseDecl := trimTokens(lhs[:open])
-	name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(baseDecl, false)
+	name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(baseDecl, false, nil)
 	if err != nil {
 		return cDeclItem{}, false, nil
 	}
@@ -4579,7 +4726,17 @@ func parseDeclItemsWithOptions(toks []Token, enumLookup map[string]int64, allowR
 		}
 		return nil, nil, false, false, fmt.Errorf("missing declarator in declaration")
 	}
-	items, err := parseDeclItemsWithBase(baseInfo, enumLookup, hasTypedef, hasTypedef || hasExtern, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
+	mergedEnumLookup := enumLookup
+	if len(baseEnumConsts) > 0 {
+		mergedEnumLookup = make(map[string]int64, len(enumLookup)+len(baseEnumConsts))
+		for k, v := range enumLookup {
+			mergedEnumLookup[k] = v
+		}
+		for k, v := range baseEnumConsts {
+			mergedEnumLookup[k] = v
+		}
+	}
+	items, err := parseDeclItemsWithBase(baseInfo, mergedEnumLookup, hasTypedef, hasTypedef || hasExtern, hasTypedef || hasExtern || allowIncompleteArray, rest, allowRuntimeArrays)
 	if err != nil {
 		return nil, nil, false, false, err
 	}
@@ -4615,7 +4772,7 @@ func parseCTypeInfo(tokens []Token) (cTypeInfo, error) {
 	if err != nil {
 		return cTypeInfo{}, err
 	}
-	name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(decl, true)
+	name, kind, ptrDepth, arrayLen, arrayDims, fnSig, directFunc, err := parseDeclarator(decl, true, nil)
 	if err != nil {
 		return cTypeInfo{}, err
 	}
@@ -4998,6 +5155,27 @@ func (fc *funcCompiler) lookupEnumConst(name string) (int64, bool) {
 		}
 	}
 	return fc.c.lookupEnumConst(name)
+}
+
+func (fc *funcCompiler) lookupConstObjectSize(name string) (int64, bool) {
+	if b, ok := fc.lookupLocalBinding(name); ok {
+		info := cTypeInfo{
+			Kind:             b.Kind,
+			PtrDepth:         b.PtrDepth,
+			ArrayLen:         b.ArrayLen,
+			ArrayDims:        cloneInt64s(b.ArrayDims),
+			Base:             b.Base,
+			FuncSig:          cloneFuncTypeSig(b.FuncSig),
+			OpaqueAggregate:  b.OpaqueAggregate,
+			AggregateKeyword: b.AggregateKeyword,
+			AggregateTag:     b.AggregateTag,
+		}
+		size, _, err := cTypeLayout(info)
+		if err == nil {
+			return size, true
+		}
+	}
+	return fc.c.lookupConstObjectSize(name)
 }
 
 func (fc *funcCompiler) enumLookupMap() map[string]int64 {

@@ -1035,6 +1035,7 @@ func (p *Preprocessor) applyMacro(file string, callTok Token, m *Macro, args [][
 	}
 
 	var out []Token
+	lastExpandedEmpty := false
 	for i := 0; i < len(m.Body); i++ {
 		t := m.Body[i]
 		if t.Kind == TokPunct && t.Text == "#" && i+1 < len(m.Body) {
@@ -1048,7 +1049,7 @@ func (p *Preprocessor) applyMacro(file string, callTok Token, m *Macro, args [][
 			}
 		}
 		if t.Kind == TokPunct && t.Text == "##" {
-			if len(out) == 0 || i+1 >= len(m.Body) {
+			if i+1 >= len(m.Body) {
 				continue
 			}
 			right := []Token{m.Body[i+1]}
@@ -1058,6 +1059,13 @@ func (p *Preprocessor) applyMacro(file string, callTok Token, m *Macro, args [][
 				}
 			}
 			if len(right) == 0 {
+				lastExpandedEmpty = false
+				i++
+				continue
+			}
+			if lastExpandedEmpty || len(out) == 0 {
+				out = append(out, right...)
+				lastExpandedEmpty = false
 				i++
 				continue
 			}
@@ -1067,16 +1075,23 @@ func (p *Preprocessor) applyMacro(file string, callTok Token, m *Macro, args [][
 			if len(right) > 1 {
 				out = append(out, right[1:]...)
 			}
+			lastExpandedEmpty = false
 			i++
 			continue
 		}
 		if t.Kind == TokIdent {
 			if arg, ok := paramMap[t.Text]; ok {
-				out = append(out, cloneTokens(arg)...)
+				if len(arg) == 0 {
+					lastExpandedEmpty = true
+				} else {
+					out = append(out, cloneTokens(arg)...)
+					lastExpandedEmpty = false
+				}
 				continue
 			}
 		}
 		out = append(out, t)
+		lastExpandedEmpty = false
 	}
 	return out, nil
 }
