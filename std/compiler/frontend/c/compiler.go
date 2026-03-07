@@ -65,19 +65,19 @@ type cFuncTypeSig struct {
 }
 
 type cDeclItem struct {
-	Name             string
-	Init             []Token
-	Kind             cDeclKind
-	DirectFunc       bool
-	PtrDepth         int
-	ArrayLen         int64
-	ArrayDims        []int64
-	IsVoid           bool
-	Base             cScalarType
-	FuncSig          *cFuncTypeSig
-	OpaqueAggregate  bool
-	AggregateKeyword string
-	AggregateTag     string
+	Name              string
+	Init              []Token
+	Kind              cDeclKind
+	DirectFunc        bool
+	PtrDepth          int
+	ArrayLen          int64
+	ArrayDims         []int64
+	IsVoid            bool
+	Base              cScalarType
+	FuncSig           *cFuncTypeSig
+	OpaqueAggregate   bool
+	AggregateKeyword  string
+	AggregateTag      string
 	RuntimeArrayBound []Token
 	RuntimeArrayElem  cTypeInfo
 }
@@ -375,6 +375,8 @@ func CompileUnits(target common.Target, units []Unit) (*ir.IRModule, []string) {
 		funcIDs:         make(map[string]int64),
 		intrinsics:      make(map[string]cIntrinsicWrapper),
 		externFns:       make(map[string]string),
+		externDataFns:   make(map[string]string),
+		externDataTypes: make(map[string]cTypeInfo),
 		nextLabelSeq:    1,
 	}
 	prevTypedefLookupCompiler := cTypedefLookupCompiler
@@ -450,6 +452,8 @@ type compiler struct {
 
 	intrinsics map[string]cIntrinsicWrapper
 	externFns  map[string]string
+	externDataFns   map[string]string
+	externDataTypes map[string]cTypeInfo
 
 	nextLabelSeq int
 }
@@ -771,6 +775,12 @@ func (c *compiler) ensureExternWrapper(name string, params int, retCount int) st
 	}
 	irName := fmt.Sprintf("c.extern$%s$%d$%d", name, params, retCount)
 	intrinsic := fmt.Sprintf("c.extern.%s|%d|%d", name, params, retCount)
+	if spec, ok := c.nativeExternLinkSpec(name, retCount); ok {
+		if c.irmod.LinkStaticFuncs == nil {
+			c.irmod.LinkStaticFuncs = make(map[string]string)
+		}
+		c.irmod.LinkStaticFuncs[intrinsic] = spec
+	}
 	f := &ir.IRFunc{
 		Name:     irName,
 		Params:   params,
@@ -781,6 +791,105 @@ func (c *compiler) ensureExternWrapper(name string, params int, retCount int) st
 	c.irmod.Funcs = append(c.irmod.Funcs, f)
 	c.externFns[key] = irName
 	return irName
+}
+
+func (c *compiler) ensureExternDataWrapper(name string, wantAddr bool) string {
+	key := name + "|value"
+	mode := "data"
+	if wantAddr {
+		key = name + "|addr"
+		mode = "dataptr"
+	}
+	if irName, ok := c.externDataFns[key]; ok {
+		return irName
+	}
+	spec, ok := c.nativeExternDataLinkSpec(name, wantAddr)
+	if !ok {
+		return ""
+	}
+	irName := fmt.Sprintf("c.externdata$%s$%s", name, mode)
+	intrinsic := fmt.Sprintf("c.externdata.%s|%s", name, mode)
+	if c.irmod.LinkStaticFuncs == nil {
+		c.irmod.LinkStaticFuncs = make(map[string]string)
+	}
+	c.irmod.LinkStaticFuncs[intrinsic] = spec
+	f := &ir.IRFunc{
+		Name:     irName,
+		Params:   0,
+		RetCount: 1,
+	}
+	f.Code = append(f.Code, ir.Inst{Op: ir.OP_CALL_INTRINSIC, Name: intrinsic, Arg: 0})
+	f.Code = append(f.Code, ir.Inst{Op: ir.OP_RETURN, Arg: 1})
+	c.irmod.Funcs = append(c.irmod.Funcs, f)
+	c.externDataFns[key] = irName
+	return irName
+}
+
+func (c *compiler) nativeExternLinkSpec(name string, retCount int) (string, bool) {
+	if c.target == nil || c.target.Backend == "c" {
+		return "", false
+	}
+	mode := ""
+	switch retCount {
+	case 0:
+		mode = "void"
+	case 1:
+		mode = "raw"
+	default:
+		return "", false
+	}
+	if name == "abort" || name == "exit" {
+		mode = "noreturn"
+	}
+	if c.target.GOOS == "darwin" {
+		switch name {
+		case "abort", "exit", "close", "read", "write", "lseek", "unlink", "perror",
+			"memset", "memmove", "bcopy", "bzero", "strcpy",
+			"strncpy", "index":
+			return "libSystem.dylib,_" + name + "," + mode, true
+		case "open":
+			return "libSystem.dylib,_open,rawvar2", true
+		case "printf":
+			return "libSystem.dylib,_printf,rawvar1", true
+		case "fprintf":
+			return "libSystem.dylib,_fprintf,rawvar2", true
+		}
+	}
+	return "", false
+}
+
+func (c *compiler) nativeExternDataLinkSpec(name string, wantAddr bool) (string, bool) {
+	if c.target == nil || c.target.Backend == "c" {
+		return "", false
+	}
+	mode := "data"
+	if wantAddr {
+		mode = "dataptr"
+	}
+	if c.target.GOOS == "darwin" && c.target.GOARCH == "arm64" {
+		switch name {
+		case "stdin":
+			return "libSystem.dylib,___stdinp," + mode, true
+		case "stdout":
+			return "libSystem.dylib,___stdoutp," + mode, true
+		case "stderr":
+			return "libSystem.dylib,___stderrp," + mode, true
+		}
+	}
+	return "", false
+}
+
+func (c *compiler) canCallExternOnTarget(name string, retCount int) bool {
+	if c.target != nil && c.target.Backend == "c" {
+		return true
+	}
+	_, ok := c.nativeExternLinkSpec(name, retCount)
+	return ok
+}
+
+func (c *compiler) canLoadExternDataOnTarget(name string) bool {
+	_, ok := c.nativeExternDataLinkSpec(name, false)
+	return ok
 }
 
 func encodeIRStringLiteral(raw string) string {
@@ -1031,6 +1140,16 @@ func (c *compiler) collectExternalDecl(file string, n *Node) {
 			OpaqueAggregate:  it.OpaqueAggregate,
 			AggregateKeyword: it.AggregateKeyword,
 			AggregateTag:     it.AggregateTag,
+		}
+		if hasExtern && len(it.Init) == 0 && c.canLoadExternDataOnTarget(it.Name) {
+			if existing, ok := c.externDataTypes[it.Name]; ok {
+				if !cTypeInfoEquivalent(existing, info) {
+					c.errorf(file, n.Line, n.Col, "conflicting extern data declaration for %q", it.Name)
+				}
+			} else {
+				c.externDataTypes[it.Name] = info
+			}
+			continue
 		}
 		if idx, exists := c.globalIndex[it.Name]; exists {
 			existing, ok := c.globalTypeInfo(it.Name)
@@ -1438,8 +1557,18 @@ func (c *compiler) emitEntryWrapper() {
 		return
 	}
 	f := &ir.IRFunc{Name: "main.main", Params: 0, RetCount: 1}
+	useValueArgs := c.target.Backend == "c" || (c.target.GOOS == "darwin" && c.target.GOARCH == "arm64")
 	for i := 0; i < mainSig.ParamCount; i++ {
-		f.Code = append(f.Code, ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		switch {
+		case useValueArgs && i == 0:
+			getArgc := c.ensureIntrinsicWrapper("SysArgcValue", 0, 1)
+			f.Code = append(f.Code, ir.Inst{Op: ir.OP_CALL, Name: getArgc, Arg: 0})
+		case useValueArgs && i == 1:
+			getArgv := c.ensureIntrinsicWrapper("SysArgvBaseValue", 0, 1)
+			f.Code = append(f.Code, ir.Inst{Op: ir.OP_CALL, Name: getArgv, Arg: 0})
+		default:
+			f.Code = append(f.Code, ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		}
 	}
 	f.Code = append(f.Code, ir.Inst{Op: ir.OP_CALL, Name: mainSig.IRName, Arg: mainSig.ParamCount})
 	if mainSig.RetCount <= 0 {
@@ -5298,12 +5427,14 @@ func (fc *funcCompiler) initLocalAggregateObject(name string, idx int, info cTyp
 		words = 1
 	}
 	firstElem := -1
+	lastElem := -1
 	for i := int64(0); i < words; i++ {
 		elemName := fmt.Sprintf("$%s$obj$%d$%d", name, idx, i)
 		elemIdx := fc.addLocal(elemName, file, line, col)
-		// Locals are laid out at decreasing stack addresses.
-		// Keep base at the last-created slot so +offset addressing stays in-bounds.
-		firstElem = elemIdx
+		if firstElem < 0 {
+			firstElem = elemIdx
+		}
+		lastElem = elemIdx
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: elemIdx})
 	}
@@ -5313,7 +5444,11 @@ func (fc *funcCompiler) initLocalAggregateObject(name string, idx int, info cTyp
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 		return
 	}
-	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
+	baseElem := lastElem
+	if fc.c.target.Backend == "c" {
+		baseElem = firstElem
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: baseElem})
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx})
 	fc.emitAggregateObjectInitializer(name, idx, false, info, init, file, line, col)
 }
@@ -6173,6 +6308,13 @@ func (fc *funcCompiler) emitAddressOf(ex *expr) bool {
 			}
 			return true
 		}
+		if fc.c.canLoadExternDataOnTarget(ex.name) {
+			wrap := fc.c.ensureExternDataWrapper(ex.name, true)
+			if wrap != "" {
+				fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: 0})
+				return true
+			}
+		}
 		if idx, ok := fc.lookupGlobal(ex.name); ok {
 			kind, _ := fc.lookupGlobalKind(ex.name)
 			ptrDepth, _ := fc.lookupGlobalPtrDepth(ex.name)
@@ -6372,6 +6514,19 @@ func (fc *funcCompiler) varTypeInfo(name string) (cTypeInfo, bool) {
 			AggregateTag:     b.AggregateTag,
 		}, true
 	}
+	if info, ok := fc.c.externDataTypes[name]; ok {
+		return cTypeInfo{
+			Kind:             info.Kind,
+			PtrDepth:         info.PtrDepth,
+			ArrayLen:         info.ArrayLen,
+			ArrayDims:        cloneInt64s(info.ArrayDims),
+			Base:             info.Base,
+			FuncSig:          cloneFuncTypeSig(info.FuncSig),
+			OpaqueAggregate:  info.OpaqueAggregate,
+			AggregateKeyword: info.AggregateKeyword,
+			AggregateTag:     info.AggregateTag,
+		}, true
+	}
 	if kind, ok := fc.lookupGlobalKind(name); ok {
 		base, _ := fc.lookupGlobalBase(name)
 		ptrDepth, _ := fc.lookupGlobalPtrDepth(name)
@@ -6447,13 +6602,15 @@ func (fc *funcCompiler) emitVariadicPackFromLocals(extraLocals []int) {
 		return
 	}
 	firstElem := -1
+	lastElem := -1
 	i := 0
 	for i < len(extraLocals) {
 		elemName := fmt.Sprintf("$va_pack_elem$%d$%d", fc.c.nextLabel(), i)
 		elemIdx := fc.addLocal(elemName, fc.sig.File, 0, 0)
-		// Locals are laid out at decreasing stack addresses; keep base at
-		// the last-created slot so +index addressing stays in-bounds.
-		firstElem = elemIdx
+		if firstElem < 0 {
+			firstElem = elemIdx
+		}
+		lastElem = elemIdx
 		fc.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: elemIdx})
 		i++
@@ -6463,7 +6620,11 @@ func (fc *funcCompiler) emitVariadicPackFromLocals(extraLocals []int) {
 		return
 	}
 	ptrLocal := fc.addLocal(fmt.Sprintf("$va_pack_ptr$%d", fc.c.nextLabel()), fc.sig.File, 0, 0)
-	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: firstElem})
+	baseElem := lastElem
+	if fc.c.target.Backend == "c" {
+		baseElem = firstElem
+	}
+	fc.emit(ir.Inst{Op: ir.OP_LOCAL_ADDR, Arg: baseElem})
 	fc.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: ptrLocal})
 	i = 0
 	for i < len(extraLocals) {
@@ -7348,6 +7509,13 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 			fc.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: idx})
 			return
 		}
+		if fc.c.canLoadExternDataOnTarget(ex.name) {
+			wrap := fc.c.ensureExternDataWrapper(ex.name, false)
+			if wrap != "" {
+				fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: 0})
+				return
+			}
+		}
 		if idx, ok := fc.lookupGlobal(ex.name); ok {
 			fc.emit(ir.Inst{Op: ir.OP_GLOBAL_GET, Arg: idx})
 			return
@@ -7641,7 +7809,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				fc.emitExpr(a)
 			}
 			if !sig.Defined {
-				if fc.c.target.Backend == "c" {
+				if fc.c.canCallExternOnTarget(sig.Name, sig.RetCount) {
 					wrap := fc.c.ensureExternWrapper(sig.Name, callArgCount, sig.RetCount)
 					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgCount})
 					if sig.RetCount == 0 {
@@ -7782,7 +7950,7 @@ func (fc *funcCompiler) emitExpr(ex *expr) {
 				}
 			}
 			if !sig.Defined {
-				if fc.c.target.Backend == "c" {
+				if fc.c.canCallExternOnTarget(sig.Name, sig.RetCount) {
 					wrap := fc.c.ensureExternWrapper(sig.Name, callArgs, sig.RetCount)
 					fc.emit(ir.Inst{Op: ir.OP_CALL, Name: wrap, Arg: callArgs})
 					if sig.RetCount == 0 {

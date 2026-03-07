@@ -1049,6 +1049,13 @@ func (g *CodeGen) EmitCallGOT(funcName string) {
 	g.EmitBlr(REG_X16)
 }
 
+// EmitLoadGOT loads the address stored in a GOT slot into rd.
+func (g *CodeGen) EmitLoadGOT(symbolName string, rd int) {
+	g.Flush()
+	slot := g.gotSlot(symbolName)
+	g.emitAdrpLdr(rd, "$got_addr$", uint64(slot*8))
+}
+
 // EmitCallPlaceholderArm64 emits a BL with placeholder for later fixup.
 func (g *CodeGen) EmitCallPlaceholderArm64(target string) {
 	g.Flush()

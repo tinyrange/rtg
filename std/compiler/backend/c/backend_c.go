@@ -259,6 +259,12 @@ func cEmitIntrinsicHostCall(bp *strings.Builder, name string) bool {
 		cEmitIntrinsicResultCall(bp, "rtg_host_alloc(locals[1])")
 	case "SysGetargc":
 		bp.WriteString("  rtg_push((rtg_word)g_argc); rtg_push(0); rtg_push(0);\n")
+	case "SysArgcValue":
+		bp.WriteString("  rtg_push((rtg_word)g_argc);\n")
+	case "SysGetargvBase":
+		bp.WriteString("  rtg_push((rtg_word)(rtg_size)g_argv); rtg_push(0); rtg_push(0);\n")
+	case "SysArgvBaseValue":
+		bp.WriteString("  rtg_push((rtg_word)(rtg_size)g_argv);\n")
 	case "SysGetargv":
 		bp.WriteString("  { int idx = (int)locals[0]; rtg_push(((idx >= g_argc) ? 0 : (rtg_word)(rtg_size)g_argv[idx])); rtg_push(0); rtg_push(0); }\n")
 	case "SysGetenv":
@@ -299,6 +305,137 @@ type cExternPrototype struct {
 	Symbol      string
 	RetCount    int
 	ParamCounts map[int]bool
+}
+
+func cKnownHostExternWrapperName(info cExternIntrinsicCall) string {
+	return fmt.Sprintf("rtg_cextern_%s_%d_%d", cMangleSymbol(info.Symbol), info.Params, info.RetCount)
+}
+
+func cHasKnownHostExternWrapper(info cExternIntrinsicCall) bool {
+	switch info.Symbol {
+	case "abort", "exit", "close", "read", "write", "lseek", "open", "perror",
+		"printf", "fprintf", "memset", "memmove", "bcopy", "bzero", "strcpy",
+		"strncpy", "index":
+		return true
+	default:
+		return false
+	}
+}
+
+func cEmitKnownHostExternWrapper(bp *strings.Builder, info cExternIntrinsicCall) bool {
+	if !cHasKnownHostExternWrapper(info) {
+		return false
+	}
+	callArgs := func(start int) string {
+		var args []string
+		for i := start; i < info.Params; i++ {
+			args = append(args, fmt.Sprintf("(rtg_sword)a%d", i))
+		}
+		return strings.Join(args, ", ")
+	}
+	ptrArg := func(idx int) string {
+		return fmt.Sprintf("(void*)(rtg_size)a%d", idx)
+	}
+	cstrArg := func(idx int) string {
+		return fmt.Sprintf("(const char*)(rtg_size)a%d", idx)
+	}
+	strArg := func(idx int) string {
+		return fmt.Sprintf("(char*)(rtg_size)a%d", idx)
+	}
+	intArg := func(idx int) string {
+		return fmt.Sprintf("(int)a%d", idx)
+	}
+	sizeArg := func(idx int) string {
+		return fmt.Sprintf("(rtg_size)a%d", idx)
+	}
+	retType := "rtg_sword"
+	if info.RetCount == 0 {
+		retType = "void"
+	}
+	cWritef(bp, "static %s %s(", retType, cKnownHostExternWrapperName(info))
+	for i := 0; i < info.Params; i++ {
+		if i > 0 {
+			bp.WriteString(", ")
+		}
+		cWritef(bp, "rtg_sword a%d", i)
+	}
+	if info.Params == 0 {
+		bp.WriteString("void")
+	}
+	bp.WriteString(") {\n")
+	switch info.Symbol {
+	case "abort":
+		bp.WriteString("  abort();\n")
+		if info.RetCount != 0 {
+			bp.WriteString("  return 0;\n")
+		}
+	case "exit":
+		cWritef(bp, "  exit(%s);\n", intArg(0))
+		if info.RetCount != 0 {
+			bp.WriteString("  return 0;\n")
+		}
+	case "close":
+		cWritef(bp, "  return (rtg_sword)close(%s);\n", intArg(0))
+	case "read":
+		cWritef(bp, "  return (rtg_sword)read(%s, %s, %s);\n", intArg(0), ptrArg(1), sizeArg(2))
+	case "write":
+		cWritef(bp, "  return (rtg_sword)write(%s, %s, %s);\n", intArg(0), ptrArg(1), sizeArg(2))
+	case "lseek":
+		cWritef(bp, "  return (rtg_sword)lseek(%s, (off_t)a1, %s);\n", intArg(0), intArg(2))
+	case "open":
+		if info.Params >= 3 {
+			cWritef(bp, "  return (rtg_sword)open(%s, %s, %s);\n", cstrArg(0), intArg(1), intArg(2))
+		} else {
+			cWritef(bp, "  return (rtg_sword)open(%s, %s);\n", cstrArg(0), intArg(1))
+		}
+	case "perror":
+		cWritef(bp, "  perror(%s);\n", cstrArg(0))
+		if info.RetCount != 0 {
+			bp.WriteString("  return 0;\n")
+		}
+	case "printf":
+		if info.Params > 0 {
+			cWritef(bp, "  return (rtg_sword)printf(%s", cstrArg(0))
+			if info.Params > 1 {
+				bp.WriteString(", ")
+				bp.WriteString(callArgs(1))
+			}
+			bp.WriteString(");\n")
+		} else {
+			bp.WriteString("  return (rtg_sword)printf(\"\");\n")
+		}
+	case "fprintf":
+		bp.WriteString("  FILE* stream = (FILE*)(rtg_size)a0;\n")
+		bp.WriteString("  if (stream == NULL) stream = stderr;\n")
+		cWritef(bp, "  return (rtg_sword)fprintf(stream, %s", cstrArg(1))
+		if info.Params > 2 {
+			bp.WriteString(", ")
+			bp.WriteString(callArgs(2))
+		}
+		bp.WriteString(");\n")
+	case "memset":
+		cWritef(bp, "  return (rtg_sword)(rtg_size)memset(%s, %s, %s);\n", ptrArg(0), intArg(1), sizeArg(2))
+	case "memmove":
+		cWritef(bp, "  return (rtg_sword)(rtg_size)memmove(%s, %s, %s);\n", ptrArg(0), ptrArg(1), sizeArg(2))
+	case "bcopy":
+		cWritef(bp, "  memmove(%s, %s, %s);\n", ptrArg(1), ptrArg(0), sizeArg(2))
+		if info.RetCount != 0 {
+			bp.WriteString("  return 0;\n")
+		}
+	case "bzero":
+		cWritef(bp, "  memset(%s, 0, %s);\n", ptrArg(0), sizeArg(1))
+		if info.RetCount != 0 {
+			bp.WriteString("  return 0;\n")
+		}
+	case "strcpy":
+		cWritef(bp, "  return (rtg_sword)(rtg_size)strcpy(%s, %s);\n", strArg(0), cstrArg(1))
+	case "strncpy":
+		cWritef(bp, "  return (rtg_sword)(rtg_size)strncpy(%s, %s, %s);\n", strArg(0), cstrArg(1), sizeArg(2))
+	case "index":
+		cWritef(bp, "  return (rtg_sword)(rtg_size)strchr(%s, %s);\n", cstrArg(0), intArg(1))
+	}
+	bp.WriteString("}\n")
+	return true
 }
 
 func cParseExternIntrinsicCall(name string) (cExternIntrinsicCall, bool) {
@@ -392,9 +529,13 @@ func cEmitExternIntrinsicCall(bp *strings.Builder, name string, retCount int, pa
 	if retCount >= 0 {
 		info.RetCount = retCount
 	}
+	callName := info.Symbol
+	if cHasKnownHostExternWrapper(info) {
+		callName = cKnownHostExternWrapperName(info)
+	}
 	switch info.RetCount {
 	case 0:
-		cWritef(bp, "  (void)%s(", info.Symbol)
+		cWritef(bp, "  (void)%s(", callName)
 		for i := 0; i < info.Params; i++ {
 			if i > 0 {
 				bp.WriteString(", ")
@@ -403,7 +544,7 @@ func cEmitExternIntrinsicCall(bp *strings.Builder, name string, retCount int, pa
 		}
 		bp.WriteString(");\n")
 	case 1:
-		cWritef(bp, "  rtg_push((rtg_word)(rtg_sword)%s(", info.Symbol)
+		cWritef(bp, "  rtg_push((rtg_word)(rtg_sword)%s(", callName)
 		for i := 0; i < info.Params; i++ {
 			if i > 0 {
 				bp.WriteString(", ")
@@ -1369,6 +1510,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 
 	externCalls := make(map[string]cExternIntrinsicCall)
 	externProto := make(map[string]cExternPrototype)
+	knownExternWrappers := make(map[string]cExternIntrinsicCall)
 	for _, f := range irmod.Funcs {
 		for _, in := range f.Code {
 			if in.Op != ir.OP_CALL_INTRINSIC {
@@ -1380,6 +1522,10 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 			}
 			key := fmt.Sprintf("%s|%d|%d", info.Symbol, info.Params, info.RetCount)
 			externCalls[key] = info
+			if cHasKnownHostExternWrapper(info) {
+				knownExternWrappers[key] = info
+				continue
+			}
 			p, ok := externProto[info.Symbol]
 			if !ok {
 				p = cExternPrototype{
@@ -1401,6 +1547,11 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		externKeys = append(externKeys, k)
 	}
 	sort.Strings(externKeys)
+	knownExternKeys := make([]string, 0, len(knownExternWrappers))
+	for k := range knownExternWrappers {
+		knownExternKeys = append(knownExternKeys, k)
+	}
+	sort.Strings(knownExternKeys)
 	externSymbols := make([]string, 0, len(externProto))
 	for s := range externProto {
 		externSymbols = append(externSymbols, s)
@@ -1472,6 +1623,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	bp.WriteString("#include <string.h>\n\n")
 	bp.WriteString("#ifdef _WIN32\n")
 	bp.WriteString("  #include <direct.h>\n")
+	bp.WriteString("  #include <fcntl.h>\n")
 	bp.WriteString("  #include <windows.h>\n")
 	bp.WriteString("  #include <time.h>\n")
 	bp.WriteString("  #define rtg_mkdir(p) _mkdir(p)\n")
@@ -1500,6 +1652,7 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 		bp.WriteString("  #endif\n")
 	} else {
 		bp.WriteString("  #include <sys/stat.h>\n")
+		bp.WriteString("  #include <fcntl.h>\n")
 		bp.WriteString("  #include <unistd.h>\n")
 		bp.WriteString("  #include <dirent.h>\n")
 		bp.WriteString("  #include <time.h>\n")
@@ -1546,6 +1699,12 @@ func Generate(target *common.Target, irmod *ir.IRModule, outputPath string) erro
 	if len(externSymbols) > 0 {
 		for _, s := range externSymbols {
 			cEmitExternPrototypeForSymbol(bp, externProto[s])
+		}
+		bp.WriteString("\n")
+	}
+	if len(knownExternKeys) > 0 {
+		for _, k := range knownExternKeys {
+			cEmitKnownHostExternWrapper(bp, knownExternWrappers[k])
 		}
 		bp.WriteString("\n")
 	}

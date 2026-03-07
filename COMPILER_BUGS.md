@@ -591,16 +591,13 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 **Scope note**
 - `55_stdlib_additions_extended` remains skipped on DOS for target capability reasons (`testing` timers), not allocator OOM.
 
-### 15) `foldSliceAppendU64LE` can corrupt wasm-hosted crosscompile output
+### 32) Native C extern support still lacked extern data imports
 
-**Symptom**
-- In `selfhost-wasm` CI, `crosscompile-wasm-native` produced a native stage2 binary that crashed on startup (`./build/cross_stage2 -h` segfault).
+**Fix summary**
+- Native darwin/arm64 hosted C lowering now imports `stdin`, `stdout`, and `stderr` through the same Mach-O GOT path used for function imports.
+- The C frontend no longer lowers those hosted extern declarations as zero-initialized RTG globals on native darwin targets.
 
-**Root cause**
-- IR fold rewrote byte-wise 64-bit append sequences to `runtime.SliceAppendU64LE(hdr, v)`.
-- The helper takes `v uintptr`; when compiler host is wasm32 (`uintptr` = 32-bit), upper 32 bits of `v` are lost.
-- That truncation can corrupt emitted byte streams for non-wasm native outputs.
-
-**Fix/workaround used**
-- Keep the `u32` append fold.
-- Disable the `u64` append fold rewrite for now (safe behavior), leaving original byte-wise sequence intact.
+**Validation**
+- `tests/c/run/extern_native_stdio_data.c` PASS.
+- `./build/mkfs_native` now prints `Usage: mkfs fs.img files...` and exits `1` when run without args.
+- `mkfs_native` with valid xv6 inputs still produces a byte-identical image to the host `cc` build.

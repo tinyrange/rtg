@@ -751,6 +751,11 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
 		g.ClearOperandCache()
+	case "SysArgcValue":
+		argcOff := len(g.irmod.Globals) * 8
+		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argcOff))
+		g.rawPush(REG_X0)
+		g.ClearOperandCache()
 	case "SysGetargv":
 		argvOff := (len(g.irmod.Globals) + 1) * 8
 		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argvOff))
@@ -758,6 +763,11 @@ func (g *CodeGen) compileCallIntrinsicArm64(inst ir.Inst) {
 		g.EmitMovZ(REG_X0, 0, 0)
 		g.rawPush(REG_X0) // r2=0
 		g.rawPush(REG_X0) // err=0
+		g.ClearOperandCache()
+	case "SysArgvBaseValue":
+		argvOff := (len(g.irmod.Globals) + 1) * 8
+		g.emitAdrpLdr(REG_X0, "$data_addr$", uint64(argvOff))
+		g.rawPush(REG_X0)
 		g.ClearOperandCache()
 	case "SysGetenvp":
 		envpOff := (len(g.irmod.Globals) + 2) * 8
