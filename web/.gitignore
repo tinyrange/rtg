@@ -1,3 +1,5 @@
 compiler.wasm
 std-library.js
+examples-library.js
+x-library.js
 playground.html
