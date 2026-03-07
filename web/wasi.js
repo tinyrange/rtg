@@ -191,17 +191,28 @@ export function createWASI(fs, args, callbacks = {}) {
     return new Uint8Array(memory.buffer);
   }
 
+  function wasmU32(value) {
+    if (typeof value === "bigint") {
+      return Number(value & 0xffffffffn);
+    }
+    return value >>> 0;
+  }
+
   function readString(ptr, len) {
+    ptr = wasmU32(ptr);
+    len = wasmU32(len);
     return new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, len));
   }
 
   function writeString(ptr, str) {
+    ptr = wasmU32(ptr);
     const bytes = new TextEncoder().encode(str);
     new Uint8Array(memory.buffer).set(bytes, ptr);
     return bytes.length;
   }
 
   function writeU64(ptr, value) {
+    ptr = wasmU32(ptr);
     const view = getMemView();
     view.setBigUint64(ptr, value, true);
   }

@@ -63,7 +63,7 @@ module.exports = [
     defaultTarget: "wasi/wasm32",
     openPath: "examples/directives/zerocall_methods/main.go",
     files: [
-      { from: "tests/zerocall_type_methods.go", to: "examples/directives/zerocall_methods/main.go" },
+      { from: "tests/go/zerocall_type_methods.go", to: "examples/directives/zerocall_methods/main.go" },
     ],
   },
   {
@@ -74,7 +74,7 @@ module.exports = [
     defaultTarget: "darwin/arm64",
     openPath: "examples/directives/targetfile_darwin_arm64/main.go",
     files: [
-      { from: "tests/targetfile_darwin_arm64.go", to: "examples/directives/targetfile_darwin_arm64/main.go" },
+      { from: "tests/go/targetfile_darwin_arm64.go", to: "examples/directives/targetfile_darwin_arm64/main.go" },
     ],
   },
   {
@@ -85,7 +85,7 @@ module.exports = [
     defaultTarget: "linux/amd64",
     openPath: "examples/directives/asm_amd64/main.go",
     files: [
-      { from: "tests/38_asm_param_balance_amd64.go", to: "examples/directives/asm_amd64/main.go" },
+      { from: "tests/go/38_asm_param_balance_amd64.go", to: "examples/directives/asm_amd64/main.go" },
     ],
   },
   {
@@ -96,7 +96,7 @@ module.exports = [
     defaultTarget: "wasi/wasm32",
     openPath: "examples/runtime/runtime_now/main.go",
     files: [
-      { from: "tests/53_runtime_now.go", to: "examples/runtime/runtime_now/main.go" },
+      { from: "tests/go/53_runtime_now.go", to: "examples/runtime/runtime_now/main.go" },
     ],
   },
   {
