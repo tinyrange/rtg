@@ -873,20 +873,44 @@
     @media (max-width: 768px) {
       #btn-toggle-files { display: block; }
       #toolbar {
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: stretch;
         height: auto;
-        align-items: flex-start;
         padding: 8px 12px;
       }
       .toolbar-left {
         width: 100%;
-        justify-content: space-between;
+        justify-content: flex-start;
+        gap: 10px;
+        min-width: 0;
       }
       #toolbar-buttons {
         width: 100%;
+        justify-content: flex-start;
+        align-content: flex-start;
+        min-width: 0;
       }
       .toolbar-group {
         width: 100%;
         flex-wrap: wrap;
+        min-width: 0;
+      }
+      .toolbar-group .btn,
+      #toolbar-buttons > .btn {
+        min-width: 0;
+      }
+      #btn-targets {
+        flex: 1 1 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #btn-emit-ir,
+      #btn-tags,
+      #btn-compile,
+      #btn-run,
+      #btn-download {
+        flex: 1 1 110px;
       }
       #target-select {
         flex: 1 1 180px;
@@ -932,6 +956,26 @@
         border-top: 1px solid var(--border);
         border-left: none;
       }
+      .panel-header {
+        height: 34px;
+        padding: 0 12px;
+      }
+      .panel-label {
+        font-size: 12px;
+      }
+      #btn-new-file {
+        font-size: 18px;
+      }
+      #file-tree {
+        font-size: 14px;
+      }
+      .tree-item {
+        padding: 7px 12px;
+      }
+      .tree-arrow {
+        width: 16px;
+        font-size: 11px;
+      }
 
       .welcome-inner { padding: 24px 16px; }
       .welcome-hero h2 { font-size: 22px; }
@@ -968,6 +1012,10 @@
       }
       .toolbar-group {
         gap: 8px;
+      }
+      .toolbar-group .btn,
+      #toolbar-buttons > .btn {
+        flex-basis: 100%;
       }
       .download-links { flex-direction: column; }
       .download-link { text-align: center; }
