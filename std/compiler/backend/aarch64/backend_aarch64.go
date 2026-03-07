@@ -509,10 +509,12 @@ func floatCompareCondArm64(op ir.Opcode) int {
 	case ir.OP_NEQ, ir.OP_JMP_NEQ:
 		return COND_NE
 	case ir.OP_LT, ir.OP_JMP_LT:
+		// Ordered LT after FCMP must stay false for NaN; COND_LT (N!=V) would be true for NaN.
 		return COND_MI
 	case ir.OP_GT, ir.OP_JMP_GT:
 		return COND_GT
 	case ir.OP_LEQ, ir.OP_JMP_LEQ:
+		// Ordered LE after FCMP must stay false for NaN; COND_LE (Z==1 || N!=V) would be true for NaN.
 		return COND_LS
 	case ir.OP_GEQ, ir.OP_JMP_GEQ:
 		return COND_GE
