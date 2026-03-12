@@ -247,6 +247,10 @@ arena-selfhost-gains: build
   sh python3 tools/arena_gain_report.py build/stage2.arena_report.txt --md-out build/stage2.arena_gains.md --tsv-out build/stage2.arena_gains.tsv
   sh echo "PASS: wrote build/stage2.arena_gains.md and build/stage2.arena_gains.tsv"
 
+selfhost-memory-rank: arena-selfhost-gains profile-stage2-flamechart
+  sh python3 tools/selfhost_memory_rank.py --arena-tsv build/stage2.arena_gains.tsv --profile-report build/stage2.profile.report.txt --out build/stage2.memory_rank.md
+  sh echo "PASS: wrote build/stage2.memory_rank.md"
+
 test-fullcompiler-armv8m-renode: build
   sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"
   fullcompiler rtg semihost/armv8m

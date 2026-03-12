@@ -957,18 +957,16 @@ func injectSyntheticTestRunner(pkg *Package) {
 
 // parseFile reads, lexes, and parses a single Go source file.
 func parseFile(path string) *Node {
+	arena.Enter("frontend.parseFile.tokens")
+	defer arena.Leave()
 	src, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", path, err)
 		return nil
 	}
 
-	// fmt.Fprintf(os.Stderr, "  parsing %s (%d bytes, %d tokens)...\n", path, len(src), 0)
-	arena.Enter("frontend.parseFile.tokens")
-	defer arena.Leave()
 	lexer := NewLexer(string(src))
 	tokens := lexer.Tokenize()
-	// fmt.Fprintf(os.Stderr, "  tokenized %s: %d tokens\n", path, len(tokens))
 
 	arena.UseParent()
 	defer arena.Restore()
