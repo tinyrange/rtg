@@ -45,7 +45,7 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 		return
 	}
 	g.curFunc = f
-	g.configureOperandCache(REG_R13, REG_R14)
+	g.configureOperandCache(REG_R12, REG_R13, REG_R14)
 	g.curFrameSize = len(f.Locals)
 	// Intrinsic functions may have Params > 0 but empty Locals.
 	// Ensure the frame is large enough to hold all param slots.
@@ -675,7 +675,7 @@ func (g *CodeGen) EmitTostringHelperX64() {
 	}
 	g.hasTostringHelper = true
 	g.funcOffsets[outlinedTostringHelper] = len(g.Code)
-	g.configureOperandCache(REG_R13, REG_R14)
+	g.configureOperandCache(REG_R12, REG_R13, REG_R14)
 
 	g.PushR(REG_RBP)
 	g.MovRR(REG_RBP, REG_RSP)
