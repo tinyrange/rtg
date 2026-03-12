@@ -815,6 +815,7 @@ func (p *Parser) ParseFile() *Node {
 	// imports
 	for p.at(TOKEN_IMPORT) {
 		file.Nodes = append(file.Nodes, p.parseImportGroup())
+		p.skipSemicolon()
 	}
 
 	// top-level declarations
@@ -823,6 +824,7 @@ func (p *Parser) ParseFile() *Node {
 		if decl != nil {
 			file.Nodes = append(file.Nodes, decl)
 		}
+		p.skipSemicolon()
 	}
 
 	return file
@@ -840,11 +842,9 @@ func (p *Parser) parseImportGroup() *Node {
 			p.skipSemicolon()
 		}
 		p.expect(TOKEN_RPAREN)
-		p.skipSemicolon()
 		return newDeclGroup("import", pos, imports)
 	}
 	spec := p.parseImportSpec()
-	p.skipSemicolon()
 	return spec
 }
 
@@ -929,7 +929,6 @@ func (p *Parser) parseFuncDecl() *Node {
 	if p.at(TOKEN_LBRACE) {
 		node.Body = p.parseBlock()
 	}
-	p.skipSemicolon()
 	return node
 }
 
@@ -1079,7 +1078,6 @@ func (p *Parser) parseTypeDecl() *Node {
 			p.skipSemicolon()
 		}
 		p.expect(TOKEN_RPAREN)
-		p.skipSemicolon()
 		return newDeclGroup("type", pos, decls)
 	}
 
@@ -1089,7 +1087,6 @@ func (p *Parser) parseTypeDecl() *Node {
 		p.advance()
 	}
 	node.Type = p.parseType()
-	p.skipSemicolon()
 	return node
 }
 
@@ -1107,12 +1104,10 @@ func (p *Parser) parseVarDecl() *Node {
 			p.skipSemicolon()
 		}
 		p.expect(TOKEN_RPAREN)
-		p.skipSemicolon()
 		return newDeclGroup("var", pos, decls)
 	}
 
 	decls := p.parseVarDeclSpec()
-	p.skipSemicolon()
 	if len(decls) == 1 {
 		return decls[0]
 	}
@@ -1181,7 +1176,6 @@ func (p *Parser) parseConstDecl() *Node {
 			p.skipSemicolon()
 		}
 		p.expect(TOKEN_RPAREN)
-		p.skipSemicolon()
 		return newDeclGroup("const", pos, decls)
 	}
 	name := p.expect(TOKEN_IDENT)
@@ -1193,7 +1187,6 @@ func (p *Parser) parseConstDecl() *Node {
 		p.advance()
 		node.X = p.parseExpr()
 	}
-	p.skipSemicolon()
 	return node
 }
 
@@ -1354,31 +1347,34 @@ func (p *Parser) parseBlock() *Node {
 }
 
 func (p *Parser) parseStmt() *Node {
+	if p.at(TOKEN_SEMICOLON) {
+		p.advance()
+		return nil
+	}
+
+	var node *Node
 	switch p.peek().Kind {
 	case TOKEN_LBRACE:
-		block := p.parseBlock()
-		p.skipSemicolon()
-		return block
+		node = p.parseBlock()
 	case TOKEN_IF:
-		return p.parseIfStmt()
+		node = p.parseIfStmt()
 	case TOKEN_FOR:
-		return p.parseForStmt()
+		node = p.parseForStmt()
 	case TOKEN_SWITCH:
-		return p.parseSwitchStmt()
+		node = p.parseSwitchStmt()
 	case TOKEN_RETURN:
-		return p.parseReturnStmt()
+		node = p.parseReturnStmt()
 	case TOKEN_VAR:
-		return p.parseVarDecl()
+		node = p.parseVarDecl()
 	case TOKEN_CONST:
-		return p.parseConstDecl()
+		node = p.parseConstDecl()
 	case TOKEN_TYPE:
-		return p.parseTypeDecl()
+		node = p.parseTypeDecl()
 	case TOKEN_GOTO:
 		pos := p.peek().Line
 		p.advance()
 		name := p.expect(TOKEN_IDENT)
-		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "goto", X: &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}, Pos: pos}
+		node = &Node{Kind: NBranch, Name: "goto", X: &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}, Pos: pos}
 	case TOKEN_BREAK:
 		pos := p.peek().Line
 		p.advance()
@@ -1387,8 +1383,7 @@ func (p *Parser) parseStmt() *Node {
 			name := p.advance()
 			target = &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}
 		}
-		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "break", X: target, Pos: pos}
+		node = &Node{Kind: NBranch, Name: "break", X: target, Pos: pos}
 	case TOKEN_CONTINUE:
 		pos := p.peek().Line
 		p.advance()
@@ -1397,15 +1392,13 @@ func (p *Parser) parseStmt() *Node {
 			name := p.advance()
 			target = &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}
 		}
-		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "continue", X: target, Pos: pos}
+		node = &Node{Kind: NBranch, Name: "continue", X: target, Pos: pos}
 	case TOKEN_FALLTHROUGH:
 		pos := p.peek().Line
 		p.advance()
-		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "fallthrough", Pos: pos}
+		node = &Node{Kind: NBranch, Name: "fallthrough", Pos: pos}
 	case TOKEN_DEFER:
-		return p.parseDeferStmt()
+		node = p.parseDeferStmt()
 	case TOKEN_GO:
 		p.errorf("go statements (goroutines) are not supported at line %d", p.peek().Line)
 		p.advance()
@@ -1425,28 +1418,24 @@ func (p *Parser) parseStmt() *Node {
 			}
 			p.advance()
 		}
-		p.skipSemicolon()
-		return nil
 	case TOKEN_SELECT:
 		p.errorf("select statements are not supported at line %d", p.peek().Line)
 		p.advance()
 		if p.at(TOKEN_LBRACE) {
 			p.skipBlock()
 		}
-		p.skipSemicolon()
-		return nil
-	case TOKEN_SEMICOLON:
-		p.advance()
-		return nil
+	default:
+		// Label declaration: name:
+		if p.at(TOKEN_IDENT) && p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TOKEN_COLON {
+			name := p.advance()
+			p.expect(TOKEN_COLON)
+			node = &Node{Kind: NBranch, Name: "label", X: &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}, Pos: name.Line}
+			break
+		}
+		node = p.parseSimpleStmtNoSemicolon()
 	}
-	// Label declaration: name:
-	if p.at(TOKEN_IDENT) && p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TOKEN_COLON {
-		name := p.advance()
-		p.expect(TOKEN_COLON)
-		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "label", X: &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}, Pos: name.Line}
-	}
-	return p.parseSimpleStmt()
+	p.skipSemicolon()
+	return node
 }
 
 func (p *Parser) parseIfStmt() *Node {
@@ -1485,7 +1474,6 @@ func (p *Parser) parseIfStmt() *Node {
 			node.Y = p.parseBlock()
 		}
 	}
-	p.skipSemicolon()
 	return node
 }
 
@@ -1497,7 +1485,6 @@ func (p *Parser) parseForStmt() *Node {
 	// Check for bare "for {"
 	if p.at(TOKEN_LBRACE) {
 		node.Body = p.parseBlock()
-		p.skipSemicolon()
 		return node
 	}
 
@@ -1508,7 +1495,6 @@ func (p *Parser) parseForStmt() *Node {
 		node.Name = "range"
 		node.Type = iterable
 		node.Body = p.parseBlock()
-		p.skipSemicolon()
 		return node
 	}
 
@@ -1523,7 +1509,6 @@ func (p *Parser) parseForStmt() *Node {
 			node.Type = p.parseSimpleStmtNoSemicolon()
 		}
 		node.Body = p.parseBlock()
-		p.skipSemicolon()
 		return node
 	}
 
@@ -1545,7 +1530,6 @@ func (p *Parser) parseForStmt() *Node {
 			node.Y = second
 			node.Type = iterable
 			node.Body = p.parseBlock()
-			p.skipSemicolon()
 			return node
 		}
 	} else if p.at(TOKEN_DEFINE) || p.at(TOKEN_ASSIGN) {
@@ -1559,7 +1543,6 @@ func (p *Parser) parseForStmt() *Node {
 			node.X = first
 			node.Type = iterable
 			node.Body = p.parseBlock()
-			p.skipSemicolon()
 			return node
 		}
 		// It's a 3-clause for: restore and parse as simple stmt
@@ -1575,7 +1558,6 @@ func (p *Parser) parseForStmt() *Node {
 			node.Type = p.parseSimpleStmtNoSemicolon()
 		}
 		node.Body = p.parseBlock()
-		p.skipSemicolon()
 		return node
 	} else if p.at(TOKEN_SEMICOLON) {
 		// 3-clause for with expression init
@@ -1590,14 +1572,12 @@ func (p *Parser) parseForStmt() *Node {
 			node.Type = p.parseSimpleStmtNoSemicolon()
 		}
 		node.Body = p.parseBlock()
-		p.skipSemicolon()
 		return node
 	}
 
 	// Simple condition for loop: for cond { ... }
 	node.Y = first
 	node.Body = p.parseBlock()
-	p.skipSemicolon()
 	return node
 }
 
@@ -1656,7 +1636,6 @@ switchBody:
 		node.Nodes = append(node.Nodes, c)
 	}
 	p.expect(TOKEN_RBRACE)
-	p.skipSemicolon()
 	return node
 }
 
@@ -1703,7 +1682,6 @@ func (p *Parser) parseReturnStmt() *Node {
 			node.Nodes = append(node.Nodes, p.parseExpr())
 		}
 	}
-	p.skipSemicolon()
 	return node
 }
 
@@ -1711,14 +1689,7 @@ func (p *Parser) parseDeferStmt() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_DEFER)
 	expr := p.parseExpr()
-	p.skipSemicolon()
 	return &Node{Kind: NDeferStmt, X: expr, Pos: pos}
-}
-
-func (p *Parser) parseSimpleStmt() *Node {
-	node := p.parseSimpleStmtNoSemicolon()
-	p.skipSemicolon()
-	return node
 }
 
 func (p *Parser) parseSimpleStmtNoSemicolon() *Node {
