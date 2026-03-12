@@ -74,6 +74,19 @@ type cachedStringResult struct {
 	ok    bool
 }
 
+type escapeAliasEntry struct {
+	name string
+	mask uint64
+}
+
+type escapeAliasState struct {
+	entries []escapeAliasEntry
+}
+
+type escapeNameSet struct {
+	names []string
+}
+
 const structTypeLookupMaxEntries = 8192
 const structFieldLookupMaxEntries = 16384
 const fieldTypeLookupMaxEntries = 16384
@@ -483,8 +496,10 @@ func (c *Compiler) resolvePackage(pkgName string) *Package {
 				return pkg
 			}
 		} else {
+			arena.UseParent()
 			c.curPkg.resolvedPkgs = make(map[string]*Package)
 			c.curPkg.missingPkgs = make(map[string]bool)
+			arena.Restore()
 		}
 		if c.curPkg.missingPkgs[pkgName] {
 			return nil
@@ -493,7 +508,9 @@ func (c *Compiler) resolvePackage(pkgName string) *Package {
 	if c.curPkg != nil && c.curPkg.ImportAliases != nil {
 		if path, ok := c.curPkg.ImportAliases[pkgName]; ok {
 			if pkg, ok := c.mod.Packages[path]; ok {
+				arena.UseParent()
 				c.curPkg.resolvedPkgs[pkgName] = pkg
+				arena.Restore()
 				return pkg
 			}
 		}
@@ -501,12 +518,16 @@ func (c *Compiler) resolvePackage(pkgName string) *Package {
 	for _, imp := range c.curPkg.Imports {
 		pkg, ok := c.mod.Packages[imp]
 		if ok && pkg.Name == pkgName {
+			arena.UseParent()
 			c.curPkg.resolvedPkgs[pkgName] = pkg
+			arena.Restore()
 			return pkg
 		}
 	}
 	if c.curPkg != nil && c.curPkg.missingPkgs != nil {
+		arena.UseParent()
 		c.curPkg.missingPkgs[pkgName] = true
+		arena.Restore()
 	}
 	return nil
 }
@@ -2537,13 +2558,54 @@ func (c *Compiler) exprMayReferenceMemory(node *Node) bool {
 	return false
 }
 
-func (c *Compiler) escapeLValueMayLeak(node *Node, paramLocals map[string]bool) bool {
+func (s *escapeAliasState) get(name string) uint64 {
+	i := 0
+	for i < len(s.entries) {
+		if s.entries[i].name == name {
+			return s.entries[i].mask
+		}
+		i++
+	}
+	return 0
+}
+
+func (s *escapeAliasState) set(name string, mask uint64) {
+	i := 0
+	for i < len(s.entries) {
+		if s.entries[i].name == name {
+			s.entries[i].mask = mask
+			return
+		}
+		i++
+	}
+	s.entries = append(s.entries, escapeAliasEntry{name: name, mask: mask})
+}
+
+func (s *escapeNameSet) has(name string) bool {
+	i := 0
+	for i < len(s.names) {
+		if s.names[i] == name {
+			return true
+		}
+		i++
+	}
+	return false
+}
+
+func (s *escapeNameSet) add(name string) {
+	if name == "" || s.has(name) {
+		return
+	}
+	s.names = append(s.names, name)
+}
+
+func (c *Compiler) escapeLValueMayLeak(node *Node, paramLocals *escapeNameSet) bool {
 	if node == nil {
 		return false
 	}
 	switch node.Kind {
 	case NIdent:
-		if paramLocals[node.Name] {
+		if paramLocals.has(node.Name) {
 			return false
 		}
 		if _, ok := c.lookupLocal(node.Name); ok {
@@ -2559,7 +2621,7 @@ func (c *Compiler) escapeLValueMayLeak(node *Node, paramLocals map[string]bool) 
 	}
 }
 
-func (c *Compiler) callArgsMayEscape(node *Node, callName string, aliases map[string]uint64) uint64 {
+func (c *Compiler) callArgsMayEscape(node *Node, callName string, aliases *escapeAliasState) uint64 {
 	if node == nil {
 		return 0
 	}
@@ -2586,8 +2648,9 @@ func (c *Compiler) resolveStaticCallNameForEscape(node *Node) string {
 		return ""
 	}
 	if node.Kind == NIdent {
-		if _, ok := c.funcRets[c.curPkg.QualName(node.Name)]; ok {
-			return c.curPkg.QualName(node.Name)
+		qname := qualNameInParentArena(c.curPkg, node.Name)
+		if _, ok := c.funcRets[qname]; ok {
+			return qname
 		}
 		if _, ok := c.funcRets[node.Name]; ok {
 			return node.Name
@@ -2596,7 +2659,7 @@ func (c *Compiler) resolveStaticCallNameForEscape(node *Node) string {
 	}
 	if node.Kind == NSelectorExpr && node.X != nil && node.X.Kind == NIdent {
 		if pkg := c.resolvePackage(node.X.Name); pkg != nil {
-			qname := pkg.QualName(node.Name)
+			qname := qualNameInParentArena(pkg, node.Name)
 			if _, ok := c.funcRets[qname]; ok {
 				return qname
 			}
@@ -2605,13 +2668,25 @@ func (c *Compiler) resolveStaticCallNameForEscape(node *Node) string {
 	return ""
 }
 
-func (c *Compiler) escapeAliasMaskForExpr(node *Node, aliases map[string]uint64) uint64 {
+func qualNameInParentArena(pkg *Package, name string) string {
+	if pkg == nil {
+		return ""
+	}
+	if q, ok := pkg.qualNames[name]; ok {
+		return q
+	}
+	arena.UseParent()
+	defer arena.Restore()
+	return pkg.QualName(name)
+}
+
+func (c *Compiler) escapeAliasMaskForExpr(node *Node, aliases *escapeAliasState) uint64 {
 	if node == nil {
 		return 0
 	}
 	switch node.Kind {
 	case NIdent:
-		return aliases[node.Name]
+		return aliases.get(node.Name)
 	case NSelectorExpr, NIndexExpr, NSliceExpr, NTypeAssertExpr:
 		return c.escapeAliasMaskForExpr(node.X, aliases)
 	case NUnaryExpr:
@@ -2633,20 +2708,7 @@ func (c *Compiler) escapeAliasMaskForExpr(node *Node, aliases map[string]uint64)
 	return 0
 }
 
-func (c *Compiler) mergeEscapeAlias(dst map[string]uint64, name string, mask uint64) bool {
-	if name == "" {
-		return false
-	}
-	old := dst[name]
-	newMask := old | mask
-	if old == newMask {
-		return false
-	}
-	dst[name] = newMask
-	return true
-}
-
-func (c *Compiler) escapeVisitNode(node *Node, aliases map[string]uint64, paramLocals map[string]bool, escapes *uint64) {
+func (c *Compiler) escapeVisitNode(node *Node, aliases *escapeAliasState, paramLocals *escapeNameSet, escapes *uint64) {
 	if node == nil {
 		return
 	}
@@ -2696,7 +2758,7 @@ func (c *Compiler) escapeVisitNode(node *Node, aliases map[string]uint64, paramL
 		}
 		mask := c.escapeAliasMaskForExpr(node.X, aliases)
 		if node.Name != "" {
-			aliases[node.Name] = mask
+			aliases.set(node.Name, mask)
 		}
 	case NAssign:
 		if node.Y != nil {
@@ -2706,7 +2768,7 @@ func (c *Compiler) escapeVisitNode(node *Node, aliases map[string]uint64, paramL
 				*escapes = *escapes | callEscape
 				for _, lhs := range node.Nodes {
 					if lhs != nil && lhs.Kind == NIdent {
-						aliases[lhs.Name] = 0
+						aliases.set(lhs.Name, 0)
 					}
 				}
 			} else if len(node.Nodes) > 0 && node.Y.Kind == NBlock {
@@ -2714,7 +2776,7 @@ func (c *Compiler) escapeVisitNode(node *Node, aliases map[string]uint64, paramL
 					if lhs == nil || lhs.Kind != NIdent || i >= len(node.Y.Nodes) {
 						continue
 					}
-					aliases[lhs.Name] = c.escapeAliasMaskForExpr(node.Y.Nodes[i], aliases)
+					aliases.set(lhs.Name, c.escapeAliasMaskForExpr(node.Y.Nodes[i], aliases))
 				}
 			} else if len(node.Nodes) > 0 {
 				mask := c.escapeAliasMaskForExpr(node.Y, aliases)
@@ -2723,7 +2785,7 @@ func (c *Compiler) escapeVisitNode(node *Node, aliases map[string]uint64, paramL
 						continue
 					}
 					if lhs.Kind == NIdent {
-						aliases[lhs.Name] = mask
+						aliases.set(lhs.Name, mask)
 					} else if c.escapeLValueMayLeak(lhs, paramLocals) {
 						*escapes = *escapes | mask
 					}
@@ -2731,7 +2793,7 @@ func (c *Compiler) escapeVisitNode(node *Node, aliases map[string]uint64, paramL
 			} else if node.X != nil {
 				mask := c.escapeAliasMaskForExpr(node.Y, aliases)
 				if node.X.Kind == NIdent {
-					aliases[node.X.Name] = mask
+					aliases.set(node.X.Name, mask)
 				} else if c.escapeLValueMayLeak(node.X, paramLocals) {
 					*escapes = *escapes | mask
 				}
@@ -2771,23 +2833,25 @@ func (c *Compiler) escapeVisitNode(node *Node, aliases map[string]uint64, paramL
 }
 
 func (c *Compiler) computeFuncParamEscapeMask(pkg *Package, qname string, fn *Node) uint64 {
+	arena.Enter("compiler.computeFuncParamEscapeMask")
+	defer arena.Leave()
 	if fn == nil {
 		return 0
 	}
-	aliases := make(map[string]uint64)
-	paramLocals := make(map[string]bool)
+	aliases := &escapeAliasState{entries: make([]escapeAliasEntry, 0, 16)}
+	paramLocals := &escapeNameSet{names: make([]string, 0, 16)}
 	paramIdx := 0
 	if fn.X != nil && fn.X.Name != "" {
-		aliases[fn.X.Name] = escapeParamBit(paramIdx)
-		paramLocals[fn.X.Name] = true
+		aliases.set(fn.X.Name, escapeParamBit(paramIdx))
+		paramLocals.add(fn.X.Name)
 		paramIdx++
 	}
 	for _, param := range fn.Nodes {
 		if param == nil || param.Name == "" {
 			continue
 		}
-		aliases[param.Name] = escapeParamBit(paramIdx)
-		paramLocals[param.Name] = true
+		aliases.set(param.Name, escapeParamBit(paramIdx))
+		paramLocals.add(param.Name)
 		paramIdx++
 	}
 	escapes := uint64(0)
@@ -2800,7 +2864,24 @@ func (c *Compiler) computeFuncParamEscapeMask(pkg *Package, qname string, fn *No
 	return escapes
 }
 
+func cloneBoolSliceToParent(src []bool) []bool {
+	if len(src) == 0 {
+		return nil
+	}
+	arena.UseParent()
+	defer arena.Restore()
+	out := make([]bool, len(src))
+	i := 0
+	for i < len(src) {
+		out[i] = src[i]
+		i++
+	}
+	return out
+}
+
 func (c *Compiler) computeEscapeSummaries() {
+	arena.Enter("compiler.computeEscapeSummaries")
+	defer arena.Leave()
 	changed := true
 	for changed {
 		changed = false
@@ -2828,13 +2909,17 @@ func (c *Compiler) computeEscapeSummaries() {
 			}
 			prev := c.funcParamEscapes[qname]
 			if len(prev) != len(next) {
-				c.funcParamEscapes[qname] = next
+				arena.UseParent()
+				c.funcParamEscapes[qname] = cloneBoolSliceToParent(next)
+				arena.Restore()
 				changed = true
 				continue
 			}
 			for i = 0; i < len(next); i++ {
 				if prev[i] != next[i] {
-					c.funcParamEscapes[qname] = next
+					arena.UseParent()
+					c.funcParamEscapes[qname] = cloneBoolSliceToParent(next)
+					arena.Restore()
 					changed = true
 					break
 				}
