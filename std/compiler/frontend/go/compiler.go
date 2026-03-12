@@ -4666,7 +4666,7 @@ func (c *Compiler) compileLinkStaticFunc(node *Node, spec LinkStaticDirective) {
 // === Scope management ===
 
 func (c *Compiler) pushScope() {
-	c.scopes = append(c.scopes, make(map[string]int))
+	c.scopes = append(c.scopes, nil)
 }
 
 func (c *Compiler) popScope() {
@@ -4679,7 +4679,13 @@ func (c *Compiler) addLocal(name string) int {
 	idx := len(c.curFunc.Locals)
 	c.curFunc.Locals = append(c.curFunc.Locals, ir.IRLocal{Name: name, Index: idx})
 	if len(c.scopes) > 0 {
-		c.scopes[len(c.scopes)-1][name] = idx
+		scopeIdx := len(c.scopes) - 1
+		scope := c.scopes[scopeIdx]
+		if scope == nil {
+			scope = make(map[string]int)
+			c.scopes[scopeIdx] = scope
+		}
+		scope[name] = idx
 	}
 	if c.inIfInit {
 		if c.ifInitLeakedNames == nil {
@@ -5413,8 +5419,11 @@ func (c *Compiler) setLocalMapMetadataFromMapType(name string, mapType *Node) {
 }
 
 func (c *Compiler) isShortDeclNameNew(scope map[string]int, name string) bool {
-	if scope == nil || name == "" {
+	if name == "" {
 		return false
+	}
+	if scope == nil {
+		return true
 	}
 	if _, exists := scope[name]; !exists {
 		return true
