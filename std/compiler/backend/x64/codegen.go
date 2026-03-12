@@ -64,12 +64,79 @@ type CodeGen struct {
 	hasTostringHelper  bool
 }
 
+func estimateCodeCap(irmod *ir.IRModule) int {
+	total := 4096
+	for _, f := range irmod.Funcs {
+		if f == nil {
+			continue
+		}
+		if f.Native != nil {
+			total += len(f.Native.Code)
+			continue
+		}
+		total += len(f.Code)*24 + len(f.Locals)*16 + 64
+	}
+	return total
+}
+
+func estimateRodataCap(irmod *ir.IRModule) int {
+	total := 1024
+	for _, f := range irmod.Funcs {
+		if f == nil || f.Native != nil {
+			continue
+		}
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CONST_STR {
+				total += len(inst.Name) + 24
+			}
+		}
+	}
+	return total
+}
+
+func estimateCallFixupCap(irmod *ir.IRModule) int {
+	total := len(irmod.Funcs) * 8
+	for _, f := range irmod.Funcs {
+		if f == nil {
+			continue
+		}
+		if f.Native != nil {
+			total += len(f.Native.Fixups)
+			continue
+		}
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CALL {
+				total++
+			}
+		}
+	}
+	return total
+}
+
+func estimateStringMapCap(irmod *ir.IRModule) int {
+	total := 16
+	for _, f := range irmod.Funcs {
+		if f == nil || f.Native != nil {
+			continue
+		}
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CONST_STR {
+				total++
+			}
+		}
+	}
+	return total
+}
+
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *CodeGen {
 	g := &CodeGen{}
 	g.target = target
-	g.funcOffsets = make(map[string]int)
+	g.Code = make([]byte, 0, estimateCodeCap(irmod))
+	g.Rodata = make([]byte, 0, estimateRodataCap(irmod))
+	g.funcOffsets = make(map[string]int, len(irmod.Funcs))
 	g.labelOffsets = make(map[int]int)
-	g.stringMap = make(map[string]int)
+	g.callFixups = make([]CallFixup, 0, estimateCallFixupCap(irmod))
+	g.stringMap = make(map[string]int, estimateStringMapCap(irmod))
 	g.globalOffsets = make([]int, len(irmod.Globals))
 	g.BaseAddr = 0x400000
 	g.irmod = irmod
