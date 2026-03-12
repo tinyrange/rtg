@@ -167,12 +167,14 @@ type Compiler struct {
 	captureConcreteTypes  map[string]string
 	captureIfaceTypes     map[string]string
 	dotJoinCache          map[string]map[string]string // a → b → "a.b"
-	qualifyTypeCache      map[string]string            // "typeName\x00pkgPath" → qualified result
+	qualifyTypeCache      map[string]map[string]string // pkgPath → typeName → qualified result
 	structTypeLookup      map[string]structTypeLookupResult
-	structFieldLookup     map[string]structFieldLookupResult
-	fieldTypeLookup       map[string]cachedStringResult
+	structFieldLookup     map[string]map[string]structFieldLookupResult
+	structFieldLookupSize int
+	fieldTypeLookup       map[string]map[string]cachedStringResult
+	fieldTypeLookupSize   int
 	storageTypeCache      map[string]cachedStringResult
-	methodResolutionCache map[string]cachedStringResult
+	methodResolutionCache map[string]map[string]cachedStringResult
 	resolveCallNameCache  map[*Node]cachedStringResult
 	resolveExprTypeCache  map[*Node]cachedStringResult
 	exprConcreteTypeCache map[*Node]cachedStringResult
@@ -259,11 +261,11 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string, m
 		funcLiteralCaptures:   make(map[string][]closureCaptureSpec),
 		localFuncCaptures:     make(map[string][]closureCaptureBinding),
 		dotJoinCache:          make(map[string]map[string]string),
-		qualifyTypeCache:      make(map[string]string),
+		qualifyTypeCache:      make(map[string]map[string]string),
 		structTypeLookup:      make(map[string]structTypeLookupResult),
-		structFieldLookup:     make(map[string]structFieldLookupResult),
-		fieldTypeLookup:       make(map[string]cachedStringResult),
-		methodResolutionCache: make(map[string]cachedStringResult),
+		structFieldLookup:     make(map[string]map[string]structFieldLookupResult),
+		fieldTypeLookup:       make(map[string]map[string]cachedStringResult),
+		methodResolutionCache: make(map[string]map[string]cachedStringResult),
 		allocSiteNames:        make(map[uint32]string),
 		assembleFuncs:         make(map[string]assembleInfo),
 		entryFunc:             entryFunc,
@@ -597,44 +599,61 @@ func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 // lookupStructField parses a qualified type name and returns the matching field node
 // and the package path. Returns nil, "" if not found.
 func (c *Compiler) lookupStructField(qualifiedType string, fieldName string) (*Node, string) {
-	cacheKey := qualifiedType + "\x00" + fieldName
-	if cached, ok := c.structFieldLookup[cacheKey]; ok {
-		if cached.ok {
-			return cached.field, cached.pkgPath
+	cacheBucket := c.structFieldLookup[qualifiedType]
+	if cacheBucket != nil {
+		if cached, ok := cacheBucket[fieldName]; ok {
+			if cached.ok {
+				return cached.field, cached.pkgPath
+			}
+			return nil, ""
 		}
-		return nil, ""
 	}
 	typeNode, pkgPath := c.lookupStructTypeNode(qualifiedType)
 	if typeNode == nil {
-		if len(c.structFieldLookup) >= structFieldLookupMaxEntries {
-			for key := range c.structFieldLookup {
-				delete(c.structFieldLookup, key)
-			}
+		if c.structFieldLookupSize >= structFieldLookupMaxEntries {
+			c.structFieldLookup = make(map[string]map[string]structFieldLookupResult)
+			c.structFieldLookupSize = 0
 		}
-		c.structFieldLookup[cacheKey] = structFieldLookupResult{}
+		cacheBucket = c.structFieldLookup[qualifiedType]
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]structFieldLookupResult)
+			c.structFieldLookup[qualifiedType] = cacheBucket
+		}
+		cacheBucket[fieldName] = structFieldLookupResult{}
+		c.structFieldLookupSize++
 		return nil, ""
 	}
 	for _, field := range typeNode.Nodes {
 		if field.Kind == NField && field.Name == fieldName {
-			if len(c.structFieldLookup) >= structFieldLookupMaxEntries {
-				for key := range c.structFieldLookup {
-					delete(c.structFieldLookup, key)
-				}
+			if c.structFieldLookupSize >= structFieldLookupMaxEntries {
+				c.structFieldLookup = make(map[string]map[string]structFieldLookupResult)
+				c.structFieldLookupSize = 0
 			}
-			c.structFieldLookup[cacheKey] = structFieldLookupResult{
+			cacheBucket = c.structFieldLookup[qualifiedType]
+			if cacheBucket == nil {
+				cacheBucket = make(map[string]structFieldLookupResult)
+				c.structFieldLookup[qualifiedType] = cacheBucket
+			}
+			cacheBucket[fieldName] = structFieldLookupResult{
 				field:   field,
 				pkgPath: pkgPath,
 				ok:      true,
 			}
+			c.structFieldLookupSize++
 			return field, pkgPath
 		}
 	}
-	if len(c.structFieldLookup) >= structFieldLookupMaxEntries {
-		for key := range c.structFieldLookup {
-			delete(c.structFieldLookup, key)
-		}
+	if c.structFieldLookupSize >= structFieldLookupMaxEntries {
+		c.structFieldLookup = make(map[string]map[string]structFieldLookupResult)
+		c.structFieldLookupSize = 0
 	}
-	c.structFieldLookup[cacheKey] = structFieldLookupResult{}
+	cacheBucket = c.structFieldLookup[qualifiedType]
+	if cacheBucket == nil {
+		cacheBucket = make(map[string]structFieldLookupResult)
+		c.structFieldLookup[qualifiedType] = cacheBucket
+	}
+	cacheBucket[fieldName] = structFieldLookupResult{}
+	c.structFieldLookupSize++
 	return nil, ""
 }
 
@@ -724,32 +743,44 @@ func (c *Compiler) resolveFieldPath(qualifiedType string, fieldName string) ([]i
 // resolveFieldType looks up the type of a struct field given a qualified type name and field name.
 func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) string {
 	qualifiedType = c.qualifyTypeName(qualifiedType, "")
-	cacheKey := qualifiedType + "\x00" + fieldName
-	if cached, ok := c.fieldTypeLookup[cacheKey]; ok {
-		if cached.ok {
-			return cached.value
+	cacheBucket := c.fieldTypeLookup[qualifiedType]
+	if cacheBucket != nil {
+		if cached, ok := cacheBucket[fieldName]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
 		}
-		return ""
 	}
 	field, pkgPath := c.lookupStructField(qualifiedType, fieldName)
 	if field != nil && field.Type != nil {
 		resolved := c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
-		if len(c.fieldTypeLookup) >= fieldTypeLookupMaxEntries {
-			for key := range c.fieldTypeLookup {
-				delete(c.fieldTypeLookup, key)
-			}
+		if c.fieldTypeLookupSize >= fieldTypeLookupMaxEntries {
+			c.fieldTypeLookup = make(map[string]map[string]cachedStringResult)
+			c.fieldTypeLookupSize = 0
 		}
-		c.fieldTypeLookup[cacheKey] = cachedStringResult{value: resolved, ok: true}
+		cacheBucket = c.fieldTypeLookup[qualifiedType]
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]cachedStringResult)
+			c.fieldTypeLookup[qualifiedType] = cacheBucket
+		}
+		cacheBucket[fieldName] = cachedStringResult{value: resolved, ok: true}
+		c.fieldTypeLookupSize++
 		return resolved
 	}
 	typeNode, ownerPkg := c.lookupStructTypeNode(qualifiedType)
 	if typeNode == nil {
-		if len(c.fieldTypeLookup) >= fieldTypeLookupMaxEntries {
-			for key := range c.fieldTypeLookup {
-				delete(c.fieldTypeLookup, key)
-			}
+		if c.fieldTypeLookupSize >= fieldTypeLookupMaxEntries {
+			c.fieldTypeLookup = make(map[string]map[string]cachedStringResult)
+			c.fieldTypeLookupSize = 0
 		}
-		c.fieldTypeLookup[cacheKey] = cachedStringResult{}
+		cacheBucket = c.fieldTypeLookup[qualifiedType]
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]cachedStringResult)
+			c.fieldTypeLookup[qualifiedType] = cacheBucket
+		}
+		cacheBucket[fieldName] = cachedStringResult{}
+		c.fieldTypeLookupSize++
 		return ""
 	}
 	for _, embedded := range typeNode.Nodes {
@@ -758,21 +789,31 @@ func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) stri
 		}
 		embeddedType := c.qualifyTypeName(nodeTypeName(embedded.Type), ownerPkg)
 		if t := c.resolveFieldType(embeddedType, fieldName); t != "" {
-			if len(c.fieldTypeLookup) >= fieldTypeLookupMaxEntries {
-				for key := range c.fieldTypeLookup {
-					delete(c.fieldTypeLookup, key)
-				}
+			if c.fieldTypeLookupSize >= fieldTypeLookupMaxEntries {
+				c.fieldTypeLookup = make(map[string]map[string]cachedStringResult)
+				c.fieldTypeLookupSize = 0
 			}
-			c.fieldTypeLookup[cacheKey] = cachedStringResult{value: t, ok: true}
+			cacheBucket = c.fieldTypeLookup[qualifiedType]
+			if cacheBucket == nil {
+				cacheBucket = make(map[string]cachedStringResult)
+				c.fieldTypeLookup[qualifiedType] = cacheBucket
+			}
+			cacheBucket[fieldName] = cachedStringResult{value: t, ok: true}
+			c.fieldTypeLookupSize++
 			return t
 		}
 	}
-	if len(c.fieldTypeLookup) >= fieldTypeLookupMaxEntries {
-		for key := range c.fieldTypeLookup {
-			delete(c.fieldTypeLookup, key)
-		}
+	if c.fieldTypeLookupSize >= fieldTypeLookupMaxEntries {
+		c.fieldTypeLookup = make(map[string]map[string]cachedStringResult)
+		c.fieldTypeLookupSize = 0
 	}
-	c.fieldTypeLookup[cacheKey] = cachedStringResult{}
+	cacheBucket = c.fieldTypeLookup[qualifiedType]
+	if cacheBucket == nil {
+		cacheBucket = make(map[string]cachedStringResult)
+		c.fieldTypeLookup[qualifiedType] = cacheBucket
+	}
+	cacheBucket[fieldName] = cachedStringResult{}
+	c.fieldTypeLookupSize++
 	return ""
 }
 
@@ -4291,7 +4332,7 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.emitKnownCall("runtime.Now", 0, 1)
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
 	}
-	if c.target != nil && (c.target.Profile || c.target.ArenaReport || c.target.AllocSiteReport || c.target.SliceResliceReport) && f.Name == c.entryFunc {
+	if c.target != nil && (c.target.Profile || c.target.ArenaReport || c.target.AllocSiteReport || c.target.SliceResliceReport || c.target.StringConcatReport) && f.Name == c.entryFunc {
 		c.profileFlushOnExit = true
 	}
 
@@ -6428,6 +6469,10 @@ func (c *Compiler) sliceResliceReportingEnabled() bool {
 	return c != nil && c.target != nil && c.target.SliceResliceReport
 }
 
+func (c *Compiler) stringConcatReportingEnabled() bool {
+	return c != nil && c.target != nil && c.target.StringConcatReport
+}
+
 func (c *Compiler) currentAllocSiteName() string {
 	if c == nil || c.curFunc == nil || c.curFunc.Name == "" {
 		return ""
@@ -6465,6 +6510,22 @@ func (c *Compiler) emitAllocSiteSample() {
 
 func (c *Compiler) emitSliceResliceSample() {
 	if !c.sliceResliceReportingEnabled() {
+		return
+	}
+	siteName := c.currentAllocSiteName()
+	if siteName == "" {
+		return
+	}
+	siteHash := profileHash32FNV(siteName)
+	c.recordAllocSiteName(siteHash, siteName)
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
+}
+
+func (c *Compiler) emitStringConcatSample() {
+	if !c.stringConcatReportingEnabled() {
 		return
 	}
 	siteName := c.currentAllocSiteName()
@@ -8610,6 +8671,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	if isStr && node.Name == "+" {
 		c.compileExpr(node.X)
 		c.compileExpr(node.Y)
+		c.emitStringConcatSample()
 		c.emitKnownCall("runtime.StringConcat", 2, 1)
 		return
 	}
@@ -11100,12 +11162,18 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	if cachePkg == "" && c.curPkg != nil {
 		cachePkg = c.curPkg.Path
 	}
-	cacheKey := typeName + "\x00" + cachePkg
-	if cached, ok := c.qualifyTypeCache[cacheKey]; ok {
-		return cached
+	cacheBucket := c.qualifyTypeCache[cachePkg]
+	if cacheBucket != nil {
+		if cached, ok := cacheBucket[typeName]; ok {
+			return cached
+		}
 	}
 	result := c.qualifyTypeNameInner(typeName, pkgPath)
-	c.qualifyTypeCache[cacheKey] = result
+	if cacheBucket == nil {
+		cacheBucket = make(map[string]string)
+		c.qualifyTypeCache[cachePkg] = cacheBucket
+	}
+	cacheBucket[typeName] = result
 	return result
 }
 
@@ -11232,25 +11300,39 @@ func pointerMethodTypeName(typeName string) string {
 }
 
 func (c *Compiler) resolveMethodByConcreteType(concreteType string, methodName string) (string, bool) {
-	cacheKey := concreteType + "\x00" + methodName
-	if cached, ok := c.methodResolutionCache[cacheKey]; ok {
-		if cached.ok {
-			return cached.value, true
+	cacheBucket := c.methodResolutionCache[concreteType]
+	if cacheBucket != nil {
+		if cached, ok := cacheBucket[methodName]; ok {
+			if cached.ok {
+				return cached.value, true
+			}
+			return "", false
 		}
-		return "", false
 	}
 	candidate := c.dotJoin(concreteType, methodName)
 	if resolved, ok := c.methodTable[candidate]; ok {
-		c.methodResolutionCache[cacheKey] = cachedStringResult{value: resolved, ok: true}
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]cachedStringResult)
+			c.methodResolutionCache[concreteType] = cacheBucket
+		}
+		cacheBucket[methodName] = cachedStringResult{value: resolved, ok: true}
 		return resolved, true
 	}
 	ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
 	resolved, ok := c.methodTable[ptrCandidate]
 	if ok {
-		c.methodResolutionCache[cacheKey] = cachedStringResult{value: resolved, ok: true}
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]cachedStringResult)
+			c.methodResolutionCache[concreteType] = cacheBucket
+		}
+		cacheBucket[methodName] = cachedStringResult{value: resolved, ok: true}
 		return resolved, true
 	}
-	c.methodResolutionCache[cacheKey] = cachedStringResult{}
+	if cacheBucket == nil {
+		cacheBucket = make(map[string]cachedStringResult)
+		c.methodResolutionCache[concreteType] = cacheBucket
+	}
+	cacheBucket[methodName] = cachedStringResult{}
 	return resolved, ok
 }
 
