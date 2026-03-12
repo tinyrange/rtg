@@ -61,7 +61,20 @@ type structTypeLookupResult struct {
 	ok       bool
 }
 
+type structFieldLookupResult struct {
+	field   *Node
+	pkgPath string
+	ok      bool
+}
+
+type cachedStringResult struct {
+	value string
+	ok    bool
+}
+
 const structTypeLookupMaxEntries = 8192
+const structFieldLookupMaxEntries = 16384
+const fieldTypeLookupMaxEntries = 16384
 
 // === Compiler ===
 
@@ -138,6 +151,8 @@ type Compiler struct {
 	dotJoinCache          map[string]map[string]string // a → b → "a.b"
 	qualifyTypeCache      map[string]string            // "typeName\x00pkgPath" → qualified result
 	structTypeLookup      map[string]structTypeLookupResult
+	structFieldLookup     map[string]structFieldLookupResult
+	fieldTypeLookup       map[string]cachedStringResult
 	comptimeSeq           int
 	comptimeDisabled      bool
 	inComptimeFunc        bool
@@ -217,6 +232,8 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		dotJoinCache:          make(map[string]map[string]string),
 		qualifyTypeCache:      make(map[string]string),
 		structTypeLookup:      make(map[string]structTypeLookupResult),
+		structFieldLookup:     make(map[string]structFieldLookupResult),
+		fieldTypeLookup:       make(map[string]cachedStringResult),
 		assembleFuncs:         make(map[string]assembleInfo),
 		entryFunc:             entryFunc,
 		deferRecoverWrapFuncs: make(map[string]bool),
@@ -511,15 +528,44 @@ func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 // lookupStructField parses a qualified type name and returns the matching field node
 // and the package path. Returns nil, "" if not found.
 func (c *Compiler) lookupStructField(qualifiedType string, fieldName string) (*Node, string) {
+	cacheKey := qualifiedType + "\x00" + fieldName
+	if cached, ok := c.structFieldLookup[cacheKey]; ok {
+		if cached.ok {
+			return cached.field, cached.pkgPath
+		}
+		return nil, ""
+	}
 	typeNode, pkgPath := c.lookupStructTypeNode(qualifiedType)
 	if typeNode == nil {
+		if len(c.structFieldLookup) >= structFieldLookupMaxEntries {
+			for key := range c.structFieldLookup {
+				delete(c.structFieldLookup, key)
+			}
+		}
+		c.structFieldLookup[cacheKey] = structFieldLookupResult{}
 		return nil, ""
 	}
 	for _, field := range typeNode.Nodes {
 		if field.Kind == NField && field.Name == fieldName {
+			if len(c.structFieldLookup) >= structFieldLookupMaxEntries {
+				for key := range c.structFieldLookup {
+					delete(c.structFieldLookup, key)
+				}
+			}
+			c.structFieldLookup[cacheKey] = structFieldLookupResult{
+				field:   field,
+				pkgPath: pkgPath,
+				ok:      true,
+			}
 			return field, pkgPath
 		}
 	}
+	if len(c.structFieldLookup) >= structFieldLookupMaxEntries {
+		for key := range c.structFieldLookup {
+			delete(c.structFieldLookup, key)
+		}
+	}
+	c.structFieldLookup[cacheKey] = structFieldLookupResult{}
 	return nil, ""
 }
 
@@ -609,12 +655,32 @@ func (c *Compiler) resolveFieldPath(qualifiedType string, fieldName string) ([]i
 // resolveFieldType looks up the type of a struct field given a qualified type name and field name.
 func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) string {
 	qualifiedType = c.qualifyTypeName(qualifiedType, "")
+	cacheKey := qualifiedType + "\x00" + fieldName
+	if cached, ok := c.fieldTypeLookup[cacheKey]; ok {
+		if cached.ok {
+			return cached.value
+		}
+		return ""
+	}
 	field, pkgPath := c.lookupStructField(qualifiedType, fieldName)
 	if field != nil && field.Type != nil {
-		return c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
+		resolved := c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
+		if len(c.fieldTypeLookup) >= fieldTypeLookupMaxEntries {
+			for key := range c.fieldTypeLookup {
+				delete(c.fieldTypeLookup, key)
+			}
+		}
+		c.fieldTypeLookup[cacheKey] = cachedStringResult{value: resolved, ok: true}
+		return resolved
 	}
 	typeNode, ownerPkg := c.lookupStructTypeNode(qualifiedType)
 	if typeNode == nil {
+		if len(c.fieldTypeLookup) >= fieldTypeLookupMaxEntries {
+			for key := range c.fieldTypeLookup {
+				delete(c.fieldTypeLookup, key)
+			}
+		}
+		c.fieldTypeLookup[cacheKey] = cachedStringResult{}
 		return ""
 	}
 	for _, embedded := range typeNode.Nodes {
@@ -623,9 +689,21 @@ func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) stri
 		}
 		embeddedType := c.qualifyTypeName(nodeTypeName(embedded.Type), ownerPkg)
 		if t := c.resolveFieldType(embeddedType, fieldName); t != "" {
+			if len(c.fieldTypeLookup) >= fieldTypeLookupMaxEntries {
+				for key := range c.fieldTypeLookup {
+					delete(c.fieldTypeLookup, key)
+				}
+			}
+			c.fieldTypeLookup[cacheKey] = cachedStringResult{value: t, ok: true}
 			return t
 		}
 	}
+	if len(c.fieldTypeLookup) >= fieldTypeLookupMaxEntries {
+		for key := range c.fieldTypeLookup {
+			delete(c.fieldTypeLookup, key)
+		}
+	}
+	c.fieldTypeLookup[cacheKey] = cachedStringResult{}
 	return ""
 }
 

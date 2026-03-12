@@ -26,6 +26,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#35` Struct values are lowered with pointer-aliasing semantics instead of copy semantics in RTG-compiled programs.
 - `#40` WASM variadic/interface boxing still truncates `int64` values in `fmt.Printf`-style calls.
 - `#41` C backend float lowering currently requires the C word size to be at least as wide as the float payload (`c/64` for `float64`; `c/32+` for `float32`).
+- `#42` Selfhost stage1 can segfault during `ResolveModule` when compiler changes introduce package-level caches over embedded-source metadata.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -84,6 +85,21 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - The backend now rejects unsupported profile/float-width combinations up front instead of generating truncated code.
+
+### 42) Selfhost stage1 can segfault during `ResolveModule` after adding embedded-source metadata caches
+
+**Symptom**
+- While optimizing compiler startup, replacing per-import embedded-stdlib scans with package-level cached metadata in `frontend/go/parser_rtg.go` produced a reproducible selfhost crash:
+  - host-built `./build/rtg` could compile and pass `test-fullcompiler-rtg`
+  - but `./build/stage1 -debug -strict -o build/stage_out ./std/compiler/` crashed immediately after:
+    - `debug: resolving module (1 entry files)`
+
+**Impact**
+- Blocks an otherwise attractive optimization avenue for selfhost startup time and memory.
+- Host-Go builds may appear healthy while the selfhosted compiler stage crashes during module resolution.
+
+**Current mitigation**
+- Avoid package-level embedded-source cache rewrites in the selfhost path for now; prefer optimizations in later frontend/backend resolution/codegen paths until the root cause is isolated.
 
 ### 40) WASM variadic/interface boxing truncates `int64` values in formatted calls
 
