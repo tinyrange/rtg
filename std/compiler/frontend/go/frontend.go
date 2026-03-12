@@ -1000,7 +1000,6 @@ func parseSource(name string, src string) *Node {
 	tokens := lexer.Tokenize()
 	arena.UseParent()
 	defer arena.Restore()
-	cloneTokenValues(tokens)
 	parser := NewParser(tokens)
 	file := parser.ParseFile()
 	releaseTokenBuffer(tokens)

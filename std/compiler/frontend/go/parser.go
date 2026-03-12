@@ -185,7 +185,7 @@ func stableTokenString(s string) string {
 	if s == "" {
 		return ""
 	}
-	return s
+	return cloneStringBytes(s)
 }
 
 func cloneTokenValues(tokens []Token) {
@@ -825,7 +825,7 @@ func (p *Parser) ParseFile() *Node {
 	// package clause
 	p.expect(TOKEN_PACKAGE)
 	pkgName := p.expect(TOKEN_IDENT)
-	file.Name = pkgName.Val
+	file.Name = stableTokenString(pkgName.Val)
 	p.skipSemicolon()
 
 	// imports
@@ -869,7 +869,7 @@ func (p *Parser) parseImportSpec() *Node {
 	aliasPos := p.peek().Line
 	if p.at(TOKEN_IDENT) {
 		aliasTok := p.advance()
-		alias = aliasTok.Val
+		alias = stableTokenString(aliasTok.Val)
 		aliasPos = aliasTok.Line
 	} else if p.at(TOKEN_DOT) {
 		aliasTok := p.advance()
@@ -878,7 +878,7 @@ func (p *Parser) parseImportSpec() *Node {
 	}
 
 	tok := p.expect(TOKEN_STRING)
-	n := &Node{Kind: NImport, Name: tok.Val, Pos: tok.Line}
+	n := &Node{Kind: NImport, Name: stableTokenString(tok.Val), Pos: tok.Line}
 	if alias != "" {
 		n.X = &Node{Kind: NIdent, Name: alias, Pos: aliasPos}
 	}
@@ -890,7 +890,7 @@ func (p *Parser) parseTopDecl() *Node {
 	case TOKEN_DIRECTIVE:
 		dir := p.advance()
 		decl := p.parseTopDecl()
-		return &Node{Kind: NDirective, Name: dir.Val, X: decl, Pos: dir.Line}
+		return &Node{Kind: NDirective, Name: stableTokenString(dir.Val), X: decl, Pos: dir.Line}
 	case TOKEN_FUNC:
 		return p.parseFuncDecl()
 	case TOKEN_TYPE:
@@ -919,7 +919,7 @@ func (p *Parser) parseFuncDecl() *Node {
 
 	// function name
 	name := p.expect(TOKEN_IDENT)
-	node.Name = name.Val
+	node.Name = stableTokenString(name.Val)
 
 	// reject generic type parameters
 	if p.at(TOKEN_LBRACK) {
@@ -966,7 +966,7 @@ func (p *Parser) parseFuncDecl() *Node {
 func (p *Parser) parseReceiver() *Node {
 	node := &Node{Kind: NField, Pos: p.peek().Line}
 	name := p.expect(TOKEN_IDENT)
-	node.Name = name.Val
+	node.Name = stableTokenString(name.Val)
 	node.Type = p.parseType()
 	return node
 }
@@ -1055,7 +1055,7 @@ func (p *Parser) parseParam() *Node {
 		next := p.tokens[p.pos+1]
 		if next.Kind != TOKEN_COMMA && next.Kind != TOKEN_RPAREN {
 			name := p.advance()
-			node.Name = name.Val
+			node.Name = stableTokenString(name.Val)
 			if p.at(TOKEN_ELLIPSIS) {
 				p.advance()
 				node.Name = "..." + node.Name
@@ -1078,7 +1078,7 @@ func (p *Parser) parseTypeDecl() *Node {
 		var decls []*Node
 		for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
 			name := p.expect(TOKEN_IDENT)
-			node := &Node{Kind: NTypeDecl, Name: name.Val, Pos: name.Line}
+			node := &Node{Kind: NTypeDecl, Name: stableTokenString(name.Val), Pos: name.Line}
 			if p.at(TOKEN_ASSIGN) {
 				p.advance()
 			}
@@ -1096,7 +1096,7 @@ func (p *Parser) parseTypeDecl() *Node {
 	}
 
 	name := p.expect(TOKEN_IDENT)
-	node := &Node{Kind: NTypeDecl, Name: name.Val, Pos: pos}
+	node := &Node{Kind: NTypeDecl, Name: stableTokenString(name.Val), Pos: pos}
 	if p.at(TOKEN_ASSIGN) {
 		p.advance()
 	}
@@ -1138,11 +1138,11 @@ func (p *Parser) parseVarDeclSpec() []*Node {
 	specPos := p.peek().Line
 	names := make([]string, 0, 2)
 	first := p.expect(TOKEN_IDENT)
-	names = append(names, first.Val)
+	names = append(names, stableTokenString(first.Val))
 	for p.at(TOKEN_COMMA) {
 		p.advance()
 		name := p.expect(TOKEN_IDENT)
-		names = append(names, name.Val)
+		names = append(names, stableTokenString(name.Val))
 	}
 
 	var typ *Node
@@ -1184,7 +1184,7 @@ func (p *Parser) parseConstDecl() *Node {
 		group := &Node{Kind: NConstDecl, Pos: pos}
 		for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
 			name := p.expect(TOKEN_IDENT)
-			spec := &Node{Kind: NConstDecl, Name: name.Val, Pos: name.Line}
+			spec := &Node{Kind: NConstDecl, Name: stableTokenString(name.Val), Pos: name.Line}
 			if p.at(TOKEN_IDENT) && !p.at(TOKEN_SEMICOLON) {
 				spec.Type = p.parseType()
 			}
@@ -1200,7 +1200,7 @@ func (p *Parser) parseConstDecl() *Node {
 		return group
 	}
 	name := p.expect(TOKEN_IDENT)
-	node := &Node{Kind: NConstDecl, Name: name.Val, Pos: pos}
+	node := &Node{Kind: NConstDecl, Name: stableTokenString(name.Val), Pos: pos}
 	if p.at(TOKEN_IDENT) {
 		node.Type = p.parseType()
 	}
@@ -1225,11 +1225,11 @@ func (p *Parser) parseType() *Node {
 			p.errorf("%s type is not supported at line %d", tok.Val, tok.Line)
 			return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 		}
-		node := &Node{Kind: NIdent, Name: tok.Val, Pos: tok.Line}
+		node := &Node{Kind: NIdent, Name: stableTokenString(tok.Val), Pos: tok.Line}
 		if p.at(TOKEN_DOT) {
 			p.advance()
 			name := p.expect(TOKEN_IDENT)
-			node = &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: tok.Line}
+			node = &Node{Kind: NSelectorExpr, X: node, Name: stableTokenString(name.Val), Pos: tok.Line}
 		}
 		return node
 	case TOKEN_STAR:
@@ -1320,7 +1320,7 @@ func (p *Parser) parseStructType() *Node {
 func (p *Parser) parseStructField() *Node {
 	node := &Node{Kind: NField, Pos: p.peek().Line}
 	name := p.expect(TOKEN_IDENT)
-	node.Name = name.Val
+	node.Name = stableTokenString(name.Val)
 	if !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_RBRACE) && !p.at(TOKEN_EOF) {
 		node.Type = p.parseType()
 	} else {
@@ -1339,7 +1339,7 @@ func (p *Parser) parseInterfaceType() *Node {
 		// Parse method signature: MethodName(params) returnType
 		meth := &Node{Kind: NFunc, Pos: p.peek().Line}
 		name := p.expect(TOKEN_IDENT)
-		meth.Name = name.Val
+		meth.Name = stableTokenString(name.Val)
 		meth.Nodes = p.parseParamList()
 		// Parse return type(s)
 		if !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_RBRACE) && !p.at(TOKEN_EOF) {
@@ -1406,14 +1406,14 @@ func (p *Parser) parseStmt() *Node {
 		p.advance()
 		name := p.expect(TOKEN_IDENT)
 		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "goto", X: &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}, Pos: pos}
+		return &Node{Kind: NBranch, Name: "goto", X: &Node{Kind: NIdent, Name: stableTokenString(name.Val), Pos: name.Line}, Pos: pos}
 	case TOKEN_BREAK:
 		pos := p.peek().Line
 		p.advance()
 		var target *Node
 		if p.at(TOKEN_IDENT) {
 			name := p.advance()
-			target = &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}
+			target = &Node{Kind: NIdent, Name: stableTokenString(name.Val), Pos: name.Line}
 		}
 		p.skipSemicolon()
 		return &Node{Kind: NBranch, Name: "break", X: target, Pos: pos}
@@ -1423,7 +1423,7 @@ func (p *Parser) parseStmt() *Node {
 		var target *Node
 		if p.at(TOKEN_IDENT) {
 			name := p.advance()
-			target = &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}
+			target = &Node{Kind: NIdent, Name: stableTokenString(name.Val), Pos: name.Line}
 		}
 		p.skipSemicolon()
 		return &Node{Kind: NBranch, Name: "continue", X: target, Pos: pos}
@@ -1472,7 +1472,7 @@ func (p *Parser) parseStmt() *Node {
 		name := p.advance()
 		p.expect(TOKEN_COLON)
 		p.skipSemicolon()
-		return &Node{Kind: NBranch, Name: "label", X: &Node{Kind: NIdent, Name: name.Val, Pos: name.Line}, Pos: name.Line}
+		return &Node{Kind: NBranch, Name: "label", X: &Node{Kind: NIdent, Name: stableTokenString(name.Val), Pos: name.Line}, Pos: name.Line}
 	}
 	return p.parseSimpleStmt()
 }
@@ -1865,13 +1865,13 @@ func (p *Parser) parsePrimaryExpr() *Node {
 	switch p.peek().Kind {
 	case TOKEN_IDENT:
 		tok := p.advance()
-		node = &Node{Kind: NIdent, Name: tok.Val, Pos: tok.Line}
+		node = &Node{Kind: NIdent, Name: stableTokenString(tok.Val), Pos: tok.Line}
 	case TOKEN_INT:
 		tok := p.advance()
-		node = &Node{Kind: NIntLit, Name: tok.Val, Pos: tok.Line}
+		node = &Node{Kind: NIntLit, Name: stableTokenString(tok.Val), Pos: tok.Line}
 	case TOKEN_FLOAT:
 		tok := p.advance()
-		node = &Node{Kind: NFloatLit, Name: tok.Val, Pos: tok.Line}
+		node = &Node{Kind: NFloatLit, Name: stableTokenString(tok.Val), Pos: tok.Line}
 	case TOKEN_IMAG:
 		tok := p.advance()
 		p.errorf("imaginary literals are not supported at line %d col %d", tok.Line, tok.Col)
@@ -1886,10 +1886,10 @@ func (p *Parser) parsePrimaryExpr() *Node {
 		node = &Node{Kind: NStringLit, Name: encodeStringLiteral(tok.Val), Pos: tok.Line}
 	case TOKEN_RUNE:
 		tok := p.advance()
-		node = &Node{Kind: NRuneLit, Name: tok.Val, Pos: tok.Line}
+		node = &Node{Kind: NRuneLit, Name: stableTokenString(tok.Val), Pos: tok.Line}
 	case TOKEN_TRUE, TOKEN_FALSE, TOKEN_NIL, TOKEN_IOTA:
 		tok := p.advance()
-		node = &Node{Kind: NBasicLit, Name: tok.Val, Pos: tok.Line}
+		node = &Node{Kind: NBasicLit, Name: stableTokenString(tok.Val), Pos: tok.Line}
 	case TOKEN_LPAREN:
 		p.advance()
 		node = p.parseExpr()
@@ -1978,7 +1978,7 @@ func (p *Parser) parsePostfixDot(node *Node) *Node {
 		return assertNode
 	}
 	name := p.expect(TOKEN_IDENT)
-	return &Node{Kind: NSelectorExpr, X: node, Name: name.Val, Pos: node.Pos}
+	return &Node{Kind: NSelectorExpr, X: node, Name: stableTokenString(name.Val), Pos: node.Pos}
 }
 
 func (p *Parser) parsePostfixCall(node *Node) *Node {
