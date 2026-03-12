@@ -108,7 +108,9 @@ func addDiscoveredBuildTag(tag string) {
 			return
 		}
 	}
-	discoveredBuildTags = append(discoveredBuildTags, tag)
+	arena.UseParent()
+	defer arena.Restore()
+	discoveredBuildTags = append(discoveredBuildTags, cloneStringBytes(tag))
 }
 
 func GetDiscoveredBuildTags() []string {
@@ -631,6 +633,8 @@ func isAlphaNum(c byte) bool {
 
 // parsePackageDir lists .go files in a directory, parses each, and merges into one Package.
 func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
+	arena.Enter("frontend.parsePackageDir")
+	defer arena.Leave()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -657,6 +661,7 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 	}
 	sortStrings(goFiles)
 
+	arena.UseParent()
 	pkg := &Package{
 		Path:    importPath,
 		Dir:     dir,
@@ -675,10 +680,12 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 	}
 
 	if len(pkg.Files) == 0 {
+		arena.Restore()
 		return nil
 	}
 
 	pkg.Imports = collectImports(pkg)
+	arena.Restore()
 	return pkg
 }
 
@@ -1073,9 +1080,16 @@ func (c *Preprocessor) shouldIncludeContent(content string, name string) bool {
 }
 
 // collectImports walks NFile.Nodes for NImport nodes and returns deduplicated import paths.
+type importAliasEntry struct {
+	alias string
+	path  string
+}
+
 func collectImports(pkg *Package) []string {
+	arena.Enter("frontend.collectImports")
+	defer arena.Leave()
 	seen := make(map[string]bool)
-	aliases := make(map[string]string)
+	var aliases []importAliasEntry
 	var result []string
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
@@ -1088,14 +1102,25 @@ func collectImports(pkg *Package) []string {
 				if node.X != nil && node.X.Kind == NIdent {
 					alias := node.X.Name
 					if alias != "" && alias != "_" && alias != "." {
-						aliases[alias] = path
+						aliases = append(aliases, importAliasEntry{alias: alias, path: path})
 					}
 				}
 			}
 		}
 	}
-	pkg.ImportAliases = aliases
-	return result
+	arena.UseParent()
+	defer arena.Restore()
+	if len(aliases) > 0 {
+		pkg.ImportAliases = make(map[string]string, len(aliases))
+		for _, entry := range aliases {
+			pkg.ImportAliases[entry.alias] = entry.path
+		}
+	} else {
+		pkg.ImportAliases = make(map[string]string)
+	}
+	var cloned []string
+	cloned = append(cloned, result...)
+	return cloned
 }
 
 // topologicalSort performs a DFS-based topological sort on the import graph.
@@ -1120,6 +1145,8 @@ func (ts *topoState) visit(path string) {
 }
 
 func topologicalSort(pkgs map[string]*Package) []string {
+	arena.Enter("frontend.topologicalSort")
+	defer arena.Leave()
 	ts := &topoState{
 		pkgs:    pkgs,
 		visited: make(map[string]bool),
@@ -1133,7 +1160,11 @@ func topologicalSort(pkgs map[string]*Package) []string {
 	for _, path := range paths {
 		ts.visit(path)
 	}
-	return ts.order
+	arena.UseParent()
+	defer arena.Restore()
+	var cloned []string
+	cloned = append(cloned, ts.order...)
+	return cloned
 }
 
 // collectSymbols walks top-level declarations and populates pkg.Symbols.
@@ -1222,8 +1253,10 @@ func collectDeclSymbol(pkg *Package, node *Node) {
 func ValidateModule(mod *Module) []string {
 	var errors []string
 	for _, path := range mod.Order {
+		arena.Enter("frontend.ValidateModule.package")
 		pkg, ok := mod.Packages[path]
 		if !ok {
+			arena.Leave()
 			continue
 		}
 		// Build import map: package name → *Package
@@ -1245,6 +1278,7 @@ func ValidateModule(mod *Module) []string {
 				validateNode(pkg, importMap, node, &errors)
 			}
 		}
+		arena.Leave()
 	}
 	return errors
 }

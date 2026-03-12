@@ -3,10 +3,13 @@
 package frontend
 
 import (
+	"j5.nz/rtg/std/compiler/arena"
 	"j5.nz/rtg/std/compiler/stdlib"
 )
 
 func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
+	arena.Enter("frontend.parsePackageFromEmbed")
+	defer arena.Leave()
 	names := stdlib.ReadDirFromEmbed(importPath)
 	if len(names) == 0 {
 		return nil
@@ -27,6 +30,7 @@ func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 		return nil
 	}
 
+	arena.UseParent()
 	pkg := &Package{
 		Path:    importPath,
 		Dir:     importPath,
@@ -48,9 +52,11 @@ func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 	}
 
 	if len(pkg.Files) == 0 {
+		arena.Restore()
 		return nil
 	}
 
 	pkg.Imports = collectImports(pkg)
+	arena.Restore()
 	return pkg
 }
