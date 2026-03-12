@@ -54,7 +54,10 @@ type CodeGen struct {
 	pendingReg int
 	cacheRegs  []int
 	cacheFree  []int
+	cacheFreeLen int
 	cacheStack []int
+	cacheStackHead int
+	cacheStackLen  int
 
 	// Word size for the target architecture (8 for amd64, 4 for i386)
 	wordSize int
@@ -502,17 +505,19 @@ func (g *CodeGen) int3() {
 
 func (g *CodeGen) Flush() {
 	if len(g.cacheRegs) > 0 {
-		if len(g.cacheStack) == 0 && !g.hasPending {
+		if g.cacheStackLen == 0 && !g.hasPending {
 			return
 		}
-		for _, reg := range g.cacheStack {
+		i := 0
+		for i < g.cacheStackLen {
+			reg := g.cacheStack[(g.cacheStackHead+i)%len(g.cacheStack)]
 			g.rawPush(reg)
+			i++
 		}
 		if g.hasPending {
 			g.rawPush(g.pendingReg)
 		}
-		g.cacheStack = g.cacheStack[:0]
-		g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
+		g.resetOperandCacheState()
 		g.hasPending = false
 		return
 	}
@@ -525,13 +530,79 @@ func (g *CodeGen) Flush() {
 
 func (g *CodeGen) configureOperandCache(regs ...int) {
 	g.cacheRegs = append(g.cacheRegs[:0], regs...)
+	if len(g.cacheRegs) > 0 {
+		if cap(g.cacheFree) < len(g.cacheRegs) {
+			g.cacheFree = make([]int, len(g.cacheRegs))
+		} else {
+			g.cacheFree = g.cacheFree[:len(g.cacheRegs)]
+		}
+		if cap(g.cacheStack) < len(g.cacheRegs) {
+			g.cacheStack = make([]int, len(g.cacheRegs))
+		} else {
+			g.cacheStack = g.cacheStack[:len(g.cacheRegs)]
+		}
+	}
 	g.ClearOperandCache()
 }
 
 func (g *CodeGen) ClearOperandCache() {
 	g.hasPending = false
-	g.cacheStack = g.cacheStack[:0]
-	g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
+	g.resetOperandCacheState()
+}
+
+func (g *CodeGen) resetOperandCacheState() {
+	g.cacheStackHead = 0
+	g.cacheStackLen = 0
+	g.cacheFreeLen = len(g.cacheRegs)
+	i := 0
+	for i < len(g.cacheRegs) {
+		g.cacheFree[i] = g.cacheRegs[i]
+		i++
+	}
+}
+
+func (g *CodeGen) cacheStackPush(reg int) {
+	idx := (g.cacheStackHead + g.cacheStackLen) % len(g.cacheStack)
+	g.cacheStack[idx] = reg
+	g.cacheStackLen++
+}
+
+func (g *CodeGen) cacheStackPop() int {
+	last := (g.cacheStackHead + g.cacheStackLen - 1) % len(g.cacheStack)
+	reg := g.cacheStack[last]
+	g.cacheStackLen--
+	if g.cacheStackLen == 0 {
+		g.cacheStackHead = 0
+	}
+	return reg
+}
+
+func (g *CodeGen) cacheStackShift() int {
+	reg := g.cacheStack[g.cacheStackHead]
+	g.cacheStackHead++
+	if g.cacheStackHead == len(g.cacheStack) {
+		g.cacheStackHead = 0
+	}
+	g.cacheStackLen--
+	if g.cacheStackLen == 0 {
+		g.cacheStackHead = 0
+	}
+	return reg
+}
+
+func (g *CodeGen) cacheStackTop() int {
+	last := (g.cacheStackHead + g.cacheStackLen - 1) % len(g.cacheStack)
+	return g.cacheStack[last]
+}
+
+func (g *CodeGen) cacheFreePush(reg int) {
+	g.cacheFree[g.cacheFreeLen] = reg
+	g.cacheFreeLen++
+}
+
+func (g *CodeGen) cacheFreePop() int {
+	g.cacheFreeLen--
+	return g.cacheFree[g.cacheFreeLen]
 }
 
 func (g *CodeGen) moveReg(dst, src int) {
@@ -575,17 +646,14 @@ func (g *CodeGen) prepareForClobber(regs ...int) {
 		return
 	}
 	if len(g.cacheRegs) > 0 {
-		if len(g.cacheFree) == 0 {
-			spill := g.cacheStack[0]
+		if g.cacheFreeLen == 0 {
+			spill := g.cacheStackShift()
 			g.rawPush(spill)
-			g.cacheStack = g.cacheStack[1:]
-			g.cacheFree = append(g.cacheFree, spill)
+			g.cacheFreePush(spill)
 		}
-		slot := len(g.cacheFree) - 1
-		dst := g.cacheFree[slot]
-		g.cacheFree = g.cacheFree[:slot]
+		dst := g.cacheFreePop()
 		g.moveReg(dst, g.pendingReg)
-		g.cacheStack = append(g.cacheStack, dst)
+		g.cacheStackPush(dst)
 		g.hasPending = false
 		return
 	}
@@ -625,17 +693,14 @@ func (g *CodeGen) rawDrop() {
 func (g *CodeGen) OpPush(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
-			if len(g.cacheFree) == 0 {
-				spill := g.cacheStack[0]
+			if g.cacheFreeLen == 0 {
+				spill := g.cacheStackShift()
 				g.rawPush(spill)
-				g.cacheStack = g.cacheStack[1:]
-				g.cacheFree = append(g.cacheFree, spill)
+				g.cacheFreePush(spill)
 			}
-			slot := len(g.cacheFree) - 1
-			dst := g.cacheFree[slot]
-			g.cacheFree = g.cacheFree[:slot]
+			dst := g.cacheFreePop()
 			g.moveReg(dst, g.pendingReg)
-			g.cacheStack = append(g.cacheStack, dst)
+			g.cacheStackPush(dst)
 		}
 		g.hasPending = true
 		g.pendingReg = reg
@@ -653,11 +718,9 @@ func (g *CodeGen) OpPop(reg int) {
 			g.moveReg(reg, g.pendingReg)
 			return
 		}
-		if len(g.cacheStack) > 0 {
-			last := len(g.cacheStack) - 1
-			src := g.cacheStack[last]
-			g.cacheStack = g.cacheStack[:last]
-			g.cacheFree = append(g.cacheFree, src)
+		if g.cacheStackLen > 0 {
+			src := g.cacheStackPop()
+			g.cacheFreePush(src)
 			g.moveReg(reg, src)
 			return
 		}
@@ -678,8 +741,8 @@ func (g *CodeGen) opLoad(reg int) {
 			g.moveReg(reg, g.pendingReg)
 			return
 		}
-		if len(g.cacheStack) > 0 {
-			g.moveReg(reg, g.cacheStack[len(g.cacheStack)-1])
+		if g.cacheStackLen > 0 {
+			g.moveReg(reg, g.cacheStackTop())
 			return
 		}
 		g.rawLoad(reg)
@@ -699,10 +762,8 @@ func (g *CodeGen) opDrop() {
 			g.hasPending = false
 			return
 		}
-		if len(g.cacheStack) > 0 {
-			last := len(g.cacheStack) - 1
-			g.cacheFree = append(g.cacheFree, g.cacheStack[last])
-			g.cacheStack = g.cacheStack[:last]
+		if g.cacheStackLen > 0 {
+			g.cacheFreePush(g.cacheStackPop())
 			return
 		}
 		g.rawDrop()
