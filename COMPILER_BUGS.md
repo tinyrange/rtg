@@ -29,6 +29,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#42` Selfhost stage1 can segfault during `ResolveModule` when compiler changes introduce package-level caches over embedded-source metadata.
 - `#43` Indexed global-array access can be miscompiled as an extra pointer dereference in RTG-generated code.
 - `#44` Arena allocation accounting follows `arenaCurrent` instead of the active allocation target, so `UseParent` scopes report bytes against the child arena.
+- `#45` Broad automatic compiler arena instrumentation is semantically unstable for mutable owner objects; selfhost can segfault unless those packages stay on explicit/manual arena scopes.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -115,6 +116,25 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - Use `test-arena-accounting` as the regression target before changing arena accounting logic.
+
+### 45) Broad automatic compiler arena instrumentation is unstable on mutable owner objects
+
+**Symptom**
+- Enabling `shouldInstrumentArena` broadly for compiler packages can make selfhost segfault instead of finishing.
+- The failing package moved as instrumentation was broadened:
+  - frontend validation crashed in `validateNode`
+  - x64 backend codegen crashed in `CodeGen.Flush`
+
+**What this means**
+- The current automatic per-function arena model is not yet sound for compiler code that mutates long-lived owner objects.
+- Typical bad shapes are:
+  - methods that write fresh allocations into package/module/backend state held on receivers or globals
+  - helpers that keep slices/maps/buffers alive across method boundaries
+
+**Current mitigation**
+- Keep automatic function instrumentation disabled.
+- Keep explicit/manual arena scopes only in proven-safe scratch paths.
+- Use the strengthened arena regressions plus `selfhost`/`selfhost-wasm` before widening arena scope again.
 
 ### 41) C backend float lowering currently depends on word-size >= float-size
 

@@ -213,6 +213,16 @@ test-arena: build
   sh ./build/test_arena_use_parent
   sh ./build/rtg tests/arena_nested_scopes.go -o build/test_arena_nested_scopes
   sh ./build/test_arena_nested_scopes
+  sh ./build/rtg tests/arena_parent_string.go -o build/test_arena_parent_string
+  sh ./build/test_arena_parent_string
+  sh ./build/rtg tests/arena_parser_ast_strings.go -o build/test_arena_parser_ast_strings
+  sh ./build/test_arena_parser_ast_strings
+  sh ./build/rtg tests/arena_parser_file_strings.go -o build/test_arena_parser_file_strings
+  sh ./build/test_arena_parser_file_strings
+  sh ./build/rtg tests/arena_parser_compiler_stress.go -o build/test_arena_parser_compiler_stress
+  sh ./build/test_arena_parser_compiler_stress
+  sh ./build/rtg tests/arena_parser_profile_flush_buffer.go -o build/test_arena_parser_profile_flush_buffer
+  sh ./build/test_arena_parser_profile_flush_buffer
   sh rm -f build/test_arena_report.txt
   sh ./build/rtg tests/arena_report.go -o build/test_arena_report
   sh RTG_ARENA_REPORT=build/test_arena_report.txt ./build/test_arena_report
@@ -224,6 +234,10 @@ test-arena-accounting: build
   sh ./build/rtg tests/arena_accounting.go -o build/test_arena_accounting
   sh RTG_ARENA_REPORT=build/test_arena_accounting.txt ./build/test_arena_accounting
   sh python3 tools/check_arena_accounting.py build/test_arena_accounting.txt
+  sh rm -f build/test_arena_defer_restore_order.txt
+  sh ./build/rtg tests/arena_defer_restore_order.go -o build/test_arena_defer_restore_order
+  sh RTG_ARENA_REPORT=build/test_arena_defer_restore_order.txt ./build/test_arena_defer_restore_order
+  sh python3 tools/check_arena_defer_restore_order.py build/test_arena_defer_restore_order.txt
 
 test-fullcompiler-armv8m-renode: build
   sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"

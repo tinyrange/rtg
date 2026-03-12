@@ -965,6 +965,7 @@ func parseFile(path string) *Node {
 
 	arena.UseParent()
 	defer arena.Restore()
+	cloneTokenValues(tokens)
 	parser := NewParser(tokens)
 	file := parser.ParseFile()
 	releaseTokenBuffer(tokens)
@@ -994,6 +995,7 @@ func parseSource(name string, src string) *Node {
 	tokens := lexer.Tokenize()
 	arena.UseParent()
 	defer arena.Restore()
+	cloneTokenValues(tokens)
 	parser := NewParser(tokens)
 	file := parser.ParseFile()
 	releaseTokenBuffer(tokens)

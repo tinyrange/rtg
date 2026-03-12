@@ -172,6 +172,17 @@ func arenaMergeBlocksIntoParent(parentFrame int, childBlockHead uintptr, childCu
 	}
 }
 
+func arenaRetainTargetFrame(frameIdx int) int {
+	if frameIdx < 0 || frameIdx >= len(arenaFrameParentAlloc) {
+		return -1
+	}
+	target := arenaFrameParentAlloc[frameIdx]
+	if target >= 0 {
+		return target
+	}
+	return frameIdx - 1
+}
+
 func arenaAlloc(size int) (uintptr, int) {
 	if size <= 0 {
 		size = PtrSize
@@ -319,7 +330,7 @@ func ArenaLeave() {
 		currentEnd := arenaFrameEnd[frameIdx]
 		retained := arenaFrameRetained[frameIdx] != 0
 		if retained {
-			parentFrame := frameIdx - 1
+			parentFrame := arenaRetainTargetFrame(frameIdx)
 			if parentFrame >= 0 {
 				arenaMergeBlocksIntoParent(parentFrame, blockHead, currentBlock, currentPtr, currentEnd)
 			}
@@ -415,6 +426,19 @@ func arenaCreateChild(parent int, methodHash uint32, methodName string) int {
 	return idx
 }
 
+func arenaAccountingNode() int {
+	if arenaAllocFrame >= 0 && arenaAllocFrame < len(arenaFrameNode) {
+		node := int(arenaFrameNode[arenaAllocFrame])
+		if node > 0 && node <= arenaNodeCount {
+			return node
+		}
+	}
+	if arenaCurrent > 0 && arenaCurrent <= arenaNodeCount {
+		return arenaCurrent
+	}
+	return 1
+}
+
 //rtg:noprofile
 func arenaRecordAlloc(reqSize int, mmapChunk int) {
 	if !arenaEnabled {
@@ -434,7 +458,7 @@ func arenaRecordAlloc(reqSize int, mmapChunk int) {
 	arenaReqBytes[1] = arenaReqBytes[1] + uint64(reqSize)
 	arenaMmapBytes[1] = arenaMmapBytes[1] + uint64(mmapChunk)
 
-	idx := arenaCurrent
+	idx := arenaAccountingNode()
 	if idx <= 1 || idx > arenaNodeCount {
 		return
 	}

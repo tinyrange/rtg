@@ -8,8 +8,20 @@ import (
 	"j5.nz/rtg/std/compiler/arena"
 )
 
-func childMixedAccounting() {
-	arena.Enter("tests.arena.accounting.child")
+func childDirectAccounting() {
+	arena.Enter("tests.arena.accounting.child.direct")
+	defer arena.Leave()
+
+	buf := make([]byte, 2048)
+	i := 0
+	for i < len(buf) {
+		buf[i] = byte((i * 7) & 255)
+		i++
+	}
+}
+
+func childParentRoutedAccounting() {
+	arena.Enter("tests.arena.accounting.child.routed")
 	defer arena.Leave()
 
 	arena.UseParent()
@@ -35,7 +47,8 @@ func childMixedAccounting() {
 func parentScope() {
 	arena.Enter("tests.arena.accounting.parent")
 	defer arena.Leave()
-	childMixedAccounting()
+	childDirectAccounting()
+	childParentRoutedAccounting()
 }
 
 func main() {

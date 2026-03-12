@@ -31,22 +31,29 @@ def main() -> int:
 
     rows = parse_rows(Path(sys.argv[1]))
     parent = rows.get("tests.arena.accounting.parent")
-    child = rows.get("tests.arena.accounting.child")
-    if parent is None or child is None:
+    child_direct = rows.get("tests.arena.accounting.child.direct")
+    child_routed = rows.get("tests.arena.accounting.child.routed")
+    if parent is None or child_direct is None or child_routed is None:
         print("FAIL: missing accounting rows")
         return 1
 
     errors = []
     if parent["enters"] <= 0:
         errors.append("parent enters == 0")
-    if child["enters"] <= 0:
-        errors.append("child enters == 0")
+    if child_direct["enters"] <= 0:
+        errors.append("child.direct enters == 0")
+    if child_routed["enters"] <= 0:
+        errors.append("child.routed enters == 0")
     if parent["req"] < 1024:
         errors.append(f"parent req_bytes too small ({parent['req']})")
-    if child["req"] > 512:
-        errors.append(f"child req_bytes too large ({child['req']})")
-    if parent["req"] <= child["req"]:
-        errors.append(f"parent req_bytes {parent['req']} <= child req_bytes {child['req']}")
+    if child_direct["req"] < 1024:
+        errors.append(f"child.direct req_bytes too small ({child_direct['req']})")
+    if child_routed["req"] >= child_direct["req"] - 1024:
+        errors.append(
+            f"child.routed req_bytes {child_routed['req']} not materially smaller than child.direct {child_direct['req']}"
+        )
+    if parent["req"] <= child_routed["req"]:
+        errors.append(f"parent req_bytes {parent['req']} <= child.routed req_bytes {child_routed['req']}")
 
     if errors:
         print("FAIL: arena accounting mismatch")

@@ -161,20 +161,40 @@ type Token struct {
 	Col  int
 }
 
-var tokenizeScratch []Token
-
 func acquireTokenBuffer(capHint int) []Token {
-	if cap(tokenizeScratch) >= capHint {
-		tokens := tokenizeScratch[:0]
-		tokenizeScratch = nil
-		return tokens
-	}
 	return make([]Token, 0, capHint)
 }
 
 func releaseTokenBuffer(tokens []Token) {
-	if cap(tokens) > cap(tokenizeScratch) {
-		tokenizeScratch = tokens[:0]
+}
+
+func cloneStringBytes(s string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	buf := make([]byte, len(s))
+	i := 0
+	for i < len(s) {
+		buf[i] = s[i]
+		i++
+	}
+	return string(buf)
+}
+
+func stableTokenString(s string) string {
+	if s == "" {
+		return ""
+	}
+	return s
+}
+
+func cloneTokenValues(tokens []Token) {
+	i := 0
+	for i < len(tokens) {
+		if tokens[i].Val != "" {
+			tokens[i].Val = cloneStringBytes(tokens[i].Val)
+		}
+		i++
 	}
 }
 
@@ -1858,7 +1878,7 @@ func (p *Parser) parsePrimaryExpr() *Node {
 		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
 	case TOKEN_STRING:
 		tok := p.advance()
-		node = &Node{Kind: NStringLit, Name: tok.Val, Pos: tok.Line}
+		node = &Node{Kind: NStringLit, Name: stableTokenString(tok.Val), Pos: tok.Line}
 	case TOKEN_RAW_STRING:
 		tok := p.advance()
 		// Raw strings carry literal bytes; normalize to escaped form so

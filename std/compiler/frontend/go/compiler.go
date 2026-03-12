@@ -4809,6 +4809,9 @@ func (c *Compiler) compileDeferStmt(node *Node) {
 		callName:       c.resolveCallName(call.X),
 		variadicElemSz: c.target.PtrSize,
 	}
+	if runtimeName := compilerArenaRuntimeCallName(site.callName); runtimeName != "" {
+		site.callName = runtimeName
+	}
 	calleeName := ""
 	localFuncTarget := ""
 	localMethodTarget := ""
@@ -6264,9 +6267,27 @@ func (c *Compiler) emitArenaRetainCurrent() {
 	c.emitKnownCall("runtime.ArenaRetainCurrent", 0, 0)
 }
 
+func compilerArenaRuntimeCallName(callName string) string {
+	switch callName {
+	case compilerArenaPkgPrefix + "Leave":
+		return "runtime.ArenaLeave"
+	case compilerArenaPkgPrefix + "RetainCurrent":
+		return "runtime.ArenaRetainCurrent"
+	case compilerArenaPkgPrefix + "UseParent":
+		return "runtime.ArenaUseParent"
+	case compilerArenaPkgPrefix + "Restore":
+		return "runtime.ArenaRestore"
+	}
+	return ""
+}
+
 func (c *Compiler) tryCompileCompilerArenaCall(node *Node, callName string) bool {
 	if c.target != nil && c.target.GOOS == "wasi" && c.target.GOARCH == "wasm32" {
 		return false
+	}
+	if runtimeName := compilerArenaRuntimeCallName(callName); runtimeName != "" {
+		c.emitKnownCall(runtimeName, 0, 0)
+		return true
 	}
 	switch callName {
 	case compilerArenaPkgPrefix + "Enter":
@@ -6279,18 +6300,6 @@ func (c *Compiler) tryCompileCompilerArenaCall(node *Node, callName string) bool
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 		c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, scopeName))
 		c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ArenaEnter"))
-		return true
-	case compilerArenaPkgPrefix + "Leave":
-		c.emitKnownCall("runtime.ArenaLeave", 0, 0)
-		return true
-	case compilerArenaPkgPrefix + "RetainCurrent":
-		c.emitKnownCall("runtime.ArenaRetainCurrent", 0, 0)
-		return true
-	case compilerArenaPkgPrefix + "UseParent":
-		c.emitKnownCall("runtime.ArenaUseParent", 0, 0)
-		return true
-	case compilerArenaPkgPrefix + "Restore":
-		c.emitKnownCall("runtime.ArenaRestore", 0, 0)
 		return true
 	}
 	return false
@@ -7862,7 +7871,7 @@ func (c *Compiler) compileExpr(node *Node) {
 			panic("ICE: bare function type in compileExpr")
 		}
 	default:
-		panic("ICE: unhandled expression kind in compileExpr")
+		panic(fmt.Sprintf("ICE: unhandled expression kind in compileExpr: func=%s kind=%d name=%q", c.curFunc.Name, node.Kind, node.Name))
 	}
 }
 
