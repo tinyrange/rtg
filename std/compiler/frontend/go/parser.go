@@ -12,7 +12,7 @@ import (
 )
 
 // TokenKind represents the type of a lexical token.
-type TokenKind int
+type TokenKind uint8
 
 const (
 	// Literals
@@ -164,10 +164,10 @@ var keywords = map[string]TokenKind{
 
 // Token represents a lexical token.
 type Token struct {
-	Kind TokenKind
 	Val  string
-	Line int
-	Col  int
+	Line uint32
+	Col  uint32
+	Kind TokenKind
 }
 
 func (t Token) String() string {
@@ -181,8 +181,8 @@ func (t Token) String() string {
 type Lexer struct {
 	src  string
 	pos  int
-	line int
-	col  int
+	line uint32
+	col  uint32
 }
 
 func NewLexer(src string) *Lexer {
@@ -316,7 +316,7 @@ func (l *Lexer) scanIdent() Token {
 		pos++
 	}
 	l.pos = pos
-	l.col += pos - start
+	l.col += uint32(pos - start)
 	val := l.src[start:l.pos]
 	kind, isKeyword := keywords[val]
 	if !isKeyword {
@@ -397,12 +397,12 @@ func (l *Lexer) scanNumber() Token {
 		if pos < n && src[pos] == 'i' {
 			pos++
 			l.pos = pos
-			l.col += pos - start
+			l.col += uint32(pos - start)
 			return Token{Kind: TOKEN_IMAG, Val: l.src[start:l.pos], Line: line, Col: col}
 		}
 	}
 	l.pos = pos
-	l.col += pos - start
+	l.col += uint32(pos - start)
 	if isFloat {
 		return Token{Kind: TOKEN_FLOAT, Val: l.src[start:l.pos], Line: line, Col: col}
 	}
@@ -650,7 +650,7 @@ func (l *Lexer) scanOperator() Token {
 }
 
 // NodeKind represents the type of an AST node.
-type NodeKind int
+type NodeKind uint8
 
 const (
 	NFile NodeKind = iota
@@ -700,17 +700,17 @@ const (
 
 // Node is the universal AST node.
 type Node struct {
-	Kind  NodeKind
-	Pos   int
 	Name  string
 	Nodes []*Node
 	X     *Node
 	Y     *Node
 	Body  *Node
 	Type  *Node
+	Pos   uint32
+	Kind  NodeKind
 }
 
-func newDeclGroup(name string, pos int, nodes []*Node) *Node {
+func newDeclGroup(name string, pos uint32, nodes []*Node) *Node {
 	return &Node{Kind: NDeclGroup, Name: name, Nodes: nodes, Pos: pos}
 }
 
@@ -1019,7 +1019,7 @@ func (p *Parser) parseNamedField(allowVariadic bool) *Node {
 	return &Node{Kind: NField, Pos: name.Line, Name: fieldName, Type: typ}
 }
 
-func (p *Parser) parseUnnamedField(pos int, allowVariadic bool) *Node {
+func (p *Parser) parseUnnamedField(pos uint32, allowVariadic bool) *Node {
 	typ, variadic := p.parseFieldType(allowVariadic)
 	name := ""
 	if variadic {
@@ -4131,7 +4131,7 @@ func (c *Compiler) filterDirectivesForStrict(pkg *Package, node *Node, directive
 			continue
 		}
 		if report {
-			line := 0
+			line := uint32(0)
 			if node != nil {
 				line = node.Pos
 			}
