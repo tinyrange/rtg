@@ -1249,7 +1249,15 @@ func ValidateModule(mod *Module) []string {
 	return errors
 }
 
+func appendValidationError(errors *[]string, msg string) {
+	arena.UseParent()
+	defer arena.Restore()
+	*errors = append(*errors, msg)
+}
+
 func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors *[]string) {
+	arena.Enter("frontend.validateNode")
+	defer arena.Leave()
 	if node == nil {
 		return
 	}
@@ -1269,7 +1277,7 @@ func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors 
 				_, hasSym := target.Symbols[n.Name]
 				allowRuntimeMemBuiltin := target.Path == "runtime" && isRuntimeMemBuiltinName(n.Name)
 				if !hasSym && !allowRuntimeMemBuiltin {
-					*errors = append(*errors, fmt.Sprintf("%s: %s.%s undefined (package %s has no symbol %s)", pkg.Path, n.X.Name, n.Name, target.Path, n.Name))
+					appendValidationError(errors, fmt.Sprintf("%s: %s.%s undefined (package %s has no symbol %s)", pkg.Path, n.X.Name, n.Name, target.Path, n.Name))
 				}
 			}
 		}
@@ -1280,7 +1288,7 @@ func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors 
 			// If calling an identifier that matches an import name, that's wrong
 			_, isImport := imports[name]
 			if isImport {
-				*errors = append(*errors, fmt.Sprintf("%s: %s used as function (is a package name)", pkg.Path, name))
+				appendValidationError(errors, fmt.Sprintf("%s: %s used as function (is a package name)", pkg.Path, name))
 			}
 		}
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"j5.nz/rtg/std/compiler/arena"
 	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
@@ -3774,6 +3775,8 @@ func (c *Compiler) compileTopDecl(node *Node) {
 }
 
 func containsDeferStmt(node *Node) bool {
+	arena.Enter("compiler.containsDeferStmt")
+	defer arena.Leave()
 	if node == nil {
 		return false
 	}
@@ -3816,6 +3819,8 @@ func containsDeferStmt(node *Node) bool {
 }
 
 func countFuncBodyNodes(node *Node) int {
+	arena.Enter("compiler.countFuncBodyNodes")
+	defer arena.Leave()
 	if node == nil {
 		return 0
 	}
