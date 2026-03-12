@@ -181,6 +181,7 @@ func main() {
 	var fromIRTextPath string
 	var profileReportPath string
 	var allocSiteMapPath string
+	var sliceResliceMapPath string
 	var extractStdlibDest string
 	var runMode bool
 	var testMode bool
@@ -268,6 +269,17 @@ func main() {
 			if i+1 < len(args) {
 				allocSiteMapPath = args[i+1]
 				compileTarget.AllocSiteMapPath = allocSiteMapPath
+				i = i + 2
+				continue
+			}
+		case "-slice-reslice-report":
+			compileTarget.SliceResliceReport = true
+			i = i + 1
+			continue
+		case "-slice-reslice-map":
+			if i+1 < len(args) {
+				sliceResliceMapPath = args[i+1]
+				compileTarget.SliceResliceMapPath = sliceResliceMapPath
 				i = i + 2
 				continue
 			}
@@ -746,6 +758,14 @@ func main() {
 				os.Exit(1)
 			}
 		}
+		if sliceResliceMapPath != "" {
+			err := writeAllocSiteMap(sliceResliceMapPath, allocSiteNames)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error writing slice-reslice map: %v\n", err)
+				runCleanup()
+				os.Exit(1)
+			}
+		}
 		traceExit(30)
 		ir.EliminateDeadFunctions(irmod, common.EntryFuncName(&compileTarget))
 		if compileTarget.CompilerDebug {
@@ -1189,6 +1209,8 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -arena-report          Flush arena accounting on process exit when RTG_ARENA_REPORT is set\n")
 	fmt.Fprintf(out, "  -alloc-site-report     Record exact runtime.Alloc bytes by source line into RTG_PROFILE\n")
 	fmt.Fprintf(out, "  -alloc-site-map <p>    Write alloc-site hash/name map for -alloc-site-report decoding\n")
+	fmt.Fprintf(out, "  -slice-reslice-report  Record runtime.SliceReslice call counts by source line into RTG_PROFILE\n")
+	fmt.Fprintf(out, "  -slice-reslice-map <p> Write hash/name map for -slice-reslice-report decoding\n")
 	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated timing and allocation trees\n")
 	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")

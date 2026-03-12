@@ -259,6 +259,14 @@ selfhost-alloc-site-report: build
   sh python3 tools/alloc_site_profile_report.py --map build/stage2.alloc_site.map --profile build/stage2.alloc_site.profile --md-out build/stage2.alloc_site.md --tsv-out build/stage2.alloc_site.tsv
   sh echo "PASS: wrote build/stage2.alloc_site.md and build/stage2.alloc_site.tsv"
 
+selfhost-slice-reslice-report: build
+  sh ./build/rtg -strict -slice-reslice-report -slice-reslice-map build/stage1.slice_reslice.map -o build/stage1_sres ./std/compiler/
+  sh ./build/stage1_sres -strict -slice-reslice-report -slice-reslice-map build/stage2.slice_reslice.map -o build/stage2_sres ./std/compiler/
+  sh rm -f build/stage2.slice_reslice.profile build/stage2.slice_reslice.md build/stage2.slice_reslice.tsv
+  sh RTG_PROFILE=build/stage2.slice_reslice.profile ./build/stage2_sres -strict -slice-reslice-report -o build/stage_out ./std/compiler/
+  sh python3 tools/slice_reslice_profile_report.py --map build/stage2.slice_reslice.map --profile build/stage2.slice_reslice.profile --md-out build/stage2.slice_reslice.md --tsv-out build/stage2.slice_reslice.tsv
+  sh echo "PASS: wrote build/stage2.slice_reslice.md and build/stage2.slice_reslice.tsv"
+
 test-fullcompiler-armv8m-renode: build
   sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"
   fullcompiler rtg semihost/armv8m

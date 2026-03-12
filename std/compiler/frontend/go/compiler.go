@@ -3872,10 +3872,12 @@ func containsDeferStmt(node *Node) bool {
 		return false
 	}
 	stack := make([]*Node, 0, 64)
+	stackTop := 0
 	stack = append(stack, node)
-	for len(stack) > 0 {
-		n := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+	stackTop = 1
+	for stackTop > 0 {
+		stackTop--
+		n := stack[stackTop]
 		if n == nil {
 			continue
 		}
@@ -3888,21 +3890,46 @@ func containsDeferStmt(node *Node) bool {
 			return true
 		}
 		if n.X != nil {
-			stack = append(stack, n.X)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.X
+			} else {
+				stack = append(stack, n.X)
+			}
+			stackTop++
 		}
 		if n.Y != nil {
-			stack = append(stack, n.Y)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Y
+			} else {
+				stack = append(stack, n.Y)
+			}
+			stackTop++
 		}
 		if n.Body != nil {
-			stack = append(stack, n.Body)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Body
+			} else {
+				stack = append(stack, n.Body)
+			}
+			stackTop++
 		}
 		if n.Type != nil {
-			stack = append(stack, n.Type)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Type
+			} else {
+				stack = append(stack, n.Type)
+			}
+			stackTop++
 		}
 		for i := len(n.Nodes) - 1; i >= 0; i-- {
 			child := n.Nodes[i]
 			if child != nil {
-				stack = append(stack, child)
+				if stackTop < len(stack) {
+					stack[stackTop] = child
+				} else {
+					stack = append(stack, child)
+				}
+				stackTop++
 			}
 		}
 	}
@@ -3916,11 +3943,13 @@ func countFuncBodyNodes(node *Node) int {
 		return 0
 	}
 	stack := make([]*Node, 0, 64)
+	stackTop := 0
 	stack = append(stack, node)
+	stackTop = 1
 	count := 0
-	for len(stack) > 0 {
-		n := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+	for stackTop > 0 {
+		stackTop--
+		n := stack[stackTop]
 		if n == nil {
 			continue
 		}
@@ -3928,38 +3957,83 @@ func countFuncBodyNodes(node *Node) int {
 		// Nested function literals compile into separate IR functions.
 		if n.Kind == NFuncType && n.Body != nil {
 			if n.X != nil {
-				stack = append(stack, n.X)
+				if stackTop < len(stack) {
+					stack[stackTop] = n.X
+				} else {
+					stack = append(stack, n.X)
+				}
+				stackTop++
 			}
 			if n.Y != nil {
-				stack = append(stack, n.Y)
+				if stackTop < len(stack) {
+					stack[stackTop] = n.Y
+				} else {
+					stack = append(stack, n.Y)
+				}
+				stackTop++
 			}
 			if n.Type != nil {
-				stack = append(stack, n.Type)
+				if stackTop < len(stack) {
+					stack[stackTop] = n.Type
+				} else {
+					stack = append(stack, n.Type)
+				}
+				stackTop++
 			}
 			for i := len(n.Nodes) - 1; i >= 0; i-- {
 				child := n.Nodes[i]
 				if child != nil {
-					stack = append(stack, child)
+					if stackTop < len(stack) {
+						stack[stackTop] = child
+					} else {
+						stack = append(stack, child)
+					}
+					stackTop++
 				}
 			}
 			continue
 		}
 		if n.X != nil {
-			stack = append(stack, n.X)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.X
+			} else {
+				stack = append(stack, n.X)
+			}
+			stackTop++
 		}
 		if n.Y != nil {
-			stack = append(stack, n.Y)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Y
+			} else {
+				stack = append(stack, n.Y)
+			}
+			stackTop++
 		}
 		if n.Body != nil {
-			stack = append(stack, n.Body)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Body
+			} else {
+				stack = append(stack, n.Body)
+			}
+			stackTop++
 		}
 		if n.Type != nil {
-			stack = append(stack, n.Type)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Type
+			} else {
+				stack = append(stack, n.Type)
+			}
+			stackTop++
 		}
 		for i := len(n.Nodes) - 1; i >= 0; i-- {
 			child := n.Nodes[i]
 			if child != nil {
-				stack = append(stack, child)
+				if stackTop < len(stack) {
+					stack[stackTop] = child
+				} else {
+					stack = append(stack, child)
+				}
+				stackTop++
 			}
 		}
 	}
@@ -4217,7 +4291,7 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.emitKnownCall("runtime.Now", 0, 1)
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
 	}
-	if c.target != nil && (c.target.Profile || c.target.ArenaReport || c.target.AllocSiteReport) && f.Name == c.entryFunc {
+	if c.target != nil && (c.target.Profile || c.target.ArenaReport || c.target.AllocSiteReport || c.target.SliceResliceReport) && f.Name == c.entryFunc {
 		c.profileFlushOnExit = true
 	}
 
@@ -6350,6 +6424,10 @@ func (c *Compiler) allocSiteReportingEnabled() bool {
 	return c != nil && c.target != nil && c.target.AllocSiteReport
 }
 
+func (c *Compiler) sliceResliceReportingEnabled() bool {
+	return c != nil && c.target != nil && c.target.SliceResliceReport
+}
+
 func (c *Compiler) currentAllocSiteName() string {
 	if c == nil || c.curFunc == nil || c.curFunc.Name == "" {
 		return ""
@@ -6380,6 +6458,22 @@ func (c *Compiler) emitAllocSiteSample() {
 	siteHash := profileHash32FNV(siteName)
 	c.recordAllocSiteName(siteHash, siteName)
 	c.emit(ir.Inst{Op: ir.OP_DUP})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
+}
+
+func (c *Compiler) emitSliceResliceSample() {
+	if !c.sliceResliceReportingEnabled() {
+		return
+	}
+	siteName := c.currentAllocSiteName()
+	if siteName == "" {
+		return
+	}
+	siteHash := profileHash32FNV(siteName)
+	c.recordAllocSiteName(siteHash, siteName)
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
@@ -12028,9 +12122,11 @@ func (c *Compiler) compileSliceExpr(node *Node) {
 	if c.isStringTypedExpr(node.X) {
 		c.emitKnownCall("runtime.StringSlice", 3, 1)
 	} else if node.Type != nil {
+		c.emitSliceResliceSample()
 		c.compileExpr(node.Type)
 		c.emitKnownCall("runtime.SliceResliceFull", 4, 1)
 	} else {
+		c.emitSliceResliceSample()
 		c.emitKnownCall("runtime.SliceReslice", 3, 1)
 	}
 }

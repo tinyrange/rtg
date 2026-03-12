@@ -642,6 +642,7 @@ func foldConstAddIntoMemoryOps(code []Inst) ([]Inst, bool) {
 type nonNilState struct {
 	locals []bool
 	stack  []bool
+	stackLen int
 }
 
 func cloneNonNilState(src *nonNilState) *nonNilState {
@@ -651,6 +652,7 @@ func cloneNonNilState(src *nonNilState) *nonNilState {
 	dst := &nonNilState{
 		locals: make([]bool, len(src.locals)),
 		stack:  make([]bool, len(src.stack)),
+		stackLen: src.stackLen,
 	}
 	copy(dst.locals, src.locals)
 	copy(dst.stack, src.stack)
@@ -683,30 +685,26 @@ func mergeNonNilState(dst *nonNilState, src *nonNilState) bool {
 		}
 	}
 
-	if len(dst.stack) != len(src.stack) {
-		limit = len(dst.stack)
-		if len(src.stack) < limit {
-			limit = len(src.stack)
+	if dst.stackLen != src.stackLen {
+		limit = dst.stackLen
+		if src.stackLen < limit {
+			limit = src.stackLen
 		}
-		merged := make([]bool, limit)
 		for i := 0; i < limit; i++ {
-			merged[i] = dst.stack[i] && src.stack[i]
-		}
-		if len(dst.stack) != len(merged) {
-			changed = true
-		} else {
-			for i := 0; i < len(merged); i++ {
-				if dst.stack[i] != merged[i] {
-					changed = true
-					break
-				}
+			merged := dst.stack[i] && src.stack[i]
+			if dst.stack[i] != merged {
+				dst.stack[i] = merged
+				changed = true
 			}
 		}
-		dst.stack = merged
+		if dst.stackLen != limit {
+			changed = true
+		}
+		dst.stackLen = limit
 		return changed
 	}
 
-	for i := 0; i < len(dst.stack); i++ {
+	for i := 0; i < dst.stackLen; i++ {
 		merged := dst.stack[i] && src.stack[i]
 		if dst.stack[i] != merged {
 			dst.stack[i] = merged
@@ -720,35 +718,38 @@ func pushNonNil(state *nonNilState, v bool) {
 	if state == nil {
 		return
 	}
-	state.stack = append(state.stack, v)
+	if state.stackLen < len(state.stack) {
+		state.stack[state.stackLen] = v
+	} else {
+		state.stack = append(state.stack, v)
+	}
+	state.stackLen++
 }
 
 func popNonNil(state *nonNilState) bool {
-	if state == nil || len(state.stack) == 0 {
+	if state == nil || state.stackLen == 0 {
 		return false
 	}
-	i := len(state.stack) - 1
-	v := state.stack[i]
-	state.stack = state.stack[:i]
-	return v
+	state.stackLen--
+	return state.stack[state.stackLen]
 }
 
 func topNonNil(state *nonNilState) bool {
-	if state == nil || len(state.stack) == 0 {
+	if state == nil || state.stackLen == 0 {
 		return false
 	}
-	return state.stack[len(state.stack)-1]
+	return state.stack[state.stackLen-1]
 }
 
 func dropNonNil(state *nonNilState, count int) {
 	if state == nil || count <= 0 {
 		return
 	}
-	if count >= len(state.stack) {
-		state.stack = state.stack[:0]
+	if count >= state.stackLen {
+		state.stackLen = 0
 		return
 	}
-	state.stack = state.stack[:len(state.stack)-count]
+	state.stackLen = state.stackLen - count
 }
 
 func setLocalNonNil(state *nonNilState, idx int, v bool) {
@@ -769,7 +770,7 @@ func clearStackNonNil(state *nonNilState) {
 	if state == nil {
 		return
 	}
-	for i := range state.stack {
+	for i := 0; i < state.stackLen; i++ {
 		state.stack[i] = false
 	}
 }
@@ -969,8 +970,8 @@ func transferNonNilState(state *nonNilState, inst Inst, f *IRFunc, funcRetCounts
 		for i := 0; i < retCount; i++ {
 			pushNonNil(next, false)
 		}
-		if retCount == 1 && callResultProvablyNonNil(inst) {
-			next.stack[len(next.stack)-1] = true
+		if retCount == 1 && callResultProvablyNonNil(inst) && next.stackLen > 0 {
+			next.stack[next.stackLen-1] = true
 		}
 	case OP_CALL_INTRINSIC:
 		retCount := instRetCount(inst, f, funcRetCounts, ifaceMethodRets)
@@ -1022,6 +1023,7 @@ func annotateNonNilMemoryBases(code []Inst, f *IRFunc, funcRetCounts map[string]
 	in := make([]*nonNilState, len(code))
 	in[0] = &nonNilState{locals: make([]bool, numLocals)}
 	work := []int{0}
+	workTop := len(work)
 
 	enqueue := func(idx int, state *nonNilState) {
 		if idx < 0 || idx >= len(code) || state == nil {
@@ -1029,17 +1031,27 @@ func annotateNonNilMemoryBases(code []Inst, f *IRFunc, funcRetCounts map[string]
 		}
 		if in[idx] == nil {
 			in[idx] = cloneNonNilState(state)
-			work = append(work, idx)
+			if workTop < len(work) {
+				work[workTop] = idx
+			} else {
+				work = append(work, idx)
+			}
+			workTop++
 			return
 		}
 		if mergeNonNilState(in[idx], state) {
-			work = append(work, idx)
+			if workTop < len(work) {
+				work[workTop] = idx
+			} else {
+				work = append(work, idx)
+			}
+			workTop++
 		}
 	}
 
-	for len(work) > 0 {
-		i := work[len(work)-1]
-		work = work[:len(work)-1]
+	for workTop > 0 {
+		workTop--
+		i := work[workTop]
 		state := cloneNonNilState(in[i])
 		if state == nil {
 			continue
@@ -1153,11 +1165,12 @@ func removeUnreachableIRCode(code []Inst) ([]Inst, bool) {
 	labels := buildLabelIndex(code)
 	reachable := make([]bool, len(code))
 	work := []int{0}
+	workTop := len(work)
 	reachable[0] = true
 
-	for len(work) > 0 {
-		i := work[len(work)-1]
-		work = work[:len(work)-1]
+	for workTop > 0 {
+		workTop--
+		i := work[workTop]
 
 		inst := code[i]
 
@@ -1166,19 +1179,34 @@ func removeUnreachableIRCode(code []Inst) ([]Inst, bool) {
 			if target, ok := labels[inst.Arg]; ok {
 				if target >= 0 && target < len(code) && !reachable[target] {
 					reachable[target] = true
-					work = append(work, target)
+					if workTop < len(work) {
+						work[workTop] = target
+					} else {
+						work = append(work, target)
+					}
+					workTop++
 				}
 			}
 		case OP_JMP_IF, OP_JMP_IF_NOT, OP_JMP_EQ, OP_JMP_NEQ, OP_JMP_LT, OP_JMP_GT, OP_JMP_LEQ, OP_JMP_GEQ:
 			next := i + 1
 			if next >= 0 && next < len(code) && !reachable[next] {
 				reachable[next] = true
-				work = append(work, next)
+				if workTop < len(work) {
+					work[workTop] = next
+				} else {
+					work = append(work, next)
+				}
+				workTop++
 			}
 			if target, ok := labels[inst.Arg]; ok {
 				if target >= 0 && target < len(code) && !reachable[target] {
 					reachable[target] = true
-					work = append(work, target)
+					if workTop < len(work) {
+						work[workTop] = target
+					} else {
+						work = append(work, target)
+					}
+					workTop++
 				}
 			}
 		case OP_RETURN, OP_PANIC:
@@ -1187,7 +1215,12 @@ func removeUnreachableIRCode(code []Inst) ([]Inst, bool) {
 			next := i + 1
 			if next >= 0 && next < len(code) && !reachable[next] {
 				reachable[next] = true
-				work = append(work, next)
+				if workTop < len(work) {
+					work[workTop] = next
+				} else {
+					work = append(work, next)
+				}
+				workTop++
 			}
 		}
 	}

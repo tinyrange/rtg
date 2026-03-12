@@ -181,72 +181,30 @@ func mapReuseFindBin(class int) uintptr {
 }
 
 func mapAllocEntryBlock(mcap int) uintptr {
-	class := mapReuseClassForCap(mcap)
-	if class >= 0 {
-		bin := mapReuseFindBin(class)
-		ptr := ReadPtr(bin + uintptr(mapReuseNodeOffEntryHead))
-		if ptr != 0 {
-			WritePtr(bin+uintptr(mapReuseNodeOffEntryHead), ReadPtr(ptr))
-			return ptr
-		}
-	}
 	return Alloc(mcap * MapEntrySize)
 }
 
 func mapFreeEntryBlock(ptr uintptr, mcap int) {
-	class := mapReuseClassForCap(mcap)
-	if class < 0 {
-		return
-	}
-	bin := mapReuseFindBin(class)
-	WritePtr(ptr, ReadPtr(bin+uintptr(mapReuseNodeOffEntryHead)))
-	WritePtr(bin+uintptr(mapReuseNodeOffEntryHead), ptr)
+	_ = ptr
+	_ = mcap
 }
 
 func mapAllocPtrBlock(count int) uintptr {
-	class := mapReuseClassForCap(count)
-	if class >= 0 {
-		bin := mapReuseFindBin(class)
-		ptr := ReadPtr(bin + uintptr(mapReuseNodeOffPtrHead))
-		if ptr != 0 {
-			WritePtr(bin+uintptr(mapReuseNodeOffPtrHead), ReadPtr(ptr))
-			return ptr
-		}
-	}
 	return Alloc(count * PtrSize)
 }
 
 func mapFreePtrBlock(ptr uintptr, count int) {
-	class := mapReuseClassForCap(count)
-	if class < 0 {
-		return
-	}
-	bin := mapReuseFindBin(class)
-	WritePtr(ptr, ReadPtr(bin+uintptr(mapReuseNodeOffPtrHead)))
-	WritePtr(bin+uintptr(mapReuseNodeOffPtrHead), ptr)
+	_ = ptr
+	_ = count
 }
 
 func mapAllocStringBlock(mcap int) uintptr {
-	class := mapReuseClassForCap(mcap)
-	if class >= 0 {
-		bin := mapReuseFindBin(class)
-		ptr := ReadPtr(bin + uintptr(mapReuseNodeOffStringHead))
-		if ptr != 0 {
-			WritePtr(bin+uintptr(mapReuseNodeOffStringHead), ReadPtr(ptr))
-			return ptr
-		}
-	}
 	return Alloc(mcap * (MapEntrySize + PtrSize))
 }
 
 func mapFreeStringBlock(ptr uintptr, mcap int) {
-	class := mapReuseClassForCap(mcap)
-	if class < 0 {
-		return
-	}
-	bin := mapReuseFindBin(class)
-	WritePtr(ptr, ReadPtr(bin+uintptr(mapReuseNodeOffStringHead)))
-	WritePtr(bin+uintptr(mapReuseNodeOffStringHead), ptr)
+	_ = ptr
+	_ = mcap
 }
 
 // allocHeap allocates size bytes from the process-lifetime heap.
@@ -1084,13 +1042,14 @@ const (
 	mapHdrOffHashCap   = mapHdrOffHashSlots + PtrSize
 	mapHdrOffHashes    = mapHdrOffHashCap + PtrSize
 	mapHdrSize         = mapHdrOffHashes + PtrSize
+	mapInitCap         = 8
 	mapHashMinLen      = 16
 )
 
 func mapHashCapForEntries(entryCap int) int {
 	need := entryCap * 2
-	if need < 64 {
-		need = 64
+	if need < 16 {
+		need = 16
 	}
 	cap := 1
 	for cap < need {
@@ -1301,7 +1260,7 @@ func mapStringInitHashState(hdr uintptr, mcap int, hashes uintptr) {
 }
 
 func mapMakeWithKeyKind(keyKind int) uintptr {
-	capHint := 32
+	capHint := mapInitCap
 	hdr := Alloc(mapHdrSize)
 	data := mapAllocEntryBlock(capHint)
 	WritePtr(hdr, data)

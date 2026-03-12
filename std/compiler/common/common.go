@@ -17,6 +17,8 @@ type Target struct {
 	ArenaReport           bool
 	AllocSiteReport       bool
 	AllocSiteMapPath      string
+	SliceResliceReport    bool
+	SliceResliceMapPath   string
 	CompilerDebug         bool
 	EmitIRAndBinaryPath   string
 	StripBinary           bool

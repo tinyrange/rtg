@@ -3,24 +3,11 @@
 package runtime
 
 func MapMakeInt() uintptr {
-	hdr := mapMakeWithKeyKind(0)
-	mapIntInitHashState(hdr, int(ReadPtr(hdr+uintptr(SliceOffCap))))
-	return hdr
+	return mapMakeWithKeyKind(0)
 }
 
 func MapMakeString() uintptr {
-	capHint := 32
-	hdr := Alloc(mapHdrSize)
-	data, hashes := mapStringAllocDataHashes(capHint)
-	WritePtr(hdr, data)
-	WritePtr(hdr+uintptr(SliceOffLen), 0)
-	WritePtr(hdr+uintptr(SliceOffCap), uintptr(capHint))
-	WritePtr(hdr+uintptr(SliceOffEsz), 1)
-	WritePtr(hdr+uintptr(mapHdrOffHashSlots), 0)
-	WritePtr(hdr+uintptr(mapHdrOffHashCap), 0)
-	WritePtr(hdr+uintptr(mapHdrOffHashes), 0)
-	mapStringInitHashState(hdr, capHint, hashes)
-	return hdr
+	return mapMakeWithKeyKind(1)
 }
 
 func MapGetInt(hdr uintptr, key uintptr) (uintptr, bool) {

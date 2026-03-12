@@ -1293,10 +1293,12 @@ func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors 
 		return
 	}
 	stack := make([]*Node, 0, 64)
+	stackTop := 0
 	stack = append(stack, node)
-	for len(stack) > 0 {
-		n := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+	stackTop = 1
+	for stackTop > 0 {
+		stackTop--
+		n := stack[stackTop]
 		if n == nil {
 			continue
 		}
@@ -1324,21 +1326,46 @@ func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors 
 		}
 
 		if n.X != nil {
-			stack = append(stack, n.X)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.X
+			} else {
+				stack = append(stack, n.X)
+			}
+			stackTop++
 		}
 		if n.Y != nil {
-			stack = append(stack, n.Y)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Y
+			} else {
+				stack = append(stack, n.Y)
+			}
+			stackTop++
 		}
 		if n.Body != nil {
-			stack = append(stack, n.Body)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Body
+			} else {
+				stack = append(stack, n.Body)
+			}
+			stackTop++
 		}
 		if n.Type != nil {
-			stack = append(stack, n.Type)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Type
+			} else {
+				stack = append(stack, n.Type)
+			}
+			stackTop++
 		}
 		for i := len(n.Nodes) - 1; i >= 0; i-- {
 			child := n.Nodes[i]
 			if child != nil {
-				stack = append(stack, child)
+				if stackTop < len(stack) {
+					stack[stackTop] = child
+				} else {
+					stack = append(stack, child)
+				}
+				stackTop++
 			}
 		}
 	}
