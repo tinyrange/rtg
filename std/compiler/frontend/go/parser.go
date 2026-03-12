@@ -161,6 +161,23 @@ type Token struct {
 	Col  int
 }
 
+var tokenizeScratch []Token
+
+func acquireTokenBuffer(capHint int) []Token {
+	if cap(tokenizeScratch) >= capHint {
+		tokens := tokenizeScratch[:0]
+		tokenizeScratch = nil
+		return tokens
+	}
+	return make([]Token, 0, capHint)
+}
+
+func releaseTokenBuffer(tokens []Token) {
+	if cap(tokens) > cap(tokenizeScratch) {
+		tokenizeScratch = tokens[:0]
+	}
+}
+
 func (t Token) String() string {
 	if t.Val != "" {
 		return tokenName(t.Kind) + "(" + t.Val + ")"
@@ -458,7 +475,7 @@ func (l *Lexer) Tokenize() []Token {
 	if capHint < 32 {
 		capHint = 32
 	}
-	tokens := make([]Token, 0, capHint)
+	tokens := acquireTokenBuffer(capHint)
 	lastKind := TOKEN_EOF
 	for {
 		sawNewline, directive, hasDirective := l.skipWhitespaceAndComments()

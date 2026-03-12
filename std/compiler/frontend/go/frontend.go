@@ -962,6 +962,7 @@ func parseFile(path string) *Node {
 
 	parser := NewParser(tokens)
 	file := parser.ParseFile()
+	releaseTokenBuffer(tokens)
 
 	if len(parser.errors) > 0 {
 		fmt.Fprintf(os.Stderr, "parse errors in %s:\n", path)
@@ -986,6 +987,7 @@ func parseSource(name string, src string) *Node {
 	tokens := lexer.Tokenize()
 	parser := NewParser(tokens)
 	file := parser.ParseFile()
+	releaseTokenBuffer(tokens)
 
 	if len(parser.errors) > 0 {
 		fmt.Fprintf(os.Stderr, "parse errors in %s:\n", name)
