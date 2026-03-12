@@ -153,6 +153,9 @@ type Compiler struct {
 	structTypeLookup      map[string]structTypeLookupResult
 	structFieldLookup     map[string]structFieldLookupResult
 	fieldTypeLookup       map[string]cachedStringResult
+	resolveCallNameCache  map[*Node]cachedStringResult
+	resolveExprTypeCache  map[*Node]cachedStringResult
+	exprConcreteTypeCache map[*Node]cachedStringResult
 	comptimeSeq           int
 	comptimeDisabled      bool
 	inComptimeFunc        bool
@@ -184,6 +187,28 @@ func (c *Compiler) dotJoin(a string, b string) string {
 	v := a + "." + b
 	m[b] = v
 	return v
+}
+
+func lookupCachedNodeString(cache map[*Node]cachedStringResult, node *Node) (string, bool) {
+	if cache == nil || node == nil {
+		return "", false
+	}
+	cached, ok := cache[node]
+	if !ok {
+		return "", false
+	}
+	if cached.ok {
+		return cached.value, true
+	}
+	return "", true
+}
+
+func storeCachedNodeString(cache map[*Node]cachedStringResult, node *Node, value string) string {
+	if cache == nil || node == nil {
+		return value
+	}
+	cache[node] = cachedStringResult{value: value, ok: value != ""}
+	return value
 }
 
 // CompileModule compiles an entire resolved module to IR.
@@ -976,6 +1001,16 @@ func arrayTypeNestingDepth(typeName string) int {
 
 // resolveExprType returns the concrete qualified type of an expression, or "" if unknown.
 func (c *Compiler) resolveExprType(node *Node) string {
+	if node == nil {
+		return ""
+	}
+	if cached, ok := lookupCachedNodeString(c.resolveExprTypeCache, node); ok {
+		return cached
+	}
+	return storeCachedNodeString(c.resolveExprTypeCache, node, c.resolveExprTypeInner(node))
+}
+
+func (c *Compiler) resolveExprTypeInner(node *Node) string {
 	if node == nil {
 		return ""
 	}
@@ -2918,6 +2953,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	savedPanicCheckSlowLabels := c.panicCheckSlowLabels
 	savedPanicCheckSlowDepths := c.panicCheckSlowDepths
 	savedNamedResultNames := c.namedResultNames
+	savedResolveCallNameCache := c.resolveCallNameCache
+	savedResolveExprTypeCache := c.resolveExprTypeCache
+	savedExprConcreteTypeCache := c.exprConcreteTypeCache
 	c.curFunc = f
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
@@ -2926,6 +2964,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.localConcreteTypes = make(map[string]string)
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
+	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
+	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
+	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
 	c.stackDepth = 0
 	c.namedResultNames = nil
 	c.panicUnwindLabel = c.newLabel()
@@ -3022,6 +3063,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.panicCheckSlowLabels = savedPanicCheckSlowLabels
 	c.panicCheckSlowDepths = savedPanicCheckSlowDepths
 	c.namedResultNames = savedNamedResultNames
+	c.resolveCallNameCache = savedResolveCallNameCache
+	c.resolveExprTypeCache = savedResolveExprTypeCache
+	c.exprConcreteTypeCache = savedExprConcreteTypeCache
 }
 
 func (c *Compiler) lookupDefineValue(qualifiedName string, shortName string) (string, bool) {
@@ -3422,6 +3466,9 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
+	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
+	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
 	c.profileStartLocal = -1
 	c.profileParentLocal = -1
 	c.profileMethodHash = 0
@@ -6095,6 +6142,16 @@ func (c *Compiler) resolveConcreteTypeID(expr *Node) int {
 
 // exprConcreteType returns the qualified concrete type name for an expression, or "".
 func (c *Compiler) exprConcreteType(expr *Node) string {
+	if expr == nil {
+		return ""
+	}
+	if cached, ok := lookupCachedNodeString(c.exprConcreteTypeCache, expr); ok {
+		return cached
+	}
+	return storeCachedNodeString(c.exprConcreteTypeCache, expr, c.exprConcreteTypeInner(expr))
+}
+
+func (c *Compiler) exprConcreteTypeInner(expr *Node) string {
 	if expr == nil {
 		return ""
 	}
@@ -9529,6 +9586,9 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedComptimeDisabled := c.comptimeDisabled
 	savedInIfInit := c.inIfInit
 	savedIfInitLeakedNames := c.ifInitLeakedNames
+	savedResolveCallNameCache := c.resolveCallNameCache
+	savedResolveExprTypeCache := c.resolveExprTypeCache
+	savedExprConcreteTypeCache := c.exprConcreteTypeCache
 
 	c.curFunc = f
 	c.scopes = nil
@@ -9555,6 +9615,9 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
+	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
+	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
 	c.activeCaptures = nil
 	c.comptimeDisabled = true
 	c.inIfInit = false
@@ -9589,6 +9652,9 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localMethodTargets = savedLocalMethodTargets
 	c.localMethodRecv = savedLocalMethodRecv
 	c.localFuncCaptures = savedLocalFuncCaptures
+	c.resolveCallNameCache = savedResolveCallNameCache
+	c.resolveExprTypeCache = savedResolveExprTypeCache
+	c.exprConcreteTypeCache = savedExprConcreteTypeCache
 	c.activeCaptures = savedActiveCaptures
 	c.comptimeDisabled = savedComptimeDisabled
 	c.inIfInit = savedInIfInit
@@ -10310,6 +10376,16 @@ func isRuntimeMemBuiltinName(name string) bool {
 }
 
 func (c *Compiler) resolveCallName(node *Node) string {
+	if node == nil {
+		return ""
+	}
+	if cached, ok := lookupCachedNodeString(c.resolveCallNameCache, node); ok {
+		return cached
+	}
+	return storeCachedNodeString(c.resolveCallNameCache, node, c.resolveCallNameInner(node))
+}
+
+func (c *Compiler) resolveCallNameInner(node *Node) string {
 	if node == nil {
 		return ""
 	}
