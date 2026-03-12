@@ -91,6 +91,8 @@ const structTypeLookupMaxEntries = 8192
 const structFieldLookupMaxEntries = 16384
 const fieldTypeLookupMaxEntries = 16384
 
+var nodeMapTypeNameCache map[*Node]string
+
 // === Compiler ===
 
 // Compiler lowers AST from a Module into stack machine IR.
@@ -132,9 +134,9 @@ type Compiler struct {
 	localElemSizes        map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
 	globalElemSizes       map[string]int      // qualified global name → slice element size
 	ifaceMethods          map[string][]string // interface name → method names
-	ifaceMethodRets       map[string]int      // iface+"\x00"+method → return count
-	ifaceMethodRetTypes   map[string]string   // iface+"\x00"+method → first return type name
-	ifaceMethodRetLists   map[string][]string // iface+"\x00"+method → full return type names
+	ifaceMethodRets       map[string]map[string]int      // iface → method → return count
+	ifaceMethodRetTypes   map[string]map[string]string   // iface → method → first return type name
+	ifaceMethodRetLists   map[string]map[string][]string // iface → method → full return type names
 	methodTable           map[string]string   // "pkg.Type.Method" → qualified IR func name
 	methodFuncNames       map[string]bool     // qualified method function names
 	typeIDs               map[string]int      // concrete type qualified name → unique int
@@ -246,9 +248,9 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string, m
 		funcParamEscapes:      make(map[string][]bool),
 		globalElemSizes:       make(map[string]int),
 		ifaceMethods:          make(map[string][]string),
-		ifaceMethodRets:       make(map[string]int),
-		ifaceMethodRetTypes:   make(map[string]string),
-		ifaceMethodRetLists:   make(map[string][]string),
+		ifaceMethodRets:       make(map[string]map[string]int),
+		ifaceMethodRetTypes:   make(map[string]map[string]string),
+		ifaceMethodRetLists:   make(map[string]map[string][]string),
 		methodTable:           make(map[string]string),
 		methodFuncNames:       make(map[string]bool),
 		typeIDs:               make(map[string]int),
@@ -390,7 +392,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string, m
 	c.irmod.TypeIDs = c.typeIDs
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
-	c.irmod.IfaceMethodRets = c.ifaceMethodRets
+	c.irmod.IfaceMethodRets = c.flattenIfaceMethodRets()
 	if len(c.funcIsZeroCall) > 0 {
 		c.irmod.ZeroCallFuncs = make(map[string]bool, len(c.funcIsZeroCall))
 		for qname := range c.funcIsZeroCall {
@@ -421,8 +423,49 @@ func (c *Compiler) initBuiltinTypes() {
 	c.typeIDs["bool"] = 3
 	c.ifaceMethods["interface{}"] = []string{}
 	c.ifaceMethods["error"] = []string{"Error"}
-	c.ifaceMethodRets["error\x00Error"] = 1
-	c.ifaceMethodRetLists["error\x00Error"] = []string{"string"}
+	c.setIfaceMethodRet("error", "Error", 1)
+	c.setIfaceMethodRetList("error", "Error", []string{"string"})
+}
+
+func (c *Compiler) setIfaceMethodRet(ifaceType string, methodName string, retCount int) {
+	methods := c.ifaceMethodRets[ifaceType]
+	if methods == nil {
+		methods = make(map[string]int)
+		c.ifaceMethodRets[ifaceType] = methods
+	}
+	methods[methodName] = retCount
+}
+
+func (c *Compiler) setIfaceMethodFirstRetType(ifaceType string, methodName string, retType string) {
+	methods := c.ifaceMethodRetTypes[ifaceType]
+	if methods == nil {
+		methods = make(map[string]string)
+		c.ifaceMethodRetTypes[ifaceType] = methods
+	}
+	methods[methodName] = retType
+}
+
+func (c *Compiler) setIfaceMethodRetList(ifaceType string, methodName string, retTypes []string) {
+	methods := c.ifaceMethodRetLists[ifaceType]
+	if methods == nil {
+		methods = make(map[string][]string)
+		c.ifaceMethodRetLists[ifaceType] = methods
+	}
+	methods[methodName] = retTypes
+}
+
+func (c *Compiler) flattenIfaceMethodRets() map[string]int {
+	total := 0
+	for _, methods := range c.ifaceMethodRets {
+		total = total + len(methods)
+	}
+	flat := make(map[string]int, total)
+	for ifaceType, methods := range c.ifaceMethodRets {
+		for methodName, retCount := range methods {
+			flat[ifaceType+"\x00"+methodName] = retCount
+		}
+	}
+	return flat
 }
 
 func (c *Compiler) errorf(format string, args ...interface{}) {
@@ -3034,15 +3077,15 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 						retTypes = append(retTypes, firstRetType)
 					}
 				}
-				c.ifaceMethodRets[node.Name+"\x00"+meth.Name] = retCount
-				c.ifaceMethodRets[qname+"\x00"+meth.Name] = retCount
+				c.setIfaceMethodRet(node.Name, meth.Name, retCount)
+				c.setIfaceMethodRet(qname, meth.Name, retCount)
 				if firstRetType != "" {
-					c.ifaceMethodRetTypes[node.Name+"\x00"+meth.Name] = firstRetType
-					c.ifaceMethodRetTypes[qname+"\x00"+meth.Name] = firstRetType
+					c.setIfaceMethodFirstRetType(node.Name, meth.Name, firstRetType)
+					c.setIfaceMethodFirstRetType(qname, meth.Name, firstRetType)
 				}
 				if len(retTypes) > 0 {
-					c.ifaceMethodRetLists[node.Name+"\x00"+meth.Name] = retTypes
-					c.ifaceMethodRetLists[qname+"\x00"+meth.Name] = retTypes
+					c.setIfaceMethodRetList(node.Name, meth.Name, retTypes)
+					c.setIfaceMethodRetList(qname, meth.Name, retTypes)
 				}
 			}
 		}
@@ -3060,9 +3103,10 @@ func (c *Compiler) ifaceMethodReturnCount(ifaceType string, methodName string) (
 	if ifaceType == "" || methodName == "" {
 		return 0, false
 	}
-	key := ifaceType + "\x00" + methodName
-	if ret, ok := c.ifaceMethodRets[key]; ok {
-		return ret, true
+	if methods, ok := c.ifaceMethodRets[ifaceType]; ok {
+		if ret, ok := methods[methodName]; ok {
+			return ret, true
+		}
 	}
 	return 0, false
 }
@@ -3071,9 +3115,10 @@ func (c *Compiler) ifaceMethodFirstReturnType(ifaceType string, methodName strin
 	if ifaceType == "" || methodName == "" {
 		return "", false
 	}
-	key := ifaceType + "\x00" + methodName
-	if retType, ok := c.ifaceMethodRetTypes[key]; ok && retType != "" {
-		return retType, true
+	if methods, ok := c.ifaceMethodRetTypes[ifaceType]; ok {
+		if retType, ok := methods[methodName]; ok && retType != "" {
+			return retType, true
+		}
 	}
 	return "", false
 }
@@ -3082,9 +3127,10 @@ func (c *Compiler) ifaceMethodReturnTypes(ifaceType string, methodName string) (
 	if ifaceType == "" || methodName == "" {
 		return nil, false
 	}
-	key := ifaceType + "\x00" + methodName
-	if retTypes, ok := c.ifaceMethodRetLists[key]; ok && len(retTypes) > 0 {
-		return retTypes, true
+	if methods, ok := c.ifaceMethodRetLists[ifaceType]; ok {
+		if retTypes, ok := methods[methodName]; ok && len(retTypes) > 0 {
+			return retTypes, true
+		}
 	}
 	return nil, false
 }
@@ -3150,12 +3196,12 @@ func (c *Compiler) registerAnonInterfaceType(typeNode *Node) string {
 	}
 	i = 0
 	for i < len(methodNames) {
-		c.ifaceMethodRets[key+"\x00"+methodNames[i]] = retCounts[i]
+		c.setIfaceMethodRet(key, methodNames[i], retCounts[i])
 		if firstRetTypes[i] != "" {
-			c.ifaceMethodRetTypes[key+"\x00"+methodNames[i]] = firstRetTypes[i]
+			c.setIfaceMethodFirstRetType(key, methodNames[i], firstRetTypes[i])
 		}
 		if len(allRetTypes[i]) > 0 {
-			c.ifaceMethodRetLists[key+"\x00"+methodNames[i]] = allRetTypes[i]
+			c.setIfaceMethodRetList(key, methodNames[i], allRetTypes[i])
 		}
 		i = i + 1
 	}
@@ -10504,7 +10550,7 @@ func (c *Compiler) tryCompileComptimeCall(node *Node, callName string) bool {
 	c.irmod.TypeIDs = c.typeIDs
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
-	c.irmod.IfaceMethodRets = c.ifaceMethodRets
+	c.irmod.IfaceMethodRets = c.flattenIfaceMethodRets()
 	eval, err := vm.NewEvalState(c.target, c.irmod)
 	c.irmod.Funcs = c.irmod.Funcs[0 : len(c.irmod.Funcs)-1]
 	if err != nil {
@@ -10751,7 +10797,7 @@ func (c *Compiler) compileAssembledFunctions() {
 	c.irmod.TypeIDs = c.typeIDs
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
-	c.irmod.IfaceMethodRets = c.ifaceMethodRets
+	c.irmod.IfaceMethodRets = c.flattenIfaceMethodRets()
 
 	for qname, info := range c.assembleFuncs {
 		if info.Arch != c.target.GOARCH {
@@ -12404,6 +12450,8 @@ func nodeTypeName(node *Node) string {
 	switch node.Kind {
 	case NIdent:
 		return node.Name
+	case NInterfaceType:
+		return "interface{}"
 	case NSelectorExpr:
 		if node.X != nil {
 			return nodeTypeName(node.X) + "." + node.Name
@@ -12429,9 +12477,14 @@ func nodeTypeName(node *Node) string {
 		}
 		return "[" + lenExpr + "]" + nodeTypeName(node.X)
 	case NMapType:
-		return "map[" + nodeTypeName(node.X) + "]" + nodeTypeName(node.Y)
-	case NInterfaceType:
-		return "interface{}"
+		if nodeMapTypeNameCache == nil {
+			nodeMapTypeNameCache = make(map[*Node]string)
+		} else if cached, ok := nodeMapTypeNameCache[node]; ok {
+			return cached
+		}
+		result := "map[" + nodeTypeName(node.X) + "]" + nodeTypeName(node.Y)
+		nodeMapTypeNameCache[node] = result
+		return result
 	}
 	return ""
 }
