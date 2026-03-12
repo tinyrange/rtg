@@ -189,28 +189,6 @@ func (c *Compiler) dotJoin(a string, b string) string {
 	return v
 }
 
-func lookupCachedNodeString(cache map[*Node]cachedStringResult, node *Node) (string, bool) {
-	if cache == nil || node == nil {
-		return "", false
-	}
-	cached, ok := cache[node]
-	if !ok {
-		return "", false
-	}
-	if cached.ok {
-		return cached.value, true
-	}
-	return "", true
-}
-
-func storeCachedNodeString(cache map[*Node]cachedStringResult, node *Node, value string) string {
-	if cache == nil || node == nil {
-		return value
-	}
-	cache[node] = cachedStringResult{value: value, ok: value != ""}
-	return value
-}
-
 // CompileModule compiles an entire resolved module to IR.
 func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 	entryFunc := target.EntryFunc
@@ -475,9 +453,23 @@ func isBuiltinName(name string) bool {
 }
 
 func (c *Compiler) resolvePackage(pkgName string) *Package {
+	if c.curPkg != nil {
+		if c.curPkg.resolvedPkgs != nil {
+			if pkg, ok := c.curPkg.resolvedPkgs[pkgName]; ok {
+				return pkg
+			}
+		} else {
+			c.curPkg.resolvedPkgs = make(map[string]*Package)
+			c.curPkg.missingPkgs = make(map[string]bool)
+		}
+		if c.curPkg.missingPkgs[pkgName] {
+			return nil
+		}
+	}
 	if c.curPkg != nil && c.curPkg.ImportAliases != nil {
 		if path, ok := c.curPkg.ImportAliases[pkgName]; ok {
 			if pkg, ok := c.mod.Packages[path]; ok {
+				c.curPkg.resolvedPkgs[pkgName] = pkg
 				return pkg
 			}
 		}
@@ -485,8 +477,12 @@ func (c *Compiler) resolvePackage(pkgName string) *Package {
 	for _, imp := range c.curPkg.Imports {
 		pkg, ok := c.mod.Packages[imp]
 		if ok && pkg.Name == pkgName {
+			c.curPkg.resolvedPkgs[pkgName] = pkg
 			return pkg
 		}
+	}
+	if c.curPkg != nil && c.curPkg.missingPkgs != nil {
+		c.curPkg.missingPkgs[pkgName] = true
 	}
 	return nil
 }
@@ -1004,10 +1000,19 @@ func (c *Compiler) resolveExprType(node *Node) string {
 	if node == nil {
 		return ""
 	}
-	if cached, ok := lookupCachedNodeString(c.resolveExprTypeCache, node); ok {
-		return cached
+	if c.resolveExprTypeCache != nil {
+		if cached, ok := c.resolveExprTypeCache[node]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
 	}
-	return storeCachedNodeString(c.resolveExprTypeCache, node, c.resolveExprTypeInner(node))
+	result := c.resolveExprTypeInner(node)
+	if c.resolveExprTypeCache != nil {
+		c.resolveExprTypeCache[node] = cachedStringResult{value: result, ok: result != ""}
+	}
+	return result
 }
 
 func (c *Compiler) resolveExprTypeInner(node *Node) string {
@@ -6145,10 +6150,19 @@ func (c *Compiler) exprConcreteType(expr *Node) string {
 	if expr == nil {
 		return ""
 	}
-	if cached, ok := lookupCachedNodeString(c.exprConcreteTypeCache, expr); ok {
-		return cached
+	if c.exprConcreteTypeCache != nil {
+		if cached, ok := c.exprConcreteTypeCache[expr]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
 	}
-	return storeCachedNodeString(c.exprConcreteTypeCache, expr, c.exprConcreteTypeInner(expr))
+	result := c.exprConcreteTypeInner(expr)
+	if c.exprConcreteTypeCache != nil {
+		c.exprConcreteTypeCache[expr] = cachedStringResult{value: result, ok: result != ""}
+	}
+	return result
 }
 
 func (c *Compiler) exprConcreteTypeInner(expr *Node) string {
@@ -10379,10 +10393,19 @@ func (c *Compiler) resolveCallName(node *Node) string {
 	if node == nil {
 		return ""
 	}
-	if cached, ok := lookupCachedNodeString(c.resolveCallNameCache, node); ok {
-		return cached
+	if c.resolveCallNameCache != nil {
+		if cached, ok := c.resolveCallNameCache[node]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
 	}
-	return storeCachedNodeString(c.resolveCallNameCache, node, c.resolveCallNameInner(node))
+	result := c.resolveCallNameInner(node)
+	if c.resolveCallNameCache != nil {
+		c.resolveCallNameCache[node] = cachedStringResult{value: result, ok: result != ""}
+	}
+	return result
 }
 
 func (c *Compiler) resolveCallNameInner(node *Node) string {

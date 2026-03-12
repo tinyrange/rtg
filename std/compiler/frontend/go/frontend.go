@@ -42,6 +42,8 @@ type Package struct {
 	Inits         []*Node
 	qualNames     map[string]string // name → "Path.name"
 	qualPtrNames  map[string]string // name → "Path.*name"
+	resolvedPkgs  map[string]*Package
+	missingPkgs   map[string]bool
 }
 
 func (pkg *Package) QualName(name string) string {
