@@ -1018,14 +1018,14 @@ func mapFindKey(data uintptr, mlen int, keyKind int, key uintptr) int {
 }
 
 const (
-	mapHdrOffHashSlots  = (SliceHdrSize + PtrSize - 1) &^ (PtrSize - 1)
-	mapHdrOffHashCap    = mapHdrOffHashSlots + PtrSize
-	mapHdrOffHashes     = mapHdrOffHashCap + PtrSize
-	mapHdrSize          = mapHdrOffHashes + PtrSize
-	mapStringHashMinLen = 16
+	mapHdrOffHashSlots = (SliceHdrSize + PtrSize - 1) &^ (PtrSize - 1)
+	mapHdrOffHashCap   = mapHdrOffHashSlots + PtrSize
+	mapHdrOffHashes    = mapHdrOffHashCap + PtrSize
+	mapHdrSize         = mapHdrOffHashes + PtrSize
+	mapHashMinLen      = 16
 )
 
-func mapStringHashCapForEntries(entryCap int) int {
+func mapHashCapForEntries(entryCap int) int {
 	need := entryCap * 2
 	if need < 64 {
 		need = 64
@@ -1035,6 +1035,15 @@ func mapStringHashCapForEntries(entryCap int) int {
 		cap = cap * 2
 	}
 	return cap
+}
+
+func mapIntHashKey(key uintptr) uintptr {
+	h := key * uintptr(2654435761)
+	h = h ^ (h >> 16)
+	if PtrSize > 4 {
+		h = h ^ (h >> 32)
+	}
+	return h
 }
 
 func mapStringHashKey(key uintptr) uintptr {
@@ -1055,6 +1064,33 @@ func mapStringHashKey(key uintptr) uintptr {
 		h = h ^ (h >> 32)
 	}
 	return h
+}
+
+func mapInitHashSlots(hdr uintptr, hashCap int) uintptr {
+	slots := mapAllocPtrBlock(hashCap)
+	if allocDebugEnabled {
+		allocDebugRecordMapHashMetaAlloc(hashCap * PtrSize)
+	}
+	Memzero(slots, hashCap*PtrSize)
+	WritePtr(hdr+uintptr(mapHdrOffHashSlots), slots)
+	WritePtr(hdr+uintptr(mapHdrOffHashCap), uintptr(hashCap))
+	return slots
+}
+
+func mapIntRebuildHashSlots(hdr uintptr, data uintptr, mlen int) {
+	slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+	hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
+	if slots == 0 || hashCap <= 0 {
+		return
+	}
+	Memzero(slots, hashCap*PtrSize)
+	i := 0
+	for i < mlen {
+		entryAddr := data + uintptr(i*MapEntrySize)
+		key := ReadPtr(entryAddr)
+		mapInsertIndex(slots, hashCap, i, mapIntHashKey(key))
+		i = i + 1
+	}
 }
 
 func mapStringRebuildHashSlots(hdr uintptr, data uintptr, mlen int) {
@@ -1092,6 +1128,32 @@ func mapStringRebuildHashSlots(hdr uintptr, data uintptr, mlen int) {
 	}
 }
 
+func mapIntFindIndex(data uintptr, mlen int, slots uintptr, hashCap int, key uintptr, keyHash uintptr) (int, int, bool) {
+	if slots == 0 || hashCap <= 0 {
+		return -1, -1, false
+	}
+	mask := hashCap - 1
+	slot := int(keyHash & uintptr(mask))
+	probes := 0
+	for probes < hashCap {
+		slotAddr := slots + uintptr(slot*PtrSize)
+		entry := ReadPtr(slotAddr)
+		if entry == 0 {
+			return -1, slot, false
+		}
+		idx := int(entry) - 1
+		if idx >= 0 && idx < mlen {
+			entryAddr := data + uintptr(idx*MapEntrySize)
+			if ReadPtr(entryAddr) == key {
+				return idx, slot, true
+			}
+		}
+		slot = (slot + 1) & mask
+		probes = probes + 1
+	}
+	return -1, -1, false
+}
+
 func mapStringFindIndex(data uintptr, mlen int, slots uintptr, hashes uintptr, hashCap int, key uintptr, keyHash uintptr) (int, int, bool) {
 	if slots == 0 || hashes == 0 || hashCap <= 0 {
 		return -1, -1, false
@@ -1120,7 +1182,7 @@ func mapStringFindIndex(data uintptr, mlen int, slots uintptr, hashes uintptr, h
 	return -1, -1, false
 }
 
-func mapStringInsertIndex(slots uintptr, hashCap int, idx int, keyHash uintptr) {
+func mapInsertIndex(slots uintptr, hashCap int, idx int, keyHash uintptr) {
 	mask := hashCap - 1
 	slot := int(keyHash & uintptr(mask))
 	probes := 0
@@ -1153,13 +1215,15 @@ func mapStringUsesCombinedBlock(data uintptr, hashes uintptr, mcap int) bool {
 	return hashes == data+uintptr(mcap*MapEntrySize)
 }
 
+func mapIntInitHashState(hdr uintptr, mcap int) {
+	hashCap := mapHashCapForEntries(mcap)
+	mapInitHashSlots(hdr, hashCap)
+	WritePtr(hdr+uintptr(mapHdrOffHashes), 0)
+}
+
 func mapStringInitHashState(hdr uintptr, mcap int, hashes uintptr) {
-	hashCap := mapStringHashCapForEntries(mcap)
-	slots := mapAllocPtrBlock(hashCap)
-	if allocDebugEnabled {
-		allocDebugRecordMapHashMetaAlloc(hashCap * PtrSize)
-	}
-	Memzero(slots, hashCap*PtrSize)
+	hashCap := mapHashCapForEntries(mcap)
+	mapInitHashSlots(hdr, hashCap)
 	if hashes == 0 {
 		hashes = mapAllocPtrBlock(mcap)
 		if allocDebugEnabled {
@@ -1171,8 +1235,6 @@ func mapStringInitHashState(hdr uintptr, mcap int, hashes uintptr) {
 		}
 	}
 	Memzero(hashes, mcap*PtrSize)
-	WritePtr(hdr+uintptr(mapHdrOffHashSlots), slots)
-	WritePtr(hdr+uintptr(mapHdrOffHashCap), uintptr(hashCap))
 	WritePtr(hdr+uintptr(mapHdrOffHashes), hashes)
 }
 
@@ -1199,10 +1261,10 @@ func MapGet(hdr uintptr, key uintptr) (uintptr, bool) {
 	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
 	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
 	data := ReadPtr(hdr)
+	slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+	hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
 	if keyKind == 1 {
-		slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
 		hashes := ReadPtr(hdr + uintptr(mapHdrOffHashes))
-		hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
 		if slots != 0 && hashes != 0 && hashCap > 0 {
 			keyHash := mapStringHashKey(key)
 			idx, _, found := mapStringFindIndex(data, mlen, slots, hashes, hashCap, key, keyHash)
@@ -1210,22 +1272,16 @@ func MapGet(hdr uintptr, key uintptr) (uintptr, bool) {
 				entryAddr := data + uintptr(idx*MapEntrySize)
 				return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
 			}
-			// Conservative fallback to preserve correctness if key headers drift
-			// and stored hash metadata becomes stale.
-			idx = mapFindKey(data, mlen, keyKind, key)
-			if idx >= 0 {
-				if ReadPtr(hashes+uintptr(idx*PtrSize)) != keyHash {
-					if allocDebugEnabled {
-						allocDebugRecordMapHashFallback()
-					}
-					WritePtr(hashes+uintptr(idx*PtrSize), keyHash)
-					mapStringRebuildHashSlots(hdr, data, mlen)
-				}
-				entryAddr := data + uintptr(idx*MapEntrySize)
-				return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
-			}
 			return 0, false
 		}
+	} else if slots != 0 && hashCap > 0 {
+		keyHash := mapIntHashKey(key)
+		idx, _, found := mapIntFindIndex(data, mlen, slots, hashCap, key, keyHash)
+		if found {
+			entryAddr := data + uintptr(idx*MapEntrySize)
+			return ReadPtr(entryAddr + uintptr(MapEntryOffVal)), true
+		}
+		return 0, false
 	}
 	idx := mapFindKey(data, mlen, keyKind, key)
 	if idx >= 0 {
@@ -1245,9 +1301,9 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
 	data := ReadPtr(hdr)
 	mcap := int(ReadPtr(hdr + uintptr(SliceOffCap)))
+	slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+	hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
 	if keyKind == 1 {
-		slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
-		hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
 		hashes := ReadPtr(hdr + uintptr(mapHdrOffHashes))
 		if slots != 0 && hashes != 0 && hashCap > 0 {
 			keyHash := mapStringHashKey(key)
@@ -1255,20 +1311,6 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 			if found {
 				entryAddr := data + uintptr(idx*MapEntrySize)
 				WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
-				return hdr
-			}
-			// Conservative fallback to avoid duplicate entries when stored hashes are stale.
-			idx = mapFindKey(data, mlen, keyKind, key)
-			if idx >= 0 {
-				entryAddr := data + uintptr(idx*MapEntrySize)
-				WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
-				if ReadPtr(hashes+uintptr(idx*PtrSize)) != keyHash {
-					if allocDebugEnabled {
-						allocDebugRecordMapHashFallback()
-					}
-					WritePtr(hashes+uintptr(idx*PtrSize), keyHash)
-					mapStringRebuildHashSlots(hdr, data, mlen)
-				}
 				return hdr
 			}
 			if mlen >= mcap {
@@ -1296,15 +1338,10 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 				WritePtr(hdr+uintptr(SliceOffCap), uintptr(mcap))
 				WritePtr(hdr+uintptr(mapHdrOffHashes), hashes)
 
-				needHashCap := mapStringHashCapForEntries(mcap)
+				needHashCap := mapHashCapForEntries(mcap)
 				if hashCap != needHashCap {
 					hashCap = needHashCap
-					slots = mapAllocPtrBlock(hashCap)
-					if allocDebugEnabled {
-						allocDebugRecordMapHashMetaAlloc(hashCap * PtrSize)
-					}
-					WritePtr(hdr+uintptr(mapHdrOffHashSlots), slots)
-					WritePtr(hdr+uintptr(mapHdrOffHashCap), uintptr(hashCap))
+					mapInitHashSlots(hdr, hashCap)
 				}
 				mapStringRebuildHashSlots(hdr, data, mlen)
 				slots = ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
@@ -1324,7 +1361,7 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 			WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
 			WritePtr(hashes+uintptr(mlen*PtrSize), keyHash)
 			WritePtr(hdr+uintptr(SliceOffLen), uintptr(mlen+1))
-			mapStringInsertIndex(slots, hashCap, mlen, keyHash)
+			mapInsertIndex(slots, hashCap, mlen, keyHash)
 			return hdr
 		}
 		// Small string maps stay on linear scan until a minimum size.
@@ -1356,10 +1393,56 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 		WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
 		newLen := mlen + 1
 		WritePtr(hdr+uintptr(SliceOffLen), uintptr(newLen))
-		if newLen >= mapStringHashMinLen {
+		if newLen >= mapHashMinLen {
 			mapStringInitHashState(hdr, mcap, 0)
 			mapStringRebuildHashSlots(hdr, data, newLen)
 		}
+		return hdr
+	}
+	if slots != 0 && hashCap > 0 {
+		keyHash := mapIntHashKey(key)
+		idx, _, found := mapIntFindIndex(data, mlen, slots, hashCap, key, keyHash)
+		if found {
+			entryAddr := data + uintptr(idx*MapEntrySize)
+			WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+			return hdr
+		}
+		if mlen >= mcap {
+			oldData := data
+			oldSlots := slots
+			oldCap := mcap
+			oldHashCap := hashCap
+			newCap := mcap * 2
+			if newCap < 8 {
+				newCap = 8
+			}
+			newData := mapAllocEntryBlock(newCap)
+			if mlen > 0 {
+				Memcopy(newData, data, mlen*MapEntrySize)
+			}
+			data = newData
+			mcap = newCap
+			WritePtr(hdr, data)
+			WritePtr(hdr+uintptr(SliceOffCap), uintptr(mcap))
+
+			needHashCap := mapHashCapForEntries(mcap)
+			if hashCap != needHashCap {
+				hashCap = needHashCap
+				mapInitHashSlots(hdr, hashCap)
+			}
+			mapIntRebuildHashSlots(hdr, data, mlen)
+			slots = ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+			hashCap = int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
+			mapFreeEntryBlock(oldData, oldCap)
+			if oldSlots != 0 && oldHashCap != hashCap {
+				mapFreePtrBlock(oldSlots, oldHashCap)
+			}
+		}
+		entryAddr := data + uintptr(mlen*MapEntrySize)
+		WritePtr(entryAddr, key)
+		WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
+		WritePtr(hdr+uintptr(SliceOffLen), uintptr(mlen+1))
+		mapInsertIndex(slots, hashCap, mlen, keyHash)
 		return hdr
 	}
 	// Search for existing key
@@ -1384,12 +1467,18 @@ func MapSet(hdr uintptr, key uintptr, value uintptr) uintptr {
 		WritePtr(hdr, newData)
 		WritePtr(hdr+uintptr(SliceOffCap), uintptr(newCap))
 		data = newData
+		mcap = newCap
 		mapFreeEntryBlock(oldData, oldCap)
 	}
 	entryAddr := data + uintptr(mlen*MapEntrySize)
 	WritePtr(entryAddr, key)
 	WritePtr(entryAddr+uintptr(MapEntryOffVal), value)
-	WritePtr(hdr+uintptr(SliceOffLen), uintptr(mlen+1))
+	newLen := mlen + 1
+	WritePtr(hdr+uintptr(SliceOffLen), uintptr(newLen))
+	if newLen >= mapHashMinLen {
+		mapIntInitHashState(hdr, mcap)
+		mapIntRebuildHashSlots(hdr, data, newLen)
+	}
 	return hdr
 }
 
@@ -1401,23 +1490,15 @@ func MapDelete(hdr uintptr, key uintptr) {
 	mlen := int(ReadPtr(hdr + uintptr(SliceOffLen)))
 	keyKind := int(ReadPtr(hdr + uintptr(SliceOffEsz)))
 	data := ReadPtr(hdr)
+	slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
+	hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
 	if keyKind == 1 {
-		slots := ReadPtr(hdr + uintptr(mapHdrOffHashSlots))
-		hashCap := int(ReadPtr(hdr + uintptr(mapHdrOffHashCap)))
 		hashes := ReadPtr(hdr + uintptr(mapHdrOffHashes))
 		if slots != 0 && hashes != 0 && hashCap > 0 {
 			keyHash := mapStringHashKey(key)
 			idx, _, found := mapStringFindIndex(data, mlen, slots, hashes, hashCap, key, keyHash)
 			if !found {
-				// Conservative fallback for stale hash metadata.
-				idx = mapFindKey(data, mlen, keyKind, key)
-				if idx < 0 {
-					return
-				}
-				if allocDebugEnabled {
-					allocDebugRecordMapHashFallback()
-				}
-				WritePtr(hashes+uintptr(idx*PtrSize), keyHash)
+				return
 			}
 			lastIdx := mlen - 1
 			if idx < lastIdx {
@@ -1432,6 +1513,22 @@ func MapDelete(hdr uintptr, key uintptr) {
 			mapStringRebuildHashSlots(hdr, data, lastIdx)
 			return
 		}
+	} else if slots != 0 && hashCap > 0 {
+		keyHash := mapIntHashKey(key)
+		idx, _, found := mapIntFindIndex(data, mlen, slots, hashCap, key, keyHash)
+		if !found {
+			return
+		}
+		lastIdx := mlen - 1
+		if idx < lastIdx {
+			entryAddr := data + uintptr(idx*MapEntrySize)
+			lastAddr := data + uintptr(lastIdx*MapEntrySize)
+			WritePtr(entryAddr, ReadPtr(lastAddr))
+			WritePtr(entryAddr+uintptr(MapEntryOffVal), ReadPtr(lastAddr+uintptr(MapEntryOffVal)))
+		}
+		WritePtr(hdr+uintptr(SliceOffLen), uintptr(lastIdx))
+		mapIntRebuildHashSlots(hdr, data, lastIdx)
+		return
 	}
 	i := 0
 	for i < mlen {
