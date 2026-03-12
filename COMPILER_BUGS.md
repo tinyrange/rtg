@@ -26,6 +26,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#35` Struct values are lowered with pointer-aliasing semantics instead of copy semantics in RTG-compiled programs.
 - `#40` WASM variadic/interface boxing still truncates `int64` values in `fmt.Printf`-style calls.
 - `#41` C backend float lowering currently requires the C word size to be at least as wide as the float payload (`c/64` for `float64`; `c/32+` for `float32`).
+- `#42` Interface method calls with grouped parameter lists can misdispatch or return incorrect values.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -70,6 +71,20 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 14. `#35` Fix struct-value copy semantics in RTG-compiled programs (current lowering aliases heap-backed struct objects).
 15. `#40` Fix wasm boxing/variadic argument handling for `int64` values.
 16. `#41` Decide whether smaller-word C profiles should gain split-word float lowering or keep an explicit unsupported-target error.
+17. `#42` Fix interface method dispatch/type matching for grouped parameter list syntax.
+
+### 42) Interface method calls with grouped parameter lists can return incorrect values
+
+**Symptom**
+- A method declared through an interface using grouped parameters, for example:
+  - `type Pairer interface { Pair(a, b int) int }`
+- can compile, but calling it through the interface can produce incorrect results at runtime.
+
+**Impact**
+- Interface method signatures that use grouped parameter syntax are not reliably callable even though equivalent non-interface methods and plain function values work.
+
+**Current mitigation**
+- Avoid grouped parameter syntax in interface method declarations when the method will be called through an interface value; spell parameters individually instead.
 
 ### 41) C backend float lowering currently depends on word-size >= float-size
 

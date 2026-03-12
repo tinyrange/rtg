@@ -918,25 +918,11 @@ func (p *Parser) parseFuncDecl() *Node {
 	}
 
 	// parameters
-	node.Nodes = p.parseParamList()
+	node.Nodes = p.parseFieldList(true)
 
 	// result type(s)
-	if !p.at(TOKEN_LBRACE) && !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_EOF) {
-		if p.at(TOKEN_LPAREN) {
-			// multiple return values (possibly named)
-			node.Type = &Node{Kind: NFuncType}
-			p.advance()
-			for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
-				t := p.parseParam()
-				node.Type.Nodes = append(node.Type.Nodes, t)
-				if p.at(TOKEN_COMMA) {
-					p.advance()
-				}
-			}
-			p.expect(TOKEN_RPAREN)
-		} else {
-			node.Type = p.parseType()
-		}
+	if canStartResult(p.peek().Kind) {
+		node.Type = p.parseResultType()
 	}
 
 	// body
@@ -955,101 +941,123 @@ func (p *Parser) parseReceiver() *Node {
 	return node
 }
 
-func (p *Parser) parseParamList() []*Node {
+func isTypeStart(kind TokenKind) bool {
+	switch kind {
+	case TOKEN_IDENT, TOKEN_STAR, TOKEN_LBRACK, TOKEN_MAP, TOKEN_FUNC, TOKEN_STRUCT, TOKEN_INTERFACE, TOKEN_CHAN:
+		return true
+	}
+	return false
+}
+
+func canStartResult(kind TokenKind) bool {
+	return kind == TOKEN_LPAREN || isTypeStart(kind)
+}
+
+func (p *Parser) parseFieldList(allowVariadic bool) []*Node {
 	p.expect(TOKEN_LPAREN)
 	params := make([]*Node, 0, 8)
 	for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
-		param := p.parseParam()
-		params = append(params, param)
+		params = append(params, p.parseFieldDecl(allowVariadic)...)
 		if p.at(TOKEN_COMMA) {
 			p.advance()
 		}
 	}
 	p.expect(TOKEN_RPAREN)
-	needsRegroup := false
-	i := 0
-	for i+1 < len(params) {
-		if params[i].Name == "" && params[i].Type != nil && params[i].Type.Kind == NIdent && params[i+1].Name != "" && params[i+1].Type != nil {
-			needsRegroup = true
-			break
-		}
-		i++
-	}
-	if !needsRegroup {
-		return params
-	}
-
-	// Fix grouped parameters: (a, b int) → two NField nodes each with type int.
-	// parseParam sees "a" followed by comma and treats it as a type-only param.
-	// If a later param has both name and type, preceding type-only params whose
-	// "type" is a bare ident are actually names sharing that type.
-	result := make([]*Node, 0, len(params))
-	i = 0
-	for i < len(params) {
-		if params[i].Name != "" || i+1 >= len(params) {
-			// Already has a name, or last param — keep as-is
-			result = append(result, params[i])
-			i = i + 1
-			continue
-		}
-		// params[i] has no name. Check if it's a bare ident that might be a
-		// grouped name. Collect consecutive unnamed bare-ident params.
-		groupStart := i
-		for i < len(params) && params[i].Name == "" && params[i].Type != nil && params[i].Type.Kind == NIdent {
-			if i+1 < len(params) && params[i+1].Name != "" && params[i+1].Type != nil {
-				// Next param has name+type — this group of bare idents are names
-				i = i + 1
-				break
-			}
-			if i+1 >= len(params) {
-				// Last param — it's a real type-only param, not a grouped name
-				break
-			}
-			i = i + 1
-		}
-		if i < len(params) && params[i].Name != "" && params[i].Type != nil {
-			// The params from groupStart..i-1 are names sharing params[i]'s type
-			j := groupStart
-			for j < i {
-				node := &Node{Kind: NField, Pos: params[j].Pos}
-				node.Name = params[j].Type.Name // the "type" was actually the name
-				node.Type = params[i].Type
-				result = append(result, node)
-				j = j + 1
-			}
-			result = append(result, params[i])
-			i = i + 1
-		} else {
-			// Not a group — emit as-is
-			j := groupStart
-			for j <= i && j < len(params) {
-				result = append(result, params[j])
-				j = j + 1
-			}
-			i = j
-		}
-	}
-	return result
+	return params
 }
 
-func (p *Parser) parseParam() *Node {
-	node := &Node{Kind: NField, Pos: p.peek().Line}
-	// Check if this is "name type" or just "type"
-	if p.at(TOKEN_IDENT) && p.pos+1 < len(p.tokens) {
-		next := p.tokens[p.pos+1]
-		if next.Kind != TOKEN_COMMA && next.Kind != TOKEN_RPAREN {
-			name := p.advance()
-			node.Name = name.Val
-			if p.at(TOKEN_ELLIPSIS) {
-				p.advance()
-				node.Name = "..." + node.Name
-			}
-			node.Type = p.parseType()
-			return node
-		}
+func (p *Parser) parseFieldDecl(allowVariadic bool) []*Node {
+	pos := p.peek().Line
+	if !p.at(TOKEN_IDENT) || p.nextKind() == TOKEN_DOT {
+		return []*Node{p.parseUnnamedField(pos, allowVariadic)}
 	}
-	node.Type = p.parseType()
-	return node
+	if p.nextKind() != TOKEN_COMMA && p.nextKind() != TOKEN_RPAREN {
+		return []*Node{p.parseNamedField(allowVariadic)}
+	}
+	names := []Token{p.advance()}
+	for p.at(TOKEN_COMMA) && p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TOKEN_IDENT {
+		if p.pos+2 < len(p.tokens) && p.tokens[p.pos+2].Kind == TOKEN_DOT {
+			break
+		}
+		p.advance()
+		names = append(names, p.advance())
+	}
+	if (allowVariadic && p.at(TOKEN_ELLIPSIS)) || isTypeStart(p.peek().Kind) {
+		typ, variadic := p.parseFieldType(allowVariadic)
+		out := make([]*Node, 0, len(names))
+		for i, name := range names {
+			fieldName := name.Val
+			if variadic && i == len(names)-1 {
+				fieldName = "..." + fieldName
+			}
+			out = append(out, &Node{Kind: NField, Pos: name.Line, Name: fieldName, Type: typ})
+		}
+		if variadic && len(names) > 1 {
+			p.errorf("variadic parameter must have exactly one name at line %d", pos)
+		}
+		return out
+	}
+	out := make([]*Node, 0, len(names))
+	for _, name := range names {
+		out = append(out, &Node{Kind: NField, Pos: name.Line, Type: p.bareIdentType(name)})
+	}
+	return out
+}
+
+func (p *Parser) parseNamedField(allowVariadic bool) *Node {
+	name := p.expect(TOKEN_IDENT)
+	typ, variadic := p.parseFieldType(allowVariadic)
+	fieldName := name.Val
+	if variadic {
+		fieldName = "..." + fieldName
+	}
+	return &Node{Kind: NField, Pos: name.Line, Name: fieldName, Type: typ}
+}
+
+func (p *Parser) parseUnnamedField(pos int, allowVariadic bool) *Node {
+	typ, variadic := p.parseFieldType(allowVariadic)
+	name := ""
+	if variadic {
+		name = "..."
+	}
+	return &Node{Kind: NField, Pos: pos, Name: name, Type: typ}
+}
+
+func (p *Parser) parseFieldType(allowVariadic bool) (*Node, bool) {
+	if allowVariadic && p.at(TOKEN_ELLIPSIS) {
+		p.advance()
+		return p.parseType(), true
+	}
+	return p.parseType(), false
+}
+
+func (p *Parser) bareIdentType(tok Token) *Node {
+	if tok.Val == "any" {
+		return &Node{Kind: NIdent, Name: "interface{}", Pos: tok.Line}
+	}
+	if tok.Val == "complex64" || tok.Val == "complex128" {
+		p.errorf("%s type is not supported at line %d", tok.Val, tok.Line)
+		return &Node{Kind: NIdent, Name: "error", Pos: tok.Line}
+	}
+	return &Node{Kind: NIdent, Name: tok.Val, Pos: tok.Line}
+}
+
+func (p *Parser) nextKind() TokenKind {
+	if p.pos+1 >= len(p.tokens) {
+		return TOKEN_EOF
+	}
+	return p.tokens[p.pos+1].Kind
+}
+
+func (p *Parser) parseResultType() *Node {
+	if !canStartResult(p.peek().Kind) {
+		return nil
+	}
+	if p.at(TOKEN_LPAREN) {
+		pos := p.peek().Line
+		return &Node{Kind: NFuncType, Pos: pos, Nodes: p.parseFieldList(false)}
+	}
+	return p.parseType()
 }
 
 func (p *Parser) parseTypeDecl() *Node {
@@ -1272,10 +1280,10 @@ func (p *Parser) parseFuncType() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_FUNC)
 	node := &Node{Kind: NFuncType, Pos: pos}
-	node.Nodes = p.parseParamList()
+	node.Nodes = p.parseFieldList(true)
 	// optional return type
-	if !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_COMMA) && !p.at(TOKEN_RPAREN) && !p.at(TOKEN_LBRACE) && !p.at(TOKEN_EOF) {
-		node.Type = p.parseType()
+	if canStartResult(p.peek().Kind) {
+		node.Type = p.parseResultType()
 	}
 	return node
 }
@@ -1317,23 +1325,10 @@ func (p *Parser) parseInterfaceType() *Node {
 		meth := &Node{Kind: NFunc, Pos: p.peek().Line}
 		name := p.expect(TOKEN_IDENT)
 		meth.Name = name.Val
-		meth.Nodes = p.parseParamList()
+		meth.Nodes = p.parseFieldList(true)
 		// Parse return type(s)
-		if !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_RBRACE) && !p.at(TOKEN_EOF) {
-			if p.at(TOKEN_LPAREN) {
-				meth.Type = &Node{Kind: NFuncType}
-				p.advance()
-				for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
-					t := p.parseParam()
-					meth.Type.Nodes = append(meth.Type.Nodes, t)
-					if p.at(TOKEN_COMMA) {
-						p.advance()
-					}
-				}
-				p.expect(TOKEN_RPAREN)
-			} else {
-				meth.Type = p.parseType()
-			}
+		if canStartResult(p.peek().Kind) {
+			meth.Type = p.parseResultType()
 		}
 		node.Nodes = append(node.Nodes, meth)
 		p.skipSemicolon()
