@@ -352,6 +352,7 @@ func Memzero(ptr uintptr, n int) {
 }
 
 // readByte reads one byte from an arbitrary address without requiring alignment.
+//rtg:zerocall
 func readByte(ptr uintptr) byte {
 	aligned := ptr &^ uintptr(PtrSize-1)
 	shift := (ptr - aligned) * uintptr(8)
@@ -986,11 +987,9 @@ func mapStrEqual(a uintptr, b uintptr) bool {
 		return true
 	}
 	// Conservative fallback for unaligned data.
-	ab := Makeslice(aptr, alen, alen)
-	bb := Makeslice(bptr, blen, blen)
 	i := 0
 	for i < alen {
-		if ab[i] != bb[i] {
+		if readByte(aptr+uintptr(i)) != readByte(bptr+uintptr(i)) {
 			return false
 		}
 		i = i + 1
@@ -1010,6 +1009,28 @@ func mapFindKey(data uintptr, mlen int, keyKind int, key uintptr) int {
 	for i < mlen {
 		entryAddr := data + uintptr(i*MapEntrySize)
 		if mapKeyEqual(keyKind, ReadPtr(entryAddr), key) {
+			return i
+		}
+		i = i + 1
+	}
+	return -1
+}
+
+func mapFindIntKey(data uintptr, mlen int, key uintptr) int {
+	i := 0
+	for i < mlen {
+		if ReadPtr(data+uintptr(i*MapEntrySize)) == key {
+			return i
+		}
+		i = i + 1
+	}
+	return -1
+}
+
+func mapFindStringKey(data uintptr, mlen int, key uintptr) int {
+	i := 0
+	for i < mlen {
+		if mapStrEqual(ReadPtr(data+uintptr(i*MapEntrySize)), key) {
 			return i
 		}
 		i = i + 1
@@ -1238,9 +1259,8 @@ func mapStringInitHashState(hdr uintptr, mcap int, hashes uintptr) {
 	WritePtr(hdr+uintptr(mapHdrOffHashes), hashes)
 }
 
-// MapMake allocates an empty map header. keyKind: 0=int, 1=string.
-func MapMake(keyKind int) uintptr {
-	capHint := 8
+func mapMakeWithKeyKind(keyKind int) uintptr {
+	capHint := 32
 	hdr := Alloc(mapHdrSize)
 	data := mapAllocEntryBlock(capHint)
 	WritePtr(hdr, data)
@@ -1251,6 +1271,11 @@ func MapMake(keyKind int) uintptr {
 	WritePtr(hdr+uintptr(mapHdrOffHashCap), 0)
 	WritePtr(hdr+uintptr(mapHdrOffHashes), 0)
 	return hdr
+}
+
+// MapMake allocates an empty map header. keyKind: 0=int, 1=string.
+func MapMake(keyKind int) uintptr {
+	return mapMakeWithKeyKind(keyKind)
 }
 
 // MapGet looks up a key in the map. Returns (value, found).

@@ -4107,7 +4107,11 @@ func knownCallRetCount(name string) (int, bool) {
 		"runtime.RuneToString",
 		"runtime.Alloc",
 		"runtime.MapMake",
+		"runtime.MapMakeInt",
+		"runtime.MapMakeString",
 		"runtime.MapSet",
+		"runtime.MapSetInt",
+		"runtime.MapSetString",
 		"runtime.MapLen",
 		"runtime.MapEntryKey",
 		"runtime.MapEntryValue",
@@ -4118,6 +4122,8 @@ func knownCallRetCount(name string) (int, bool) {
 		"runtime.Recover":
 		return 1, true
 	case "runtime.MapGet",
+		"runtime.MapGetInt",
+		"runtime.MapGetString",
 		"runtime.StringDecodeRune":
 		return 2, true
 	case "runtime.SysWrite":
@@ -4129,6 +4135,8 @@ func knownCallRetCount(name string) (int, bool) {
 		"runtime.ProfileAllocHash",
 		"runtime.PanicBegin",
 		"runtime.MapDelete",
+		"runtime.MapDeleteInt",
+		"runtime.MapDeleteString",
 		"runtime.ProfileHashNow",
 		"runtime.ProfileFlush",
 		"runtime.ArenaFlush",
@@ -4939,7 +4947,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		if node.Y != nil && node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X) {
 			c.compileExpr(node.Y.X) // push map
 			c.compileExpr(node.Y.Y) // push key
-			c.emitKnownCall("runtime.MapGet", 2, 2)
+			c.emitKnownCall(c.mapGetRuntimeName(node.Y.X), 2, 2)
 			// MapGet returns (value, ok) — both on stack
 			// Assign in reverse order: ok first (top of stack), then value
 			c.assignStackValuesToLHS(node.Nodes, isDefine)
@@ -5216,7 +5224,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		if mapValueIsInterface {
 			c.maybeBoxValueForInterface(node.Y)
 		}
-		c.emitKnownCall("runtime.MapSet", 3, 1)
+		c.emitKnownCall(c.mapSetRuntimeName(node.X.X), 3, 1)
 		c.emit(ir.Inst{Op: ir.OP_DROP}) // discard returned header (unchanged)
 		return
 	}
@@ -9159,7 +9167,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			if len(node.Nodes) >= 2 {
 				c.compileExpr(node.Nodes[0])
 				c.compileExpr(node.Nodes[1])
-				c.emit(makeInst(ir.OP_CALL, 2, 0, 0, "runtime.MapDelete"))
+				c.emit(makeInst(ir.OP_CALL, 2, 0, 0, c.mapDeleteRuntimeName(node.Nodes[0])))
 			}
 			return
 		}
@@ -9176,8 +9184,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 							keyKind = k
 						}
 					}
-					c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
-					c.emitKnownCall("runtime.MapMake", 1, 1)
+					c.emitMapMakeCall(keyKind)
 					c.compileLValueSet(target)
 					return
 				}
@@ -10648,8 +10655,7 @@ func (c *Compiler) compileMake(node *Node) {
 	if node.Nodes[0].Kind == NMapType {
 		// Map creation: make(map[K]V)
 		keyKind := c.mapKeyKind(node.Nodes[0].X)
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
-		c.emitKnownCall("runtime.MapMake", 1, 1)
+		c.emitMapMakeCall(keyKind)
 		return
 	}
 	// Slice creation: make([]T, len) or make([]T, len, cap)
@@ -10675,6 +10681,56 @@ func (c *Compiler) mapKeyKind(keyTypeNode *Node) int {
 		return 1
 	}
 	return 0
+}
+
+func (c *Compiler) mapMakeRuntimeName(keyKind int) string {
+	if keyKind == 1 {
+		return "runtime.MapMakeString"
+	}
+	return "runtime.MapMakeInt"
+}
+
+func (c *Compiler) emitMapMakeCall(keyKind int) {
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
+		c.emitKnownCall("runtime.MapMake", 1, 1)
+		return
+	}
+	c.emitKnownCall(c.mapMakeRuntimeName(keyKind), 0, 1)
+}
+
+func (c *Compiler) mapGetRuntimeName(node *Node) string {
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		return "runtime.MapGet"
+	}
+	if c.mapExprKeyKind(node) == 1 {
+		return "runtime.MapGetString"
+	}
+	return "runtime.MapGetInt"
+}
+
+func (c *Compiler) mapSetRuntimeName(node *Node) string {
+	return c.mapSetRuntimeNameByKeyKind(c.mapExprKeyKind(node))
+}
+
+func (c *Compiler) mapSetRuntimeNameByKeyKind(keyKind int) string {
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		return "runtime.MapSet"
+	}
+	if keyKind == 1 {
+		return "runtime.MapSetString"
+	}
+	return "runtime.MapSetInt"
+}
+
+func (c *Compiler) mapDeleteRuntimeName(node *Node) string {
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		return "runtime.MapDelete"
+	}
+	if c.mapExprKeyKind(node) == 1 {
+		return "runtime.MapDeleteString"
+	}
+	return "runtime.MapDeleteInt"
 }
 
 // exprReturnCount returns how many values an expression pushes onto the operand stack.
@@ -10956,7 +11012,7 @@ func (c *Compiler) compileIndexExpr(node *Node) {
 	if c.isMapExpr(node.X) {
 		c.compileExpr(node.X)
 		c.compileExpr(node.Y)
-		c.emitKnownCall("runtime.MapGet", 2, 2)
+		c.emitKnownCall(c.mapGetRuntimeName(node.X), 2, 2)
 		// MapGet returns (value, ok) — drop ok for single-value context
 		// (multi-value context is handled in compileAssign)
 		c.emit(ir.Inst{Op: ir.OP_DROP})
@@ -11224,8 +11280,7 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 		}
 		valueTypeQualified := c.qualifyTypeName(valueTypeName, "")
 		valueIsInterface := c.isInterfaceTypeName(valueTypeName) || c.isInterfaceTypeName(valueTypeQualified)
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
-		c.emitKnownCall("runtime.MapMake", 1, 1)
+		c.emitMapMakeCall(keyKind)
 		// For each key-value pair, call MapSet
 		for _, elem := range node.Nodes {
 			if elem.Kind == NKeyValue {
@@ -11237,7 +11292,7 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 				if valueIsInterface {
 					c.maybeBoxValueForInterface(elem.Y)
 				}
-				c.emitKnownCall("runtime.MapSet", 3, 1)
+				c.emitKnownCall(c.mapSetRuntimeNameByKeyKind(keyKind), 3, 1)
 				c.emit(ir.Inst{Op: ir.OP_DROP}) // drop the returned header (same as input)
 				// Original map_hdr still on stack
 			}
