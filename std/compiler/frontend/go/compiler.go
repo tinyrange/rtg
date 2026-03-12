@@ -153,6 +153,8 @@ type Compiler struct {
 	structTypeLookup      map[string]structTypeLookupResult
 	structFieldLookup     map[string]structFieldLookupResult
 	fieldTypeLookup       map[string]cachedStringResult
+	storageTypeCache      map[string]cachedStringResult
+	methodResolutionCache map[string]cachedStringResult
 	resolveCallNameCache  map[*Node]cachedStringResult
 	resolveExprTypeCache  map[*Node]cachedStringResult
 	exprConcreteTypeCache map[*Node]cachedStringResult
@@ -237,6 +239,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		structTypeLookup:      make(map[string]structTypeLookupResult),
 		structFieldLookup:     make(map[string]structFieldLookupResult),
 		fieldTypeLookup:       make(map[string]cachedStringResult),
+		methodResolutionCache: make(map[string]cachedStringResult),
 		assembleFuncs:         make(map[string]assembleInfo),
 		entryFunc:             entryFunc,
 		deferRecoverWrapFuncs: make(map[string]bool),
@@ -411,6 +414,7 @@ func (c *Compiler) registerLocalTypeDecl(node *Node) {
 		c.localTypeDecls = make(map[string]*Node)
 	}
 	c.localTypeDecls[node.Name] = node
+	c.storageTypeCache = nil
 }
 
 func isBuiltinName(name string) bool {
@@ -1315,13 +1319,31 @@ func (c *Compiler) setLocalTypeFlags(idx int, typeName string) {
 }
 
 func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
+	cacheable := depth == 0 && c.storageTypeCache != nil
+	if cacheable {
+		if cached, ok := c.storageTypeCache[typeName]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
+	}
 	if typeName == "" || depth > 16 {
+		if cacheable {
+			c.storageTypeCache[typeName] = cachedStringResult{value: typeName, ok: typeName != ""}
+		}
 		return typeName
 	}
 	if isBuiltinTypeName(typeName) || c.isInterfaceTypeName(typeName) {
+		if cacheable {
+			c.storageTypeCache[typeName] = cachedStringResult{value: typeName, ok: true}
+		}
 		return typeName
 	}
 	if len(typeName) > 0 && (typeName[0] == '*' || strings.HasPrefix(typeName, "[]") || strings.HasPrefix(typeName, "map[")) {
+		if cacheable {
+			c.storageTypeCache[typeName] = cachedStringResult{value: typeName, ok: true}
+		}
 		return typeName
 	}
 	dot := len(typeName) - 1
@@ -1334,6 +1356,9 @@ func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
 	if dot > 0 {
 		typeShort := typeName[dot+1:]
 		if isBuiltinTypeName(typeShort) || c.isInterfaceTypeName(typeShort) {
+			if cacheable {
+				c.storageTypeCache[typeName] = cachedStringResult{value: typeShort, ok: true}
+			}
 			return typeShort
 		}
 	}
@@ -1343,7 +1368,11 @@ func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
 			next = nodeTypeName(decl.Type)
 		}
 		if next != "" && next != typeName {
-			return c.resolveStorageTypeName(next, depth+1)
+			result := c.resolveStorageTypeName(next, depth+1)
+			if cacheable {
+				c.storageTypeCache[typeName] = cachedStringResult{value: result, ok: result != ""}
+			}
+			return result
 		}
 	}
 	dot = len(typeName) - 1
@@ -1363,10 +1392,17 @@ func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
 					next = nodeTypeName(sym.Node.Type)
 				}
 				if next != "" && next != typeName {
-					return c.resolveStorageTypeName(next, depth+1)
+					result := c.resolveStorageTypeName(next, depth+1)
+					if cacheable {
+						c.storageTypeCache[typeName] = cachedStringResult{value: result, ok: result != ""}
+					}
+					return result
 				}
 			}
 		}
+	}
+	if cacheable {
+		c.storageTypeCache[typeName] = cachedStringResult{value: typeName, ok: true}
 	}
 	return typeName
 }
@@ -2958,6 +2994,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	savedPanicCheckSlowLabels := c.panicCheckSlowLabels
 	savedPanicCheckSlowDepths := c.panicCheckSlowDepths
 	savedNamedResultNames := c.namedResultNames
+	savedStorageTypeCache := c.storageTypeCache
 	savedResolveCallNameCache := c.resolveCallNameCache
 	savedResolveExprTypeCache := c.resolveExprTypeCache
 	savedExprConcreteTypeCache := c.exprConcreteTypeCache
@@ -2969,6 +3006,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.localConcreteTypes = make(map[string]string)
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
+	c.storageTypeCache = make(map[string]cachedStringResult)
 	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
 	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
 	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
@@ -3068,6 +3106,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.panicCheckSlowLabels = savedPanicCheckSlowLabels
 	c.panicCheckSlowDepths = savedPanicCheckSlowDepths
 	c.namedResultNames = savedNamedResultNames
+	c.storageTypeCache = savedStorageTypeCache
 	c.resolveCallNameCache = savedResolveCallNameCache
 	c.resolveExprTypeCache = savedResolveExprTypeCache
 	c.exprConcreteTypeCache = savedExprConcreteTypeCache
@@ -3471,6 +3510,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.storageTypeCache = make(map[string]cachedStringResult)
 	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
 	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
 	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
@@ -9600,6 +9640,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedComptimeDisabled := c.comptimeDisabled
 	savedInIfInit := c.inIfInit
 	savedIfInitLeakedNames := c.ifInitLeakedNames
+	savedStorageTypeCache := c.storageTypeCache
 	savedResolveCallNameCache := c.resolveCallNameCache
 	savedResolveExprTypeCache := c.resolveExprTypeCache
 	savedExprConcreteTypeCache := c.exprConcreteTypeCache
@@ -9629,6 +9670,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.storageTypeCache = make(map[string]cachedStringResult)
 	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
 	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
 	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
@@ -9666,6 +9708,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localMethodTargets = savedLocalMethodTargets
 	c.localMethodRecv = savedLocalMethodRecv
 	c.localFuncCaptures = savedLocalFuncCaptures
+	c.storageTypeCache = savedStorageTypeCache
 	c.resolveCallNameCache = savedResolveCallNameCache
 	c.resolveExprTypeCache = savedResolveExprTypeCache
 	c.exprConcreteTypeCache = savedExprConcreteTypeCache
@@ -10323,12 +10366,25 @@ func pointerMethodTypeName(typeName string) string {
 }
 
 func (c *Compiler) resolveMethodByConcreteType(concreteType string, methodName string) (string, bool) {
+	cacheKey := concreteType + "\x00" + methodName
+	if cached, ok := c.methodResolutionCache[cacheKey]; ok {
+		if cached.ok {
+			return cached.value, true
+		}
+		return "", false
+	}
 	candidate := c.dotJoin(concreteType, methodName)
 	if resolved, ok := c.methodTable[candidate]; ok {
+		c.methodResolutionCache[cacheKey] = cachedStringResult{value: resolved, ok: true}
 		return resolved, true
 	}
 	ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
 	resolved, ok := c.methodTable[ptrCandidate]
+	if ok {
+		c.methodResolutionCache[cacheKey] = cachedStringResult{value: resolved, ok: true}
+		return resolved, true
+	}
+	c.methodResolutionCache[cacheKey] = cachedStringResult{}
 	return resolved, ok
 }
 
