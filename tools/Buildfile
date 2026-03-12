@@ -275,6 +275,14 @@ selfhost-string-concat-report: build
   sh python3 tools/string_concat_profile_report.py --map build/stage2.string_concat.map --profile build/stage2.string_concat.profile --md-out build/stage2.string_concat.md --tsv-out build/stage2.string_concat.tsv
   sh echo "PASS: wrote build/stage2.string_concat.md and build/stage2.string_concat.tsv"
 
+selfhost-map-make-report: build
+  sh ./build/rtg -strict -map-make-report -map-make-map build/stage1.map_make.map -o build/stage1_mapmake ./std/compiler/
+  sh ./build/stage1_mapmake -strict -map-make-report -map-make-map build/stage2.map_make.map -o build/stage2_mapmake ./std/compiler/
+  sh rm -f build/stage2.map_make.profile build/stage2.map_make.md build/stage2.map_make.tsv
+  sh RTG_PROFILE=build/stage2.map_make.profile ./build/stage2_mapmake -strict -map-make-report -o build/stage_out ./std/compiler/
+  sh python3 tools/map_make_profile_report.py --map build/stage2.map_make.map --profile build/stage2.map_make.profile --md-out build/stage2.map_make.md --tsv-out build/stage2.map_make.tsv
+  sh echo "PASS: wrote build/stage2.map_make.md and build/stage2.map_make.tsv"
+
 test-fullcompiler-armv8m-renode: build
   sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"
   fullcompiler rtg semihost/armv8m

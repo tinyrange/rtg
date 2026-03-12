@@ -21,6 +21,8 @@ type Target struct {
 	SliceResliceMapPath   string
 	StringConcatReport    bool
 	StringConcatMapPath   string
+	MapMakeReport         bool
+	MapMakeMapPath        string
 	CompilerDebug         bool
 	EmitIRAndBinaryPath   string
 	StripBinary           bool

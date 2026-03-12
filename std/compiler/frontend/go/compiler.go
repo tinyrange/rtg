@@ -6519,6 +6519,10 @@ func (c *Compiler) stringConcatReportingEnabled() bool {
 	return c != nil && c.target != nil && c.target.StringConcatReport
 }
 
+func (c *Compiler) mapMakeReportingEnabled() bool {
+	return c != nil && c.target != nil && c.target.MapMakeReport
+}
+
 func (c *Compiler) currentAllocSiteName() string {
 	if c == nil || c.curFunc == nil || c.curFunc.Name == "" {
 		return ""
@@ -6572,6 +6576,22 @@ func (c *Compiler) emitSliceResliceSample() {
 
 func (c *Compiler) emitStringConcatSample() {
 	if !c.stringConcatReportingEnabled() {
+		return
+	}
+	siteName := c.currentAllocSiteName()
+	if siteName == "" {
+		return
+	}
+	siteHash := profileHash32FNV(siteName)
+	c.recordAllocSiteName(siteHash, siteName)
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
+}
+
+func (c *Compiler) emitMapMakeSample() {
+	if !c.mapMakeReportingEnabled() {
 		return
 	}
 	siteName := c.currentAllocSiteName()
@@ -11685,10 +11705,12 @@ func (c *Compiler) mapMakeRuntimeName(keyKind int) string {
 
 func (c *Compiler) emitMapMakeCall(keyKind int) {
 	if c.target != nil && c.target.GOARCH == "wasm32" {
+		c.emitMapMakeSample()
 		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
 		c.emitKnownCall("runtime.MapMake", 1, 1)
 		return
 	}
+	c.emitMapMakeSample()
 	c.emitKnownCall(c.mapMakeRuntimeName(keyKind), 0, 1)
 }
 
