@@ -28,6 +28,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#41` C backend float lowering currently requires the C word size to be at least as wide as the float payload (`c/64` for `float64`; `c/32+` for `float32`).
 - `#42` Selfhost stage1 can segfault during `ResolveModule` when compiler changes introduce package-level caches over embedded-source metadata.
 - `#43` Indexed global-array access can be miscompiled as an extra pointer dereference in RTG-generated code.
+- `#44` Arena allocation accounting follows `arenaCurrent` instead of the active allocation target, so `UseParent` scopes report bytes against the child arena.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -93,6 +94,27 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 **Current mitigation**
 - Avoid indexed access to global arrays in RTG-compiled code for now.
 - Use heap-linked structures, slices, or scalar globals instead when the index is dynamic.
+
+### 44) Arena allocation accounting attributes `UseParent` allocations to the child scope
+
+**Symptom**
+- The new focused target:
+  - `./build/build test-arena-accounting`
+- currently fails with a report like:
+  - parent scope: tiny `req_bytes`
+  - child scope: nearly all requested bytes
+- even though the test performs its large allocation while `arena.UseParent()` is active inside the child scope.
+
+**Impact**
+- Arena reports are currently misleading for optimization work: parent-routed allocations look like child allocations.
+- This makes the new arena machinery hard to tune because the accounting does not reflect the real allocation target.
+
+**Likely root cause**
+- `arenaAlloc` routes allocation through `arenaAllocFrame`, but `arenaRecordAlloc` still attributes bytes using `arenaCurrent`.
+- `ArenaUseParent` only changes the allocation target, not `arenaCurrent`.
+
+**Current mitigation**
+- Use `test-arena-accounting` as the regression target before changing arena accounting logic.
 
 ### 41) C backend float lowering currently depends on word-size >= float-size
 

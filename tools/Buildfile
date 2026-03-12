@@ -219,6 +219,12 @@ test-arena: build
   sh python3 tools/check_arena_report.py build/test_arena_report.txt tests.arena.report.outer tests.arena.report.inner tests.arena.report.churn
   sh echo "PASS: arena tests OK"
 
+test-arena-accounting: build
+  sh rm -f build/test_arena_accounting.txt
+  sh ./build/rtg tests/arena_accounting.go -o build/test_arena_accounting
+  sh RTG_ARENA_REPORT=build/test_arena_accounting.txt ./build/test_arena_accounting
+  sh python3 tools/check_arena_accounting.py build/test_arena_accounting.txt
+
 test-fullcompiler-armv8m-renode: build
   sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"
   fullcompiler rtg semihost/armv8m
