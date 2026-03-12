@@ -655,6 +655,7 @@ type NodeKind int
 const (
 	NFile NodeKind = iota
 	NImport
+	NDeclGroup
 	NFunc
 	NTypeDecl
 	NField
@@ -707,6 +708,17 @@ type Node struct {
 	Y     *Node
 	Body  *Node
 	Type  *Node
+}
+
+func newDeclGroup(name string, pos int, nodes []*Node) *Node {
+	return &Node{Kind: NDeclGroup, Name: name, Nodes: nodes, Pos: pos}
+}
+
+func isDeclGroup(node *Node, name string) bool {
+	if node == nil || node.Kind != NDeclGroup {
+		return false
+	}
+	return name == "" || node.Name == name
 }
 
 // Parser parses a sequence of tokens into an AST.
@@ -802,8 +814,7 @@ func (p *Parser) ParseFile() *Node {
 
 	// imports
 	for p.at(TOKEN_IMPORT) {
-		imports := p.parseImportGroup()
-		file.Nodes = append(file.Nodes, imports...)
+		file.Nodes = append(file.Nodes, p.parseImportGroup())
 	}
 
 	// top-level declarations
@@ -817,7 +828,8 @@ func (p *Parser) ParseFile() *Node {
 	return file
 }
 
-func (p *Parser) parseImportGroup() []*Node {
+func (p *Parser) parseImportGroup() *Node {
+	pos := p.peek().Line
 	p.expect(TOKEN_IMPORT)
 	imports := make([]*Node, 0, 1)
 	if p.at(TOKEN_LPAREN) {
@@ -828,12 +840,12 @@ func (p *Parser) parseImportGroup() []*Node {
 			p.skipSemicolon()
 		}
 		p.expect(TOKEN_RPAREN)
-	} else {
-		spec := p.parseImportSpec()
-		imports = append(imports, spec)
+		p.skipSemicolon()
+		return newDeclGroup("import", pos, imports)
 	}
+	spec := p.parseImportSpec()
 	p.skipSemicolon()
-	return imports
+	return spec
 }
 
 func (p *Parser) parseImportSpec() *Node {
@@ -1060,11 +1072,7 @@ func (p *Parser) parseTypeDecl() *Node {
 		}
 		p.expect(TOKEN_RPAREN)
 		p.skipSemicolon()
-		if len(decls) == 1 {
-			return decls[0]
-		}
-		group := &Node{Kind: NBlock, Nodes: decls, Pos: pos}
-		return group
+		return newDeclGroup("type", pos, decls)
 	}
 
 	name := p.expect(TOKEN_IDENT)
@@ -1092,10 +1100,7 @@ func (p *Parser) parseVarDecl() *Node {
 		}
 		p.expect(TOKEN_RPAREN)
 		p.skipSemicolon()
-		if len(decls) == 1 {
-			return decls[0]
-		}
-		return &Node{Kind: NVarDecl, Nodes: decls, Pos: pos}
+		return newDeclGroup("var", pos, decls)
 	}
 
 	decls := p.parseVarDeclSpec()
@@ -1153,7 +1158,7 @@ func (p *Parser) parseConstDecl() *Node {
 	p.expect(TOKEN_CONST)
 	if p.at(TOKEN_LPAREN) {
 		p.advance()
-		group := &Node{Kind: NConstDecl, Pos: pos}
+		decls := make([]*Node, 0, 4)
 		for !p.at(TOKEN_RPAREN) && !p.at(TOKEN_EOF) {
 			name := p.expect(TOKEN_IDENT)
 			spec := &Node{Kind: NConstDecl, Name: name.Val, Pos: name.Line}
@@ -1164,12 +1169,12 @@ func (p *Parser) parseConstDecl() *Node {
 				p.advance()
 				spec.X = p.parseExpr()
 			}
-			group.Nodes = append(group.Nodes, spec)
+			decls = append(decls, spec)
 			p.skipSemicolon()
 		}
 		p.expect(TOKEN_RPAREN)
 		p.skipSemicolon()
-		return group
+		return newDeclGroup("const", pos, decls)
 	}
 	name := p.expect(TOKEN_IDENT)
 	node := &Node{Kind: NConstDecl, Name: name.Val, Pos: pos}
@@ -3606,8 +3611,13 @@ func (c *Compiler) exprWidth(node *Node) int {
 func (c *Compiler) precomputeConsts(pkg *Package) {
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
-			if node.Kind == NConstDecl && len(node.Nodes) > 0 {
-				// Grouped const block: iota increments for each child
+			base, _ := unwrapDirectiveNode(node)
+			if base == nil {
+				continue
+			}
+			node = base
+			if isDeclGroup(node, "const") {
+				// Grouped const block: iota increments for each child.
 				var lastExpr *Node
 				iotaVal := int64(0)
 				for _, child := range node.Nodes {
@@ -3626,7 +3636,7 @@ func (c *Compiler) precomputeConsts(pkg *Package) {
 					iotaVal++
 				}
 			} else if node.Kind == NConstDecl {
-				// Single const: iota = 0
+				// Single const: iota = 0.
 				qname := pkg.QualName(node.Name)
 				if c.isConstStringExpr(node.X) {
 					c.constStringValues[qname] = c.evalConstString(node.X)
@@ -3854,7 +3864,7 @@ func appendTopDeclNames(node *Node, out []string) []string {
 		if node.X != nil {
 			return appendTopDeclNames(node.X, out)
 		}
-	case NBlock:
+	case NDeclGroup:
 		for _, child := range node.Nodes {
 			out = appendTopDeclNames(child, out)
 		}
@@ -4172,7 +4182,7 @@ func (c *Compiler) collectZeroCallTypeDirectives(pkg *Package) {
 				if base.Name != "" {
 					c.typeIsZeroCall[pkg.QualName(base.Name)] = true
 				}
-			case NBlock:
+			case NDeclGroup:
 				for _, child := range base.Nodes {
 					if child != nil && child.Kind == NTypeDecl && child.Name != "" {
 						c.typeIsZeroCall[pkg.QualName(child.Name)] = true
@@ -4404,6 +4414,10 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 	if node == nil {
 		return
 	}
+	if node.Kind == NDirective {
+		c.collectInterfaceDecl(pkg, node.X)
+		return
+	}
 	if node.Kind == NTypeDecl && node.Type != nil && node.Type.Kind == NInterfaceType {
 		qname := pkg.QualName(node.Name)
 		var methods []string
@@ -4451,7 +4465,7 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 		c.ifaceMethods[node.Name] = methods
 		c.ifaceMethods[qname] = methods
 	}
-	if node.Kind == NBlock {
+	if node.Kind == NDeclGroup {
 		for _, child := range node.Nodes {
 			c.collectInterfaceDecl(pkg, child)
 		}
@@ -4855,35 +4869,40 @@ func (c *Compiler) collectArtifactDirectiveInits(pkg *Package) []artifactInit {
 	return out
 }
 
+func collectVarInitDecls(node *Node, inits *[]*Node) {
+	if node == nil {
+		return
+	}
+	if node.Kind == NDirective {
+		collectVarInitDecls(node.X, inits)
+		return
+	}
+	if node.Kind == NDeclGroup {
+		for _, child := range node.Nodes {
+			collectVarInitDecls(child, inits)
+		}
+		return
+	}
+	if node.Kind != NVarDecl {
+		return
+	}
+	if node.X != nil {
+		*inits = append(*inits, node)
+		return
+	}
+	for _, child := range node.Nodes {
+		if child != nil && child.X != nil {
+			*inits = append(*inits, child)
+		}
+	}
+}
+
 func (c *Compiler) compileGlobalInits(pkg *Package) {
 	// Collect all global var decls with initializers
 	var inits []*Node
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
-			if node.Kind == NVarDecl {
-				if node.X != nil {
-					inits = append(inits, node)
-				} else if len(node.Nodes) > 0 {
-					for _, child := range node.Nodes {
-						if child.X != nil {
-							inits = append(inits, child)
-						}
-					}
-				}
-				continue
-			}
-			if node.Kind == NDirective && node.X != nil && node.X.Kind == NVarDecl {
-				directiveVar := node.X
-				if directiveVar.X != nil {
-					inits = append(inits, directiveVar)
-				} else if len(directiveVar.Nodes) > 0 {
-					for _, child := range directiveVar.Nodes {
-						if child.X != nil {
-							inits = append(inits, child)
-						}
-					}
-				}
-			}
+			collectVarInitDecls(node, &inits)
 		}
 	}
 
@@ -5256,7 +5275,7 @@ func (c *Compiler) compileTopDecl(node *Node) {
 		}
 	case NVarDecl:
 		// Global var — init handled separately
-	case NConstDecl, NTypeDecl, NBlock, NImport:
+	case NConstDecl, NTypeDecl, NDeclGroup, NImport:
 		// No code to emit
 	default:
 		panic("ICE: unhandled top-level declaration kind in compileTopDecl")
@@ -6205,6 +6224,10 @@ func (c *Compiler) compileStmt(node *Node) {
 	case NTypeDecl:
 		// Local type declaration
 		c.registerLocalTypeDecl(node)
+	case NDeclGroup:
+		for _, child := range node.Nodes {
+			c.compileStmt(child)
+		}
 	case NBlock:
 		c.compileBlock(node)
 	default:
@@ -14622,23 +14645,37 @@ func collectImports(pkg *Package) []string {
 	var result []string
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
-			if node.Kind == NImport {
-				path := node.Name
-				if !seen[path] {
-					seen[path] = true
-					result = append(result, path)
-				}
-				if node.X != nil && node.X.Kind == NIdent {
-					alias := node.X.Name
-					if alias != "" && alias != "_" && alias != "." {
-						aliases[alias] = path
-					}
-				}
-			}
+			collectImportsFromNode(node, seen, aliases, &result)
 		}
 	}
 	pkg.ImportAliases = aliases
 	return result
+}
+
+func collectImportsFromNode(node *Node, seen map[string]bool, aliases map[string]string, result *[]string) {
+	if node == nil {
+		return
+	}
+	if node.Kind == NDeclGroup {
+		for _, child := range node.Nodes {
+			collectImportsFromNode(child, seen, aliases, result)
+		}
+		return
+	}
+	if node.Kind != NImport {
+		return
+	}
+	path := node.Name
+	if !seen[path] {
+		seen[path] = true
+		*result = append(*result, path)
+	}
+	if node.X != nil && node.X.Kind == NIdent {
+		alias := node.X.Name
+		if alias != "" && alias != "_" && alias != "." {
+			aliases[alias] = path
+		}
+	}
 }
 
 // topologicalSort performs a DFS-based topological sort on the import graph.
@@ -14728,31 +14765,35 @@ func collectDeclSymbol(pkg *Package, node *Node) {
 	case NDirective:
 		// Unwrap the directive, register the inner decl, and mark intrinsic
 		if node.X != nil {
-			collectDeclSymbol(pkg, node.X)
+			base := node.X
+			collectDeclSymbol(pkg, base)
+			if base.Kind == NDeclGroup {
+				return
+			}
 			// Parse directive name for "internal FuncName"
 			intern := parseInternalDirective(node.Name)
-			if intern != "" && node.X.Name != "" {
-				sym, ok := pkg.Symbols[node.X.Name]
+			if intern != "" && base.Name != "" {
+				sym, ok := pkg.Symbols[base.Name]
 				if ok {
 					sym.Intern = intern
 				}
 			}
 			// Check for embed directive
-			if len(node.Name) > 6 && node.Name[0:6] == "embed " && node.X.Name != "" {
-				sym, ok := pkg.Symbols[node.X.Name]
+			if len(node.Name) > 6 && node.Name[0:6] == "embed " && base.Name != "" {
+				sym, ok := pkg.Symbols[base.Name]
 				if ok {
 					sym.Embed = node.Name[6:len(node.Name)]
 				}
 			}
-			if _, ok := parseLinkStaticDirective(node.Name); ok && node.X.Name != "" {
-				sym, exists := pkg.Symbols[node.X.Name]
+			if _, ok := parseLinkStaticDirective(node.Name); ok && base.Name != "" {
+				sym, exists := pkg.Symbols[base.Name]
 				if exists {
 					sym.LinkStatic = true
 				}
 			}
 		}
-	case NBlock:
-		// Grouped type declarations
+	case NDeclGroup:
+		// Grouped declarations.
 		for _, child := range node.Nodes {
 			collectDeclSymbol(pkg, child)
 		}
