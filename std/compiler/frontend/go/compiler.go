@@ -184,6 +184,8 @@ type Compiler struct {
 	profileMethodHash     uint32
 	profileFlushOnExit    bool
 	currentMethodHash     uint32
+	currentSourceLine     int
+	allocSiteNames        map[uint32]string
 	arenaEntered          bool
 	inIfInit              bool
 	ifInitLeakedNames     map[string]bool
@@ -211,7 +213,7 @@ func (c *Compiler) dotJoin(a string, b string) string {
 }
 
 // CompileModule compiles an entire resolved module to IR.
-func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
+func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string, map[uint32]string) {
 	entryFunc := target.EntryFunc
 	if entryFunc == "" {
 		entryFunc = "main.main"
@@ -262,6 +264,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		structFieldLookup:     make(map[string]structFieldLookupResult),
 		fieldTypeLookup:       make(map[string]cachedStringResult),
 		methodResolutionCache: make(map[string]cachedStringResult),
+		allocSiteNames:        make(map[uint32]string),
 		assembleFuncs:         make(map[string]assembleInfo),
 		entryFunc:             entryFunc,
 		deferRecoverWrapFuncs: make(map[string]bool),
@@ -397,7 +400,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		c.errors = append(c.errors, optErrs...)
 	}
 
-	return c.irmod, c.errors
+	return c.irmod, c.errors, c.allocSiteNames
 }
 
 func (c *Compiler) initBuiltinTypes() {
@@ -3471,6 +3474,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	savedProfileStartLocal := c.profileStartLocal
 	savedProfileParentLocal := c.profileParentLocal
 	savedProfileFlushOnExit := c.profileFlushOnExit
+	savedCurrentSourceLine := c.currentSourceLine
 	savedArenaEntered := c.arenaEntered
 	c.curFunc = f
 	c.scopes = nil
@@ -3493,6 +3497,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.profileStartLocal = -1
 	c.profileParentLocal = -1
 	c.profileFlushOnExit = false
+	c.currentSourceLine = 0
 	c.arenaEntered = false
 	if c.shouldInstrumentArena(f.Name) {
 		c.emitArenaEnter(f.Name)
@@ -3606,6 +3611,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.profileStartLocal = savedProfileStartLocal
 	c.profileParentLocal = savedProfileParentLocal
 	c.profileFlushOnExit = savedProfileFlushOnExit
+	c.currentSourceLine = savedCurrentSourceLine
 	c.arenaEntered = savedArenaEntered
 }
 
@@ -4020,6 +4026,7 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.profileMethodHash = 0
 	c.profileFlushOnExit = false
 	c.currentMethodHash = profileHash32FNV(qname)
+	c.currentSourceLine = 0
 	c.arenaEntered = false
 	c.inIfInit = false
 	c.ifInitLeakedNames = make(map[string]bool)
@@ -4210,7 +4217,7 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.emitKnownCall("runtime.Now", 0, 1)
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
 	}
-	if c.target != nil && (c.target.Profile || c.target.ArenaReport) && f.Name == c.entryFunc {
+	if c.target != nil && (c.target.Profile || c.target.ArenaReport || c.target.AllocSiteReport) && f.Name == c.entryFunc {
 		c.profileFlushOnExit = true
 	}
 
@@ -4344,6 +4351,7 @@ func (c *Compiler) compileIntrinsicFunc(node *Node, intern string) {
 
 	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, 4)}
 	c.curFunc = f
+	c.currentSourceLine = 0
 
 	// Count params and detect variadic
 	paramCount := len(node.Nodes)
@@ -4419,6 +4427,7 @@ func (c *Compiler) compileLinkStaticFunc(node *Node, spec LinkStaticDirective) {
 
 	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, 8)}
 	c.curFunc = f
+	c.currentSourceLine = 0
 
 	// Count params and detect variadic
 	paramCount := len(node.Nodes)
@@ -4808,6 +4817,18 @@ func (c *Compiler) compileBlock(node *Node) {
 }
 
 func (c *Compiler) compileStmt(node *Node) {
+	if node == nil {
+		return
+	}
+	savedSourceLine := c.currentSourceLine
+	if node.Pos > 0 {
+		c.currentSourceLine = node.Pos
+	}
+	c.compileStmtBody(node)
+	c.currentSourceLine = savedSourceLine
+}
+
+func (c *Compiler) compileStmtBody(node *Node) {
 	if node == nil {
 		return
 	}
@@ -5879,6 +5900,7 @@ func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureC
 	savedProfileMethodHash := c.profileMethodHash
 	savedProfileFlushOnExit := c.profileFlushOnExit
 	savedCurrentMethodHash := c.currentMethodHash
+	savedCurrentSourceLine := c.currentSourceLine
 	savedArenaEntered := c.arenaEntered
 	savedInIfInit := c.inIfInit
 	savedIfInitLeakedNames := c.ifInitLeakedNames
@@ -5922,6 +5944,7 @@ func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureC
 	c.profileMethodHash = savedProfileMethodHash
 	c.profileFlushOnExit = savedProfileFlushOnExit
 	c.currentMethodHash = savedCurrentMethodHash
+	c.currentSourceLine = savedCurrentSourceLine
 	c.arenaEntered = savedArenaEntered
 	c.inIfInit = savedInIfInit
 	c.ifInitLeakedNames = savedIfInitLeakedNames
@@ -6323,7 +6346,47 @@ func (c *Compiler) emitProfileAllocSample() {
 	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
 }
 
+func (c *Compiler) allocSiteReportingEnabled() bool {
+	return c != nil && c.target != nil && c.target.AllocSiteReport
+}
+
+func (c *Compiler) currentAllocSiteName() string {
+	if c == nil || c.curFunc == nil || c.curFunc.Name == "" {
+		return ""
+	}
+	if c.currentSourceLine > 0 {
+		return fmt.Sprintf("%s:%d", c.curFunc.Name, c.currentSourceLine)
+	}
+	return c.curFunc.Name
+}
+
+func (c *Compiler) recordAllocSiteName(siteHash uint32, siteName string) {
+	if siteHash == 0 || siteName == "" || c.allocSiteNames == nil {
+		return
+	}
+	if _, ok := c.allocSiteNames[siteHash]; !ok {
+		c.allocSiteNames[siteHash] = siteName
+	}
+}
+
+func (c *Compiler) emitAllocSiteSample() {
+	if !c.allocSiteReportingEnabled() {
+		return
+	}
+	siteName := c.currentAllocSiteName()
+	if siteName == "" {
+		return
+	}
+	siteHash := profileHash32FNV(siteName)
+	c.recordAllocSiteName(siteHash, siteName)
+	c.emit(ir.Inst{Op: ir.OP_DUP})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
+}
+
 func (c *Compiler) emitRuntimeAllocCall() {
+	c.emitAllocSiteSample()
 	c.emitProfileAllocSample()
 	c.emitKnownCall("runtime.Alloc", 1, 1)
 }
@@ -6556,7 +6619,10 @@ func (c *Compiler) emitPanicPropagationCheck(_ int) {
 
 func (c *Compiler) emitCallWithPanicCheck(callName string, argCount int) {
 	if callName == "runtime.Alloc" && argCount == 1 {
+		c.emitAllocSiteSample()
 		c.emitProfileAllocSample()
+		c.emitKnownCall("runtime.Alloc", 1, 1)
+		return
 	}
 	retCount := c.resolvedCallRetCount(callName)
 	c.curFunc.Code = append(c.curFunc.Code, makeInst(ir.OP_CALL, argCount, 0, 0, callName))
@@ -7921,6 +7987,18 @@ func (c *Compiler) compileBranch(node *Node) {
 // === Expression compilation ===
 
 func (c *Compiler) compileExpr(node *Node) {
+	if node == nil {
+		return
+	}
+	savedSourceLine := c.currentSourceLine
+	if node.Pos > 0 {
+		c.currentSourceLine = node.Pos
+	}
+	c.compileExprBody(node)
+	c.currentSourceLine = savedSourceLine
+}
+
+func (c *Compiler) compileExprBody(node *Node) {
 	if node == nil {
 		return
 	}
@@ -10335,6 +10413,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedResolveCallNameCache := c.resolveCallNameCache
 	savedResolveExprTypeCache := c.resolveExprTypeCache
 	savedExprConcreteTypeCache := c.exprConcreteTypeCache
+	savedCurrentSourceLine := c.currentSourceLine
 
 	c.curFunc = f
 	c.scopes = nil
@@ -10369,6 +10448,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.comptimeDisabled = true
 	c.inIfInit = false
 	c.ifInitLeakedNames = make(map[string]bool)
+	c.currentSourceLine = 0
 	c.pushScope()
 	c.compileExpr(call)
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: retCount})
@@ -10403,6 +10483,7 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.resolveCallNameCache = savedResolveCallNameCache
 	c.resolveExprTypeCache = savedResolveExprTypeCache
 	c.exprConcreteTypeCache = savedExprConcreteTypeCache
+	c.currentSourceLine = savedCurrentSourceLine
 	c.activeCaptures = savedActiveCaptures
 	c.comptimeDisabled = savedComptimeDisabled
 	c.inIfInit = savedInIfInit

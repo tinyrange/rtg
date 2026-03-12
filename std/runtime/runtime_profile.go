@@ -11,8 +11,10 @@ const (
 )
 
 var profileInitDone bool
+var profileIniting bool
 var profileTouched bool
 var profileEnabled bool
+var profileBypass bool
 var profileFD uintptr
 var profileFDOpen bool
 var profileBuf []byte
@@ -51,14 +53,20 @@ func ProfileAllocHash(size int, methodHash uint32, parentHash uint32) {
 }
 
 func profileRecord(kind uint32, methodHash uint32, parentHash uint32, value uint32) {
+	if profileBypass {
+		return
+	}
+	profileBypass = true
 	profileTouched = true
 	profileEnsureInit()
 	if !profileEnabled {
+		profileBypass = false
 		return
 	}
 	if profileBufUsed+profileRecordSize > profileBufferSize {
 		profileFlushBuffer()
 		if !profileEnabled {
+			profileBypass = false
 			return
 		}
 	}
@@ -83,6 +91,7 @@ func profileRecord(kind uint32, methodHash uint32, parentHash uint32, value uint
 	if profileBufUsed == profileBufferSize {
 		profileFlushBuffer()
 	}
+	profileBypass = false
 }
 
 // ProfileFlush flushes pending profile records and closes the profile output.
@@ -90,19 +99,30 @@ func ProfileFlush() {
 	if !profileTouched && !profileInitDone {
 		return
 	}
+	if profileBypass {
+		return
+	}
+	profileBypass = true
 	profileEnsureInit()
 	if !profileEnabled {
+		profileBypass = false
 		return
 	}
 	profileFlushBuffer()
 	allocDebugMaybePrintSummary()
 	profileDisable()
+	profileBypass = false
 }
 
 func profileEnsureInit() {
 	if profileInitDone {
 		return
 	}
+	if profileIniting {
+		return
+	}
+	profileIniting = true
+	profileBypass = true
 	profileInitDone = true
 	if len(profileBuf) == 0 {
 		profileBuf = make([]byte, profileBufferSize)
@@ -110,11 +130,15 @@ func profileEnsureInit() {
 
 	path := profileLookupEnv("RTG_PROFILE")
 	if path == "" {
+		profileBypass = false
+		profileIniting = false
 		return
 	}
 	cpath := profileMakeCString(path)
 	fd, _, errn := SysOpen(Sliceptr(cpath), uintptr(profileOpenFlags), uintptr(profileFilePerm))
 	if errn != 0 {
+		profileBypass = false
+		profileIniting = false
 		return
 	}
 	// Some targets may create the file with restrictive default mode despite O_CREAT mode.
@@ -127,11 +151,15 @@ func profileEnsureInit() {
 	header[3] = '2'
 	if !profileWriteAll(fd, header[:]) {
 		SysClose(fd)
+		profileBypass = false
+		profileIniting = false
 		return
 	}
 	profileFD = fd
 	profileFDOpen = true
 	profileEnabled = true
+	profileBypass = false
+	profileIniting = false
 }
 
 func profileDisable() {

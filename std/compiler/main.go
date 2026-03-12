@@ -180,6 +180,7 @@ func main() {
 	var fromIRBinaryPath string
 	var fromIRTextPath string
 	var profileReportPath string
+	var allocSiteMapPath string
 	var extractStdlibDest string
 	var runMode bool
 	var testMode bool
@@ -259,6 +260,17 @@ func main() {
 			compileTarget.ArenaReport = true
 			i = i + 1
 			continue
+		case "-alloc-site-report":
+			compileTarget.AllocSiteReport = true
+			i = i + 1
+			continue
+		case "-alloc-site-map":
+			if i+1 < len(args) {
+				allocSiteMapPath = args[i+1]
+				compileTarget.AllocSiteMapPath = allocSiteMapPath
+				i = i + 2
+				continue
+			}
 		case "-profile-report":
 			if i+1 < len(args) {
 				profileReportPath = args[i+1]
@@ -711,7 +723,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
 		}
 		var errs []string
-		irmod, errs = frontend.CompileModule(compileTarget, mod)
+		var allocSiteNames map[uint32]string
+		irmod, errs, allocSiteNames = frontend.CompileModule(compileTarget, mod)
 
 		if len(errs) > 0 {
 			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
@@ -724,6 +737,14 @@ func main() {
 
 		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
+		}
+		if allocSiteMapPath != "" {
+			err := writeAllocSiteMap(allocSiteMapPath, allocSiteNames)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error writing alloc site map: %v\n", err)
+				runCleanup()
+				os.Exit(1)
+			}
 		}
 		traceExit(30)
 		ir.EliminateDeadFunctions(irmod, common.EntryFuncName(&compileTarget))
@@ -1043,6 +1064,47 @@ func summarizeErrors(errs []string) string {
 	return out
 }
 
+func writeAllocSiteMap(path string, sites map[uint32]string) error {
+	if path == "" {
+		return nil
+	}
+	if len(sites) == 0 {
+		return os.WriteFile(path, []byte("alloc_site_map_v1\n"), 0644)
+	}
+	type allocSiteEntry struct {
+		hash uint32
+		name string
+	}
+	entries := make([]allocSiteEntry, 0, len(sites))
+	for hash, name := range sites {
+		entries = append(entries, allocSiteEntry{hash: hash, name: name})
+	}
+	for i := 1; i < len(entries); i++ {
+		j := i
+		for j > 0 && (entries[j].name < entries[j-1].name || (entries[j].name == entries[j-1].name && entries[j].hash < entries[j-1].hash)) {
+			entries[j], entries[j-1] = entries[j-1], entries[j]
+			j--
+		}
+	}
+	out := "alloc_site_map_v1\n"
+	for _, entry := range entries {
+		out = out + "0x" + allocSiteHex32(entry.hash) + " " + entry.name + "\n"
+	}
+	return os.WriteFile(path, []byte(out), 0644)
+}
+
+func allocSiteHex32(v uint32) string {
+	const hexdigits = "0123456789abcdef"
+	var buf [8]byte
+	i := 0
+	for i < 8 {
+		shift := uint32(28 - i*4)
+		buf[i] = hexdigits[(v>>shift)&0xF]
+		i++
+	}
+	return string(buf[:])
+}
+
 func readCompileAsArtifact(path string) ([]byte, error) {
 	payload, err := os.ReadFile(path)
 	if err == nil {
@@ -1088,7 +1150,7 @@ func buildCompileAsArtifacts(baseTarget *common.Target, baseDir string, entryFil
 		if valErrs := frontend.ValidateModule(innerMod); len(valErrs) > 0 {
 			return nil, fmt.Errorf("id=%s target=%s validation failed: %s", spec.ID, spec.Target, summarizeErrors(valErrs))
 		}
-		innerIR, compileErrs := frontend.CompileModule(*innerTarget, innerMod)
+		innerIR, compileErrs, _ := frontend.CompileModule(*innerTarget, innerMod)
 		if len(compileErrs) > 0 {
 			return nil, fmt.Errorf("id=%s target=%s compile failed: %s", spec.ID, spec.Target, summarizeErrors(compileErrs))
 		}
@@ -1125,6 +1187,8 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -strict                Reject RTG-only language extensions in user packages\n")
 	fmt.Fprintf(out, "  -profile               Enable profiling (compiler/target methods+functions default-on; //rtg:noprofile opts out; //rtg:profile opts in elsewhere)\n")
 	fmt.Fprintf(out, "  -arena-report          Flush arena accounting on process exit when RTG_ARENA_REPORT is set\n")
+	fmt.Fprintf(out, "  -alloc-site-report     Record exact runtime.Alloc bytes by source line into RTG_PROFILE\n")
+	fmt.Fprintf(out, "  -alloc-site-map <p>    Write alloc-site hash/name map for -alloc-site-report decoding\n")
 	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated timing and allocation trees\n")
 	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")

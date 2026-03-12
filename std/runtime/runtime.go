@@ -289,12 +289,18 @@ func allocHeap(size int) (uintptr, int) {
 }
 
 // Alloc allocates size bytes, preferring the current arena frame when one is active.
-func Alloc(size int) uintptr {
-	result, mmapChunk := arenaAlloc(size)
+func allocWithZeroInfo(size int) (uintptr, bool) {
+	result, mmapChunk, freshZero := arenaAlloc(size)
 	arenaRecordAlloc(size, mmapChunk)
 	if allocDebugEnabled {
 		allocDebugRecord(size, mmapChunk)
 	}
+	return result, freshZero
+}
+
+// Alloc allocates size bytes, preferring the current arena frame when one is active.
+func Alloc(size int) uintptr {
+	result, _ := allocWithZeroInfo(size)
 	return result
 }
 
@@ -609,15 +615,23 @@ func StringEqual(a string, b string) bool {
 // These replace assembly builtins with Go code.
 // Slice headers: {data_ptr, len, cap, elem_size} - size is SliceHdrSize
 
+func allocSliceStorage(byteSize int) (uintptr, uintptr, bool) {
+	if byteSize <= 0 {
+		header, freshZero := allocWithZeroInfo(SliceHdrSize)
+		return header, 0, freshZero
+	}
+	header, freshZero := allocWithZeroInfo(SliceHdrSize + byteSize)
+	dataPtr := header + uintptr(SliceHdrSize)
+	return header, dataPtr, freshZero
+}
+
 // SliceMake allocates a new slice with the given length and element size.
 func SliceMake(length int, elemSize int) uintptr {
 	byteSize := length * elemSize
-	var dataPtr uintptr
-	if byteSize > 0 {
-		dataPtr = Alloc(byteSize)
+	header, dataPtr, freshZero := allocSliceStorage(byteSize)
+	if byteSize > 0 && !freshZero {
 		Memzero(dataPtr, byteSize)
 	}
-	header := Alloc(SliceHdrSize)
 	WritePtr(header, dataPtr)
 	WritePtr(header+uintptr(SliceOffLen), uintptr(length))
 	WritePtr(header+uintptr(SliceOffCap), uintptr(length))
@@ -627,12 +641,10 @@ func SliceMake(length int, elemSize int) uintptr {
 
 func SliceMakeCap(length int, capacity int, elemSize int) uintptr {
 	byteSize := capacity * elemSize
-	var dataPtr uintptr
-	if byteSize > 0 {
-		dataPtr = Alloc(byteSize)
+	header, dataPtr, freshZero := allocSliceStorage(byteSize)
+	if byteSize > 0 && !freshZero {
 		Memzero(dataPtr, byteSize)
 	}
-	header := Alloc(SliceHdrSize)
 	WritePtr(header, dataPtr)
 	WritePtr(header+uintptr(SliceOffLen), uintptr(length))
 	WritePtr(header+uintptr(SliceOffCap), uintptr(capacity))
@@ -644,8 +656,12 @@ func SliceMakeCap(length int, capacity int, elemSize int) uintptr {
 // Returns the (possibly updated) header pointer.
 func SliceAppend(hdr uintptr, elem uintptr, elemSize int) uintptr {
 	if hdr == 0 {
-		hdr = Alloc(SliceHdrSize)
-		dataPtr := Alloc(8 * elemSize)
+		var dataPtr uintptr
+		var freshZero bool
+		hdr, dataPtr, freshZero = allocSliceStorage(8 * elemSize)
+		if elemSize > 0 && !freshZero {
+			Memzero(dataPtr, 8*elemSize)
+		}
 		WritePtr(hdr, dataPtr)
 		WritePtr(hdr+uintptr(SliceOffLen), 0)
 		WritePtr(hdr+uintptr(SliceOffCap), 8)
@@ -682,8 +698,12 @@ func SliceAppend(hdr uintptr, elem uintptr, elemSize int) uintptr {
 // little-endian bytes in one grow/check pass.
 func SliceAppendU32LE(hdr uintptr, v uintptr) uintptr {
 	if hdr == 0 {
-		hdr = Alloc(SliceHdrSize)
-		dataPtr := Alloc(8)
+		var dataPtr uintptr
+		var freshZero bool
+		hdr, dataPtr, freshZero = allocSliceStorage(8)
+		if !freshZero {
+			Memzero(dataPtr, 8)
+		}
 		WritePtr(hdr, dataPtr)
 		WritePtr(hdr+uintptr(SliceOffLen), 0)
 		WritePtr(hdr+uintptr(SliceOffCap), 8)
@@ -735,8 +755,12 @@ func SliceAppendU32LE(hdr uintptr, v uintptr) uintptr {
 // little-endian bytes in one grow/check pass.
 func SliceAppendU64LE(hdr uintptr, v uintptr) uintptr {
 	if hdr == 0 {
-		hdr = Alloc(SliceHdrSize)
-		dataPtr := Alloc(8)
+		var dataPtr uintptr
+		var freshZero bool
+		hdr, dataPtr, freshZero = allocSliceStorage(8)
+		if !freshZero {
+			Memzero(dataPtr, 8)
+		}
 		WritePtr(hdr, dataPtr)
 		WritePtr(hdr+uintptr(SliceOffLen), 0)
 		WritePtr(hdr+uintptr(SliceOffCap), 8)
@@ -803,9 +827,13 @@ func SliceAppendSlice(dst uintptr, src uintptr) uintptr {
 		return dst
 	}
 	if dst == 0 {
-		dst = Alloc(SliceHdrSize)
 		elemSize := int(ReadPtr(src + uintptr(SliceOffEsz)))
-		dataPtr := Alloc(srcLen * elemSize)
+		var dataPtr uintptr
+		var freshZero bool
+		dst, dataPtr, freshZero = allocSliceStorage(srcLen * elemSize)
+		if srcLen > 0 && elemSize > 0 && !freshZero {
+			Memzero(dataPtr, srcLen*elemSize)
+		}
 		WritePtr(dst, dataPtr)
 		WritePtr(dst+uintptr(SliceOffLen), 0)
 		WritePtr(dst+uintptr(SliceOffCap), uintptr(srcLen))

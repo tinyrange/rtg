@@ -30,6 +30,7 @@ var arenaFrameCurrentBlock []uintptr
 var arenaFrameParentAlloc []int
 var arenaFramePtr []uintptr
 var arenaFrameEnd []uintptr
+var arenaFrameFresh []byte
 var arenaFrameRetained []byte
 var arenaFrameReqBytes []uint64
 var arenaFrameMmapBytes []uint64
@@ -76,6 +77,7 @@ func arenaEnsureInit() bool {
 	arenaFrameParentAlloc = make([]int, arenaMaxStack)
 	arenaFramePtr = make([]uintptr, arenaMaxStack)
 	arenaFrameEnd = make([]uintptr, arenaMaxStack)
+	arenaFrameFresh = make([]byte, arenaMaxStack)
 	arenaFrameRetained = make([]byte, arenaMaxStack)
 	arenaFrameReqBytes = make([]uint64, arenaMaxStack)
 	arenaFrameMmapBytes = make([]uint64, arenaMaxStack)
@@ -159,7 +161,7 @@ func arenaPushBlockListToReuse(node int, block uintptr) {
 	arenaReuseBlock[node] = block
 }
 
-func arenaMergeBlocksIntoParent(parentFrame int, childBlockHead uintptr, childCurrent uintptr, childPtr uintptr, childEnd uintptr) {
+func arenaMergeBlocksIntoParent(parentFrame int, childBlockHead uintptr, childCurrent uintptr, childPtr uintptr, childEnd uintptr, childFresh byte) {
 	if parentFrame < 0 || parentFrame >= len(arenaFrameBlockHead) || childBlockHead == 0 {
 		return
 	}
@@ -177,6 +179,7 @@ func arenaMergeBlocksIntoParent(parentFrame int, childBlockHead uintptr, childCu
 		arenaFrameCurrentBlock[parentFrame] = childCurrent
 		arenaFramePtr[parentFrame] = childPtr
 		arenaFrameEnd[parentFrame] = childEnd
+		arenaFrameFresh[parentFrame] = childFresh
 	}
 }
 
@@ -191,29 +194,33 @@ func arenaRetainTargetFrame(frameIdx int) int {
 	return frameIdx - 1
 }
 
-func arenaAlloc(size int) (uintptr, int) {
+func arenaAlloc(size int) (uintptr, int, bool) {
 	if size <= 0 {
 		size = PtrSize
 	}
 	size = (size + 7) &^ 7
 	if arenaBypassAlloc || !arenaEnabled || arenaAllocFrame < 0 {
-		return allocHeap(size)
+		ptr, mmapChunk := allocHeap(size)
+		return ptr, mmapChunk, true
 	}
 	idx := arenaAllocFrame
 	if idx < 0 || idx >= len(arenaFramePtr) {
-		return allocHeap(size)
+		ptr, mmapChunk := allocHeap(size)
+		return ptr, mmapChunk, true
 	}
 	ptr := arenaFramePtr[idx]
 	end := arenaFrameEnd[idx]
 	if ptr != 0 && end >= ptr+uintptr(size) {
 		arenaFramePtr[idx] = ptr + uintptr(size)
-		return ptr, 0
+		return ptr, 0, arenaFrameFresh[idx] != 0
 	}
 	node := int(arenaFrameNode[idx])
 	block := arenaAcquireReusableBlock(node, size)
 	mmapChunk := 0
+	fresh := false
 	if block == 0 {
 		block, mmapChunk = arenaAllocNewBlock(size)
+		fresh = true
 	}
 	WritePtr(block+uintptr(arenaBlockOffNext), arenaFrameBlockHead[idx])
 	arenaFrameBlockHead[idx] = block
@@ -222,7 +229,12 @@ func arenaAlloc(size int) (uintptr, int) {
 	end = ReadPtr(block + uintptr(arenaBlockOffEnd))
 	arenaFramePtr[idx] = ptr + uintptr(size)
 	arenaFrameEnd[idx] = end
-	return ptr, mmapChunk
+	if fresh {
+		arenaFrameFresh[idx] = 1
+	} else {
+		arenaFrameFresh[idx] = 0
+	}
+	return ptr, mmapChunk, fresh
 }
 
 // ArenaRetainCurrent promotes the current arena frame to its parent instead of
@@ -286,6 +298,7 @@ func ArenaEnter(methodHash uint32, parentHash uint32, methodName string) {
 			arenaFrameParentAlloc[frameIdx] = arenaAllocFrame
 			arenaFramePtr[frameIdx] = 0
 			arenaFrameEnd[frameIdx] = 0
+			arenaFrameFresh[frameIdx] = 0
 			arenaFrameRetained[frameIdx] = 0
 			arenaFrameReqBytes[frameIdx] = 0
 			arenaFrameMmapBytes[frameIdx] = 0
@@ -312,6 +325,7 @@ func ArenaEnter(methodHash uint32, parentHash uint32, methodName string) {
 		arenaFrameParentAlloc[frameIdx] = arenaAllocFrame
 		arenaFramePtr[frameIdx] = 0
 		arenaFrameEnd[frameIdx] = 0
+		arenaFrameFresh[frameIdx] = 0
 		arenaFrameRetained[frameIdx] = 0
 		arenaFrameReqBytes[frameIdx] = 0
 		arenaFrameMmapBytes[frameIdx] = 0
@@ -340,6 +354,7 @@ func ArenaLeave() {
 		currentBlock := arenaFrameCurrentBlock[frameIdx]
 		currentPtr := arenaFramePtr[frameIdx]
 		currentEnd := arenaFrameEnd[frameIdx]
+		currentFresh := arenaFrameFresh[frameIdx]
 		retained := arenaFrameRetained[frameIdx] != 0
 		frameReq := arenaFrameReqBytes[frameIdx]
 		frameMmap := arenaFrameMmapBytes[frameIdx]
@@ -350,7 +365,7 @@ func ArenaLeave() {
 			}
 			parentFrame := arenaRetainTargetFrame(frameIdx)
 			if parentFrame >= 0 {
-				arenaMergeBlocksIntoParent(parentFrame, blockHead, currentBlock, currentPtr, currentEnd)
+				arenaMergeBlocksIntoParent(parentFrame, blockHead, currentBlock, currentPtr, currentEnd, currentFresh)
 				arenaFrameReqBytes[parentFrame] = arenaFrameReqBytes[parentFrame] + frameReq
 				arenaFrameMmapBytes[parentFrame] = arenaFrameMmapBytes[parentFrame] + frameMmap
 			}
@@ -363,6 +378,7 @@ func ArenaLeave() {
 		arenaFrameParentAlloc[frameIdx] = -1
 		arenaFramePtr[frameIdx] = 0
 		arenaFrameEnd[frameIdx] = 0
+		arenaFrameFresh[frameIdx] = 0
 		arenaFrameRetained[frameIdx] = 0
 		arenaFrameReqBytes[frameIdx] = 0
 		arenaFrameMmapBytes[frameIdx] = 0

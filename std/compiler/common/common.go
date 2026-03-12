@@ -15,6 +15,8 @@ type Target struct {
 	Strict                bool
 	Profile               bool
 	ArenaReport           bool
+	AllocSiteReport       bool
+	AllocSiteMapPath      string
 	CompilerDebug         bool
 	EmitIRAndBinaryPath   string
 	StripBinary           bool
