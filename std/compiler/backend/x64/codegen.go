@@ -311,6 +311,22 @@ func (g *CodeGen) EmitByte(b byte) {
 	g.Code = append(g.Code, b)
 }
 
+func (g *CodeGen) Emit2(b0 byte, b1 byte) {
+	g.Code = append(g.Code, b0, b1)
+}
+
+func (g *CodeGen) Emit3(b0 byte, b1 byte, b2 byte) {
+	g.Code = append(g.Code, b0, b1, b2)
+}
+
+func (g *CodeGen) Emit4(b0 byte, b1 byte, b2 byte, b3 byte) {
+	g.Code = append(g.Code, b0, b1, b2, b3)
+}
+
+func (g *CodeGen) Emit5(b0 byte, b1 byte, b2 byte, b3 byte, b4 byte) {
+	g.Code = append(g.Code, b0, b1, b2, b3, b4)
+}
+
 func (g *CodeGen) EmitBytes(bytes ...byte) {
 	g.Code = append(g.Code, bytes...)
 }
@@ -338,7 +354,7 @@ func (g *CodeGen) EmitRodataU64(v uint64) {
 // EmitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
 func (g *CodeGen) EmitCallPlaceholder(target string) {
 	g.Flush()
-	g.EmitBytes(0xe8) // call rel32
+	g.EmitByte(0xe8) // call rel32
 	g.callFixups = append(g.callFixups, CallFixup{len(g.Code), target, 0})
 	g.EmitU32(0) // placeholder
 }
@@ -374,7 +390,7 @@ func (g *CodeGen) JmpRel32() int {
 // JccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
 func (g *CodeGen) JccRel32(cc byte) int {
 	g.Flush()
-	g.EmitBytes(0x0f, cc)
+	g.Emit2(0x0f, cc)
 	off := len(g.Code)
 	g.EmitU32(0) // placeholder
 	return off
@@ -523,14 +539,14 @@ func (g *CodeGen) moveReg(dst, src int) {
 		return
 	}
 	if g.wordSize == 2 {
-		g.EmitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+		g.Emit2(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		return
 	}
 	if g.wordSize == 4 {
 		if g.target.GOOS == "dos" {
-			g.EmitBytes(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+			g.Emit3(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		} else {
-			g.EmitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+			g.Emit2(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		}
 		return
 	}
@@ -541,7 +557,7 @@ func (g *CodeGen) moveReg(dst, src int) {
 	if dst >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+	g.Emit3(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 }
 
 func (g *CodeGen) prepareForClobber(regs ...int) {
@@ -577,12 +593,12 @@ func (g *CodeGen) prepareForClobber(regs ...int) {
 }
 
 func (g *CodeGen) rawPush(reg int) {
-	g.EmitBytes(0x4d, 0x8d, 0x7f, 0xf8) // lea r15, [r15-8] (preserves flags)
+	g.Emit4(0x4d, 0x8d, 0x7f, 0xf8) // lea r15, [r15-8] (preserves flags)
 	rex := byte(0x49)
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.EmitBytes(rex, 0x89, byte(0x07|((reg&7)<<3)))
+	g.Emit3(rex, 0x89, byte(0x07|((reg&7)<<3)))
 }
 
 func (g *CodeGen) rawPop(reg int) {
@@ -590,8 +606,8 @@ func (g *CodeGen) rawPop(reg int) {
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.EmitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
-	g.EmitBytes(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8] (preserves flags)
+	g.Emit3(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+	g.Emit4(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8] (preserves flags)
 }
 
 func (g *CodeGen) rawLoad(reg int) {
@@ -599,11 +615,11 @@ func (g *CodeGen) rawLoad(reg int) {
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.EmitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+	g.Emit3(rex, 0x8b, byte(0x07|((reg&7)<<3)))
 }
 
 func (g *CodeGen) rawDrop() {
-	g.EmitBytes(0x49, 0x83, 0xc7, 0x08)
+	g.Emit4(0x49, 0x83, 0xc7, 0x08)
 }
 
 func (g *CodeGen) OpPush(reg int) {

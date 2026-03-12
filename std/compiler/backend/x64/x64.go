@@ -63,10 +63,10 @@ func (g *CodeGen) EmitLoadLocal(offset int, reg int) {
 	modrm := byte(0x45 | ((reg & 7) << 3)) // [rbp + disp8] or disp32
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
-		g.EmitBytes(rex, 0x8b, modrm, byte(negOff))
+		g.Emit4(rex, 0x8b, modrm, byte(negOff))
 	} else {
 		modrm = byte(0x85 | ((reg & 7) << 3)) // [rbp + disp32]
-		g.EmitBytes(rex, 0x8b, modrm)
+		g.Emit3(rex, 0x8b, modrm)
 		g.EmitU32(uint32(int32(negOff)))
 	}
 }
@@ -80,10 +80,10 @@ func (g *CodeGen) emitStoreLocal(offset int, reg int) {
 	modrm := byte(0x45 | ((reg & 7) << 3))
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
-		g.EmitBytes(rex, 0x89, modrm, byte(negOff))
+		g.Emit4(rex, 0x89, modrm, byte(negOff))
 	} else {
 		modrm = byte(0x85 | ((reg & 7) << 3))
-		g.EmitBytes(rex, 0x89, modrm)
+		g.Emit3(rex, 0x89, modrm)
 		g.EmitU32(uint32(int32(negOff)))
 	}
 }
@@ -97,10 +97,10 @@ func (g *CodeGen) emitLeaLocal(offset int, reg int) {
 	modrm := byte(0x45 | ((reg & 7) << 3))
 	negOff := -offset
 	if negOff >= -128 && negOff <= 127 {
-		g.EmitBytes(rex, 0x8d, modrm, byte(negOff))
+		g.Emit4(rex, 0x8d, modrm, byte(negOff))
 	} else {
 		modrm = byte(0x85 | ((reg & 7) << 3))
-		g.EmitBytes(rex, 0x8d, modrm)
+		g.Emit3(rex, 0x8d, modrm)
 		g.EmitU32(uint32(int32(negOff)))
 	}
 }
@@ -111,9 +111,9 @@ func (g *CodeGen) emitAddLocalImm(offset int, imm int32) {
 	if imm >= -128 && imm <= 127 {
 		// 48 83 /0 ib
 		if negOff >= -128 && negOff <= 127 {
-			g.EmitBytes(0x48, 0x83, 0x45, byte(negOff), byte(imm))
+			g.Emit5(0x48, 0x83, 0x45, byte(negOff), byte(imm))
 		} else {
-			g.EmitBytes(0x48, 0x83, 0x85)
+			g.Emit3(0x48, 0x83, 0x85)
 			g.EmitU32(uint32(int32(negOff)))
 			g.EmitByte(byte(imm))
 		}
@@ -121,10 +121,10 @@ func (g *CodeGen) emitAddLocalImm(offset int, imm int32) {
 	}
 	// 48 81 /0 id
 	if negOff >= -128 && negOff <= 127 {
-		g.EmitBytes(0x48, 0x81, 0x45, byte(negOff))
+		g.Emit4(0x48, 0x81, 0x45, byte(negOff))
 		g.EmitU32(uint32(imm))
 	} else {
-		g.EmitBytes(0x48, 0x81, 0x85)
+		g.Emit3(0x48, 0x81, 0x85)
 		g.EmitU32(uint32(int32(negOff)))
 		g.EmitU32(uint32(imm))
 	}
@@ -135,7 +135,7 @@ func (g *CodeGen) emitAddLocalImm(offset int, imm int32) {
 // PushR emits `push reg` (handles r8-r15 with REX.B prefix)
 func (g *CodeGen) PushR(reg int) {
 	if reg >= 8 {
-		g.EmitBytes(0x41, byte(0x50+(reg&7)))
+		g.Emit2(0x41, byte(0x50+(reg&7)))
 	} else {
 		g.EmitByte(byte(0x50 + reg))
 	}
@@ -144,7 +144,7 @@ func (g *CodeGen) PushR(reg int) {
 // PopR emits `pop reg` (handles r8-r15 with REX.B prefix)
 func (g *CodeGen) PopR(reg int) {
 	if reg >= 8 {
-		g.EmitBytes(0x41, byte(0x58+(reg&7)))
+		g.Emit2(0x41, byte(0x58+(reg&7)))
 	} else {
 		g.EmitByte(byte(0x58 + reg))
 	}
@@ -171,47 +171,47 @@ func modrmRR(dst, src int) byte {
 
 // MovRR emits `mov dst, src`
 func (g *CodeGen) MovRR(dst, src int) {
-	g.EmitBytes(rexRR(src, dst), 0x89, modrmRR(src, dst))
+	g.Emit3(rexRR(src, dst), 0x89, modrmRR(src, dst))
 }
 
 // AddRR emits `add dst, src`
 func (g *CodeGen) AddRR(dst, src int) {
-	g.EmitBytes(rexRR(src, dst), 0x01, modrmRR(src, dst))
+	g.Emit3(rexRR(src, dst), 0x01, modrmRR(src, dst))
 }
 
 // subRR emits `sub dst, src`
 func (g *CodeGen) subRR(dst, src int) {
-	g.EmitBytes(rexRR(src, dst), 0x29, modrmRR(src, dst))
+	g.Emit3(rexRR(src, dst), 0x29, modrmRR(src, dst))
 }
 
 // andRR emits `and dst, src`
 func (g *CodeGen) andRR(dst, src int) {
-	g.EmitBytes(rexRR(src, dst), 0x21, modrmRR(src, dst))
+	g.Emit3(rexRR(src, dst), 0x21, modrmRR(src, dst))
 }
 
 // orRR emits `or dst, src`
 func (g *CodeGen) orRR(dst, src int) {
-	g.EmitBytes(rexRR(src, dst), 0x09, modrmRR(src, dst))
+	g.Emit3(rexRR(src, dst), 0x09, modrmRR(src, dst))
 }
 
 // XorRR emits `xor dst, src`
 func (g *CodeGen) XorRR(dst, src int) {
-	g.EmitBytes(rexRR(src, dst), 0x31, modrmRR(src, dst))
+	g.Emit3(rexRR(src, dst), 0x31, modrmRR(src, dst))
 }
 
 // CmpRR emits `cmp a, b`
 func (g *CodeGen) CmpRR(a, b int) {
-	g.EmitBytes(rexRR(b, a), 0x39, modrmRR(b, a))
+	g.Emit3(rexRR(b, a), 0x39, modrmRR(b, a))
 }
 
 // TestRR emits `test a, b`
 func (g *CodeGen) TestRR(a, b int) {
-	g.EmitBytes(rexRR(b, a), 0x85, modrmRR(b, a))
+	g.Emit3(rexRR(b, a), 0x85, modrmRR(b, a))
 }
 
 // imulRR emits `imul dst, src` (2-byte opcode 0F AF)
 func (g *CodeGen) imulRR(dst, src int) {
-	g.EmitBytes(rexRR(dst, src), 0x0f, 0xaf, modrmRR(dst, src))
+	g.Emit4(rexRR(dst, src), 0x0f, 0xaf, modrmRR(dst, src))
 }
 
 // === Single-register / no-operand instructions ===
@@ -222,12 +222,12 @@ func (g *CodeGen) negR(reg int) {
 	if reg >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0xf7, byte(0xd8|(reg&7)))
+	g.Emit3(rex, 0xf7, byte(0xd8|(reg&7)))
 }
 
 // cqo emits `cqo` (sign-extend rax into rdx:rax)
 func (g *CodeGen) cqo() {
-	g.EmitBytes(0x48, 0x99)
+	g.Emit2(0x48, 0x99)
 }
 
 // idivR emits `idiv reg`
@@ -236,7 +236,7 @@ func (g *CodeGen) idivR(reg int) {
 	if reg >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0xf7, byte(0xf8|(reg&7)))
+	g.Emit3(rex, 0xf7, byte(0xf8|(reg&7)))
 }
 
 // divR emits `div reg` (unsigned divide)
@@ -245,7 +245,7 @@ func (g *CodeGen) divR(reg int) {
 	if reg >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0xf7, byte(0xf0|(reg&7)))
+	g.Emit3(rex, 0xf7, byte(0xf0|(reg&7)))
 }
 
 // shlCl emits `shl reg, cl`
@@ -254,7 +254,7 @@ func (g *CodeGen) shlCl(reg int) {
 	if reg >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0xd3, byte(0xe0|(reg&7)))
+	g.Emit3(rex, 0xd3, byte(0xe0|(reg&7)))
 }
 
 // sarCl emits `sar reg, cl` (arithmetic shift right)
@@ -263,7 +263,7 @@ func (g *CodeGen) sarCl(reg int) {
 	if reg >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0xd3, byte(0xf8|(reg&7)))
+	g.Emit3(rex, 0xd3, byte(0xf8|(reg&7)))
 }
 
 // shrCl emits `shr reg, cl` (logical shift right)
@@ -272,7 +272,7 @@ func (g *CodeGen) shrCl(reg int) {
 	if reg >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0xd3, byte(0xe8|(reg&7)))
+	g.Emit3(rex, 0xd3, byte(0xe8|(reg&7)))
 }
 
 // shlImm emits `shl reg, imm8`
@@ -281,12 +281,12 @@ func (g *CodeGen) shlImm(reg int, n byte) {
 	if reg >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0xc1, byte(0xe0|(reg&7)), n)
+	g.Emit4(rex, 0xc1, byte(0xe0|(reg&7)), n)
 }
 
 // emitSyscall emits the `syscall` instruction (0x0f, 0x05)
 func (g *CodeGen) emitSyscall() {
-	g.EmitBytes(0x0f, 0x05)
+	g.Emit2(0x0f, 0x05)
 }
 
 // === Register-immediate operations ===
@@ -298,12 +298,12 @@ func (g *CodeGen) AddRI(reg int, val int32) {
 		rex |= 0x01
 	}
 	if val >= -128 && val <= 127 {
-		g.EmitBytes(rex, 0x83, byte(0xc0|(reg&7)), byte(val))
+		g.Emit4(rex, 0x83, byte(0xc0|(reg&7)), byte(val))
 	} else {
 		if reg == REG_RAX {
-			g.EmitBytes(rex, 0x05)
+			g.Emit2(rex, 0x05)
 		} else {
-			g.EmitBytes(rex, 0x81, byte(0xc0|(reg&7)))
+			g.Emit3(rex, 0x81, byte(0xc0|(reg&7)))
 		}
 		g.EmitU32(uint32(val))
 	}
@@ -316,9 +316,9 @@ func (g *CodeGen) SubRI(reg int, val int32) {
 		rex |= 0x01
 	}
 	if val >= -128 && val <= 127 {
-		g.EmitBytes(rex, 0x83, byte(0xe8|(reg&7)), byte(val))
+		g.Emit4(rex, 0x83, byte(0xe8|(reg&7)), byte(val))
 	} else {
-		g.EmitBytes(rex, 0x81, byte(0xe8|(reg&7)))
+		g.Emit3(rex, 0x81, byte(0xe8|(reg&7)))
 		g.EmitU32(uint32(val))
 	}
 }
@@ -330,9 +330,9 @@ func (g *CodeGen) cmpRI(reg int, val int32) {
 		rex |= 0x01
 	}
 	if val >= -128 && val <= 127 {
-		g.EmitBytes(rex, 0x83, byte(0xf8|(reg&7)), byte(val))
+		g.Emit4(rex, 0x83, byte(0xf8|(reg&7)), byte(val))
 	} else {
-		g.EmitBytes(rex, 0x81, byte(0xf8|(reg&7)))
+		g.Emit3(rex, 0x81, byte(0xf8|(reg&7)))
 		g.EmitU32(uint32(val))
 	}
 }
@@ -343,12 +343,12 @@ func (g *CodeGen) xorRI8(reg int, val byte) {
 	if reg >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0x83, byte(0xf0|(reg&7)), val)
+	g.Emit4(rex, 0x83, byte(0xf0|(reg&7)), val)
 }
 
 // imulRRI32 emits `imul dst, src, imm32`
 func (g *CodeGen) imulRRI32(dst, src int, val int32) {
-	g.EmitBytes(rexRR(dst, src), 0x69, modrmRR(dst, src))
+	g.Emit3(rexRR(dst, src), 0x69, modrmRR(dst, src))
 	g.EmitU32(uint32(val))
 }
 
