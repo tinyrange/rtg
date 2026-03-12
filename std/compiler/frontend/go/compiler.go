@@ -2912,7 +2912,8 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		return
 	}
 	// Create a synthetic init function for global var initialization
-	f := &ir.IRFunc{Name: pkg.Path + ".init$globals"}
+	codeCap := 64 + len(inits)*8 + len(embeds)*6 + len(targetInits)*4 + len(abiInits)*5 + len(asmInits)*5 + len(fmtInits)*5 + len(artifactInits)*4
+	f := &ir.IRFunc{Name: pkg.Path + ".init$globals", Code: make([]ir.Inst, 0, codeCap)}
 	savedPanicUnwindLabel := c.panicUnwindLabel
 	savedPanicCheckSlowLabels := c.panicCheckSlowLabels
 	savedPanicCheckSlowDepths := c.panicCheckSlowDepths
@@ -3315,6 +3316,70 @@ func containsDeferStmt(node *Node) bool {
 	return false
 }
 
+func countFuncBodyNodes(node *Node) int {
+	if node == nil {
+		return 0
+	}
+	stack := make([]*Node, 0, 64)
+	stack = append(stack, node)
+	count := 0
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n == nil {
+			continue
+		}
+		count++
+		// Nested function literals compile into separate IR functions.
+		if n.Kind == NFuncType && n.Body != nil {
+			if n.X != nil {
+				stack = append(stack, n.X)
+			}
+			if n.Y != nil {
+				stack = append(stack, n.Y)
+			}
+			if n.Type != nil {
+				stack = append(stack, n.Type)
+			}
+			for i := len(n.Nodes) - 1; i >= 0; i-- {
+				child := n.Nodes[i]
+				if child != nil {
+					stack = append(stack, child)
+				}
+			}
+			continue
+		}
+		if n.X != nil {
+			stack = append(stack, n.X)
+		}
+		if n.Y != nil {
+			stack = append(stack, n.Y)
+		}
+		if n.Body != nil {
+			stack = append(stack, n.Body)
+		}
+		if n.Type != nil {
+			stack = append(stack, n.Type)
+		}
+		for i := len(n.Nodes) - 1; i >= 0; i-- {
+			child := n.Nodes[i]
+			if child != nil {
+				stack = append(stack, child)
+			}
+		}
+	}
+	return count
+}
+
+func estimateCodeCap(node *Node, topLevelCount int) int {
+	capHint := 64 + topLevelCount*12
+	capHint = capHint + countFuncBodyNodes(node)*3
+	if capHint < 128 {
+		return 128
+	}
+	return capHint
+}
+
 func (c *Compiler) compileFunc(node *Node) {
 	qname := c.curPkg.QualName(node.Name)
 	if node.X != nil {
@@ -3322,10 +3387,11 @@ func (c *Compiler) compileFunc(node *Node) {
 		recvType := nodeTypeName(node.X.Type)
 		qname = c.dotJoin(c.curPkg.QualName(recvType), node.Name)
 	}
-	codeCap := 64
+	topLevelCount := 0
 	if node.Body != nil {
-		codeCap += len(node.Body.Nodes) * 12
+		topLevelCount = len(node.Body.Nodes)
 	}
+	codeCap := estimateCodeCap(node.Body, topLevelCount)
 	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, codeCap)}
 	savedInComptimeFunc := c.inComptimeFunc
 	if savedInComptimeFunc || c.comptimeFuncs[qname] {
@@ -3694,7 +3760,7 @@ func (c *Compiler) compileAssembleFunc(node *Node, arch string) {
 func (c *Compiler) compileIntrinsicFunc(node *Node, intern string) {
 	qname := c.curPkg.QualName(node.Name)
 
-	f := &ir.IRFunc{Name: qname}
+	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, 4)}
 	c.curFunc = f
 
 	// Count params and detect variadic
@@ -3769,7 +3835,7 @@ func (c *Compiler) compileLinkStaticFunc(node *Node, spec LinkStaticDirective) {
 	qname := c.curPkg.QualName(node.Name)
 	intrinsicName := qname
 
-	f := &ir.IRFunc{Name: qname}
+	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, 8)}
 	c.curFunc = f
 
 	// Count params and detect variadic
