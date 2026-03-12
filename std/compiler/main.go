@@ -255,6 +255,10 @@ func main() {
 			compileTarget.Profile = true
 			i = i + 1
 			continue
+		case "-arena-report":
+			compileTarget.ArenaReport = true
+			i = i + 1
+			continue
 		case "-profile-report":
 			if i+1 < len(args) {
 				profileReportPath = args[i+1]
@@ -1120,6 +1124,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -parse-only            Parse and resolve imports only (no codegen)\n")
 	fmt.Fprintf(out, "  -strict                Reject RTG-only language extensions in user packages\n")
 	fmt.Fprintf(out, "  -profile               Enable profiling (compiler/target methods+functions default-on; //rtg:noprofile opts out; //rtg:profile opts in elsewhere)\n")
+	fmt.Fprintf(out, "  -arena-report          Flush arena accounting on process exit when RTG_ARENA_REPORT is set\n")
 	fmt.Fprintf(out, "  -profile-report <p>    Read profile records from path and print aggregated timing and allocation trees\n")
 	if binary.IrBinaryEnabled {
 		fmt.Fprintf(out, "  -emit-ir-binary <p>    Compile source and write binary IR module to path\n")

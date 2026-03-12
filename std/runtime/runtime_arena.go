@@ -18,6 +18,8 @@ var arenaEnters []uint64
 var arenaAllocs []uint64
 var arenaReqBytes []uint64
 var arenaMmapBytes []uint64
+var arenaRetainedReqBytes []uint64
+var arenaRetainedMmapBytes []uint64
 var arenaName []string
 var arenaStack []uint32
 var arenaReuseBlock []uintptr
@@ -29,6 +31,8 @@ var arenaFrameParentAlloc []int
 var arenaFramePtr []uintptr
 var arenaFrameEnd []uintptr
 var arenaFrameRetained []byte
+var arenaFrameReqBytes []uint64
+var arenaFrameMmapBytes []uint64
 var arenaAllocRestore []int
 
 var arenaInitDone bool
@@ -61,6 +65,8 @@ func arenaEnsureInit() bool {
 	arenaAllocs = make([]uint64, arenaMaxNodes)
 	arenaReqBytes = make([]uint64, arenaMaxNodes)
 	arenaMmapBytes = make([]uint64, arenaMaxNodes)
+	arenaRetainedReqBytes = make([]uint64, arenaMaxNodes)
+	arenaRetainedMmapBytes = make([]uint64, arenaMaxNodes)
 	arenaName = make([]string, arenaMaxNodes)
 	arenaStack = make([]uint32, arenaMaxStack)
 	arenaReuseBlock = make([]uintptr, arenaMaxNodes)
@@ -71,6 +77,8 @@ func arenaEnsureInit() bool {
 	arenaFramePtr = make([]uintptr, arenaMaxStack)
 	arenaFrameEnd = make([]uintptr, arenaMaxStack)
 	arenaFrameRetained = make([]byte, arenaMaxStack)
+	arenaFrameReqBytes = make([]uint64, arenaMaxStack)
+	arenaFrameMmapBytes = make([]uint64, arenaMaxStack)
 	arenaAllocRestore = make([]int, arenaMaxStack)
 
 	arenaNodeCount = 1
@@ -279,6 +287,8 @@ func ArenaEnter(methodHash uint32, parentHash uint32, methodName string) {
 			arenaFramePtr[frameIdx] = 0
 			arenaFrameEnd[frameIdx] = 0
 			arenaFrameRetained[frameIdx] = 0
+			arenaFrameReqBytes[frameIdx] = 0
+			arenaFrameMmapBytes[frameIdx] = 0
 			arenaAllocFrame = frameIdx
 		}
 		return
@@ -303,6 +313,8 @@ func ArenaEnter(methodHash uint32, parentHash uint32, methodName string) {
 		arenaFramePtr[frameIdx] = 0
 		arenaFrameEnd[frameIdx] = 0
 		arenaFrameRetained[frameIdx] = 0
+		arenaFrameReqBytes[frameIdx] = 0
+		arenaFrameMmapBytes[frameIdx] = 0
 		arenaAllocFrame = frameIdx
 	}
 }
@@ -329,10 +341,18 @@ func ArenaLeave() {
 		currentPtr := arenaFramePtr[frameIdx]
 		currentEnd := arenaFrameEnd[frameIdx]
 		retained := arenaFrameRetained[frameIdx] != 0
+		frameReq := arenaFrameReqBytes[frameIdx]
+		frameMmap := arenaFrameMmapBytes[frameIdx]
 		if retained {
+			if node > 0 && node <= arenaNodeCount {
+				arenaRetainedReqBytes[node] = arenaRetainedReqBytes[node] + frameReq
+				arenaRetainedMmapBytes[node] = arenaRetainedMmapBytes[node] + frameMmap
+			}
 			parentFrame := arenaRetainTargetFrame(frameIdx)
 			if parentFrame >= 0 {
 				arenaMergeBlocksIntoParent(parentFrame, blockHead, currentBlock, currentPtr, currentEnd)
+				arenaFrameReqBytes[parentFrame] = arenaFrameReqBytes[parentFrame] + frameReq
+				arenaFrameMmapBytes[parentFrame] = arenaFrameMmapBytes[parentFrame] + frameMmap
 			}
 		} else {
 			arenaPushBlockListToReuse(node, blockHead)
@@ -344,6 +364,8 @@ func ArenaLeave() {
 		arenaFramePtr[frameIdx] = 0
 		arenaFrameEnd[frameIdx] = 0
 		arenaFrameRetained[frameIdx] = 0
+		arenaFrameReqBytes[frameIdx] = 0
+		arenaFrameMmapBytes[frameIdx] = 0
 	}
 	arenaStackLen--
 	p := int(arenaStack[arenaStackLen])
@@ -465,6 +487,10 @@ func arenaRecordAlloc(reqSize int, mmapChunk int) {
 	arenaAllocs[idx] = arenaAllocs[idx] + 1
 	arenaReqBytes[idx] = arenaReqBytes[idx] + uint64(reqSize)
 	arenaMmapBytes[idx] = arenaMmapBytes[idx] + uint64(mmapChunk)
+	if arenaAllocFrame >= 0 && arenaAllocFrame < len(arenaFrameReqBytes) {
+		arenaFrameReqBytes[arenaAllocFrame] = arenaFrameReqBytes[arenaAllocFrame] + uint64(reqSize)
+		arenaFrameMmapBytes[arenaAllocFrame] = arenaFrameMmapBytes[arenaAllocFrame] + uint64(mmapChunk)
+	}
 }
 
 // ArenaFlush writes arena accounting to RTG_ARENA_REPORT, when set.
@@ -494,7 +520,7 @@ func ArenaFlush() {
 			return
 		}
 	}
-	if !arenaWriteString(fd, "id parent depth hash enters allocs req_bytes mmap_bytes name\n") {
+	if !arenaWriteString(fd, "id parent depth hash enters allocs req_bytes mmap_bytes retained_req_bytes retained_mmap_bytes name\n") {
 		SysClose(fd)
 		return
 	}
@@ -515,6 +541,10 @@ func ArenaFlush() {
 			!arenaWriteU64(fd, arenaReqBytes[i]) ||
 			!arenaWriteString(fd, " ") ||
 			!arenaWriteU64(fd, arenaMmapBytes[i]) ||
+			!arenaWriteString(fd, " ") ||
+			!arenaWriteU64(fd, arenaRetainedReqBytes[i]) ||
+			!arenaWriteString(fd, " ") ||
+			!arenaWriteU64(fd, arenaRetainedMmapBytes[i]) ||
 			!arenaWriteString(fd, " ") ||
 			!arenaWriteString(fd, arenaNodeName(i)) ||
 			!arenaWriteString(fd, "\n") {

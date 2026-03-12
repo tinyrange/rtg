@@ -239,6 +239,14 @@ test-arena-accounting: build
   sh RTG_ARENA_REPORT=build/test_arena_defer_restore_order.txt ./build/test_arena_defer_restore_order
   sh python3 tools/check_arena_defer_restore_order.py build/test_arena_defer_restore_order.txt
 
+arena-selfhost-gains: build
+  sh ./build/rtg -strict -arena-report -o build/stage1_arena ./std/compiler/
+  sh ./build/stage1_arena -strict -arena-report -o build/stage2_arena ./std/compiler/
+  sh rm -f build/stage2.arena_report.txt build/stage2.arena_gains.md build/stage2.arena_gains.tsv
+  sh RTG_ARENA_REPORT=build/stage2.arena_report.txt ./build/stage2_arena -strict -arena-report -o build/stage_out ./std/compiler/
+  sh python3 tools/arena_gain_report.py build/stage2.arena_report.txt --md-out build/stage2.arena_gains.md --tsv-out build/stage2.arena_gains.tsv
+  sh echo "PASS: wrote build/stage2.arena_gains.md and build/stage2.arena_gains.tsv"
+
 test-fullcompiler-armv8m-renode: build
   sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"
   fullcompiler rtg semihost/armv8m

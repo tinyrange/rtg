@@ -4210,7 +4210,7 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.emitKnownCall("runtime.Now", 0, 1)
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
 	}
-	if c.target != nil && c.target.Profile && f.Name == c.entryFunc {
+	if c.target != nil && (c.target.Profile || c.target.ArenaReport) && f.Name == c.entryFunc {
 		c.profileFlushOnExit = true
 	}
 

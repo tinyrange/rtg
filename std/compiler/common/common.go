@@ -14,6 +14,7 @@ type Target struct {
 	Defines               map[string]string
 	Strict                bool
 	Profile               bool
+	ArenaReport           bool
 	CompilerDebug         bool
 	EmitIRAndBinaryPath   string
 	StripBinary           bool

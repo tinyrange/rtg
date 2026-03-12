@@ -16,10 +16,10 @@ def main() -> int:
     for line in lines:
         if not line or line.startswith("arena_report") or line.startswith("note=") or line.startswith("id "):
             continue
-        parts = line.split(" ", 8)
-        if len(parts) < 9:
+        parts = line.split()
+        if len(parts) < 11:
             continue
-        name = parts[8]
+        name = parts[10]
         if name not in expected:
             continue
         enters = int(parts[4])

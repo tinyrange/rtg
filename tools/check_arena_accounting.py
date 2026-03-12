@@ -9,10 +9,10 @@ def parse_rows(path: Path):
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line or line.startswith("arena_report") or line.startswith("note=") or line.startswith("id "):
             continue
-        parts = line.split(" ", 8)
-        if len(parts) < 9:
+        parts = line.split()
+        if len(parts) < 11:
             continue
-        rows[parts[8]] = {
+        rows[parts[10]] = {
             "id": int(parts[0]),
             "parent": int(parts[1]),
             "depth": int(parts[2]),
@@ -20,6 +20,8 @@ def parse_rows(path: Path):
             "allocs": int(parts[5]),
             "req": int(parts[6]),
             "mmap": int(parts[7]),
+            "retained_req": int(parts[8]),
+            "retained_mmap": int(parts[9]),
         }
     return rows
 
