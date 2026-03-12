@@ -170,7 +170,7 @@ func mapReuseFindBin(class int) uintptr {
 		}
 		bin = ReadPtr(bin + uintptr(mapReuseNodeOffNext))
 	}
-	bin = Alloc(mapReuseNodeSize)
+	bin = allocHeapTracked(mapReuseNodeSize)
 	WritePtr(bin+uintptr(mapReuseNodeOffNext), mapReuseBins)
 	WritePtr(bin+uintptr(mapReuseNodeOffClass), uintptr(class))
 	WritePtr(bin+uintptr(mapReuseNodeOffEntryHead), 0)
@@ -249,10 +249,8 @@ func mapFreeStringBlock(ptr uintptr, mcap int) {
 	WritePtr(bin+uintptr(mapReuseNodeOffStringHead), ptr)
 }
 
-// Alloc allocates size bytes via mmap, using a bump allocator over
-// growth-sized regions to avoid per-allocation syscall overhead while
-// keeping startup memory lower.
-func Alloc(size int) uintptr {
+// allocHeap allocates size bytes from the process-lifetime heap.
+func allocHeap(size int) (uintptr, int) {
 	// Round up to 8-byte alignment without division (important on no-div backends).
 	size = (size + 7) &^ 7
 
@@ -285,13 +283,28 @@ func Alloc(size int) uintptr {
 		heapPtr = ptr
 		heapEnd = ptr + uintptr(chunk)
 	}
+	result := heapPtr
+	heapPtr = heapPtr + uintptr(size)
+	return result, mmapChunk
+}
+
+// Alloc allocates size bytes, preferring the current arena frame when one is active.
+func Alloc(size int) uintptr {
+	result, mmapChunk := arenaAlloc(size)
 	arenaRecordAlloc(size, mmapChunk)
 	if allocDebugEnabled {
 		allocDebugRecord(size, mmapChunk)
 	}
+	return result
+}
 
-	result := heapPtr
-	heapPtr = heapPtr + uintptr(size)
+// allocHeapTracked bypasses arena routing for runtime-owned storage that may
+// be mutated or reused independently of the caller's arena lifetime.
+func allocHeapTracked(size int) uintptr {
+	result, mmapChunk := allocHeap(size)
+	if allocDebugEnabled {
+		allocDebugRecord(size, mmapChunk)
+	}
 	return result
 }
 

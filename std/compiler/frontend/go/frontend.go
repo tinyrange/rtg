@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"j5.nz/rtg/std/compiler/arena"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/stdlib"
 )
@@ -956,10 +957,14 @@ func parseFile(path string) *Node {
 	}
 
 	// fmt.Fprintf(os.Stderr, "  parsing %s (%d bytes, %d tokens)...\n", path, len(src), 0)
+	arena.Enter("frontend.parseFile.tokens")
+	defer arena.Leave()
 	lexer := NewLexer(string(src))
 	tokens := lexer.Tokenize()
 	// fmt.Fprintf(os.Stderr, "  tokenized %s: %d tokens\n", path, len(tokens))
 
+	arena.UseParent()
+	defer arena.Restore()
 	parser := NewParser(tokens)
 	file := parser.ParseFile()
 	releaseTokenBuffer(tokens)
@@ -983,8 +988,12 @@ func ParseFile(path string) *Node {
 
 // parseSource lexes and parses source code from a string.
 func parseSource(name string, src string) *Node {
+	arena.Enter("frontend.parseSource.tokens")
+	defer arena.Leave()
 	lexer := NewLexer(src)
 	tokens := lexer.Tokenize()
+	arena.UseParent()
+	defer arena.Restore()
 	parser := NewParser(tokens)
 	file := parser.ParseFile()
 	releaseTokenBuffer(tokens)

@@ -13,6 +13,7 @@ import (
 const (
 	comptimePkgPath           = "j5.nz/rtg/x/comptime"
 	comptimePkgPrefix         = "j5.nz/rtg/x/comptime."
+	compilerArenaPkgPrefix    = "j5.nz/rtg/std/compiler/arena."
 	targetPkgPath             = "j5.nz/rtg/std/target"
 	targetRegisterFn          = targetPkgPath + ".Register"
 	targetRegisterABI         = targetPkgPath + ".RegisterABI"
@@ -111,6 +112,9 @@ type Compiler struct {
 	typeIsZeroCall        map[string]bool     // qualified type name → true if methods default to zerocall
 	comptimeFuncs         map[string]bool     // function/method name → true if marked //rtg:comptime
 	funcRetTypeNodes      map[string]*Node    // function name → first return type node (for comptime literal synthesis)
+	funcNodes             map[string]*Node    // function name → declaration node
+	funcNodePkgPath       map[string]string   // function name → declaring package path
+	funcParamEscapes      map[string][]bool   // function name → params that may escape the callee
 	localElemSizes        map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
 	globalElemSizes       map[string]int      // qualified global name → slice element size
 	ifaceMethods          map[string][]string // interface name → method names
@@ -166,6 +170,7 @@ type Compiler struct {
 	profileMethodHash     uint32
 	profileFlushOnExit    bool
 	currentMethodHash     uint32
+	arenaEntered          bool
 	inIfInit              bool
 	ifInitLeakedNames     map[string]bool
 	assembleFuncs         map[string]assembleInfo
@@ -218,6 +223,9 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		typeIsZeroCall:        make(map[string]bool),
 		comptimeFuncs:         make(map[string]bool),
 		funcRetTypeNodes:      make(map[string]*Node),
+		funcNodes:             make(map[string]*Node),
+		funcNodePkgPath:       make(map[string]string),
+		funcParamEscapes:      make(map[string][]bool),
 		globalElemSizes:       make(map[string]int),
 		ifaceMethods:          make(map[string][]string),
 		ifaceMethodRets:       make(map[string]int),
@@ -332,6 +340,17 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		c.curPkg = pkg
 		c.precomputeConsts(pkg)
 	}
+
+	// Precompute function metadata and escape summaries across the whole module.
+	for _, path := range mod.Order {
+		pkg, ok := mod.Packages[path]
+		if !ok {
+			continue
+		}
+		c.curPkg = pkg
+		c.collectFuncRetTypes(pkg)
+	}
+	c.computeEscapeSummaries()
 
 	// Compile functions for all packages in topological order
 	for _, path := range mod.Order {
@@ -1919,8 +1938,6 @@ func (c *Compiler) compilePackage(pkg *Package) {
 	c.checkTopLevelRedeclarations(pkg)
 	// Build interface and method tables for this package
 	c.buildInterfaceTable(pkg)
-	// Pre-pass: collect function return types so they're available during compilation
-	c.collectFuncRetTypes(pkg)
 	// First, generate init code for global variables with initializers
 	c.compileGlobalInits(pkg)
 	// Then compile all functions
@@ -2306,6 +2323,8 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 			c.funcRetTypes[qname] = retTypeNames
 			c.funcRets[qname] = len(retTypeNames)
+			c.funcNodes[qname] = fn
+			c.funcNodePkgPath[qname] = pkg.Path
 			var firstRet *Node
 			if fn.Type != nil {
 				if fn.Type.Kind == NFuncType && len(fn.Type.Nodes) > 0 {
@@ -2455,6 +2474,369 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 				c.funcVariadic[qname] = fixedParams
 				c.funcVariadicIface[qname] = isIfaceVariadic
 				c.funcVariadicElem[qname] = varElemSize
+			}
+		}
+	}
+}
+
+func escapeParamBit(idx int) uint64 {
+	if idx < 0 || idx >= 64 {
+		return 0
+	}
+	return uint64(1) << uint(idx)
+}
+
+func escapeMaskHas(mask uint64, idx int) bool {
+	return mask&escapeParamBit(idx) != 0
+}
+
+func (c *Compiler) typeNameMayReferenceMemory(typeName string) bool {
+	if typeName == "" {
+		return false
+	}
+	q := c.qualifyTypeName(typeName, "")
+	if q == "" {
+		q = typeName
+	}
+	switch q {
+	case "bool", "byte", "int8", "uint8", "int16", "uint16", "int32", "uint32",
+		"int64", "uint64", "int", "uint", "uintptr", "float32", "float64":
+		return false
+	}
+	if q == "string" || q == "error" || q == "interface{}" {
+		return true
+	}
+	if strings.HasPrefix(q, "*") || strings.HasPrefix(q, "[]") || strings.HasPrefix(q, "[") ||
+		strings.HasPrefix(q, "map[") || strings.HasPrefix(q, "func(") {
+		return true
+	}
+	if c.isInterfaceTypeName(q) {
+		return true
+	}
+	return true
+}
+
+func (c *Compiler) exprMayReferenceMemory(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if c.isStringTypedExpr(node) || c.isMapExpr(node) {
+		return true
+	}
+	if ct := c.exprConcreteType(node); ct != "" {
+		return c.typeNameMayReferenceMemory(ct)
+	}
+	if rt := c.resolveExprType(node); rt != "" {
+		return c.typeNameMayReferenceMemory(rt)
+	}
+	switch node.Kind {
+	case NCompositeLit, NSliceExpr, NCallExpr, NSelectorExpr, NIndexExpr:
+		return true
+	}
+	return false
+}
+
+func (c *Compiler) escapeLValueMayLeak(node *Node, paramLocals map[string]bool) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case NIdent:
+		if paramLocals[node.Name] {
+			return false
+		}
+		if _, ok := c.lookupLocal(node.Name); ok {
+			return false
+		}
+		return true
+	case NSelectorExpr, NIndexExpr:
+		return true
+	case NUnaryExpr:
+		return node.Name == "*"
+	default:
+		return true
+	}
+}
+
+func (c *Compiler) callArgsMayEscape(node *Node, callName string, aliases map[string]uint64) uint64 {
+	if node == nil {
+		return 0
+	}
+	summary, known := c.funcParamEscapes[callName]
+	if !known {
+		escapeMask := uint64(0)
+		for _, arg := range node.Nodes {
+			escapeMask |= c.escapeAliasMaskForExpr(arg, aliases)
+		}
+		return escapeMask
+	}
+	escapeMask := uint64(0)
+	for i, arg := range node.Nodes {
+		if i >= len(summary) || !summary[i] {
+			continue
+		}
+		escapeMask |= c.escapeAliasMaskForExpr(arg, aliases)
+	}
+	return escapeMask
+}
+
+func (c *Compiler) resolveStaticCallNameForEscape(node *Node) string {
+	if node == nil || c.curPkg == nil {
+		return ""
+	}
+	if node.Kind == NIdent {
+		if _, ok := c.funcRets[c.curPkg.QualName(node.Name)]; ok {
+			return c.curPkg.QualName(node.Name)
+		}
+		if _, ok := c.funcRets[node.Name]; ok {
+			return node.Name
+		}
+		return ""
+	}
+	if node.Kind == NSelectorExpr && node.X != nil && node.X.Kind == NIdent {
+		if pkg := c.resolvePackage(node.X.Name); pkg != nil {
+			qname := pkg.QualName(node.Name)
+			if _, ok := c.funcRets[qname]; ok {
+				return qname
+			}
+		}
+	}
+	return ""
+}
+
+func (c *Compiler) escapeAliasMaskForExpr(node *Node, aliases map[string]uint64) uint64 {
+	if node == nil {
+		return 0
+	}
+	switch node.Kind {
+	case NIdent:
+		return aliases[node.Name]
+	case NSelectorExpr, NIndexExpr, NSliceExpr, NTypeAssertExpr:
+		return c.escapeAliasMaskForExpr(node.X, aliases)
+	case NUnaryExpr:
+		if node.Name == "&" || node.Name == "*" {
+			return c.escapeAliasMaskForExpr(node.X, aliases)
+		}
+		return 0
+	case NCallExpr:
+		callName := c.resolveStaticCallNameForEscape(node.X)
+		if callName == "" {
+			mask := uint64(0)
+			for _, arg := range node.Nodes {
+				mask |= c.escapeAliasMaskForExpr(arg, aliases)
+			}
+			return mask
+		}
+		return c.callArgsMayEscape(node, callName, aliases)
+	}
+	return 0
+}
+
+func (c *Compiler) mergeEscapeAlias(dst map[string]uint64, name string, mask uint64) bool {
+	if name == "" {
+		return false
+	}
+	old := dst[name]
+	newMask := old | mask
+	if old == newMask {
+		return false
+	}
+	dst[name] = newMask
+	return true
+}
+
+func (c *Compiler) escapeVisitNode(node *Node, aliases map[string]uint64, paramLocals map[string]bool, escapes *uint64) {
+	if node == nil {
+		return
+	}
+	switch node.Kind {
+	case NBlock:
+		for _, child := range node.Nodes {
+			c.escapeVisitNode(child, aliases, paramLocals, escapes)
+		}
+	case NIf:
+		if node.X != nil {
+			c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+		}
+		if node.Y != nil {
+			c.escapeVisitNode(node.Y, aliases, paramLocals, escapes)
+		}
+		if node.Body != nil {
+			c.escapeVisitNode(node.Body, aliases, paramLocals, escapes)
+		}
+	case NFor, NSwitch, NCase:
+		if node.X != nil {
+			c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+		}
+		if node.Y != nil {
+			c.escapeVisitNode(node.Y, aliases, paramLocals, escapes)
+		}
+		if node.Body != nil {
+			c.escapeVisitNode(node.Body, aliases, paramLocals, escapes)
+		}
+		for _, child := range node.Nodes {
+			c.escapeVisitNode(child, aliases, paramLocals, escapes)
+		}
+	case NExprStmt, NDeferStmt:
+		c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+	case NReturn:
+		if node.X != nil {
+			*escapes = *escapes | c.escapeAliasMaskForExpr(node.X, aliases)
+		}
+		for _, extra := range node.Nodes {
+			*escapes = *escapes | c.escapeAliasMaskForExpr(extra, aliases)
+		}
+	case NVarDecl:
+		if len(node.Nodes) > 0 {
+			for _, child := range node.Nodes {
+				c.escapeVisitNode(child, aliases, paramLocals, escapes)
+			}
+			return
+		}
+		mask := c.escapeAliasMaskForExpr(node.X, aliases)
+		if node.Name != "" {
+			aliases[node.Name] = mask
+		}
+	case NAssign:
+		if node.Y != nil {
+			if len(node.Nodes) > 0 && node.Y.Kind == NCallExpr {
+				callName := c.resolveStaticCallNameForEscape(node.Y.X)
+				callEscape := c.callArgsMayEscape(node.Y, callName, aliases)
+				*escapes = *escapes | callEscape
+				for _, lhs := range node.Nodes {
+					if lhs != nil && lhs.Kind == NIdent {
+						aliases[lhs.Name] = 0
+					}
+				}
+			} else if len(node.Nodes) > 0 && node.Y.Kind == NBlock {
+				for i, lhs := range node.Nodes {
+					if lhs == nil || lhs.Kind != NIdent || i >= len(node.Y.Nodes) {
+						continue
+					}
+					aliases[lhs.Name] = c.escapeAliasMaskForExpr(node.Y.Nodes[i], aliases)
+				}
+			} else if len(node.Nodes) > 0 {
+				mask := c.escapeAliasMaskForExpr(node.Y, aliases)
+				for _, lhs := range node.Nodes {
+					if lhs == nil {
+						continue
+					}
+					if lhs.Kind == NIdent {
+						aliases[lhs.Name] = mask
+					} else if c.escapeLValueMayLeak(lhs, paramLocals) {
+						*escapes = *escapes | mask
+					}
+				}
+			} else if node.X != nil {
+				mask := c.escapeAliasMaskForExpr(node.Y, aliases)
+				if node.X.Kind == NIdent {
+					aliases[node.X.Name] = mask
+				} else if c.escapeLValueMayLeak(node.X, paramLocals) {
+					*escapes = *escapes | mask
+				}
+			}
+			c.escapeVisitNode(node.Y, aliases, paramLocals, escapes)
+		}
+		if node.X != nil {
+			c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+		}
+		for _, lhs := range node.Nodes {
+			c.escapeVisitNode(lhs, aliases, paramLocals, escapes)
+		}
+	case NCallExpr:
+		callName := c.resolveStaticCallNameForEscape(node.X)
+		*escapes = *escapes | c.callArgsMayEscape(node, callName, aliases)
+		for _, arg := range node.Nodes {
+			c.escapeVisitNode(arg, aliases, paramLocals, escapes)
+		}
+	case NFunc:
+		// Nested function literals are compiled separately; keep the outer
+		// summary conservative by not descending into their bodies here.
+		return
+	default:
+		if node.X != nil {
+			c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+		}
+		if node.Y != nil {
+			c.escapeVisitNode(node.Y, aliases, paramLocals, escapes)
+		}
+		if node.Body != nil {
+			c.escapeVisitNode(node.Body, aliases, paramLocals, escapes)
+		}
+		for _, child := range node.Nodes {
+			c.escapeVisitNode(child, aliases, paramLocals, escapes)
+		}
+	}
+}
+
+func (c *Compiler) computeFuncParamEscapeMask(pkg *Package, qname string, fn *Node) uint64 {
+	if fn == nil {
+		return 0
+	}
+	aliases := make(map[string]uint64)
+	paramLocals := make(map[string]bool)
+	paramIdx := 0
+	if fn.X != nil && fn.X.Name != "" {
+		aliases[fn.X.Name] = escapeParamBit(paramIdx)
+		paramLocals[fn.X.Name] = true
+		paramIdx++
+	}
+	for _, param := range fn.Nodes {
+		if param == nil || param.Name == "" {
+			continue
+		}
+		aliases[param.Name] = escapeParamBit(paramIdx)
+		paramLocals[param.Name] = true
+		paramIdx++
+	}
+	escapes := uint64(0)
+	savedPkg := c.curPkg
+	c.curPkg = pkg
+	if fn.Body != nil {
+		c.escapeVisitNode(fn.Body, aliases, paramLocals, &escapes)
+	}
+	c.curPkg = savedPkg
+	return escapes
+}
+
+func (c *Compiler) computeEscapeSummaries() {
+	changed := true
+	for changed {
+		changed = false
+		for qname, fn := range c.funcNodes {
+			pkgPath := c.funcNodePkgPath[qname]
+			pkg, ok := c.mod.Packages[pkgPath]
+			if !ok || fn == nil {
+				continue
+			}
+			mask := c.computeFuncParamEscapeMask(pkg, qname, fn)
+			paramCount := 0
+			if fn.X != nil && fn.X.Name != "" {
+				paramCount++
+			}
+			for _, param := range fn.Nodes {
+				if param != nil && param.Name != "" {
+					paramCount++
+				}
+			}
+			next := make([]bool, paramCount)
+			i := 0
+			for i < paramCount && i < 64 {
+				next[i] = escapeMaskHas(mask, i)
+				i++
+			}
+			prev := c.funcParamEscapes[qname]
+			if len(prev) != len(next) {
+				c.funcParamEscapes[qname] = next
+				changed = true
+				continue
+			}
+			for i = 0; i < len(next); i++ {
+				if prev[i] != next[i] {
+					c.funcParamEscapes[qname] = next
+					changed = true
+					break
+				}
 			}
 		}
 	}
@@ -2998,6 +3380,12 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	savedResolveCallNameCache := c.resolveCallNameCache
 	savedResolveExprTypeCache := c.resolveExprTypeCache
 	savedExprConcreteTypeCache := c.exprConcreteTypeCache
+	savedCurrentMethodHash := c.currentMethodHash
+	savedProfileMethodHash := c.profileMethodHash
+	savedProfileStartLocal := c.profileStartLocal
+	savedProfileParentLocal := c.profileParentLocal
+	savedProfileFlushOnExit := c.profileFlushOnExit
+	savedArenaEntered := c.arenaEntered
 	c.curFunc = f
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
@@ -3014,6 +3402,15 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.namedResultNames = nil
 	c.panicUnwindLabel = c.newLabel()
 	c.resetPanicPropagationOutlineState()
+	c.currentMethodHash = profileHash32FNV(f.Name)
+	c.profileMethodHash = 0
+	c.profileStartLocal = -1
+	c.profileParentLocal = -1
+	c.profileFlushOnExit = false
+	c.arenaEntered = false
+	if c.shouldInstrumentArena(f.Name) {
+		c.emitArenaEnter(f.Name)
+	}
 	c.pushScope()
 	for _, node := range inits {
 		qname := pkg.QualName(node.Name)
@@ -3023,6 +3420,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		}
 		if defineValue, ok := c.lookupDefineValue(qname, node.Name); ok {
 			c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, encodeStringLiteral(defineValue)))
+			if c.typeNameMayReferenceMemory("string") {
+				c.emitArenaRetainCurrent()
+			}
 			c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 			continue
 		}
@@ -3031,6 +3431,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 			c.maybeCloneArrayForTypeName(nodeTypeName(node.Type))
 		} else {
 			c.maybeCloneArrayForTypeName(c.exprConcreteType(node.X))
+		}
+		if c.exprMayReferenceMemory(node.X) {
+			c.emitArenaRetainCurrent()
 		}
 		c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 	}
@@ -3057,6 +3460,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 			}
 			c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, encodeStringLiteral(payload)))
 			c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, "[]byte"))
+			c.emitArenaRetainCurrent()
 			c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 		}
 	}
@@ -3084,6 +3488,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		c.emit(makeInst(ir.OP_CALL, 0, 0, 0, reg.qname))
 		c.emitKnownCall(targetRegisterFmt, 2, 0)
 	}
+	c.emitProfileExit()
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 	if c.panicUnwindLabel >= 0 {
 		c.emitPanicPropagationSlowPaths()
@@ -3110,6 +3515,12 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.resolveCallNameCache = savedResolveCallNameCache
 	c.resolveExprTypeCache = savedResolveExprTypeCache
 	c.exprConcreteTypeCache = savedExprConcreteTypeCache
+	c.currentMethodHash = savedCurrentMethodHash
+	c.profileMethodHash = savedProfileMethodHash
+	c.profileStartLocal = savedProfileStartLocal
+	c.profileParentLocal = savedProfileParentLocal
+	c.profileFlushOnExit = savedProfileFlushOnExit
+	c.arenaEntered = savedArenaEntered
 }
 
 func (c *Compiler) lookupDefineValue(qualifiedName string, shortName string) (string, bool) {
@@ -3518,7 +3929,8 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.profileParentLocal = -1
 	c.profileMethodHash = 0
 	c.profileFlushOnExit = false
-	c.currentMethodHash = 0
+	c.currentMethodHash = profileHash32FNV(qname)
+	c.arenaEntered = false
 	c.inIfInit = false
 	c.ifInitLeakedNames = make(map[string]bool)
 	for name, concreteType := range c.captureConcreteTypes {
@@ -3530,9 +3942,6 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.pushScope()
 
 	profileParentABI := c.target != nil && c.target.Profile && c.funcProfileParentABI[qname]
-	if c.target != nil && c.target.Profile {
-		c.currentMethodHash = profileHash32FNV(qname)
-	}
 
 	// Extract return type names for interface boxing
 	var retTypeNames []string
@@ -3699,6 +4108,9 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.panicUnwindLabel = c.newLabel()
 	}
 	c.resetPanicPropagationOutlineState()
+	if c.shouldInstrumentArena(f.Name) {
+		c.emitArenaEnter(qname)
+	}
 	if c.funcIsProfiled[f.Name] {
 		c.profileMethodHash = c.currentMethodHash
 		if c.profileMethodHash == 0 {
@@ -3707,18 +4119,6 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.profileStartLocal = c.addLocal("$profile_start")
 		c.emitKnownCall("runtime.Now", 0, 1)
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
-		arenaMethodHash := c.currentMethodHash
-		if arenaMethodHash == 0 {
-			arenaMethodHash = profileHash32FNV(f.Name)
-		}
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(arenaMethodHash)})
-		if c.profileParentLocal >= 0 {
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileParentLocal})
-		} else {
-			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-		}
-		c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, qname))
-		c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ArenaEnter"))
 	}
 	if c.target != nil && c.target.Profile && f.Name == c.entryFunc {
 		c.profileFlushOnExit = true
@@ -4129,6 +4529,8 @@ func knownCallRetCount(name string) (int, bool) {
 	case "runtime.SysWrite":
 		return 3, true
 	case "runtime.ArenaEnter",
+		"runtime.ArenaRetainCurrent",
+		"runtime.ArenaUseParent",
 		"runtime.Memzero",
 		"runtime.DeferRecoverEnter",
 		"runtime.DeferRecoverExit",
@@ -4140,6 +4542,7 @@ func knownCallRetCount(name string) (int, bool) {
 		"runtime.ProfileHashNow",
 		"runtime.ProfileFlush",
 		"runtime.ArenaFlush",
+		"runtime.ArenaRestore",
 		"runtime.ArenaLeave",
 		"runtime.PanicReset",
 		"runtime.PanicShouldUnwind":
@@ -5215,6 +5618,9 @@ func (c *Compiler) compileAssign(node *Node) {
 		mapValueType := c.resolveMapValueType(node.X.X)
 		mapValueTypeQualified := c.qualifyTypeName(mapValueType, "")
 		mapValueIsInterface := c.isInterfaceTypeName(mapValueType) || c.isInterfaceTypeName(mapValueTypeQualified)
+		if c.exprMayReferenceMemory(node.Y) {
+			c.emitArenaRetainCurrent()
+		}
 		c.compileExpr(node.X.X) // push map
 		c.compileExpr(node.X.Y) // push key
 		c.compileExpr(node.Y)   // push value
@@ -5235,6 +5641,9 @@ func (c *Compiler) compileAssign(node *Node) {
 		return
 	}
 	c.compileExpr(node.Y)
+	if c.lvalueMayEscapeCurrentArena(node.X) && c.exprMayReferenceMemory(node.Y) {
+		c.emitArenaRetainCurrent()
+	}
 	if lhsType := c.resolveExprType(node.X); isFloatTypeName(lhsType) {
 		c.maybeConvertArgForParamType(node.Y, lhsType)
 	}
@@ -5377,6 +5786,7 @@ func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureC
 	savedProfileMethodHash := c.profileMethodHash
 	savedProfileFlushOnExit := c.profileFlushOnExit
 	savedCurrentMethodHash := c.currentMethodHash
+	savedArenaEntered := c.arenaEntered
 	savedInIfInit := c.inIfInit
 	savedIfInitLeakedNames := c.ifInitLeakedNames
 
@@ -5419,6 +5829,7 @@ func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureC
 	c.profileMethodHash = savedProfileMethodHash
 	c.profileFlushOnExit = savedProfileFlushOnExit
 	c.currentMethodHash = savedCurrentMethodHash
+	c.arenaEntered = savedArenaEntered
 	c.inIfInit = savedInIfInit
 	c.ifInitLeakedNames = savedIfInitLeakedNames
 	target := c.curPkg.QualName(name)
@@ -5506,6 +5917,25 @@ func (c *Compiler) lvalueInterfaceType(node *Node) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func (c *Compiler) lvalueMayEscapeCurrentArena(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case NIdent:
+		if _, ok := c.lookupLocal(node.Name); ok {
+			return false
+		}
+		return true
+	case NSelectorExpr, NIndexExpr:
+		return true
+	case NUnaryExpr:
+		return node.Name == "*"
+	default:
+		return true
+	}
 }
 
 func (c *Compiler) compileLValueSet(node *Node) {
@@ -5773,10 +6203,8 @@ func (c *Compiler) emitProfileExit() {
 		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileStartLocal})
 		c.emitKnownCall("runtime.ProfileHashNow", 3, 0)
-		if c.target != nil && c.target.Profile {
-			c.emitKnownCall("runtime.ArenaLeave", 0, 0)
-		}
 	}
+	c.emitArenaExit()
 }
 
 func (c *Compiler) emitProfileAllocSample() {
@@ -5805,6 +6233,115 @@ func (c *Compiler) emitProfileAllocSample() {
 func (c *Compiler) emitRuntimeAllocCall() {
 	c.emitProfileAllocSample()
 	c.emitKnownCall("runtime.Alloc", 1, 1)
+}
+
+func (c *Compiler) emitArenaEnter(methodName string) {
+	if c.currentMethodHash == 0 {
+		return
+	}
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.currentMethodHash)})
+	if c.profileParentLocal >= 0 {
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileParentLocal})
+	} else {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	}
+	c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, methodName))
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ArenaEnter"))
+	c.arenaEntered = true
+}
+
+func (c *Compiler) emitArenaExit() {
+	if !c.arenaEntered {
+		return
+	}
+	c.emitKnownCall("runtime.ArenaLeave", 0, 0)
+}
+
+func (c *Compiler) emitArenaRetainCurrent() {
+	if !c.arenaEntered {
+		return
+	}
+	c.emitKnownCall("runtime.ArenaRetainCurrent", 0, 0)
+}
+
+func (c *Compiler) tryCompileCompilerArenaCall(node *Node, callName string) bool {
+	if c.target != nil && c.target.GOOS == "wasi" && c.target.GOARCH == "wasm32" {
+		return false
+	}
+	switch callName {
+	case compilerArenaPkgPrefix + "Enter":
+		if len(node.Nodes) != 1 || node.Nodes[0] == nil || node.Nodes[0].Kind != NStringLit {
+			c.errorf("%s: arena.Enter requires a string literal argument", c.curFunc.Name)
+			return true
+		}
+		scopeName := node.Nodes[0].Name
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(profileHash32FNV(scopeName))})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, scopeName))
+		c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ArenaEnter"))
+		return true
+	case compilerArenaPkgPrefix + "Leave":
+		c.emitKnownCall("runtime.ArenaLeave", 0, 0)
+		return true
+	case compilerArenaPkgPrefix + "RetainCurrent":
+		c.emitKnownCall("runtime.ArenaRetainCurrent", 0, 0)
+		return true
+	case compilerArenaPkgPrefix + "UseParent":
+		c.emitKnownCall("runtime.ArenaUseParent", 0, 0)
+		return true
+	case compilerArenaPkgPrefix + "Restore":
+		c.emitKnownCall("runtime.ArenaRestore", 0, 0)
+		return true
+	}
+	return false
+}
+
+func (c *Compiler) shouldInstrumentArena(qname string) bool {
+	_ = qname
+	return false
+}
+
+func (c *Compiler) resolvedCallArgMayEscape(callName string, argIdx int) bool {
+	summary, ok := c.funcParamEscapes[callName]
+	if !ok {
+		return true
+	}
+	if argIdx < 0 || argIdx >= len(summary) {
+		return false
+	}
+	return summary[argIdx]
+}
+
+func (c *Compiler) callNeedsArenaRetain(callName string, args []*Node, argOffset int) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if callName == "" {
+		for _, arg := range args {
+			if c.exprMayReferenceMemory(arg) {
+				return true
+			}
+		}
+		return false
+	}
+	for i, arg := range args {
+		if !c.exprMayReferenceMemory(arg) {
+			continue
+		}
+		if c.resolvedCallArgMayEscape(callName, i+argOffset) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Compiler) returnNeedsArenaRetain(retTypes []string) bool {
+	for _, retType := range retTypes {
+		if c.typeNameMayReferenceMemory(retType) {
+			return true
+		}
+	}
+	return false
 }
 
 func profileHash32FNV(name string) uint32 {
@@ -5878,6 +6415,9 @@ func (c *Compiler) emitRecoveredPanicReturn() {
 			count++
 			i++
 		}
+	}
+	if c.returnNeedsArenaRetain(retTypes) {
+		c.emitArenaRetainCurrent()
 	}
 	c.emitProfileExit()
 	c.emitProfileFinalize()
@@ -5998,6 +6538,9 @@ func (c *Compiler) compileReturn(node *Node) {
 					c.maybeBoxInterface(extra, retTypes, retIdx)
 					count++
 				}
+				if c.returnNeedsArenaRetain(retTypes) {
+					c.emitArenaRetainCurrent()
+				}
 				if len(c.deferSites) > 0 {
 					c.emitDeferredCalls()
 				}
@@ -6006,6 +6549,9 @@ func (c *Compiler) compileReturn(node *Node) {
 				c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
 				return
 			}
+		}
+		if c.returnNeedsArenaRetain(retTypes) {
+			c.emitArenaRetainCurrent()
 		}
 		if len(c.deferSites) > 0 {
 			c.emitDeferredCalls()
@@ -6034,6 +6580,9 @@ func (c *Compiler) compileReturn(node *Node) {
 		}
 		c.maybeBoxInterface(extra, retTypes, retIdx)
 		count++
+	}
+	if c.returnNeedsArenaRetain(retTypes) {
+		c.emitArenaRetainCurrent()
 	}
 	if len(c.deferSites) > 0 {
 		c.emitDeferredCalls()
@@ -8615,6 +9164,10 @@ func (c *Compiler) methodCallNeedsProfileParent(callName string) bool {
 
 func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName string) {
 	paramTypes := c.funcParamTypes[callName]
+	if (c.exprMayReferenceMemory(receiver) && c.resolvedCallArgMayEscape(callName, 0)) ||
+		c.callNeedsArenaRetain(callName, args, 1) {
+		c.emitArenaRetainCurrent()
+	}
 	c.compileExpr(receiver)
 	if len(paramTypes) > 0 {
 		c.maybeCloneArrayForTypeName(paramTypes[0])
@@ -8638,6 +9191,10 @@ func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName s
 }
 
 func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType string, methodName string) {
+	callName := c.dotJoin(ifaceType, methodName)
+	if c.exprMayReferenceMemory(recvExpr) || c.callNeedsArenaRetain(callName, args, 0) {
+		c.emitArenaRetainCurrent()
+	}
 	paramTypes := c.funcParamTypes[c.dotJoin(ifaceType, methodName)]
 	c.compileExpr(recvExpr)
 	argCount := len(args)
@@ -8656,10 +9213,13 @@ func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType s
 		}
 	}
 	retCount, _ := c.ifaceMethodReturnCount(ifaceType, methodName)
-	c.emitIfaceCallWithPanicCheck(c.dotJoin(ifaceType, methodName), argCount, retCount)
+	c.emitIfaceCallWithPanicCheck(callName, argCount, retCount)
 }
 
 func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promotedMethodMatch) {
+	if c.exprMayReferenceMemory(recvExpr) || c.callNeedsArenaRetain(pm.Target, args, 1) {
+		c.emitArenaRetainCurrent()
+	}
 	c.compileExpr(recvExpr)
 	i := 0
 	for i < len(pm.Offsets) {
@@ -8693,6 +9253,9 @@ func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedNa
 	fixedCount, isVariadic := c.funcVariadic[resolvedName]
 	isSpread := node.Name == "spread"
 	if isVariadic && !isSpread {
+		if c.exprMayReferenceMemory(recvExpr) || c.callNeedsArenaRetain(resolvedName, node.Nodes, 1) {
+			c.emitArenaRetainCurrent()
+		}
 		c.compileExpr(recvExpr)
 		paramTypes := c.funcParamTypes[resolvedName]
 		if len(paramTypes) > 0 {
@@ -8839,7 +9402,7 @@ func (c *Compiler) compileNewBuiltin(node *Node) bool {
 		size = c.target.PtrSize
 	}
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
-	c.emitKnownCall("runtime.Alloc", 1, 1)
+	c.emitRuntimeAllocCall()
 	c.emit(ir.Inst{Op: ir.OP_DUP})
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
 	c.emit(makeInst(ir.OP_CALL, 2, 0, 0, "runtime.Memzero"))
@@ -9076,6 +9639,19 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		if target, ok := c.localFuncTargets[node.X.Name]; ok {
 			captureArgs := c.localFuncCaptures[node.X.Name]
+			needRetain := false
+			for i := 0; i < len(captureArgs); i++ {
+				if c.resolvedCallArgMayEscape(target, i) {
+					needRetain = true
+					break
+				}
+			}
+			if !needRetain && c.callNeedsArenaRetain(target, node.Nodes, len(captureArgs)) {
+				needRetain = true
+			}
+			if needRetain {
+				c.emitArenaRetainCurrent()
+			}
 			for _, capture := range captureArgs {
 				if capture.IsPtr {
 					c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: capture.LocalIdx})
@@ -9463,6 +10039,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if c.tryCompileTestingRunCall(node, callName) {
 		return
 	}
+	if c.tryCompileCompilerArenaCall(node, callName) {
+		return
+	}
 
 	paramTypes := c.funcParamTypes[callName]
 	profileParentOffset := 0
@@ -9500,6 +10079,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	}
 
 	if isVariadic && !isSpread {
+		if c.callNeedsArenaRetain(callName, node.Nodes, 0) {
+			c.emitArenaRetainCurrent()
+		}
 		// Compile fixed args normally
 		i := 0
 		for i < callFixedCount && i < len(node.Nodes) {
@@ -9532,6 +10114,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		// Call with fixedCount + 1 args (fixed params + one slice)
 		c.emitCallWithPanicCheck(callName, callFixedCount+1)
 	} else {
+		if c.callNeedsArenaRetain(callName, node.Nodes, 0) {
+			c.emitArenaRetainCurrent()
+		}
 		// Non-variadic call, or spread call — compile all args normally.
 		for i, arg := range node.Nodes {
 			c.compileExpr(arg)
