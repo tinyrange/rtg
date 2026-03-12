@@ -91,7 +91,7 @@ const structTypeLookupMaxEntries = 8192
 const structFieldLookupMaxEntries = 16384
 const fieldTypeLookupMaxEntries = 16384
 
-var nodeMapTypeNameCache map[*Node]string
+var nodeTypeNameCache map[*Node]string
 
 // === Compiler ===
 
@@ -6622,14 +6622,17 @@ func (c *Compiler) emitArenaRetainCurrent() {
 }
 
 func compilerArenaRuntimeCallName(callName string) string {
-	switch callName {
-	case compilerArenaPkgPrefix + "Leave":
+	if !strings.HasPrefix(callName, compilerArenaPkgPrefix) {
+		return ""
+	}
+	switch callName[len(compilerArenaPkgPrefix):] {
+	case "Leave":
 		return "runtime.ArenaLeave"
-	case compilerArenaPkgPrefix + "RetainCurrent":
+	case "RetainCurrent":
 		return "runtime.ArenaRetainCurrent"
-	case compilerArenaPkgPrefix + "UseParent":
+	case "UseParent":
 		return "runtime.ArenaUseParent"
-	case compilerArenaPkgPrefix + "Restore":
+	case "Restore":
 		return "runtime.ArenaRestore"
 	}
 	return ""
@@ -6643,8 +6646,11 @@ func (c *Compiler) tryCompileCompilerArenaCall(node *Node, callName string) bool
 		c.emitKnownCall(runtimeName, 0, 0)
 		return true
 	}
-	switch callName {
-	case compilerArenaPkgPrefix + "Enter":
+	if !strings.HasPrefix(callName, compilerArenaPkgPrefix) {
+		return false
+	}
+	switch callName[len(compilerArenaPkgPrefix):] {
+	case "Enter":
 		if len(node.Nodes) != 1 || node.Nodes[0] == nil || node.Nodes[0].Kind != NStringLit {
 			c.errorf("%s: arena.Enter requires a string literal argument", c.curFunc.Name)
 			return true
@@ -12448,6 +12454,14 @@ func nodeTypeName(node *Node) string {
 		return ""
 	}
 	switch node.Kind {
+	case NPointerType, NSliceType, NMapType:
+		if nodeTypeNameCache != nil {
+			if cached, ok := nodeTypeNameCache[node]; ok {
+				return cached
+			}
+		}
+	}
+	switch node.Kind {
 	case NIdent:
 		return node.Name
 	case NInterfaceType:
@@ -12458,9 +12472,19 @@ func nodeTypeName(node *Node) string {
 		}
 		return node.Name
 	case NPointerType:
-		return "*" + nodeTypeName(node.X)
+		result := "*" + nodeTypeName(node.X)
+		if nodeTypeNameCache == nil {
+			nodeTypeNameCache = make(map[*Node]string)
+		}
+		nodeTypeNameCache[node] = result
+		return result
 	case NSliceType:
-		return "[]" + nodeTypeName(node.X)
+		result := "[]" + nodeTypeName(node.X)
+		if nodeTypeNameCache == nil {
+			nodeTypeNameCache = make(map[*Node]string)
+		}
+		nodeTypeNameCache[node] = result
+		return result
 	case NArrayType:
 		lenExpr := "0"
 		if node.Name == "..." {
@@ -12477,13 +12501,11 @@ func nodeTypeName(node *Node) string {
 		}
 		return "[" + lenExpr + "]" + nodeTypeName(node.X)
 	case NMapType:
-		if nodeMapTypeNameCache == nil {
-			nodeMapTypeNameCache = make(map[*Node]string)
-		} else if cached, ok := nodeMapTypeNameCache[node]; ok {
-			return cached
-		}
 		result := "map[" + nodeTypeName(node.X) + "]" + nodeTypeName(node.Y)
-		nodeMapTypeNameCache[node] = result
+		if nodeTypeNameCache == nil {
+			nodeTypeNameCache = make(map[*Node]string)
+		}
+		nodeTypeNameCache[node] = result
 		return result
 	}
 	return ""
