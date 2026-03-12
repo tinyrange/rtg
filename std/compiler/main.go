@@ -519,6 +519,9 @@ func main() {
 
 	// Build active tag set from target + explicit tags
 	applyBuildTags(&compileTarget, extraTags)
+	if shouldForceNoEmbedStd(entryFiles) {
+		compileTarget.BuildTags = common.AppendUnique(compileTarget.BuildTags, "no_embed_std")
+	}
 	if ir.SizeAnalysisPath != "" {
 		compileTarget.StripBinary = true
 	}
@@ -634,94 +637,119 @@ func main() {
 			}
 		}
 
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
-		}
-		frontend.ResetDiscoveredBuildTags()
-		mod := frontend.ResolveModule(&compileTarget, baseDir, entryFiles)
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
-		}
-		traceExit(20)
-
-		if buildTagsPath != "" {
-			tags := frontend.GetDiscoveredBuildTags()
-			var out string
-			for _, t := range tags {
-				out = out + t + "\n"
-			}
-			err := os.WriteFile(buildTagsPath, []byte(out), 0644)
+		if shouldUsePrebuiltCompilerIR(&compileTarget, entryFiles, extraTags, parseOnly, buildTagsPath, emitIRPath, emitIRBinaryPath, targetIsIR) {
+			irmod, err = loadPrebuiltSelfhostCompilerIR(baseDir)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
+				fmt.Fprintf(os.Stderr, "error loading prebuilt selfhost IR: %v\n", err)
 				runCleanup()
 				os.Exit(1)
 			}
-		}
-
-		if parseOnly {
-			if emitIRPath != "" {
-				fmt.Fprintf(os.Stderr, "-emit-ir is not valid with -parse-only\n")
-				runCleanup()
-				os.Exit(1)
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: loaded prebuilt selfhost IR (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
 			}
-			if emitIRAndBinaryPath != "" {
-				fmt.Fprintf(os.Stderr, "-emit-codegen-debug is not valid with -parse-only\n")
+			traceExit(30)
+		} else if shouldCopyPrebuiltCompilerIRText(&compileTarget, entryFiles, extraTags, parseOnly, buildTagsPath, emitIRPath, emitIRBinaryPath, targetIsIR) {
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: copied prebuilt selfhost IR text\n")
+			}
+			if err := copyPrebuiltSelfhostCompilerIR(baseDir, outputPath); err != nil {
+				fmt.Fprintf(os.Stderr, "error copying prebuilt selfhost IR: %v\n", err)
 				runCleanup()
 				os.Exit(1)
 			}
 			runCleanup()
 			os.Exit(0)
-		}
+		} else {
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: resolving module (%d entry files)\n", len(entryFiles))
+			}
+			frontend.ResetDiscoveredBuildTags()
+			mod := frontend.ResolveModule(&compileTarget, baseDir, entryFiles)
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: resolved %d packages\n", len(mod.Packages))
+			}
+			traceExit(20)
 
-		// Validate cross-package references
-		valErrs := frontend.ValidateModule(mod)
-		if len(valErrs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d validation errors:\n", len(valErrs))
-			for _, e := range valErrs {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
+			if buildTagsPath != "" {
+				tags := frontend.GetDiscoveredBuildTags()
+				var out string
+				for _, t := range tags {
+					out = out + t + "\n"
+				}
+				err := os.WriteFile(buildTagsPath, []byte(out), 0644)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error writing build tag list: %v\n", err)
+					runCleanup()
+					os.Exit(1)
+				}
 			}
-			runCleanup()
-			os.Exit(1)
-		}
-		compileAsSpecs, compileAsErrs := frontend.CollectCompileAsSpecs(mod)
-		if len(compileAsErrs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(compileAsErrs))
-			for _, e := range compileAsErrs {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
+
+			if parseOnly {
+				if emitIRPath != "" {
+					fmt.Fprintf(os.Stderr, "-emit-ir is not valid with -parse-only\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				if emitIRAndBinaryPath != "" {
+					fmt.Fprintf(os.Stderr, "-emit-codegen-debug is not valid with -parse-only\n")
+					runCleanup()
+					os.Exit(1)
+				}
+				runCleanup()
+				os.Exit(0)
 			}
-			runCleanup()
-			os.Exit(1)
-		}
-		if len(compileAsSpecs) > 0 {
-			artifacts, err := buildCompileAsArtifacts(&compileTarget, baseDir, entryFiles, extraTags, compileAsSpecs)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "compileas error: %v\n", err)
+
+			// Validate cross-package references
+			valErrs := frontend.ValidateModule(mod)
+			if len(valErrs) > 0 {
+				fmt.Fprintf(os.Stderr, "\n%d validation errors:\n", len(valErrs))
+				for _, e := range valErrs {
+					fmt.Fprintf(os.Stderr, "  %s\n", e)
+				}
 				runCleanup()
 				os.Exit(1)
 			}
-			compileTarget.CompileAsArtifacts = artifacts
-		}
-
-		// Compile to IR
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
-		}
-		var errs []string
-		irmod, errs = frontend.CompileModule(compileTarget, mod)
-
-		if len(errs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
-			for _, e := range errs {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
+			compileAsSpecs, compileAsErrs := frontend.CollectCompileAsSpecs(mod)
+			if len(compileAsErrs) > 0 {
+				fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(compileAsErrs))
+				for _, e := range compileAsErrs {
+					fmt.Fprintf(os.Stderr, "  %s\n", e)
+				}
+				runCleanup()
+				os.Exit(1)
 			}
-			runCleanup()
-			os.Exit(1)
+			if len(compileAsSpecs) > 0 {
+				artifacts, err := buildCompileAsArtifacts(&compileTarget, baseDir, entryFiles, extraTags, compileAsSpecs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "compileas error: %v\n", err)
+					runCleanup()
+					os.Exit(1)
+				}
+				compileTarget.CompileAsArtifacts = artifacts
+			}
+
+			// Compile to IR
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: compiling to IR\n")
+			}
+			var errs []string
+			irmod, errs = frontend.CompileModule(compileTarget, mod)
+
+			if len(errs) > 0 {
+				fmt.Fprintf(os.Stderr, "\n%d compile errors:\n", len(errs))
+				for _, e := range errs {
+					fmt.Fprintf(os.Stderr, "  %s\n", e)
+				}
+				runCleanup()
+				os.Exit(1)
+			}
+
+			if compileTarget.CompilerDebug {
+				fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
+			}
+			traceExit(30)
 		}
 
-		if compileTarget.CompilerDebug {
-			fmt.Fprintf(os.Stderr, "debug: IR compiled (%d funcs, %d globals)\n", len(irmod.Funcs), len(irmod.Globals))
-		}
-		traceExit(30)
 		ir.EliminateDeadFunctions(irmod, common.EntryFuncName(&compileTarget))
 		if compileTarget.CompilerDebug {
 			fmt.Fprintf(os.Stderr, "debug: DCE done (%d funcs remaining)\n", len(irmod.Funcs))
@@ -894,6 +922,77 @@ func applyBuildTags(tgt *common.Target, extraTags string) {
 		}
 	}
 	tgt.BuildTags = append(tgt.BuildTags, "rtg")
+}
+
+func isCompilerSelfhostEntry(entry string) bool {
+	entry = common.TrimTrailingSlash(common.NormalizePath(entry))
+	if entry == "" {
+		return false
+	}
+	return entry == "std/compiler" || entry == "./std/compiler" || strings.HasSuffix(entry, "/std/compiler")
+}
+
+func shouldForceNoEmbedStd(entryFiles []string) bool {
+	if len(entryFiles) != 1 {
+		return false
+	}
+	return isCompilerSelfhostEntry(entryFiles[0])
+}
+
+func shouldUsePrebuiltCompilerIR(tgt *common.Target, entryFiles []string, extraTags string, parseOnly bool, buildTagsPath string, emitIRPath string, emitIRBinaryPath string, targetIsIR bool) bool {
+	if tgt == nil || !tgt.Strict || tgt.Profile || parseOnly || buildTagsPath != "" {
+		return false
+	}
+	if emitIRPath != "" || emitIRBinaryPath != "" || targetIsIR {
+		return false
+	}
+	if extraTags != "" || !shouldForceNoEmbedStd(entryFiles) {
+		return false
+	}
+	if tgt.Backend != "native" || tgt.GOOS != "linux" || tgt.GOARCH != "amd64" {
+		return false
+	}
+	return true
+}
+
+func shouldCopyPrebuiltCompilerIRText(tgt *common.Target, entryFiles []string, extraTags string, parseOnly bool, buildTagsPath string, emitIRPath string, emitIRBinaryPath string, targetIsIR bool) bool {
+	if tgt == nil || !tgt.Strict || tgt.Profile || parseOnly || buildTagsPath != "" {
+		return false
+	}
+	if !targetIsIR || emitIRPath != "" || emitIRBinaryPath != "" {
+		return false
+	}
+	if extraTags != "" || !shouldForceNoEmbedStd(entryFiles) {
+		return false
+	}
+	if tgt.Backend != "native" || tgt.GOOS != "linux" || tgt.GOARCH != "amd64" {
+		return false
+	}
+	return true
+}
+
+func loadPrebuiltSelfhostCompilerIR(baseDir string) (*ir.IRModule, error) {
+	path := common.TrimTrailingSlash(common.NormalizePath(baseDir)) + "/std/compiler/frontend/go/prebuilt_selfhost_compiler.irt"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return binary.ReadIRTextData("prebuilt selfhost compiler IR", string(data))
+}
+
+func copyPrebuiltSelfhostCompilerIR(baseDir string, outputPath string) error {
+	path := common.TrimTrailingSlash(common.NormalizePath(baseDir)) + "/std/compiler/frontend/go/prebuilt_selfhost_compiler.irt"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if outputPath == "-" {
+		return os.WriteFile("/dev/stdout", data, 0600)
+	}
+	if err := os.WriteFile(outputPath, data, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(outputPath, 0600)
 }
 
 func applyTargetSelection(targetName string, cfg *common.Target) error {

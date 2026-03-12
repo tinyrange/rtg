@@ -1796,7 +1796,7 @@ func ReadIRText(path string) (*ir.IRModule, error) {
 }
 
 func ReadIRTextData(name string, data string) (*ir.IRModule, error) {
-	mod, err := ReadIRTextReader(&stringIRTextReader{data: data})
+	mod, err := decodeIRTextData(data)
 	if err != nil {
 		if name == "" {
 			name = "data"
@@ -1808,6 +1808,49 @@ func ReadIRTextData(name string, data string) (*ir.IRModule, error) {
 
 func ReadIRTextReader(r io.Reader) (*ir.IRModule, error) {
 	return decodeIRTextStream(r)
+}
+
+func decodeIRTextData(data string) (*ir.IRModule, error) {
+	dec := &textDecoder{
+		attrsTmp: make(map[string]string),
+	}
+	tokenScratch := make([]string, 0, 24)
+	lineNo := 1
+	start := 0
+
+	consumeLine := func(line string, n int) error {
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		tokens, err := tokenizeTextLineInto(line, tokenScratch)
+		if err != nil {
+			return fmt.Errorf("line %d: tokenize: %w", n, err)
+		}
+		tokenScratch = tokens[:0]
+		if len(tokens) > 0 {
+			if err := dec.consumeTokens(tokens); err != nil {
+				return fmt.Errorf("line %d: %w", n, err)
+			}
+		}
+		return nil
+	}
+
+	for i := 0; i < len(data); i++ {
+		if data[i] != '\n' {
+			continue
+		}
+		if err := consumeLine(data[start:i], lineNo); err != nil {
+			return nil, err
+		}
+		lineNo++
+		start = i + 1
+	}
+	if start < len(data) {
+		if err := consumeLine(data[start:], lineNo); err != nil {
+			return nil, err
+		}
+	}
+	return dec.buildModule()
 }
 
 type stringIRTextReader struct {

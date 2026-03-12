@@ -4,9 +4,15 @@ import "j5.nz/rtg/std/compiler/common"
 
 // OptimizeIRModule runs lightweight, backend-independent IR cleanups.
 func OptimizeIRModule(target *common.Target, irmod *IRModule) []string {
+	return OptimizeIRModuleFrom(target, irmod, 0)
+}
+
+// OptimizeIRModuleFrom runs whole-module IR cleanups, but only reapplies the
+// per-function cleanup pipeline to funcs starting at optimizeFrom.
+func OptimizeIRModuleFrom(target *common.Target, irmod *IRModule, optimizeFrom int) []string {
 	var errors []string
-	errors = append(errors, inlineZeroCallFuncs(irmod)...)
-	outlineCompositeLiteralCalls(target, irmod)
+	errors = append(errors, inlineZeroCallFuncsFrom(irmod, optimizeFrom)...)
+	outlineCompositeLiteralCallsFrom(target, irmod, optimizeFrom)
 	funcRetCounts := make(map[string]int, len(irmod.Funcs))
 	for _, f := range irmod.Funcs {
 		if f == nil {
@@ -14,7 +20,14 @@ func OptimizeIRModule(target *common.Target, irmod *IRModule) []string {
 		}
 		funcRetCounts[f.Name] = f.RetCount
 	}
-	for _, f := range irmod.Funcs {
+	if optimizeFrom < 0 {
+		optimizeFrom = 0
+	}
+	if optimizeFrom > len(irmod.Funcs) {
+		optimizeFrom = len(irmod.Funcs)
+	}
+	for i := optimizeFrom; i < len(irmod.Funcs); i++ {
+		f := irmod.Funcs[i]
 		f.Code = optimizeIRFuncCode(target, f, funcRetCounts, irmod.IfaceMethodRets)
 	}
 	return errors
@@ -186,6 +199,10 @@ func buildCompositeHelperFunc(name string, fieldCount int, wordSize int) *IRFunc
 //
 // so backends do not duplicate large constructor lowering at every callsite.
 func outlineCompositeLiteralCalls(target *common.Target, irmod *IRModule) {
+	outlineCompositeLiteralCallsFrom(target, irmod, 0)
+}
+
+func outlineCompositeLiteralCallsFrom(target *common.Target, irmod *IRModule, callerStart int) {
 	if irmod == nil || len(irmod.Funcs) == 0 {
 		return
 	}
@@ -198,8 +215,17 @@ func outlineCompositeLiteralCalls(target *common.Target, irmod *IRModule) {
 	const minSitesToOutline = 2
 	counts := make(map[int]int)
 	existing := make(map[string]bool)
-	for _, f := range irmod.Funcs {
+	if callerStart < 0 {
+		callerStart = 0
+	}
+	if callerStart > len(irmod.Funcs) {
+		callerStart = len(irmod.Funcs)
+	}
+	for i, f := range irmod.Funcs {
 		existing[f.Name] = true
+		if i < callerStart {
+			continue
+		}
 		for _, inst := range f.Code {
 			if isBuiltinCompositeCall(inst) && inst.Arg > 0 {
 				counts[inst.Arg] = counts[inst.Arg] + 1
@@ -241,9 +267,10 @@ func outlineCompositeLiteralCalls(target *common.Target, irmod *IRModule) {
 		existing[name] = true
 	}
 
-	for _, f := range irmod.Funcs {
-		for i := range f.Code {
-			inst := f.Code[i]
+	for i := callerStart; i < len(irmod.Funcs); i++ {
+		f := irmod.Funcs[i]
+		for j := range f.Code {
+			inst := f.Code[j]
 			if !isBuiltinCompositeCall(inst) || inst.Arg <= 0 {
 				continue
 			}
@@ -251,7 +278,7 @@ func outlineCompositeLiteralCalls(target *common.Target, irmod *IRModule) {
 			if !ok || name == "" {
 				continue
 			}
-			f.Code[i].Name = name
+			f.Code[j].Name = name
 		}
 	}
 }

@@ -250,6 +250,9 @@ func main() {
 		}
 	}
 	buildTags = append(buildTags, "rtg")
+	if len(entryFiles) == 1 && isCompilerSelfhostEntry(entryFiles[0]) {
+		buildTags = appendUniqueTag(buildTags, "no_embed_std")
+	}
 	if ir.SizeAnalysisPath != "" {
 		stripBinary = true
 	}
@@ -324,4 +327,21 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -h, --help             Show this help\n")
 	fmt.Fprintf(out, "\nIR text stdin: pass '-' as the input with -F ir\n")
 	fmt.Fprintf(out, "\nDefault target: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+}
+
+func isCompilerSelfhostEntry(entry string) bool {
+	entry = common.TrimTrailingSlash(common.NormalizePath(entry))
+	if entry == "" {
+		return false
+	}
+	return entry == "std/compiler" || entry == "./std/compiler" || strings.HasSuffix(entry, "/std/compiler")
+}
+
+func appendUniqueTag(tags []string, tag string) []string {
+	for _, existing := range tags {
+		if existing == tag {
+			return tags
+		}
+	}
+	return append(tags, tag)
 }

@@ -264,6 +264,10 @@ func inlineZeroCallsInFunc(caller *IRFunc, funcIndex map[string]*IRFunc, zeroCal
 }
 
 func inlineZeroCallFuncs(irmod *IRModule) []string {
+	return inlineZeroCallFuncsFrom(irmod, 0)
+}
+
+func inlineZeroCallFuncsFrom(irmod *IRModule, callerStart int) []string {
 	if irmod == nil || len(irmod.ZeroCallFuncs) == 0 {
 		return nil
 	}
@@ -275,11 +279,18 @@ func inlineZeroCallFuncs(irmod *IRModule) []string {
 	if len(errs) > 0 {
 		return errs
 	}
+	if callerStart < 0 {
+		callerStart = 0
+	}
+	if callerStart > len(irmod.Funcs) {
+		callerStart = len(irmod.Funcs)
+	}
 
 	changed := true
 	for changed {
 		changed = false
-		for _, caller := range irmod.Funcs {
+		for i := callerStart; i < len(irmod.Funcs); i++ {
+			caller := irmod.Funcs[i]
 			newCode, newLocals, didChange, inlineErrs := inlineZeroCallsInFunc(caller, funcIndex, irmod.ZeroCallFuncs)
 			if len(inlineErrs) > 0 {
 				errs = append(errs, inlineErrs...)
@@ -296,7 +307,8 @@ func inlineZeroCallFuncs(irmod *IRModule) []string {
 		}
 	}
 
-	for _, f := range irmod.Funcs {
+	for i := callerStart; i < len(irmod.Funcs); i++ {
+		f := irmod.Funcs[i]
 		for i := 0; i < len(f.Code); i++ {
 			if f.Code[i].Op == OP_CALL && irmod.ZeroCallFuncs[f.Code[i].Name] {
 				errs = append(errs, fmt.Sprintf("%s: zerocall call was not inlined: %s", f.Name, f.Code[i].Name))

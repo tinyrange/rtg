@@ -40,6 +40,7 @@ type Package struct {
 	ImportAliases map[string]string
 	Symbols       map[string]*Symbol
 	Inits         []*Node
+	Prebuilt      bool
 	qualNames     map[string]string // name → "Path.name"
 	qualPtrNames  map[string]string // name → "Path.*name"
 	resolvedPkgs  map[string]*Package
@@ -232,6 +233,9 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 	for _, path := range mod.Order {
 		pkg, ok := mod.Packages[path]
 		if ok {
+			if pkg.Prebuilt {
+				continue
+			}
 			collectSymbols(pkg)
 		}
 	}
@@ -282,6 +286,14 @@ func (c *Preprocessor) resolveImportDirs(baseDir string, importPath string) []st
 
 func (c *Preprocessor) parsePackageFromStdlibSources(baseDir string, importPath string) *Package {
 	importCandidates := importPathCandidates(importPath)
+	if shouldUsePrebuiltStdlib(c.target) {
+		for _, candidate := range importCandidates {
+			pkg := loadPrebuiltStdlibPackage(baseDir, candidate, importPath)
+			if pkg != nil {
+				return pkg
+			}
+		}
+	}
 	if ShouldUseEmbeddedStdlib(c.target) {
 		for _, candidate := range importCandidates {
 			pkg := c.parsePackageFromEmbed(candidate)

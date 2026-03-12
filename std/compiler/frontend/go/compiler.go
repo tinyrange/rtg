@@ -246,11 +246,29 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 	}
 	c.initBuiltinTypes()
 
+	var prebuiltStdlibIR *ir.IRModule
+	prebuiltFuncCount := 0
+	if moduleHasPrebuiltStdlib(mod) {
+		var err error
+		prebuiltStdlibIR, err = loadPrebuiltStdlibIR(mod.BaseDir)
+		if err != nil {
+			c.errorf("load prebuilt stdlib IR: %v", err)
+			return c.irmod, c.errors
+		}
+		if err := c.seedPrebuiltStdlibState(prebuiltStdlibIR); err != nil {
+			c.errorf("%v", err)
+			return c.irmod, c.errors
+		}
+	}
+
 	// Pre-pass: collect interface and method declarations for all packages so
 	// interface method lowering does not depend on per-package compile order.
 	for _, path := range mod.Order {
 		pkg, ok := mod.Packages[path]
 		if !ok {
+			continue
+		}
+		if pkg != nil && pkg.Prebuilt {
 			continue
 		}
 		c.curPkg = pkg
@@ -333,6 +351,22 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		c.precomputeConsts(pkg)
 	}
 
+	if prebuiltStdlibIR != nil {
+		for _, path := range mod.Order {
+			pkg, ok := mod.Packages[path]
+			if !ok || pkg == nil || !pkg.Prebuilt {
+				continue
+			}
+			c.curPkg = pkg
+			c.collectFuncRetTypes(pkg)
+		}
+		if err := c.mergePrebuiltStdlibIR(prebuiltStdlibIR); err != nil {
+			c.errorf("%v", err)
+			return c.irmod, c.errors
+		}
+		prebuiltFuncCount = len(c.irmod.Funcs)
+	}
+
 	// Compile functions for all packages in topological order
 	for _, path := range mod.Order {
 		pkg, ok := mod.Packages[path]
@@ -340,6 +374,9 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 			continue
 		}
 		c.curPkg = pkg
+		if pkg.Prebuilt {
+			continue
+		}
 		c.compilePackage(pkg)
 	}
 
@@ -359,7 +396,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 			c.irmod.ZeroCallFuncs[qname] = true
 		}
 	}
-	optErrs := ir.OptimizeIRModule(c.target, c.irmod)
+	optErrs := ir.OptimizeIRModuleFrom(c.target, c.irmod, prebuiltFuncCount)
 	if len(optErrs) > 0 {
 		c.errors = append(c.errors, optErrs...)
 	}

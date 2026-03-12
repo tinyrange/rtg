@@ -27,6 +27,8 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#40` WASM variadic/interface boxing still truncates `int64` values in `fmt.Printf`-style calls.
 - `#41` C backend float lowering currently requires the C word size to be at least as wide as the float payload (`c/64` for `float64`; `c/32+` for `float32`).
 - `#42` Selfhost stage1 can segfault during `ResolveModule` when compiler changes introduce package-level caches over embedded-source metadata.
+- `#43` Prebuilt selfhost artifact regeneration can silently self-cache old frontend/IR code unless regeneration explicitly disables the prebuilt loader.
+- `#44` Selfhosted `-T ir` emission can segfault in `binary.textQuote` while serializing large compiler IR modules.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -71,6 +73,8 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 14. `#35` Fix struct-value copy semantics in RTG-compiled programs (current lowering aliases heap-backed struct objects).
 15. `#40` Fix wasm boxing/variadic argument handling for `int64` values.
 16. `#41` Decide whether smaller-word C profiles should gain split-word float lowering or keep an explicit unsupported-target error.
+17. `#43` Keep prebuilt-artifact generation source-based and add a stronger freshness story so compiler changes cannot hide behind stale selfhost caches.
+18. `#44` Root-cause the selfhosted IR-text writer crash so `-T ir` no longer needs the compiler-selfhost artifact copy workaround.
 
 ### 41) C backend float lowering currently depends on word-size >= float-size
 
@@ -100,6 +104,35 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - Avoid package-level embedded-source cache rewrites in the selfhost path for now; prefer optimizations in later frontend/backend resolution/codegen paths until the root cause is isolated.
+
+### 43) Prebuilt selfhost artifact regeneration can accidentally reuse stale prebuilt compiler/frontend code
+
+**Symptom**
+- The `tools/prebuilt_stdlib` generator can resolve compiler packages through the current prebuilt loader instead of from source.
+- When that happens, edits inside prebuilt packages such as `std/compiler/frontend/go` or `std/compiler/ir` may not appear in regenerated summaries/IR, even though the generator completes successfully.
+
+**Impact**
+- Selfhost performance/correctness work can appear to land while stage1/stage2 binaries still contain older frontend/IR logic.
+- Debug/profiling instrumentation inside prebuilt packages can disappear, making regressions harder to reason about.
+
+**Current mitigation**
+- Generation now forces a dedicated `regen_prebuilt_stdlib` build tag and the prebuilt loader refuses to activate under that tag, so artifact regeneration always compiles from source.
+
+### 44) Selfhosted `-T ir` compiler emission can segfault in `binary.textQuote`
+
+**Symptom**
+- `./build/stage2 -debug -strict -F go -T ir -o build/out.irt ./std/compiler/`
+  can reach:
+  - `debug: generating output (backend=native, target=linux/amd64, emit=ir-text)`
+- and then crash with:
+  - `SIGSEGV` in `j5.nz/rtg/std/compiler/binary[textQuote]`
+
+**Impact**
+- Breaks the `selfhost-ir` validation target even when normal native selfhost succeeds.
+- Makes large selfhost IR-text dumps unreliable from selfhosted compiler binaries.
+
+**Current mitigation**
+- The compiler-selfhost `-T ir` path now copies the regenerated `prebuilt_selfhost_compiler.irt` artifact directly instead of reserializing the IR through the crashing selfhosted writer.
 
 ### 40) WASM variadic/interface boxing truncates `int64` values in formatted calls
 
