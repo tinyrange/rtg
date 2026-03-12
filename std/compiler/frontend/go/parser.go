@@ -756,19 +756,6 @@ func (p *Parser) at(kind TokenKind) bool {
 	return p.tokens[p.pos].Kind == kind
 }
 
-func (p *Parser) match(kinds ...TokenKind) bool {
-	k := TOKEN_EOF
-	if p.pos < len(p.tokens) {
-		k = p.tokens[p.pos].Kind
-	}
-	for _, kind := range kinds {
-		if k == kind {
-			return true
-		}
-	}
-	return false
-}
-
 func (p *Parser) expect(kind TokenKind) Token {
 	tok := p.advance()
 	if tok.Kind != kind {
@@ -950,6 +937,25 @@ func isTypeStart(kind TokenKind) bool {
 
 func canStartResult(kind TokenKind) bool {
 	return kind == TOKEN_LPAREN || isTypeStart(kind)
+}
+
+func isAssignOp(kind TokenKind) bool {
+	switch kind {
+	case TOKEN_ASSIGN, TOKEN_DEFINE, TOKEN_PLUS_ASSIGN, TOKEN_MINUS_ASSIGN,
+		TOKEN_STAR_ASSIGN, TOKEN_SLASH_ASSIGN, TOKEN_PERCENT_ASSIGN,
+		TOKEN_OR_ASSIGN, TOKEN_AND_ASSIGN, TOKEN_CARET_ASSIGN,
+		TOKEN_SHL_ASSIGN, TOKEN_SHR_ASSIGN:
+		return true
+	}
+	return false
+}
+
+func isSimpleAssignOp(kind TokenKind) bool {
+	return kind == TOKEN_ASSIGN || kind == TOKEN_DEFINE
+}
+
+func isStmtTerminator(kind TokenKind) bool {
+	return kind == TOKEN_SEMICOLON || kind == TOKEN_RBRACE || kind == TOKEN_EOF
 }
 
 func (p *Parser) parseFieldList(allowVariadic bool) []*Node {
@@ -1675,7 +1681,7 @@ func (p *Parser) parseReturnStmt() *Node {
 	pos := p.peek().Line
 	p.expect(TOKEN_RETURN)
 	node := &Node{Kind: NReturn, Pos: pos}
-	if !p.at(TOKEN_SEMICOLON) && !p.at(TOKEN_RBRACE) && !p.at(TOKEN_EOF) {
+	if !isStmtTerminator(p.peek().Kind) {
 		node.X = p.parseExpr()
 		for p.at(TOKEN_COMMA) {
 			p.advance()
@@ -1706,7 +1712,7 @@ func (p *Parser) parseSimpleStmtNoSemicolon() *Node {
 	}
 
 	// Check for assignment / short var decl
-	if p.match(TOKEN_ASSIGN, TOKEN_DEFINE, TOKEN_PLUS_ASSIGN, TOKEN_MINUS_ASSIGN, TOKEN_STAR_ASSIGN, TOKEN_SLASH_ASSIGN, TOKEN_PERCENT_ASSIGN, TOKEN_OR_ASSIGN, TOKEN_AND_ASSIGN, TOKEN_CARET_ASSIGN, TOKEN_SHL_ASSIGN, TOKEN_SHR_ASSIGN) {
+	if isAssignOp(p.peek().Kind) {
 		op := p.advance()
 		rhs := p.parseExpr()
 		return &Node{Kind: NAssign, Name: tokenVal(op), X: expr, Y: rhs, Pos: expr.Pos}
@@ -1720,7 +1726,7 @@ func (p *Parser) parseSimpleStmtNoSemicolon() *Node {
 			p.advance()
 			lhs = append(lhs, p.parseExpr())
 		}
-		if p.match(TOKEN_ASSIGN, TOKEN_DEFINE) {
+		if isSimpleAssignOp(p.peek().Kind) {
 			op := p.advance()
 			rhs := p.parseExpr()
 			node := &Node{Kind: NAssign, Name: tokenVal(op), Y: rhs, Pos: expr.Pos}
