@@ -27,6 +27,7 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#40` WASM variadic/interface boxing still truncates `int64` values in `fmt.Printf`-style calls.
 - `#41` C backend float lowering currently requires the C word size to be at least as wide as the float payload (`c/64` for `float64`; `c/32+` for `float32`).
 - `#42` Selfhost stage1 can segfault during `ResolveModule` when compiler changes introduce package-level caches over embedded-source metadata.
+- `#43` Indexed global-array access can be miscompiled as an extra pointer dereference in RTG-generated code.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -71,6 +72,27 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 14. `#35` Fix struct-value copy semantics in RTG-compiled programs (current lowering aliases heap-backed struct objects).
 15. `#40` Fix wasm boxing/variadic argument handling for `int64` values.
 16. `#41` Decide whether smaller-word C profiles should gain split-word float lowering or keep an explicit unsupported-target error.
+
+### 43) Indexed global-array access can be lowered as an extra pointer dereference
+
+**Symptom**
+- While prototyping runtime freelists, code shaped like:
+  - `ptr := globalArray[idx]`
+  - `globalArray[idx] = next`
+- crashed in RTG-generated binaries during `runtime.mapAllocEntryBlock` with a null dereference.
+- `gdb` on the generated amd64 binary showed the load sequence:
+  - load symbol address for the global array
+  - dereference element `0` as if it were a base pointer
+  - then add `idx*elemSize`
+- so an all-zero global array immediately faulted on the second dereference.
+
+**Impact**
+- Prevents safe use of indexed fixed-size global arrays in runtime/compiler hot paths.
+- The failure mode is a generated-program crash, not a compile-time diagnostic.
+
+**Current mitigation**
+- Avoid indexed access to global arrays in RTG-compiled code for now.
+- Use heap-linked structures, slices, or scalar globals instead when the index is dynamic.
 
 ### 41) C backend float lowering currently depends on word-size >= float-size
 
