@@ -102,7 +102,7 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 	// Resolve jump fixups within this function
 	funcStart := g.funcOffsets[f.Name]
 	if g.target.GOOS != "dos" {
-		g.relaxCurrentFuncJumps()
+		g.relaxCurrentFuncJumps(funcStart)
 	}
 	for _, fix := range g.jumpFixups {
 		labelOff, ok := g.labelOffsets[fix.LabelID]

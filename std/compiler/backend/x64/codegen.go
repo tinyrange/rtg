@@ -448,53 +448,145 @@ func (g *CodeGen) shiftOffsetsAfterDelete(cutPos int, removed int) {
 
 // relaxCurrentFuncJumps shortens rel32 jumps/jccs to rel8 when possible for x86 backends.
 // Must be called before resolving rel32 fixups.
-func (g *CodeGen) relaxCurrentFuncJumps() {
+func (g *CodeGen) relaxCurrentFuncJumps(funcStart int) {
+	if len(g.jumpFixups) == 0 {
+		return
+	}
+	oldFuncCode := append([]byte(nil), g.Code[funcStart:]...)
+
+	selected := make([]bool, len(g.jumpFixups))
+	deletedBefore := func(pos int) int {
+		removed := 0
+		for i, fix := range g.jumpFixups {
+			if !selected[i] {
+				continue
+			}
+			if fix.Kind == jumpFixupJmpRel32 {
+				if pos > (fix.CodeOffset - funcStart) {
+					removed += 3
+				}
+			} else if fix.Kind == jumpFixupJccRel32 {
+				if pos > (fix.CodeOffset - funcStart - 1) {
+					removed += 4
+				}
+			}
+		}
+		return removed
+	}
+
 	changed := true
 	for changed {
 		changed = false
-		i := 0
-		for i < len(g.jumpFixups) {
-			fix := g.jumpFixups[i]
-			if fix.Kind != jumpFixupJmpRel32 && fix.Kind != jumpFixupJccRel32 {
-				i++
+		for i, fix := range g.jumpFixups {
+			if selected[i] || (fix.Kind != jumpFixupJmpRel32 && fix.Kind != jumpFixupJccRel32) {
 				continue
 			}
 			target, ok := g.labelOffsets[fix.LabelID]
 			if !ok {
-				i++
 				continue
 			}
+			targetLocal := (target - funcStart) - deletedBefore(target-funcStart)
 			if fix.Kind == jumpFixupJmpRel32 {
-				insPos := fix.CodeOffset - 1
-				rel := target - (insPos + 2)
-				if !fitsRel8(rel) {
-					i++
-					continue
+				insPosLocal := (fix.CodeOffset - funcStart - 1) - deletedBefore(fix.CodeOffset-funcStart-1)
+				if fitsRel8(targetLocal - (insPosLocal + 2)) {
+					selected[i] = true
+					changed = true
 				}
-				g.Code[insPos] = 0xeb
-				g.jumpFixups[i].Kind = jumpFixupJmpRel8
-				g.jumpFixups[i].CodeOffset = insPos + 1
-				// Delete trailing bytes of old rel32 encoding.
-				g.Code = append(g.Code[:insPos+2], g.Code[insPos+5:]...)
-				g.shiftOffsetsAfterDelete(insPos+1, 3)
+				continue
+			}
+			insPosLocal := (fix.CodeOffset - funcStart - 2) - deletedBefore(fix.CodeOffset-funcStart-2)
+			if fitsRel8(targetLocal - (insPosLocal + 2)) {
+				selected[i] = true
 				changed = true
-				i++
-				continue
 			}
-			insPos := fix.CodeOffset - 2
-			rel := target - (insPos + 2)
-			if !fitsRel8(rel) {
-				i++
-				continue
+		}
+	}
+
+	totalRemoved := deletedBefore(len(oldFuncCode))
+	if totalRemoved == 0 {
+		return
+	}
+
+	newFuncCode := make([]byte, len(oldFuncCode)-totalRemoved)
+	newFixOffsets := make([]int, len(g.jumpFixups))
+	oldToNew := make([]int, len(oldFuncCode)+1)
+	src := 0
+	dst := 0
+	for i := range newFixOffsets {
+		newFixOffsets[i] = -1
+	}
+	for i, fix := range g.jumpFixups {
+		if !selected[i] {
+			continue
+		}
+		insPosLocal := 0
+		oldLen := 0
+		if fix.Kind == jumpFixupJmpRel32 {
+			insPosLocal = fix.CodeOffset - funcStart - 1
+			oldLen = 5
+		} else {
+			insPosLocal = fix.CodeOffset - funcStart - 2
+			oldLen = 6
+		}
+		copyLen := insPosLocal - src
+		copy(newFuncCode[dst:dst+copyLen], oldFuncCode[src:insPosLocal])
+		k := 0
+		for k < copyLen {
+			oldToNew[src+k] = dst + k
+			k++
+		}
+		dst += insPosLocal - src
+		if fix.Kind == jumpFixupJmpRel32 {
+			newFuncCode[dst] = 0xeb
+			newFuncCode[dst+1] = 0
+			oldToNew[insPosLocal] = dst
+			oldToNew[fix.CodeOffset-funcStart] = dst + 1
+		} else {
+			newFuncCode[dst] = byte(0x70 | (fix.CC & 0x0f))
+			newFuncCode[dst+1] = 0
+			oldToNew[insPosLocal] = dst
+			oldToNew[insPosLocal+1] = dst
+			oldToNew[fix.CodeOffset-funcStart] = dst + 1
+		}
+		newFixOffsets[i] = funcStart + dst + 1
+		dst += 2
+		src = insPosLocal + oldLen
+	}
+	copyLen := len(oldFuncCode) - src
+	copy(newFuncCode[dst:], oldFuncCode[src:])
+	k := 0
+	for k < copyLen {
+		oldToNew[src+k] = dst + k
+		k++
+	}
+	oldToNew[len(oldFuncCode)] = len(newFuncCode)
+	g.Code = append(g.Code[:funcStart], newFuncCode...)
+
+	for id, off := range g.labelOffsets {
+		localOff := off - funcStart
+		g.labelOffsets[id] = funcStart + oldToNew[localOff]
+	}
+	for i, fix := range g.jumpFixups {
+		localOff := fix.CodeOffset - funcStart
+		if selected[i] {
+			if fix.Kind == jumpFixupJmpRel32 {
+				g.jumpFixups[i].Kind = jumpFixupJmpRel8
+			} else if fix.Kind == jumpFixupJccRel32 {
+				g.jumpFixups[i].Kind = jumpFixupJccRel8
 			}
-			g.Code[insPos] = byte(0x70 | (fix.CC & 0x0f))
-			g.jumpFixups[i].Kind = jumpFixupJccRel8
-			g.jumpFixups[i].CodeOffset = insPos + 1
-			// Delete trailing bytes of old near-jcc encoding.
-			g.Code = append(g.Code[:insPos+2], g.Code[insPos+6:]...)
-			g.shiftOffsetsAfterDelete(insPos+1, 4)
-			changed = true
-			i++
+		}
+		if newFixOffsets[i] >= 0 {
+			g.jumpFixups[i].CodeOffset = newFixOffsets[i]
+		} else {
+			g.jumpFixups[i].CodeOffset = funcStart + oldToNew[localOff]
+		}
+	}
+	for i, fix := range g.callFixups {
+		if fix.CodeOffset >= funcStart {
+			localOff := fix.CodeOffset - funcStart
+			if localOff <= len(oldFuncCode) {
+				g.callFixups[i].CodeOffset = funcStart + oldToNew[localOff]
+			}
 		}
 	}
 }
