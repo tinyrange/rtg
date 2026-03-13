@@ -141,7 +141,7 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *Cod
 	g.callFixups = make([]CallFixup, 0, estimateCallFixupCap(irmod))
 	g.stringMap = make(map[string]int, estimateStringMapCap(irmod))
 	g.globalOffsets = make([]int, len(irmod.Globals))
-	g.BaseAddr = 0x400000
+	g.BaseAddr = baseAddr
 	g.irmod = irmod
 	g.wordSize = 8
 
