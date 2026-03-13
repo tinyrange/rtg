@@ -15,17 +15,21 @@ func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 		return nil
 	}
 
-	var goFiles []string
+	var goFiles []packageSourceFile
 	for _, name := range names {
 		if !isGoFile(name) {
 			continue
 		}
 		content := stdlib.ReadFileFromEmbed(importPath + "/" + name)
 		if p.shouldIncludeContent(content, name) {
-			goFiles = append(goFiles, name)
+			goFiles = append(goFiles, packageSourceFile{
+				name:    name,
+				path:    importPath + "/" + name,
+				content: content,
+			})
 		}
 	}
-	sortStrings(goFiles)
+	sortPackageSourceFiles(goFiles)
 	if len(goFiles) == 0 {
 		return nil
 	}
@@ -39,9 +43,8 @@ func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 
 	i := 0
 	for i < len(goFiles) {
-		name := goFiles[i]
-		content := stdlib.ReadFileFromEmbed(importPath + "/" + name)
-		node := parseSource(importPath+"/"+name, content)
+		file := goFiles[i]
+		node := parseSource(file.path, file.content)
 		if node != nil {
 			if pkg.Name == "" {
 				pkg.Name = node.Name

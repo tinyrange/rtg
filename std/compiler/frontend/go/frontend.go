@@ -364,78 +364,11 @@ func sortStrings(s []string) {
 // If a //go:build directive exists, it takes precedence over filename-based filtering.
 // Otherwise, filename-based GOOS/GOARCH conventions are used.
 func (c *Preprocessor) shouldIncludeFile(path string, name string) bool {
-	// 1. Check //go:build directive in file content (takes precedence)
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return true // if can't read, include by default
 	}
-	content := string(src)
-	collectBuildTagsFromContent(content)
-	collectBuildTagsFromFilename(name)
-
-	// Scan first few lines for //go:build
-	pos := 0
-	for pos < len(content) {
-		// Find end of line
-		eol := pos
-		for eol < len(content) && content[eol] != '\n' {
-			eol++
-		}
-		line := content[pos:eol]
-
-		// Skip blank lines and comments at top of file
-		trimmed := trimLeftSpace(line)
-		if len(trimmed) == 0 {
-			pos = eol + 1
-			continue
-		}
-
-		// Check for //go:build
-		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
-			expr := trimmed[11:len(trimmed)]
-			return c.evalBuildExpr(expr)
-		}
-
-		// Check for regular comments (skip them)
-		if len(trimmed) >= 2 && trimmed[0:2] == "//" {
-			pos = eol + 1
-			continue
-		}
-
-		// First non-comment, non-blank line — stop looking
-		break
-	}
-
-	// 2. Filename-based tag filtering (only if no //go:build directive)
-	// Strip .go suffix
-	base := name[0 : len(name)-3]
-
-	// Check for _GOOS_GOARCH.go, _GOOS.go, _GOARCH.go patterns
-	// Find last underscore segment(s)
-	parts := splitString(base, '_')
-	if len(parts) >= 3 {
-		// Could be name_GOOS_GOARCH.go
-		maybearch := parts[len(parts)-1]
-		maybeos := parts[len(parts)-2]
-		if isKnownOS(maybeos) && isKnownArch(maybearch) {
-			if !c.hasTag(maybeos) || !c.hasTag(maybearch) {
-				return false
-			}
-		} else if isKnownOS(maybearch) || isKnownArch(maybearch) {
-			if !c.hasTag(maybearch) {
-				return false
-			}
-		}
-	} else if len(parts) >= 2 {
-		last := parts[len(parts)-1]
-		if isKnownOS(last) || isKnownArch(last) {
-			if !c.hasTag(last) {
-				return false
-			}
-		}
-	}
-
-	return true
+	return c.shouldIncludeContent(string(src), name)
 }
 
 // splitString splits a string by a separator byte.
@@ -454,8 +387,7 @@ func splitString(s string, sep byte) []string {
 	return result
 }
 
-func collectBuildTagsFromContent(content string) {
-	// Scan first few lines for //go:build expression.
+func leadingBuildExpr(content string) (string, bool) {
 	pos := 0
 	for pos < len(content) {
 		eol := pos
@@ -469,14 +401,21 @@ func collectBuildTagsFromContent(content string) {
 			continue
 		}
 		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
-			collectBuildTagsFromExpr(trimmed[11:len(trimmed)])
-			return
+			return trimmed[11:len(trimmed)], true
 		}
 		if len(trimmed) >= 2 && trimmed[0:2] == "//" {
 			pos = eol + 1
 			continue
 		}
-		return
+		return "", false
+	}
+	return "", false
+}
+
+func collectBuildTagsFromContent(content string) {
+	expr, ok := leadingBuildExpr(content)
+	if ok {
+		collectBuildTagsFromExpr(expr)
 	}
 }
 
@@ -515,6 +454,50 @@ func collectBuildTagsFromFilename(name string) {
 		if isKnownOS(last) || isKnownArch(last) {
 			addDiscoveredBuildTag(last)
 		}
+	}
+}
+
+func (c *Preprocessor) shouldIncludeFilename(name string) bool {
+	base := name[0 : len(name)-3]
+	parts := splitString(base, '_')
+	if len(parts) >= 3 {
+		maybearch := parts[len(parts)-1]
+		maybeos := parts[len(parts)-2]
+		if isKnownOS(maybeos) && isKnownArch(maybearch) {
+			if !c.hasTag(maybeos) || !c.hasTag(maybearch) {
+				return false
+			}
+		} else if isKnownOS(maybearch) || isKnownArch(maybearch) {
+			if !c.hasTag(maybearch) {
+				return false
+			}
+		}
+	} else if len(parts) >= 2 {
+		last := parts[len(parts)-1]
+		if isKnownOS(last) || isKnownArch(last) {
+			if !c.hasTag(last) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+type packageSourceFile struct {
+	name    string
+	path    string
+	content string
+}
+
+func sortPackageSourceFiles(files []packageSourceFile) {
+	i := 1
+	for i < len(files) {
+		j := i
+		for j > 0 && files[j-1].name > files[j].name {
+			files[j-1], files[j] = files[j], files[j-1]
+			j--
+		}
+		i++
 	}
 }
 
@@ -642,7 +625,7 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 
 	// Collect .go file names and sort for deterministic order.
 	// Go's os.ReadDir sorts by name, but RTG's ReadDir returns filesystem order.
-	var goFiles []string
+	var goFiles []packageSourceFile
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -653,13 +636,18 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 		if !c.target.TestMode && isGoTestFile(entry.Name()) {
 			continue
 		}
-		// Check build tags before including
-		if !c.shouldIncludeFile(dir+"/"+entry.Name(), entry.Name()) {
+		path := dir + "/" + entry.Name()
+		src, err := os.ReadFile(path)
+		if err != nil {
 			continue
 		}
-		goFiles = append(goFiles, entry.Name())
+		content := string(src)
+		if !c.shouldIncludeContent(content, entry.Name()) {
+			continue
+		}
+		goFiles = append(goFiles, packageSourceFile{name: entry.Name(), path: path, content: content})
 	}
-	sortStrings(goFiles)
+	sortPackageSourceFiles(goFiles)
 
 	arena.UseParent()
 	pkg := &Package{
@@ -668,9 +656,8 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 		Symbols: make(map[string]*Symbol),
 	}
 
-	for _, name := range goFiles {
-		path := dir + "/" + name
-		node := parseFile(path)
+	for _, file := range goFiles {
+		node := parseSource(file.path, file.content)
 		if node != nil {
 			if pkg.Name == "" {
 				pkg.Name = node.Name
@@ -1023,57 +1010,12 @@ func ParseSource(name string, src string) *Node {
 // shouldIncludeContent checks if source content should be included based on build tags.
 // This is like shouldIncludeFile but takes content directly instead of reading from disk.
 func (c *Preprocessor) shouldIncludeContent(content string, name string) bool {
-	collectBuildTagsFromContent(content)
 	collectBuildTagsFromFilename(name)
-
-	// 1. Check //go:build directive in content (takes precedence)
-	pos := 0
-	for pos < len(content) {
-		eol := pos
-		for eol < len(content) && content[eol] != '\n' {
-			eol++
-		}
-		line := content[pos:eol]
-		trimmed := trimLeftSpace(line)
-		if len(trimmed) == 0 {
-			pos = eol + 1
-			continue
-		}
-		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
-			expr := trimmed[11:len(trimmed)]
-			return c.evalBuildExpr(expr)
-		}
-		if len(trimmed) >= 2 && trimmed[0:2] == "//" {
-			pos = eol + 1
-			continue
-		}
-		break
+	if expr, ok := leadingBuildExpr(content); ok {
+		collectBuildTagsFromExpr(expr)
+		return c.evalBuildExpr(expr)
 	}
-
-	// 2. Filename-based tag filtering
-	base := name[0 : len(name)-3]
-	parts := splitString(base, '_')
-	if len(parts) >= 3 {
-		maybearch := parts[len(parts)-1]
-		maybeos := parts[len(parts)-2]
-		if isKnownOS(maybeos) && isKnownArch(maybearch) {
-			if !c.hasTag(maybeos) || !c.hasTag(maybearch) {
-				return false
-			}
-		} else if isKnownOS(maybearch) || isKnownArch(maybearch) {
-			if !c.hasTag(maybearch) {
-				return false
-			}
-		}
-	} else if len(parts) >= 2 {
-		last := parts[len(parts)-1]
-		if isKnownOS(last) || isKnownArch(last) {
-			if !c.hasTag(last) {
-				return false
-			}
-		}
-	}
-	return true
+	return c.shouldIncludeFilename(name)
 }
 
 // collectImports walks NFile.Nodes for NImport nodes and returns deduplicated import paths.
