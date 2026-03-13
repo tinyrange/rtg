@@ -81,11 +81,15 @@ type escapeAliasEntry struct {
 
 type escapeAliasState struct {
 	entries []escapeAliasEntry
+	index   map[string]uint64
 }
 
 type escapeNameSet struct {
 	names []string
+	index map[string]bool
 }
+
+const escapeLinearScanLimit = 16
 
 const structTypeLookupMaxEntries = 8192
 const structFieldLookupMaxEntries = 16384
@@ -2646,6 +2650,9 @@ func (c *Compiler) exprMayReferenceMemory(node *Node) bool {
 }
 
 func (s *escapeAliasState) get(name string) uint64 {
+	if s.index != nil {
+		return s.index[name]
+	}
 	i := 0
 	for i < len(s.entries) {
 		if s.entries[i].name == name {
@@ -2657,6 +2664,10 @@ func (s *escapeAliasState) get(name string) uint64 {
 }
 
 func (s *escapeAliasState) set(name string, mask uint64) {
+	if s.index != nil {
+		s.index[name] = mask
+		return
+	}
 	i := 0
 	for i < len(s.entries) {
 		if s.entries[i].name == name {
@@ -2666,9 +2677,18 @@ func (s *escapeAliasState) set(name string, mask uint64) {
 		i++
 	}
 	s.entries = append(s.entries, escapeAliasEntry{name: name, mask: mask})
+	if len(s.entries) > escapeLinearScanLimit {
+		s.index = make(map[string]uint64, len(s.entries)*2)
+		for _, entry := range s.entries {
+			s.index[entry.name] = entry.mask
+		}
+	}
 }
 
 func (s *escapeNameSet) has(name string) bool {
+	if s.index != nil {
+		return s.index[name]
+	}
 	i := 0
 	for i < len(s.names) {
 		if s.names[i] == name {
@@ -2683,7 +2703,17 @@ func (s *escapeNameSet) add(name string) {
 	if name == "" || s.has(name) {
 		return
 	}
+	if s.index != nil {
+		s.index[name] = true
+		return
+	}
 	s.names = append(s.names, name)
+	if len(s.names) > escapeLinearScanLimit {
+		s.index = make(map[string]bool, len(s.names)*2)
+		for _, existing := range s.names {
+			s.index[existing] = true
+		}
+	}
 }
 
 func (c *Compiler) escapeLValueMayLeak(node *Node, paramLocals *escapeNameSet) bool {
