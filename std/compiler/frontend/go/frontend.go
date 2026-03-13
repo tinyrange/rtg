@@ -161,7 +161,7 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 		// Bare package name: try embedded std first, then directory scan
 		mainPkg = p.parsePackageFromStdlibSources(baseDir, arg)
 		if mainPkg == nil {
-			mainPkg = p.parsePackageDir(entryDir, "main")
+			mainPkg = p.parsePackageDir(arg, "main")
 		}
 	} else {
 		// "." or directory: scan the directory for all .go files
