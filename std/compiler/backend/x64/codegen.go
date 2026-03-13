@@ -32,6 +32,8 @@ type CodeGen struct {
 
 	// String literal deduplication: string content → rodata offset of header
 	stringMap map[string]int
+	// Cache decoded escaped literals by raw source spelling.
+	decodedStrMap map[string]string
 
 	// Global variable info: global index → offset in .data
 	globalOffsets []int
@@ -140,6 +142,7 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *Cod
 	g.labelOffsets = make(map[int]int)
 	g.callFixups = make([]CallFixup, 0, estimateCallFixupCap(irmod))
 	g.stringMap = make(map[string]int, estimateStringMapCap(irmod))
+	g.decodedStrMap = make(map[string]string, estimateStringMapCap(irmod))
 	g.globalOffsets = make([]int, len(irmod.Globals))
 	g.BaseAddr = baseAddr
 	g.irmod = irmod

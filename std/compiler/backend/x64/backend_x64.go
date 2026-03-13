@@ -331,13 +331,17 @@ func (g *CodeGen) CompileConstI64(val int64) {
 
 func (g *CodeGen) CompileConstStr(s string) {
 	g.prepareForClobber(REG_RAX)
-	decoded := becommon.DecodeStringLiteral(s)
+	decoded, ok := g.decodedStrMap[s]
+	if !ok {
+		decoded = becommon.DecodeStringLiteral(s)
+		g.decodedStrMap[s] = decoded
+	}
 
 	headerOff, ok := g.stringMap[decoded]
 	if !ok {
 		// Store string bytes in rodata
 		dataOff := len(g.Rodata)
-		g.Rodata = append(g.Rodata, []byte(decoded)...)
+		g.Rodata = append(g.Rodata, decoded...)
 
 		// Store 16-byte header {data_ptr, len} in rodata
 		// data_ptr will need fixup when we know rodata's virtual address
