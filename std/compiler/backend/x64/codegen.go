@@ -34,6 +34,9 @@ type CodeGen struct {
 	stringMap map[string]int
 	// Cache decoded escaped literals by raw source spelling.
 	decodedStrMap map[string]string
+	// Dispatch candidates bucketed by bare method name.
+	methodDispatchNames   []string
+	methodDispatchEntries [][]DispatchEntry
 
 	// Global variable info: global index → offset in .data
 	globalOffsets []int
@@ -147,6 +150,7 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *Cod
 	g.BaseAddr = baseAddr
 	g.irmod = irmod
 	g.wordSize = 8
+	g.buildMethodDispatch()
 
 	// Allocate .data space for globals (8 bytes each)
 	for i := range irmod.Globals {
@@ -155,6 +159,61 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *Cod
 	g.Data = make([]byte, len(irmod.Globals)*8)
 
 	return g
+}
+
+func splitMethodDispatchKey(name string) (string, string, bool) {
+	dot := len(name) - 1
+	for dot >= 0 {
+		if name[dot] == '.' {
+			break
+		}
+		dot--
+	}
+	if dot <= 0 || dot+1 >= len(name) {
+		return "", "", false
+	}
+	return name[:dot], name[dot+1:], true
+}
+
+func (g *CodeGen) buildMethodDispatch() {
+	if g.irmod == nil || g.irmod.TypeIDs == nil || g.irmod.MethodTable == nil {
+		return
+	}
+	for methodKey, fnName := range g.irmod.MethodTable {
+		typeName, bareMethod, ok := splitMethodDispatchKey(methodKey)
+		if !ok {
+			continue
+		}
+		typeID, ok := g.irmod.TypeIDs[typeName]
+		if !ok {
+			continue
+		}
+		bucket := -1
+		for i, name := range g.methodDispatchNames {
+			if name == bareMethod {
+				bucket = i
+				break
+			}
+		}
+		if bucket < 0 {
+			g.methodDispatchNames = append(g.methodDispatchNames, bareMethod)
+			g.methodDispatchEntries = append(g.methodDispatchEntries, nil)
+			bucket = len(g.methodDispatchEntries) - 1
+		}
+		g.methodDispatchEntries[bucket] = append(g.methodDispatchEntries[bucket], DispatchEntry{typeID, fnName})
+	}
+	for i := range g.methodDispatchEntries {
+		sortDispatchEntries(g.methodDispatchEntries[i])
+	}
+}
+
+func (g *CodeGen) getMethodDispatch(bareMethod string) []DispatchEntry {
+	for i, name := range g.methodDispatchNames {
+		if name == bareMethod {
+			return g.methodDispatchEntries[i]
+		}
+	}
+	return nil
 }
 
 const outlinedTostringHelper = "$rtg.tostring$"

@@ -729,23 +729,32 @@ func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 	g.LoadMem(REG_RDX, REG_RAX, 8)
 	g.OpPush(REG_RDX)
 
-	// Generate dispatch chain for "Error" method
-	var entries []DispatchEntry
-	if g.irmod != nil && g.irmod.TypeIDs != nil {
-		for typeName, tid := range g.irmod.TypeIDs {
-			// Check for Error method first, then String
-			candidate := typeName + ".Error"
-			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
-				entries = append(entries, DispatchEntry{tid, fnName})
-				continue
-			}
-			candidate = typeName + ".String"
-			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
-				entries = append(entries, DispatchEntry{tid, fnName})
+		// Generate dispatch chain for "Error" method, falling back to "String".
+		var entries []DispatchEntry
+		errorEntries := g.getMethodDispatch("Error")
+		if len(errorEntries) > 0 {
+			for i := range errorEntries {
+				entry := errorEntries[i]
+				entries = append(entries, entry)
 			}
 		}
-	}
-	sortDispatchEntries(entries)
+		stringEntries := g.getMethodDispatch("String")
+		if len(stringEntries) > 0 {
+			for i := range stringEntries {
+				entry := stringEntries[i]
+				seen := false
+				for j := range entries {
+					if entries[j].typeID == entry.typeID {
+						seen = true
+						break
+					}
+				}
+				if !seen {
+					entries = append(entries, entry)
+				}
+			}
+		}
+		sortDispatchEntries(entries)
 
 	g.PatchRel32(dispatchFixup)
 
@@ -915,16 +924,7 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 	// Collect all type IDs that implement this interface method
 	var entries []DispatchEntry
 
-	if g.irmod != nil && g.irmod.TypeIDs != nil {
-		for typeName, tid := range g.irmod.TypeIDs {
-			// Check if typeName.Method exists in methodTable
-			candidate := typeName + "." + bareMethod
-			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
-				entries = append(entries, DispatchEntry{tid, fnName})
-			}
-		}
-	}
-	sortDispatchEntries(entries)
+		entries = g.getMethodDispatch(bareMethod)
 
 	// Restore type_id from call stack
 	g.PopR(REG_RCX)
