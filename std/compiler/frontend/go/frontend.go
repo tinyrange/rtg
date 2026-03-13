@@ -180,8 +180,12 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 
 	// Worklist loop: resolve imports recursively
 	var worklist []string
+	queued := make(map[string]bool)
 	for _, imp := range mainPkg.Imports {
-		worklist = append(worklist, imp)
+		if !queued[imp] {
+			worklist = append(worklist, imp)
+			queued[imp] = true
+		}
 	}
 	// Runtime is required by compiler-emitted helpers (alloc/map/string/etc),
 	// even for programs that do not explicitly import it.
@@ -193,18 +197,22 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 				break
 			}
 		}
-		if !hasRuntime {
-			mainPkg.Imports = append(mainPkg.Imports, "runtime")
-			worklist = append(worklist, "runtime")
+			if !hasRuntime {
+				mainPkg.Imports = append(mainPkg.Imports, "runtime")
+				if !queued["runtime"] {
+					worklist = append(worklist, "runtime")
+					queued["runtime"] = true
+				}
+			}
 		}
-	}
 
-	for len(worklist) > 0 {
-		importPath := worklist[0]
-		worklist = worklist[1:len(worklist)]
+		for len(worklist) > 0 {
+			importPath := worklist[0]
+			worklist = worklist[1:len(worklist)]
+			queued[importPath] = false
 
-		_, already := mod.Packages[importPath]
-		if already {
+			_, already := mod.Packages[importPath]
+			if already {
 			continue
 		}
 
@@ -220,13 +228,14 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 		}
 		mod.Packages[importPath] = pkg
 
-		for _, imp := range pkg.Imports {
-			_, seen := mod.Packages[imp]
-			if !seen {
-				worklist = append(worklist, imp)
+			for _, imp := range pkg.Imports {
+				_, seen := mod.Packages[imp]
+				if !seen && !queued[imp] {
+					worklist = append(worklist, imp)
+					queued[imp] = true
+				}
 			}
 		}
-	}
 
 	// Topological sort
 	mod.Order = topologicalSort(mod.Packages)
