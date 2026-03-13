@@ -140,7 +140,7 @@ func GenerateELF(target *common.Target, irmod *ir.IRModule, outputPath string) e
 	// Emit _start
 	emitStart(g, irmod, common.EntryFuncName(target))
 
-	g.EmitAllFunctions(irmod)
+	g.EmitAllFunctionsStreaming(irmod)
 
 	unresolved := g.ResolveLinuxCallFixups()
 

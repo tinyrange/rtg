@@ -292,6 +292,24 @@ func (g *CodeGen) EmitAllFunctions(irmod *ir.IRModule) {
 	}
 }
 
+// EmitAllFunctionsStreaming compiles each function into the final text buffer and
+// then drops the large IR slices that are no longer needed by the final link step.
+func (g *CodeGen) EmitAllFunctionsStreaming(irmod *ir.IRModule) {
+	for _, f := range irmod.Funcs {
+		g.funcOffsets[f.Name] = len(g.Code)
+		g.CompileFunc(f)
+		if f != nil {
+			f.Code = nil
+			f.Locals = nil
+		}
+	}
+
+	ir.CollectNativeFuncSizes(irmod, g.funcOffsets, len(g.Code))
+	if g.NeedTostringHelper {
+		g.EmitTostringHelperX64()
+	}
+}
+
 func (g *CodeGen) CheckUnresolvedCalls(unresolved []string) error {
 	if len(unresolved) > 0 {
 		fmt.Fprintf(os.Stderr, "error: %d unresolved calls:\n", len(unresolved))
