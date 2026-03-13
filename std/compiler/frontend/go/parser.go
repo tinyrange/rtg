@@ -188,16 +188,6 @@ func stableTokenString(s string) string {
 	return cloneStringBytes(s)
 }
 
-func cloneTokenValues(tokens []Token) {
-	i := 0
-	for i < len(tokens) {
-		if tokens[i].Val != "" {
-			tokens[i].Val = cloneStringBytes(tokens[i].Val)
-		}
-		i++
-	}
-}
-
 func (t Token) String() string {
 	if t.Val != "" {
 		return tokenName(t.Kind) + "(" + t.Val + ")"
