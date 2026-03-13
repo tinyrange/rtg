@@ -3952,77 +3952,6 @@ func (c *Compiler) compileTopDecl(node *Node) {
 	}
 }
 
-func containsDeferStmt(node *Node) bool {
-	arena.Enter("compiler.containsDeferStmt")
-	defer arena.Leave()
-	if node == nil {
-		return false
-	}
-	stack := make([]*Node, 0, 64)
-	stackTop := 0
-	stack = append(stack, node)
-	stackTop = 1
-	for stackTop > 0 {
-		stackTop--
-		n := stack[stackTop]
-		if n == nil {
-			continue
-		}
-		// Defer statements inside nested function literals belong to the nested
-		// function, not the current one.
-		if n.Kind == NFuncType && n.Body != nil {
-			continue
-		}
-		if n.Kind == NDeferStmt {
-			return true
-		}
-		if n.X != nil {
-			if stackTop < len(stack) {
-				stack[stackTop] = n.X
-			} else {
-				stack = append(stack, n.X)
-			}
-			stackTop++
-		}
-		if n.Y != nil {
-			if stackTop < len(stack) {
-				stack[stackTop] = n.Y
-			} else {
-				stack = append(stack, n.Y)
-			}
-			stackTop++
-		}
-		if n.Body != nil {
-			if stackTop < len(stack) {
-				stack[stackTop] = n.Body
-			} else {
-				stack = append(stack, n.Body)
-			}
-			stackTop++
-		}
-		if n.Type != nil {
-			if stackTop < len(stack) {
-				stack[stackTop] = n.Type
-			} else {
-				stack = append(stack, n.Type)
-			}
-			stackTop++
-		}
-		for i := len(n.Nodes) - 1; i >= 0; i-- {
-			child := n.Nodes[i]
-			if child != nil {
-				if stackTop < len(stack) {
-					stack[stackTop] = child
-				} else {
-					stack = append(stack, child)
-				}
-				stackTop++
-			}
-		}
-	}
-	return false
-}
-
 func countFuncBodyNodes(node *Node) int {
 	arena.Enter("compiler.countFuncBodyNodes")
 	defer arena.Leave()
@@ -4391,12 +4320,6 @@ func (c *Compiler) compileFunc(node *Node) {
 			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
 		}
-	}
-
-	if featureDeferEnabled && containsDeferStmt(node.Body) {
-		c.deferHeadLocal = c.addLocal("$defer_head")
-		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
-		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
 	}
 
 	// Compile body
