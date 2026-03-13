@@ -354,18 +354,46 @@ func stringLess(a string, b string) bool {
 	return la < lb
 }
 
-// sortStrings sorts a string slice in-place using insertion sort.
+// sortStrings sorts a string slice in-place.
 func sortStrings(s []string) {
-	i := 1
-	for i < len(s) {
-		j := i
-		for j > 0 && stringLess(s[j], s[j-1]) {
-			tmp := s[j]
-			s[j] = s[j-1]
-			s[j-1] = tmp
-			j = j - 1
+	if len(s) < 2 {
+		return
+	}
+	stack := make([]int, 0, 32)
+	stack = append(stack, 0, len(s)-1)
+	for len(stack) > 0 {
+		hi := stack[len(stack)-1]
+		lo := stack[len(stack)-2]
+		stack = stack[:len(stack)-2]
+		for lo < hi {
+			i := lo
+			j := hi
+			pivot := s[lo+(hi-lo)/2]
+			for i <= j {
+				for stringLess(s[i], pivot) {
+					i++
+				}
+				for stringLess(pivot, s[j]) {
+					j--
+				}
+				if i <= j {
+					s[i], s[j] = s[j], s[i]
+					i++
+					j--
+				}
+			}
+			if j-lo < hi-i {
+				if i < hi {
+					stack = append(stack, i, hi)
+				}
+				hi = j
+			} else {
+				if lo < j {
+					stack = append(stack, lo, j)
+				}
+				lo = i
+			}
 		}
-		i = i + 1
 	}
 }
 
