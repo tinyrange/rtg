@@ -248,6 +248,12 @@ func (g *CodeGen) ResolveLinuxCallFixups() []string {
 		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
 			continue
 		}
+		if len(fix.Target) > 10 && fix.Target[0:10] == "$funcaddr$" {
+			if _, ok := g.MaybeGetFuncOffsets(fix.Target[10:]); !ok {
+				unresolved = append(unresolved, fix.Target)
+			}
+			continue
+		}
 		target, ok := g.MaybeGetFuncOffsets(fix.Target)
 		if !ok {
 			unresolved = append(unresolved, fix.Target)
@@ -266,6 +272,18 @@ func (g *CodeGen) PatchLinuxDataAndRodataFixups(rodataVAddr uint64, dataVAddr ui
 		} else if fix.Target == "$data_addr$" {
 			dataOff := common.GetU64(g.Code[fix.CodeOffset : fix.CodeOffset+8])
 			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], dataVAddr+dataOff)
+		}
+	}
+}
+
+func (g *CodeGen) PatchLinuxFuncAddrFixups(textVAddr uint64) {
+	for _, fix := range g.callFixups {
+		if len(fix.Target) > 10 && fix.Target[0:10] == "$funcaddr$" {
+			funcOff, ok := g.MaybeGetFuncOffsets(fix.Target[10:])
+			if !ok {
+				panic("ICE: unresolved function address fixup: " + fix.Target[10:])
+			}
+			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], textVAddr+uint64(funcOff))
 		}
 	}
 }
