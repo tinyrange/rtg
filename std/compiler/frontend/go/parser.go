@@ -287,10 +287,8 @@ func isExpDigitStart(ch byte, next byte) bool {
 	return false
 }
 
-func (l *Lexer) skipWhitespaceAndComments() (bool, Token, bool) {
+func (l *Lexer) skipWhitespaceAndComments() bool {
 	sawNewline := false
-	var directive Token
-	hasDirective := false
 	for !l.atEnd() {
 		ch := l.src[l.pos]
 		if ch == '\n' {
@@ -331,18 +329,18 @@ func (l *Lexer) skipWhitespaceAndComments() (bool, Token, bool) {
 				trimmed = trimmed[1:]
 			}
 			if len(trimmed) >= 4 && trimmed[0:4] == "rtg:" {
-				directive = Token{Kind: TOKEN_DIRECTIVE, Val: trimmed[4:len(trimmed)], Line: cLine, Col: cCol}
-				hasDirective = true
+				l.pendingDirective = Token{Kind: TOKEN_DIRECTIVE, Val: trimmed[4:len(trimmed)], Line: cLine, Col: cCol}
+				l.hasPendingDirective = true
 			} else if len(trimmed) >= 9 && trimmed[0:9] == "go:embed " {
-				directive = Token{Kind: TOKEN_DIRECTIVE, Val: "embed " + trimmed[9:len(trimmed)], Line: cLine, Col: cCol}
-				hasDirective = true
+				l.pendingDirective = Token{Kind: TOKEN_DIRECTIVE, Val: "embed " + trimmed[9:len(trimmed)], Line: cLine, Col: cCol}
+				l.hasPendingDirective = true
 			}
 			sawNewline = true
 		} else {
 			break
 		}
 	}
-	return sawNewline, directive, hasDirective
+	return sawNewline
 }
 
 func (l *Lexer) scanIdent() Token {
@@ -519,18 +517,15 @@ func (l *Lexer) NextToken() Token {
 			return Token{Kind: TOKEN_EOF, Line: l.line, Col: l.col}
 		}
 
-		sawNewline, directive, hasDirective := l.skipWhitespaceAndComments()
+		sawNewline := l.skipWhitespaceAndComments()
 		if sawNewline && needsSemicolon(l.lastKind) {
-			if hasDirective {
-				l.pendingDirective = directive
-				l.hasPendingDirective = true
-			}
 			l.pendingSemicolon = true
 			continue
 		}
-		if hasDirective {
+		if l.hasPendingDirective {
+			l.hasPendingDirective = false
 			l.lastKind = TOKEN_DIRECTIVE
-			return directive
+			return l.pendingDirective
 		}
 		if l.atEnd() {
 			if !l.emittedFinalSemi && needsSemicolon(l.lastKind) {
@@ -543,20 +538,32 @@ func (l *Lexer) NextToken() Token {
 		}
 
 		ch := l.peek()
-		var tok Token
 		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' {
-			tok = l.scanIdent()
-		} else if ch >= '0' && ch <= '9' {
-			tok = l.scanNumber()
-		} else if ch == '"' {
-			tok = l.scanString()
-		} else if ch == '`' {
-			tok = l.scanRawString()
-		} else if ch == '\'' {
-			tok = l.scanRune()
-		} else {
-			tok = l.scanOperator()
+			tok := l.scanIdent()
+			l.lastKind = tok.Kind
+			return tok
 		}
+		if ch >= '0' && ch <= '9' {
+			tok := l.scanNumber()
+			l.lastKind = tok.Kind
+			return tok
+		}
+		if ch == '"' {
+			tok := l.scanString()
+			l.lastKind = tok.Kind
+			return tok
+		}
+		if ch == '`' {
+			tok := l.scanRawString()
+			l.lastKind = tok.Kind
+			return tok
+		}
+		if ch == '\'' {
+			tok := l.scanRune()
+			l.lastKind = tok.Kind
+			return tok
+		}
+		tok := l.scanOperator()
 		l.lastKind = tok.Kind
 		return tok
 	}
