@@ -197,14 +197,20 @@ func (t Token) String() string {
 
 // Lexer tokenizes Go source code.
 type Lexer struct {
-	src  string
-	pos  int
-	line int
-	col  int
+	src                 string
+	pos                 int
+	line                int
+	col                 int
+	lastKind            TokenKind
+	pendingDirective    Token
+	hasPendingDirective bool
+	pendingSemicolon    bool
+	emittedFinalSemi    bool
+	emittedEOF          bool
 }
 
 func NewLexer(src string) *Lexer {
-	return &Lexer{src: src, pos: 0, line: 1, col: 1}
+	return &Lexer{src: src, pos: 0, line: 1, col: 1, lastKind: TOKEN_EOF}
 }
 
 //rtg:noprofile
@@ -480,30 +486,45 @@ func (l *Lexer) scanRune() Token {
 	return Token{Kind: TOKEN_RUNE, Val: val, Line: line, Col: col}
 }
 
-func (l *Lexer) Tokenize() []Token {
-	capHint := len(l.src)/3 + 2
-	if capHint < 32 {
-		capHint = 32
-	}
-	tokens := acquireTokenBuffer(capHint)
-	lastKind := TOKEN_EOF
+func (l *Lexer) NextToken() Token {
 	for {
+		if l.pendingSemicolon {
+			l.pendingSemicolon = false
+			l.lastKind = TOKEN_SEMICOLON
+			return Token{Kind: TOKEN_SEMICOLON, Line: l.line, Col: l.col}
+		}
+		if l.hasPendingDirective {
+			l.hasPendingDirective = false
+			l.lastKind = TOKEN_DIRECTIVE
+			return l.pendingDirective
+		}
+		if l.emittedEOF {
+			return Token{Kind: TOKEN_EOF, Line: l.line, Col: l.col}
+		}
+
 		sawNewline, directive, hasDirective := l.skipWhitespaceAndComments()
-		if sawNewline && needsSemicolon(lastKind) {
-			tokens = append(tokens, Token{Kind: TOKEN_SEMICOLON, Val: "", Line: l.line, Col: l.col})
-			lastKind = TOKEN_SEMICOLON
+		if sawNewline && needsSemicolon(l.lastKind) {
+			if hasDirective {
+				l.pendingDirective = directive
+				l.hasPendingDirective = true
+			}
+			l.pendingSemicolon = true
+			continue
 		}
 		if hasDirective {
-			tokens = append(tokens, directive)
-			lastKind = TOKEN_DIRECTIVE
+			l.lastKind = TOKEN_DIRECTIVE
+			return directive
 		}
 		if l.atEnd() {
-			if needsSemicolon(lastKind) {
-				tokens = append(tokens, Token{Kind: TOKEN_SEMICOLON, Val: "", Line: l.line, Col: l.col})
+			if !l.emittedFinalSemi && needsSemicolon(l.lastKind) {
+				l.emittedFinalSemi = true
+				l.lastKind = TOKEN_SEMICOLON
+				return Token{Kind: TOKEN_SEMICOLON, Line: l.line, Col: l.col}
 			}
-			tokens = append(tokens, Token{Kind: TOKEN_EOF, Line: l.line, Col: l.col})
-			break
+			l.emittedEOF = true
+			return Token{Kind: TOKEN_EOF, Line: l.line, Col: l.col}
 		}
+
 		ch := l.peek()
 		var tok Token
 		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' {
@@ -519,8 +540,23 @@ func (l *Lexer) Tokenize() []Token {
 		} else {
 			tok = l.scanOperator()
 		}
+		l.lastKind = tok.Kind
+		return tok
+	}
+}
+
+func (l *Lexer) Tokenize() []Token {
+	capHint := len(l.src)/3 + 2
+	if capHint < 32 {
+		capHint = 32
+	}
+	tokens := acquireTokenBuffer(capHint)
+	for {
+		tok := l.NextToken()
 		tokens = append(tokens, tok)
-		lastKind = tok.Kind
+		if tok.Kind == TOKEN_EOF {
+			break
+		}
 	}
 	return tokens
 }
@@ -729,6 +765,7 @@ type Node struct {
 
 // Parser parses a sequence of tokens into an AST.
 type Parser struct {
+	lexer     *Lexer
 	tokens    []Token
 	pos       int
 	errors    []string
@@ -739,34 +776,62 @@ func NewParser(tokens []Token) *Parser {
 	return &Parser{tokens: tokens, pos: 0}
 }
 
-func (p *Parser) peek() Token {
-	if p.pos >= len(p.tokens) {
+func NewPullParser(lexer *Lexer) *Parser {
+	return &Parser{lexer: lexer, tokens: make([]Token, 0, 8)}
+}
+
+func (p *Parser) ensure(n int) {
+	if p.lexer == nil {
+		return
+	}
+	for p.pos+n >= len(p.tokens) {
+		if len(p.tokens) > 0 && p.tokens[len(p.tokens)-1].Kind == TOKEN_EOF {
+			return
+		}
+		p.tokens = append(p.tokens, p.lexer.NextToken())
+	}
+}
+
+func (p *Parser) compact() {
+	if p.pos == 0 {
+		return
+	}
+	if p.pos < 64 && p.pos*2 < len(p.tokens) {
+		return
+	}
+	n := copy(p.tokens, p.tokens[p.pos:])
+	p.tokens = p.tokens[:n]
+	p.pos = 0
+}
+
+func (p *Parser) peekN(n int) Token {
+	p.ensure(n)
+	if p.pos+n >= len(p.tokens) {
 		return Token{Kind: TOKEN_EOF}
 	}
-	return p.tokens[p.pos]
+	return p.tokens[p.pos+n]
+}
+
+func (p *Parser) peek() Token {
+	return p.peekN(0)
 }
 
 func (p *Parser) advance() Token {
-	if p.pos >= len(p.tokens) {
-		return Token{Kind: TOKEN_EOF}
+	tok := p.peekN(0)
+	if tok.Kind == TOKEN_EOF && p.pos >= len(p.tokens) {
+		return tok
 	}
-	tok := p.tokens[p.pos]
 	p.pos++
+	p.compact()
 	return tok
 }
 
 func (p *Parser) at(kind TokenKind) bool {
-	if p.pos >= len(p.tokens) {
-		return TOKEN_EOF == kind
-	}
-	return p.tokens[p.pos].Kind == kind
+	return p.peekN(0).Kind == kind
 }
 
 func (p *Parser) match(kinds ...TokenKind) bool {
-	k := TOKEN_EOF
-	if p.pos < len(p.tokens) {
-		k = p.tokens[p.pos].Kind
-	}
+	k := p.peekN(0).Kind
 	for _, kind := range kinds {
 		if k == kind {
 			return true
@@ -1041,8 +1106,8 @@ func (p *Parser) parseParamList() []*Node {
 func (p *Parser) parseParam() *Node {
 	node := &Node{Kind: NField, Pos: p.peek().Line}
 	// Check if this is "name type" or just "type"
-	if p.at(TOKEN_IDENT) && p.pos+1 < len(p.tokens) {
-		next := p.tokens[p.pos+1]
+	if p.at(TOKEN_IDENT) {
+		next := p.peekN(1)
 		if next.Kind != TOKEN_COMMA && next.Kind != TOKEN_RPAREN {
 			name := p.advance()
 			node.Name = stableTokenString(name.Val)
@@ -1458,7 +1523,7 @@ func (p *Parser) parseStmt() *Node {
 		return nil
 	}
 	// Label declaration: name:
-	if p.at(TOKEN_IDENT) && p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TOKEN_COLON {
+	if p.at(TOKEN_IDENT) && p.peekN(1).Kind == TOKEN_COLON {
 		name := p.advance()
 		p.expect(TOKEN_COLON)
 		p.skipSemicolon()
@@ -1568,9 +1633,9 @@ func (p *Parser) parseForStmt() *Node {
 		}
 	} else if p.at(TOKEN_DEFINE) || p.at(TOKEN_ASSIGN) {
 		// Could be: for i := range ... or for i := 0; ...
-		savedPos := p.pos
-		op := p.advance()
-		if p.at(TOKEN_RANGE) {
+		op := p.peek()
+		if p.peekN(1).Kind == TOKEN_RANGE {
+			p.advance()
 			p.advance()
 			iterable := p.parseExprNoBrace()
 			node.Name = "range"
@@ -1580,8 +1645,7 @@ func (p *Parser) parseForStmt() *Node {
 			p.skipSemicolon()
 			return node
 		}
-		// It's a 3-clause for: restore and parse as simple stmt
-		p.pos = savedPos
+		// It's a 3-clause for.
 		p.advance() // consume the := or =
 		rhs := p.parseExprNoBrace()
 		init := &Node{Kind: NAssign, Name: tokenVal(op), X: first, Y: rhs, Pos: first.Pos}

@@ -197,22 +197,22 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 				break
 			}
 		}
-			if !hasRuntime {
-				mainPkg.Imports = append(mainPkg.Imports, "runtime")
-				if !queued["runtime"] {
-					worklist = append(worklist, "runtime")
-					queued["runtime"] = true
-				}
+		if !hasRuntime {
+			mainPkg.Imports = append(mainPkg.Imports, "runtime")
+			if !queued["runtime"] {
+				worklist = append(worklist, "runtime")
+				queued["runtime"] = true
 			}
 		}
+	}
 
-		for len(worklist) > 0 {
-			importPath := worklist[0]
-			worklist = worklist[1:len(worklist)]
-			queued[importPath] = false
+	for len(worklist) > 0 {
+		importPath := worklist[0]
+		worklist = worklist[1:len(worklist)]
+		queued[importPath] = false
 
-			_, already := mod.Packages[importPath]
-			if already {
+		_, already := mod.Packages[importPath]
+		if already {
 			continue
 		}
 
@@ -228,14 +228,14 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 		}
 		mod.Packages[importPath] = pkg
 
-			for _, imp := range pkg.Imports {
-				_, seen := mod.Packages[imp]
-				if !seen && !queued[imp] {
-					worklist = append(worklist, imp)
-					queued[imp] = true
-				}
+		for _, imp := range pkg.Imports {
+			_, seen := mod.Packages[imp]
+			if !seen && !queued[imp] {
+				worklist = append(worklist, imp)
+				queued[imp] = true
 			}
 		}
+	}
 
 	// Topological sort
 	mod.Order = topologicalSort(mod.Packages)
@@ -990,13 +990,11 @@ func parseFile(path string) *Node {
 	}
 
 	lexer := NewLexer(string(src))
-	tokens := lexer.Tokenize()
 
 	arena.UseParent()
 	defer arena.Restore()
-	parser := NewParser(tokens)
+	parser := NewPullParser(lexer)
 	file := parser.ParseFile()
-	releaseTokenBuffer(tokens)
 
 	if len(parser.errors) > 0 {
 		fmt.Fprintf(os.Stderr, "parse errors in %s:\n", path)
@@ -1020,12 +1018,10 @@ func parseSource(name string, src string) *Node {
 	arena.Enter("frontend.parseSource.tokens")
 	defer arena.Leave()
 	lexer := NewLexer(src)
-	tokens := lexer.Tokenize()
 	arena.UseParent()
 	defer arena.Restore()
-	parser := NewParser(tokens)
+	parser := NewPullParser(lexer)
 	file := parser.ParseFile()
-	releaseTokenBuffer(tokens)
 
 	if len(parser.errors) > 0 {
 		fmt.Fprintf(os.Stderr, "parse errors in %s:\n", name)
