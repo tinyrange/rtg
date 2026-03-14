@@ -292,22 +292,41 @@ func (l *Lexer) skipWhitespaceAndComments() (bool, Token, bool) {
 	var directive Token
 	hasDirective := false
 	for !l.atEnd() {
-		ch := l.peek()
+		ch := l.src[l.pos]
 		if ch == '\n' {
 			sawNewline = true
-			l.advance()
+			l.pos++
+			l.line++
+			l.col = 1
 		} else if ch == ' ' || ch == '\t' || ch == '\r' {
-			l.advance()
+			start := l.pos
+			pos := start
+			src := l.src
+			for pos < len(src) {
+				ch = src[pos]
+				if ch != ' ' && ch != '\t' && ch != '\r' {
+					break
+				}
+				pos++
+			}
+			l.pos = pos
+			l.col += pos - start
 		} else if ch == '/' && l.peekAt(1) == '/' {
 			cLine := l.line
 			cCol := l.col
-			l.advance()
-			l.advance()
-			start := l.pos
-			for !l.atEnd() && l.peek() != '\n' && l.peek() != '\r' {
-				l.advance()
+			start := l.pos + 2
+			pos := start
+			src := l.src
+			for pos < len(src) {
+				ch = src[pos]
+				if ch == '\n' || ch == '\r' {
+					break
+				}
+				pos++
 			}
-			trimmed := l.src[start:l.pos]
+			l.pos = pos
+			l.col += pos - (start - 2)
+			trimmed := src[start:pos]
 			for len(trimmed) > 0 && (trimmed[0] == ' ' || trimmed[0] == '\t') {
 				trimmed = trimmed[1:]
 			}
