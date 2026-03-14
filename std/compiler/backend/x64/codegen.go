@@ -32,6 +32,11 @@ type CodeGen struct {
 
 	// String literal deduplication: string content → rodata offset of header
 	stringMap map[string]int
+	// Cache decoded escaped literals by raw source spelling.
+	decodedStrMap map[string]string
+	// Dispatch candidates bucketed by bare method name.
+	methodDispatchNames   []string
+	methodDispatchEntries [][]DispatchEntry
 
 	// Global variable info: global index → offset in .data
 	globalOffsets []int
@@ -54,7 +59,10 @@ type CodeGen struct {
 	pendingReg int
 	cacheRegs  []int
 	cacheFree  []int
+	cacheFreeLen int
 	cacheStack []int
+	cacheStackHead int
+	cacheStackLen  int
 
 	// Word size for the target architecture (8 for amd64, 4 for i386)
 	wordSize int
@@ -64,16 +72,85 @@ type CodeGen struct {
 	hasTostringHelper  bool
 }
 
+func estimateCodeCap(irmod *ir.IRModule) int {
+	total := 4096
+	for _, f := range irmod.Funcs {
+		if f == nil {
+			continue
+		}
+		if f.Native != nil {
+			total += len(f.Native.Code)
+			continue
+		}
+		total += len(f.Code)*24 + len(f.Locals)*16 + 64
+	}
+	return total
+}
+
+func estimateRodataCap(irmod *ir.IRModule) int {
+	total := 1024
+	for _, f := range irmod.Funcs {
+		if f == nil || f.Native != nil {
+			continue
+		}
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CONST_STR {
+				total += len(inst.Name) + 24
+			}
+		}
+	}
+	return total
+}
+
+func estimateCallFixupCap(irmod *ir.IRModule) int {
+	total := len(irmod.Funcs) * 8
+	for _, f := range irmod.Funcs {
+		if f == nil {
+			continue
+		}
+		if f.Native != nil {
+			total += len(f.Native.Fixups)
+			continue
+		}
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CALL {
+				total++
+			}
+		}
+	}
+	return total
+}
+
+func estimateStringMapCap(irmod *ir.IRModule) int {
+	total := 16
+	for _, f := range irmod.Funcs {
+		if f == nil || f.Native != nil {
+			continue
+		}
+		for _, inst := range f.Code {
+			if inst.Op == ir.OP_CONST_STR {
+				total++
+			}
+		}
+	}
+	return total
+}
+
 func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *CodeGen {
 	g := &CodeGen{}
 	g.target = target
-	g.funcOffsets = make(map[string]int)
+	g.Code = make([]byte, 0, estimateCodeCap(irmod))
+	g.Rodata = make([]byte, 0, estimateRodataCap(irmod))
+	g.funcOffsets = make(map[string]int, len(irmod.Funcs))
 	g.labelOffsets = make(map[int]int)
-	g.stringMap = make(map[string]int)
+	g.callFixups = make([]CallFixup, 0, estimateCallFixupCap(irmod))
+	g.stringMap = make(map[string]int, estimateStringMapCap(irmod))
+	g.decodedStrMap = make(map[string]string, estimateStringMapCap(irmod))
 	g.globalOffsets = make([]int, len(irmod.Globals))
-	g.BaseAddr = 0x400000
+	g.BaseAddr = baseAddr
 	g.irmod = irmod
 	g.wordSize = 8
+	g.buildMethodDispatch()
 
 	// Allocate .data space for globals (8 bytes each)
 	for i := range irmod.Globals {
@@ -82,6 +159,61 @@ func NewCodeGen(target *common.Target, irmod *ir.IRModule, baseAddr uint64) *Cod
 	g.Data = make([]byte, len(irmod.Globals)*8)
 
 	return g
+}
+
+func splitMethodDispatchKey(name string) (string, string, bool) {
+	dot := len(name) - 1
+	for dot >= 0 {
+		if name[dot] == '.' {
+			break
+		}
+		dot--
+	}
+	if dot <= 0 || dot+1 >= len(name) {
+		return "", "", false
+	}
+	return name[:dot], name[dot+1:], true
+}
+
+func (g *CodeGen) buildMethodDispatch() {
+	if g.irmod == nil || g.irmod.TypeIDs == nil || g.irmod.MethodTable == nil {
+		return
+	}
+	for methodKey, fnName := range g.irmod.MethodTable {
+		typeName, bareMethod, ok := splitMethodDispatchKey(methodKey)
+		if !ok {
+			continue
+		}
+		typeID, ok := g.irmod.TypeIDs[typeName]
+		if !ok {
+			continue
+		}
+		bucket := -1
+		for i, name := range g.methodDispatchNames {
+			if name == bareMethod {
+				bucket = i
+				break
+			}
+		}
+		if bucket < 0 {
+			g.methodDispatchNames = append(g.methodDispatchNames, bareMethod)
+			g.methodDispatchEntries = append(g.methodDispatchEntries, nil)
+			bucket = len(g.methodDispatchEntries) - 1
+		}
+		g.methodDispatchEntries[bucket] = append(g.methodDispatchEntries[bucket], DispatchEntry{typeID, fnName})
+	}
+	for i := range g.methodDispatchEntries {
+		sortDispatchEntries(g.methodDispatchEntries[i])
+	}
+}
+
+func (g *CodeGen) getMethodDispatch(bareMethod string) []DispatchEntry {
+	for i, name := range g.methodDispatchNames {
+		if name == bareMethod {
+			return g.methodDispatchEntries[i]
+		}
+	}
+	return nil
 }
 
 const outlinedTostringHelper = "$rtg.tostring$"
@@ -178,6 +310,12 @@ func (g *CodeGen) ResolveLinuxCallFixups() []string {
 		if fix.Target == "$rodata_header$" || fix.Target == "$data_addr$" {
 			continue
 		}
+		if len(fix.Target) > 10 && fix.Target[0:10] == "$funcaddr$" {
+			if _, ok := g.MaybeGetFuncOffsets(fix.Target[10:]); !ok {
+				unresolved = append(unresolved, fix.Target)
+			}
+			continue
+		}
 		target, ok := g.MaybeGetFuncOffsets(fix.Target)
 		if !ok {
 			unresolved = append(unresolved, fix.Target)
@@ -196,6 +334,18 @@ func (g *CodeGen) PatchLinuxDataAndRodataFixups(rodataVAddr uint64, dataVAddr ui
 		} else if fix.Target == "$data_addr$" {
 			dataOff := common.GetU64(g.Code[fix.CodeOffset : fix.CodeOffset+8])
 			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], dataVAddr+dataOff)
+		}
+	}
+}
+
+func (g *CodeGen) PatchLinuxFuncAddrFixups(textVAddr uint64) {
+	for _, fix := range g.callFixups {
+		if len(fix.Target) > 10 && fix.Target[0:10] == "$funcaddr$" {
+			funcOff, ok := g.MaybeGetFuncOffsets(fix.Target[10:])
+			if !ok {
+				panic("ICE: unresolved function address fixup: " + fix.Target[10:])
+			}
+			common.PutU64(g.Code[fix.CodeOffset:fix.CodeOffset+8], textVAddr+uint64(funcOff))
 		}
 	}
 }
@@ -244,6 +394,22 @@ func (g *CodeGen) EmitByte(b byte) {
 	g.Code = append(g.Code, b)
 }
 
+func (g *CodeGen) Emit2(b0 byte, b1 byte) {
+	g.Code = append(g.Code, b0, b1)
+}
+
+func (g *CodeGen) Emit3(b0 byte, b1 byte, b2 byte) {
+	g.Code = append(g.Code, b0, b1, b2)
+}
+
+func (g *CodeGen) Emit4(b0 byte, b1 byte, b2 byte, b3 byte) {
+	g.Code = append(g.Code, b0, b1, b2, b3)
+}
+
+func (g *CodeGen) Emit5(b0 byte, b1 byte, b2 byte, b3 byte, b4 byte) {
+	g.Code = append(g.Code, b0, b1, b2, b3, b4)
+}
+
 func (g *CodeGen) EmitBytes(bytes ...byte) {
 	g.Code = append(g.Code, bytes...)
 }
@@ -271,7 +437,7 @@ func (g *CodeGen) EmitRodataU64(v uint64) {
 // EmitCallPlaceholder emits a `call rel32` with a placeholder that gets fixed up later.
 func (g *CodeGen) EmitCallPlaceholder(target string) {
 	g.Flush()
-	g.EmitBytes(0xe8) // call rel32
+	g.EmitByte(0xe8) // call rel32
 	g.callFixups = append(g.callFixups, CallFixup{len(g.Code), target, 0})
 	g.EmitU32(0) // placeholder
 }
@@ -307,7 +473,7 @@ func (g *CodeGen) JmpRel32() int {
 // JccRel32 emits `jCC rel32` (0x0f, cc) and returns the offset of the rel32.
 func (g *CodeGen) JccRel32(cc byte) int {
 	g.Flush()
-	g.EmitBytes(0x0f, cc)
+	g.Emit2(0x0f, cc)
 	off := len(g.Code)
 	g.EmitU32(0) // placeholder
 	return off
@@ -344,53 +510,145 @@ func (g *CodeGen) shiftOffsetsAfterDelete(cutPos int, removed int) {
 
 // relaxCurrentFuncJumps shortens rel32 jumps/jccs to rel8 when possible for x86 backends.
 // Must be called before resolving rel32 fixups.
-func (g *CodeGen) relaxCurrentFuncJumps() {
+func (g *CodeGen) relaxCurrentFuncJumps(funcStart int) {
+	if len(g.jumpFixups) == 0 {
+		return
+	}
+	oldFuncCode := append([]byte(nil), g.Code[funcStart:]...)
+
+	selected := make([]bool, len(g.jumpFixups))
+	deletedBefore := func(pos int) int {
+		removed := 0
+		for i, fix := range g.jumpFixups {
+			if !selected[i] {
+				continue
+			}
+			if fix.Kind == jumpFixupJmpRel32 {
+				if pos > (fix.CodeOffset - funcStart) {
+					removed += 3
+				}
+			} else if fix.Kind == jumpFixupJccRel32 {
+				if pos > (fix.CodeOffset - funcStart - 1) {
+					removed += 4
+				}
+			}
+		}
+		return removed
+	}
+
 	changed := true
 	for changed {
 		changed = false
-		i := 0
-		for i < len(g.jumpFixups) {
-			fix := g.jumpFixups[i]
-			if fix.Kind != jumpFixupJmpRel32 && fix.Kind != jumpFixupJccRel32 {
-				i++
+		for i, fix := range g.jumpFixups {
+			if selected[i] || (fix.Kind != jumpFixupJmpRel32 && fix.Kind != jumpFixupJccRel32) {
 				continue
 			}
 			target, ok := g.labelOffsets[fix.LabelID]
 			if !ok {
-				i++
 				continue
 			}
+			targetLocal := (target - funcStart) - deletedBefore(target-funcStart)
 			if fix.Kind == jumpFixupJmpRel32 {
-				insPos := fix.CodeOffset - 1
-				rel := target - (insPos + 2)
-				if !fitsRel8(rel) {
-					i++
-					continue
+				insPosLocal := (fix.CodeOffset - funcStart - 1) - deletedBefore(fix.CodeOffset-funcStart-1)
+				if fitsRel8(targetLocal - (insPosLocal + 2)) {
+					selected[i] = true
+					changed = true
 				}
-				g.Code[insPos] = 0xeb
-				g.jumpFixups[i].Kind = jumpFixupJmpRel8
-				g.jumpFixups[i].CodeOffset = insPos + 1
-				// Delete trailing bytes of old rel32 encoding.
-				g.Code = append(g.Code[:insPos+2], g.Code[insPos+5:]...)
-				g.shiftOffsetsAfterDelete(insPos+1, 3)
+				continue
+			}
+			insPosLocal := (fix.CodeOffset - funcStart - 2) - deletedBefore(fix.CodeOffset-funcStart-2)
+			if fitsRel8(targetLocal - (insPosLocal + 2)) {
+				selected[i] = true
 				changed = true
-				i++
-				continue
 			}
-			insPos := fix.CodeOffset - 2
-			rel := target - (insPos + 2)
-			if !fitsRel8(rel) {
-				i++
-				continue
+		}
+	}
+
+	totalRemoved := deletedBefore(len(oldFuncCode))
+	if totalRemoved == 0 {
+		return
+	}
+
+	newFuncCode := make([]byte, len(oldFuncCode)-totalRemoved)
+	newFixOffsets := make([]int, len(g.jumpFixups))
+	oldToNew := make([]int, len(oldFuncCode)+1)
+	src := 0
+	dst := 0
+	for i := range newFixOffsets {
+		newFixOffsets[i] = -1
+	}
+	for i, fix := range g.jumpFixups {
+		if !selected[i] {
+			continue
+		}
+		insPosLocal := 0
+		oldLen := 0
+		if fix.Kind == jumpFixupJmpRel32 {
+			insPosLocal = fix.CodeOffset - funcStart - 1
+			oldLen = 5
+		} else {
+			insPosLocal = fix.CodeOffset - funcStart - 2
+			oldLen = 6
+		}
+		copyLen := insPosLocal - src
+		copy(newFuncCode[dst:dst+copyLen], oldFuncCode[src:insPosLocal])
+		k := 0
+		for k < copyLen {
+			oldToNew[src+k] = dst + k
+			k++
+		}
+		dst += insPosLocal - src
+		if fix.Kind == jumpFixupJmpRel32 {
+			newFuncCode[dst] = 0xeb
+			newFuncCode[dst+1] = 0
+			oldToNew[insPosLocal] = dst
+			oldToNew[fix.CodeOffset-funcStart] = dst + 1
+		} else {
+			newFuncCode[dst] = byte(0x70 | (fix.CC & 0x0f))
+			newFuncCode[dst+1] = 0
+			oldToNew[insPosLocal] = dst
+			oldToNew[insPosLocal+1] = dst
+			oldToNew[fix.CodeOffset-funcStart] = dst + 1
+		}
+		newFixOffsets[i] = funcStart + dst + 1
+		dst += 2
+		src = insPosLocal + oldLen
+	}
+	copyLen := len(oldFuncCode) - src
+	copy(newFuncCode[dst:], oldFuncCode[src:])
+	k := 0
+	for k < copyLen {
+		oldToNew[src+k] = dst + k
+		k++
+	}
+	oldToNew[len(oldFuncCode)] = len(newFuncCode)
+	g.Code = append(g.Code[:funcStart], newFuncCode...)
+
+	for id, off := range g.labelOffsets {
+		localOff := off - funcStart
+		g.labelOffsets[id] = funcStart + oldToNew[localOff]
+	}
+	for i, fix := range g.jumpFixups {
+		localOff := fix.CodeOffset - funcStart
+		if selected[i] {
+			if fix.Kind == jumpFixupJmpRel32 {
+				g.jumpFixups[i].Kind = jumpFixupJmpRel8
+			} else if fix.Kind == jumpFixupJccRel32 {
+				g.jumpFixups[i].Kind = jumpFixupJccRel8
 			}
-			g.Code[insPos] = byte(0x70 | (fix.CC & 0x0f))
-			g.jumpFixups[i].Kind = jumpFixupJccRel8
-			g.jumpFixups[i].CodeOffset = insPos + 1
-			// Delete trailing bytes of old near-jcc encoding.
-			g.Code = append(g.Code[:insPos+2], g.Code[insPos+6:]...)
-			g.shiftOffsetsAfterDelete(insPos+1, 4)
-			changed = true
-			i++
+		}
+		if newFixOffsets[i] >= 0 {
+			g.jumpFixups[i].CodeOffset = newFixOffsets[i]
+		} else {
+			g.jumpFixups[i].CodeOffset = funcStart + oldToNew[localOff]
+		}
+	}
+	for i, fix := range g.callFixups {
+		if fix.CodeOffset >= funcStart {
+			localOff := fix.CodeOffset - funcStart
+			if localOff <= len(oldFuncCode) {
+				g.callFixups[i].CodeOffset = funcStart + oldToNew[localOff]
+			}
 		}
 	}
 }
@@ -419,17 +677,19 @@ func (g *CodeGen) int3() {
 
 func (g *CodeGen) Flush() {
 	if len(g.cacheRegs) > 0 {
-		if len(g.cacheStack) == 0 && !g.hasPending {
+		if g.cacheStackLen == 0 && !g.hasPending {
 			return
 		}
-		for _, reg := range g.cacheStack {
+		i := 0
+		for i < g.cacheStackLen {
+			reg := g.cacheStack[(g.cacheStackHead+i)%len(g.cacheStack)]
 			g.rawPush(reg)
+			i++
 		}
 		if g.hasPending {
 			g.rawPush(g.pendingReg)
 		}
-		g.cacheStack = g.cacheStack[:0]
-		g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
+		g.resetOperandCacheState()
 		g.hasPending = false
 		return
 	}
@@ -442,13 +702,79 @@ func (g *CodeGen) Flush() {
 
 func (g *CodeGen) configureOperandCache(regs ...int) {
 	g.cacheRegs = append(g.cacheRegs[:0], regs...)
+	if len(g.cacheRegs) > 0 {
+		if cap(g.cacheFree) < len(g.cacheRegs) {
+			g.cacheFree = make([]int, len(g.cacheRegs))
+		} else {
+			g.cacheFree = g.cacheFree[:len(g.cacheRegs)]
+		}
+		if cap(g.cacheStack) < len(g.cacheRegs) {
+			g.cacheStack = make([]int, len(g.cacheRegs))
+		} else {
+			g.cacheStack = g.cacheStack[:len(g.cacheRegs)]
+		}
+	}
 	g.ClearOperandCache()
 }
 
 func (g *CodeGen) ClearOperandCache() {
 	g.hasPending = false
-	g.cacheStack = g.cacheStack[:0]
-	g.cacheFree = append(g.cacheFree[:0], g.cacheRegs...)
+	g.resetOperandCacheState()
+}
+
+func (g *CodeGen) resetOperandCacheState() {
+	g.cacheStackHead = 0
+	g.cacheStackLen = 0
+	g.cacheFreeLen = len(g.cacheRegs)
+	i := 0
+	for i < len(g.cacheRegs) {
+		g.cacheFree[i] = g.cacheRegs[i]
+		i++
+	}
+}
+
+func (g *CodeGen) cacheStackPush(reg int) {
+	idx := (g.cacheStackHead + g.cacheStackLen) % len(g.cacheStack)
+	g.cacheStack[idx] = reg
+	g.cacheStackLen++
+}
+
+func (g *CodeGen) cacheStackPop() int {
+	last := (g.cacheStackHead + g.cacheStackLen - 1) % len(g.cacheStack)
+	reg := g.cacheStack[last]
+	g.cacheStackLen--
+	if g.cacheStackLen == 0 {
+		g.cacheStackHead = 0
+	}
+	return reg
+}
+
+func (g *CodeGen) cacheStackShift() int {
+	reg := g.cacheStack[g.cacheStackHead]
+	g.cacheStackHead++
+	if g.cacheStackHead == len(g.cacheStack) {
+		g.cacheStackHead = 0
+	}
+	g.cacheStackLen--
+	if g.cacheStackLen == 0 {
+		g.cacheStackHead = 0
+	}
+	return reg
+}
+
+func (g *CodeGen) cacheStackTop() int {
+	last := (g.cacheStackHead + g.cacheStackLen - 1) % len(g.cacheStack)
+	return g.cacheStack[last]
+}
+
+func (g *CodeGen) cacheFreePush(reg int) {
+	g.cacheFree[g.cacheFreeLen] = reg
+	g.cacheFreeLen++
+}
+
+func (g *CodeGen) cacheFreePop() int {
+	g.cacheFreeLen--
+	return g.cacheFree[g.cacheFreeLen]
 }
 
 func (g *CodeGen) moveReg(dst, src int) {
@@ -456,14 +782,14 @@ func (g *CodeGen) moveReg(dst, src int) {
 		return
 	}
 	if g.wordSize == 2 {
-		g.EmitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+		g.Emit2(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		return
 	}
 	if g.wordSize == 4 {
 		if g.target.GOOS == "dos" {
-			g.EmitBytes(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+			g.Emit3(0x66, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		} else {
-			g.EmitBytes(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+			g.Emit2(0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 		}
 		return
 	}
@@ -474,7 +800,7 @@ func (g *CodeGen) moveReg(dst, src int) {
 	if dst >= 8 {
 		rex |= 0x01
 	}
-	g.EmitBytes(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
+	g.Emit3(rex, 0x89, byte(0xc0|((src&7)<<3)|(dst&7)))
 }
 
 func (g *CodeGen) prepareForClobber(regs ...int) {
@@ -492,17 +818,14 @@ func (g *CodeGen) prepareForClobber(regs ...int) {
 		return
 	}
 	if len(g.cacheRegs) > 0 {
-		if len(g.cacheFree) == 0 {
-			spill := g.cacheStack[0]
+		if g.cacheFreeLen == 0 {
+			spill := g.cacheStackShift()
 			g.rawPush(spill)
-			g.cacheStack = g.cacheStack[1:]
-			g.cacheFree = append(g.cacheFree, spill)
+			g.cacheFreePush(spill)
 		}
-		slot := len(g.cacheFree) - 1
-		dst := g.cacheFree[slot]
-		g.cacheFree = g.cacheFree[:slot]
+		dst := g.cacheFreePop()
 		g.moveReg(dst, g.pendingReg)
-		g.cacheStack = append(g.cacheStack, dst)
+		g.cacheStackPush(dst)
 		g.hasPending = false
 		return
 	}
@@ -510,12 +833,12 @@ func (g *CodeGen) prepareForClobber(regs ...int) {
 }
 
 func (g *CodeGen) rawPush(reg int) {
-	g.EmitBytes(0x4d, 0x8d, 0x7f, 0xf8) // lea r15, [r15-8] (preserves flags)
+	g.Emit4(0x4d, 0x8d, 0x7f, 0xf8) // lea r15, [r15-8] (preserves flags)
 	rex := byte(0x49)
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.EmitBytes(rex, 0x89, byte(0x07|((reg&7)<<3)))
+	g.Emit3(rex, 0x89, byte(0x07|((reg&7)<<3)))
 }
 
 func (g *CodeGen) rawPop(reg int) {
@@ -523,8 +846,8 @@ func (g *CodeGen) rawPop(reg int) {
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.EmitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
-	g.EmitBytes(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8] (preserves flags)
+	g.Emit3(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+	g.Emit4(0x4d, 0x8d, 0x7f, 0x08) // lea r15, [r15+8] (preserves flags)
 }
 
 func (g *CodeGen) rawLoad(reg int) {
@@ -532,27 +855,24 @@ func (g *CodeGen) rawLoad(reg int) {
 	if reg >= 8 {
 		rex = 0x4d
 	}
-	g.EmitBytes(rex, 0x8b, byte(0x07|((reg&7)<<3)))
+	g.Emit3(rex, 0x8b, byte(0x07|((reg&7)<<3)))
 }
 
 func (g *CodeGen) rawDrop() {
-	g.EmitBytes(0x49, 0x83, 0xc7, 0x08)
+	g.Emit4(0x49, 0x83, 0xc7, 0x08)
 }
 
 func (g *CodeGen) OpPush(reg int) {
 	if len(g.cacheRegs) > 0 {
 		if g.hasPending {
-			if len(g.cacheFree) == 0 {
-				spill := g.cacheStack[0]
+			if g.cacheFreeLen == 0 {
+				spill := g.cacheStackShift()
 				g.rawPush(spill)
-				g.cacheStack = g.cacheStack[1:]
-				g.cacheFree = append(g.cacheFree, spill)
+				g.cacheFreePush(spill)
 			}
-			slot := len(g.cacheFree) - 1
-			dst := g.cacheFree[slot]
-			g.cacheFree = g.cacheFree[:slot]
+			dst := g.cacheFreePop()
 			g.moveReg(dst, g.pendingReg)
-			g.cacheStack = append(g.cacheStack, dst)
+			g.cacheStackPush(dst)
 		}
 		g.hasPending = true
 		g.pendingReg = reg
@@ -570,11 +890,9 @@ func (g *CodeGen) OpPop(reg int) {
 			g.moveReg(reg, g.pendingReg)
 			return
 		}
-		if len(g.cacheStack) > 0 {
-			last := len(g.cacheStack) - 1
-			src := g.cacheStack[last]
-			g.cacheStack = g.cacheStack[:last]
-			g.cacheFree = append(g.cacheFree, src)
+		if g.cacheStackLen > 0 {
+			src := g.cacheStackPop()
+			g.cacheFreePush(src)
 			g.moveReg(reg, src)
 			return
 		}
@@ -595,8 +913,8 @@ func (g *CodeGen) opLoad(reg int) {
 			g.moveReg(reg, g.pendingReg)
 			return
 		}
-		if len(g.cacheStack) > 0 {
-			g.moveReg(reg, g.cacheStack[len(g.cacheStack)-1])
+		if g.cacheStackLen > 0 {
+			g.moveReg(reg, g.cacheStackTop())
 			return
 		}
 		g.rawLoad(reg)
@@ -616,10 +934,8 @@ func (g *CodeGen) opDrop() {
 			g.hasPending = false
 			return
 		}
-		if len(g.cacheStack) > 0 {
-			last := len(g.cacheStack) - 1
-			g.cacheFree = append(g.cacheFree, g.cacheStack[last])
-			g.cacheStack = g.cacheStack[:last]
+		if g.cacheStackLen > 0 {
+			g.cacheFreePush(g.cacheStackPop())
 			return
 		}
 		g.rawDrop()

@@ -3,48 +3,38 @@
 package frontend
 
 import (
+	"j5.nz/rtg/std/compiler/arena"
 	"j5.nz/rtg/std/compiler/stdlib"
 )
 
 func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
-	// Enumerate all embedded files and filter by package prefix. Some embed
-	// runtimes are unreliable for non-dot walk roots.
-	names, data := stdlib.WalkEmbedFromFS(".")
+	arena.Enter("frontend.parsePackageFromEmbed")
+	defer arena.Leave()
+	names := stdlib.ReadDirFromEmbed(importPath)
 	if len(names) == 0 {
 		return nil
 	}
-	contentsByPath := make(map[string]string, len(names))
-	for i := 0; i < len(names) && i < len(data); i++ {
-		contentsByPath[names[i]] = data[i]
-	}
 
-	// Filter and sort .go files in this package directory.
-	var goFiles []string
-	for _, full := range names {
-		if len(full) <= len(importPath)+1 {
-			continue
-		}
-		if full[0:len(importPath)] != importPath || full[len(importPath)] != '/' {
-			continue
-		}
-		name := full[len(importPath)+1:]
-		// Ignore nested files; package files must be direct children.
-		if len(name) == 0 || stringsIndexByte(name, '/') >= 0 {
-			continue
-		}
+	var goFiles []packageSourceFile
+	for _, name := range names {
 		if !isGoFile(name) {
 			continue
 		}
-		content := contentsByPath[full]
+		content := stdlib.ReadFileFromEmbed(importPath + "/" + name)
 		if p.shouldIncludeContent(content, name) {
-			goFiles = append(goFiles, name)
+			goFiles = append(goFiles, packageSourceFile{
+				name:    name,
+				path:    importPath + "/" + name,
+				content: content,
+			})
 		}
 	}
-	sortStrings(goFiles)
+	sortPackageSourceFiles(goFiles)
 	if len(goFiles) == 0 {
 		return nil
 	}
 
+	arena.UseParent()
 	pkg := &Package{
 		Path:    importPath,
 		Dir:     importPath,
@@ -53,9 +43,8 @@ func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 
 	i := 0
 	for i < len(goFiles) {
-		name := goFiles[i]
-		content := contentsByPath[importPath+"/"+name]
-		node := parseSource(importPath+"/"+name, content)
+		file := goFiles[i]
+		node := parseSource(file.path, file.content)
 		if node != nil {
 			if pkg.Name == "" {
 				pkg.Name = node.Name
@@ -66,20 +55,11 @@ func (p *Preprocessor) parsePackageFromEmbed(importPath string) *Package {
 	}
 
 	if len(pkg.Files) == 0 {
+		arena.Restore()
 		return nil
 	}
 
 	pkg.Imports = collectImports(pkg)
+	arena.Restore()
 	return pkg
-}
-
-func stringsIndexByte(s string, c byte) int {
-	i := 0
-	for i < len(s) {
-		if s[i] == c {
-			return i
-		}
-		i = i + 1
-	}
-	return -1
 }

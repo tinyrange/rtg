@@ -26,6 +26,10 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 - `#35` Struct values are lowered with pointer-aliasing semantics instead of copy semantics in RTG-compiled programs.
 - `#40` WASM variadic/interface boxing still truncates `int64` values in `fmt.Printf`-style calls.
 - `#41` C backend float lowering currently requires the C word size to be at least as wide as the float payload (`c/64` for `float64`; `c/32+` for `float32`).
+- `#42` Selfhost stage1 can segfault during `ResolveModule` when compiler changes introduce package-level caches over embedded-source metadata.
+- `#43` Indexed global-array access can be miscompiled as an extra pointer dereference in RTG-generated code.
+- `#44` Arena allocation accounting follows `arenaCurrent` instead of the active allocation target, so `UseParent` scopes report bytes against the child arena.
+- `#45` Broad automatic compiler arena instrumentation is semantically unstable for mutable owner objects; selfhost can segfault unless those packages stay on explicit/manual arena scopes.
 
 ### Watch (not currently reproducible)
 - `#1` ICE in `compileGlobalInits` for package-scope initializers.
@@ -71,6 +75,67 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 15. `#40` Fix wasm boxing/variadic argument handling for `int64` values.
 16. `#41` Decide whether smaller-word C profiles should gain split-word float lowering or keep an explicit unsupported-target error.
 
+### 43) Indexed global-array access can be lowered as an extra pointer dereference
+
+**Symptom**
+- While prototyping runtime freelists, code shaped like:
+  - `ptr := globalArray[idx]`
+  - `globalArray[idx] = next`
+- crashed in RTG-generated binaries during `runtime.mapAllocEntryBlock` with a null dereference.
+- `gdb` on the generated amd64 binary showed the load sequence:
+  - load symbol address for the global array
+  - dereference element `0` as if it were a base pointer
+  - then add `idx*elemSize`
+- so an all-zero global array immediately faulted on the second dereference.
+
+**Impact**
+- Prevents safe use of indexed fixed-size global arrays in runtime/compiler hot paths.
+- The failure mode is a generated-program crash, not a compile-time diagnostic.
+
+**Current mitigation**
+- Avoid indexed access to global arrays in RTG-compiled code for now.
+- Use heap-linked structures, slices, or scalar globals instead when the index is dynamic.
+
+### 44) Arena allocation accounting attributes `UseParent` allocations to the child scope
+
+**Symptom**
+- The new focused target:
+  - `./build/build test-arena-accounting`
+- currently fails with a report like:
+  - parent scope: tiny `req_bytes`
+  - child scope: nearly all requested bytes
+- even though the test performs its large allocation while `arena.UseParent()` is active inside the child scope.
+
+**Impact**
+- Arena reports are currently misleading for optimization work: parent-routed allocations look like child allocations.
+- This makes the new arena machinery hard to tune because the accounting does not reflect the real allocation target.
+
+**Likely root cause**
+- `arenaAlloc` routes allocation through `arenaAllocFrame`, but `arenaRecordAlloc` still attributes bytes using `arenaCurrent`.
+- `ArenaUseParent` only changes the allocation target, not `arenaCurrent`.
+
+**Current mitigation**
+- Use `test-arena-accounting` as the regression target before changing arena accounting logic.
+
+### 45) Broad automatic compiler arena instrumentation is unstable on mutable owner objects
+
+**Symptom**
+- Enabling `shouldInstrumentArena` broadly for compiler packages can make selfhost segfault instead of finishing.
+- The failing package moved as instrumentation was broadened:
+  - frontend validation crashed in `validateNode`
+  - x64 backend codegen crashed in `CodeGen.Flush`
+
+**What this means**
+- The current automatic per-function arena model is not yet sound for compiler code that mutates long-lived owner objects.
+- Typical bad shapes are:
+  - methods that write fresh allocations into package/module/backend state held on receivers or globals
+  - helpers that keep slices/maps/buffers alive across method boundaries
+
+**Current mitigation**
+- Keep automatic function instrumentation disabled.
+- Keep explicit/manual arena scopes only in proven-safe scratch paths.
+- Use the strengthened arena regressions plus `selfhost`/`selfhost-wasm` before widening arena scope again.
+
 ### 41) C backend float lowering currently depends on word-size >= float-size
 
 **Symptom**
@@ -84,6 +149,21 @@ Compiler bugs/limitations discovered while implementing stdlib extensions (`erro
 
 **Current mitigation**
 - The backend now rejects unsupported profile/float-width combinations up front instead of generating truncated code.
+
+### 42) Selfhost stage1 can segfault during `ResolveModule` after adding embedded-source metadata caches
+
+**Symptom**
+- While optimizing compiler startup, replacing per-import embedded-stdlib scans with package-level cached metadata in `frontend/go/parser_rtg.go` produced a reproducible selfhost crash:
+  - host-built `./build/rtg` could compile and pass `test-fullcompiler-rtg`
+  - but `./build/stage1 -debug -strict -o build/stage_out ./std/compiler/` crashed immediately after:
+    - `debug: resolving module (1 entry files)`
+
+**Impact**
+- Blocks an otherwise attractive optimization avenue for selfhost startup time and memory.
+- Host-Go builds may appear healthy while the selfhosted compiler stage crashes during module resolution.
+
+**Current mitigation**
+- Avoid package-level embedded-source cache rewrites in the selfhost path for now; prefer optimizations in later frontend/backend resolution/codegen paths until the root cause is isolated.
 
 ### 40) WASM variadic/interface boxing truncates `int64` values in formatted calls
 

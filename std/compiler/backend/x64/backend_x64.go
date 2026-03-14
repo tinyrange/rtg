@@ -45,7 +45,7 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 		return
 	}
 	g.curFunc = f
-	g.configureOperandCache(REG_R13, REG_R14)
+	g.configureOperandCache(REG_R12, REG_R13, REG_R14)
 	g.curFrameSize = len(f.Locals)
 	// Intrinsic functions may have Params > 0 but empty Locals.
 	// Ensure the frame is large enough to hold all param slots.
@@ -102,7 +102,7 @@ func (g *CodeGen) CompileFunc(f *ir.IRFunc) {
 	// Resolve jump fixups within this function
 	funcStart := g.funcOffsets[f.Name]
 	if g.target.GOOS != "dos" {
-		g.relaxCurrentFuncJumps()
+		g.relaxCurrentFuncJumps(funcStart)
 	}
 	for _, fix := range g.jumpFixups {
 		labelOff, ok := g.labelOffsets[fix.LabelID]
@@ -331,13 +331,17 @@ func (g *CodeGen) CompileConstI64(val int64) {
 
 func (g *CodeGen) CompileConstStr(s string) {
 	g.prepareForClobber(REG_RAX)
-	decoded := becommon.DecodeStringLiteral(s)
+	decoded, ok := g.decodedStrMap[s]
+	if !ok {
+		decoded = becommon.DecodeStringLiteral(s)
+		g.decodedStrMap[s] = decoded
+	}
 
 	headerOff, ok := g.stringMap[decoded]
 	if !ok {
 		// Store string bytes in rodata
 		dataOff := len(g.Rodata)
-		g.Rodata = append(g.Rodata, []byte(decoded)...)
+		g.Rodata = append(g.Rodata, decoded...)
 
 		// Store 16-byte header {data_ptr, len} in rodata
 		// data_ptr will need fixup when we know rodata's virtual address
@@ -675,7 +679,7 @@ func (g *CodeGen) EmitTostringHelperX64() {
 	}
 	g.hasTostringHelper = true
 	g.funcOffsets[outlinedTostringHelper] = len(g.Code)
-	g.configureOperandCache(REG_R13, REG_R14)
+	g.configureOperandCache(REG_R12, REG_R13, REG_R14)
 
 	g.PushR(REG_RBP)
 	g.MovRR(REG_RBP, REG_RSP)
@@ -725,23 +729,32 @@ func (g *CodeGen) compileTostringIntrinsicBodyX64() {
 	g.LoadMem(REG_RDX, REG_RAX, 8)
 	g.OpPush(REG_RDX)
 
-	// Generate dispatch chain for "Error" method
-	var entries []DispatchEntry
-	if g.irmod != nil && g.irmod.TypeIDs != nil {
-		for typeName, tid := range g.irmod.TypeIDs {
-			// Check for Error method first, then String
-			candidate := typeName + ".Error"
-			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
-				entries = append(entries, DispatchEntry{tid, fnName})
-				continue
-			}
-			candidate = typeName + ".String"
-			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
-				entries = append(entries, DispatchEntry{tid, fnName})
+		// Generate dispatch chain for "Error" method, falling back to "String".
+		var entries []DispatchEntry
+		errorEntries := g.getMethodDispatch("Error")
+		if len(errorEntries) > 0 {
+			for i := range errorEntries {
+				entry := errorEntries[i]
+				entries = append(entries, entry)
 			}
 		}
-	}
-	sortDispatchEntries(entries)
+		stringEntries := g.getMethodDispatch("String")
+		if len(stringEntries) > 0 {
+			for i := range stringEntries {
+				entry := stringEntries[i]
+				seen := false
+				for j := range entries {
+					if entries[j].typeID == entry.typeID {
+						seen = true
+						break
+					}
+				}
+				if !seen {
+					entries = append(entries, entry)
+				}
+			}
+		}
+		sortDispatchEntries(entries)
 
 	g.PatchRel32(dispatchFixup)
 
@@ -911,16 +924,7 @@ func (g *CodeGen) compileIfaceCall(inst ir.Inst) {
 	// Collect all type IDs that implement this interface method
 	var entries []DispatchEntry
 
-	if g.irmod != nil && g.irmod.TypeIDs != nil {
-		for typeName, tid := range g.irmod.TypeIDs {
-			// Check if typeName.Method exists in methodTable
-			candidate := typeName + "." + bareMethod
-			if fnName, ok := becommon.LookupStringMapLinear(g.irmod.MethodTable, candidate); ok {
-				entries = append(entries, DispatchEntry{tid, fnName})
-			}
-		}
-	}
-	sortDispatchEntries(entries)
+		entries = g.getMethodDispatch(bareMethod)
 
 	// Restore type_id from call stack
 	g.PopR(REG_RCX)

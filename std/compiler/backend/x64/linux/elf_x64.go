@@ -47,6 +47,9 @@ func buildELF64(g *core.CodeGen, irmod *ir.IRModule) []byte {
 	// x86-64: fix up string headers in rodata with absolute virtual addresses.
 	g.PatchLinuxStringHeaders(rodataVAddr)
 
+	// Patch embedded absolute function addresses after final text layout is known.
+	g.PatchLinuxFuncAddrFixups(textVAddr)
+
 	// Fix up code references to rodata headers and data section.
 	g.PatchLinuxDataAndRodataFixups(rodataVAddr, dataVAddr)
 

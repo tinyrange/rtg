@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"j5.nz/rtg/std/compiler/arena"
 	"j5.nz/rtg/std/compiler/backend/vm"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/ir"
@@ -13,6 +14,7 @@ import (
 const (
 	comptimePkgPath           = "j5.nz/rtg/x/comptime"
 	comptimePkgPrefix         = "j5.nz/rtg/x/comptime."
+	compilerArenaPkgPrefix    = "j5.nz/rtg/std/compiler/arena."
 	targetPkgPath             = "j5.nz/rtg/std/target"
 	targetRegisterFn          = targetPkgPath + ".Register"
 	targetRegisterABI         = targetPkgPath + ".RegisterABI"
@@ -61,7 +63,39 @@ type structTypeLookupResult struct {
 	ok       bool
 }
 
+type structFieldLookupResult struct {
+	field   *Node
+	pkgPath string
+	ok      bool
+}
+
+type cachedStringResult struct {
+	value string
+	ok    bool
+}
+
+type escapeAliasEntry struct {
+	name string
+	mask uint64
+}
+
+type escapeAliasState struct {
+	entries []escapeAliasEntry
+	index   map[string]uint64
+}
+
+type escapeNameSet struct {
+	names []string
+	index map[string]bool
+}
+
+const escapeLinearScanLimit = 16
+
 const structTypeLookupMaxEntries = 8192
+const structFieldLookupMaxEntries = 16384
+const fieldTypeLookupMaxEntries = 16384
+
+var nodeTypeNameCache map[*Node]string
 
 // === Compiler ===
 
@@ -98,12 +132,15 @@ type Compiler struct {
 	typeIsZeroCall        map[string]bool     // qualified type name → true if methods default to zerocall
 	comptimeFuncs         map[string]bool     // function/method name → true if marked //rtg:comptime
 	funcRetTypeNodes      map[string]*Node    // function name → first return type node (for comptime literal synthesis)
+	funcNodes             map[string]*Node    // function name → declaration node
+	funcNodePkgPath       map[string]string   // function name → declaring package path
+	funcParamEscapes      map[string][]bool   // function name → params that may escape the callee
 	localElemSizes        map[string]int      // variable name → slice element size (1 for byte, 8 otherwise)
 	globalElemSizes       map[string]int      // qualified global name → slice element size
 	ifaceMethods          map[string][]string // interface name → method names
-	ifaceMethodRets       map[string]int      // iface+"\x00"+method → return count
-	ifaceMethodRetTypes   map[string]string   // iface+"\x00"+method → first return type name
-	ifaceMethodRetLists   map[string][]string // iface+"\x00"+method → full return type names
+	ifaceMethodRets       map[string]map[string]int      // iface → method → return count
+	ifaceMethodRetTypes   map[string]map[string]string   // iface → method → first return type name
+	ifaceMethodRetLists   map[string]map[string][]string // iface → method → full return type names
 	methodTable           map[string]string   // "pkg.Type.Method" → qualified IR func name
 	methodFuncNames       map[string]bool     // qualified method function names
 	typeIDs               map[string]int      // concrete type qualified name → unique int
@@ -136,8 +173,17 @@ type Compiler struct {
 	captureConcreteTypes  map[string]string
 	captureIfaceTypes     map[string]string
 	dotJoinCache          map[string]map[string]string // a → b → "a.b"
-	qualifyTypeCache      map[string]string            // "typeName\x00pkgPath" → qualified result
+	qualifyTypeCache      map[string]map[string]string // pkgPath → typeName → qualified result
 	structTypeLookup      map[string]structTypeLookupResult
+	structFieldLookup     map[string]map[string]structFieldLookupResult
+	structFieldLookupSize int
+	fieldTypeLookup       map[string]map[string]cachedStringResult
+	fieldTypeLookupSize   int
+	storageTypeCache      map[string]cachedStringResult
+	methodResolutionCache map[string]map[string]cachedStringResult
+	resolveCallNameCache  map[*Node]cachedStringResult
+	resolveExprTypeCache  map[*Node]cachedStringResult
+	exprConcreteTypeCache map[*Node]cachedStringResult
 	comptimeSeq           int
 	comptimeDisabled      bool
 	inComptimeFunc        bool
@@ -146,6 +192,9 @@ type Compiler struct {
 	profileMethodHash     uint32
 	profileFlushOnExit    bool
 	currentMethodHash     uint32
+	currentSourceLine     int
+	allocSiteNames        map[uint32]string
+	arenaEntered          bool
 	inIfInit              bool
 	ifInitLeakedNames     map[string]bool
 	assembleFuncs         map[string]assembleInfo
@@ -172,7 +221,7 @@ func (c *Compiler) dotJoin(a string, b string) string {
 }
 
 // CompileModule compiles an entire resolved module to IR.
-func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
+func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string, map[uint32]string) {
 	entryFunc := target.EntryFunc
 	if entryFunc == "" {
 		entryFunc = "main.main"
@@ -198,11 +247,14 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		typeIsZeroCall:        make(map[string]bool),
 		comptimeFuncs:         make(map[string]bool),
 		funcRetTypeNodes:      make(map[string]*Node),
+		funcNodes:             make(map[string]*Node),
+		funcNodePkgPath:       make(map[string]string),
+		funcParamEscapes:      make(map[string][]bool),
 		globalElemSizes:       make(map[string]int),
 		ifaceMethods:          make(map[string][]string),
-		ifaceMethodRets:       make(map[string]int),
-		ifaceMethodRetTypes:   make(map[string]string),
-		ifaceMethodRetLists:   make(map[string][]string),
+		ifaceMethodRets:       make(map[string]map[string]int),
+		ifaceMethodRetTypes:   make(map[string]map[string]string),
+		ifaceMethodRetLists:   make(map[string]map[string][]string),
 		methodTable:           make(map[string]string),
 		methodFuncNames:       make(map[string]bool),
 		typeIDs:               make(map[string]int),
@@ -215,8 +267,12 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		funcLiteralCaptures:   make(map[string][]closureCaptureSpec),
 		localFuncCaptures:     make(map[string][]closureCaptureBinding),
 		dotJoinCache:          make(map[string]map[string]string),
-		qualifyTypeCache:      make(map[string]string),
+		qualifyTypeCache:      make(map[string]map[string]string),
 		structTypeLookup:      make(map[string]structTypeLookupResult),
+		structFieldLookup:     make(map[string]map[string]structFieldLookupResult),
+		fieldTypeLookup:       make(map[string]map[string]cachedStringResult),
+		methodResolutionCache: make(map[string]map[string]cachedStringResult),
+		allocSiteNames:        make(map[uint32]string),
 		assembleFuncs:         make(map[string]assembleInfo),
 		entryFunc:             entryFunc,
 		deferRecoverWrapFuncs: make(map[string]bool),
@@ -310,6 +366,17 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		c.precomputeConsts(pkg)
 	}
 
+	// Precompute function metadata and escape summaries across the whole module.
+	for _, path := range mod.Order {
+		pkg, ok := mod.Packages[path]
+		if !ok {
+			continue
+		}
+		c.curPkg = pkg
+		c.collectFuncRetTypes(pkg)
+	}
+	c.computeEscapeSummaries()
+
 	// Compile functions for all packages in topological order
 	for _, path := range mod.Order {
 		pkg, ok := mod.Packages[path]
@@ -329,7 +396,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 	c.irmod.TypeIDs = c.typeIDs
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
-	c.irmod.IfaceMethodRets = c.ifaceMethodRets
+	c.irmod.IfaceMethodRets = c.flattenIfaceMethodRets()
 	if len(c.funcIsZeroCall) > 0 {
 		c.irmod.ZeroCallFuncs = make(map[string]bool, len(c.funcIsZeroCall))
 		for qname := range c.funcIsZeroCall {
@@ -341,7 +408,7 @@ func CompileModule(target common.Target, mod *Module) (*ir.IRModule, []string) {
 		c.errors = append(c.errors, optErrs...)
 	}
 
-	return c.irmod, c.errors
+	return c.irmod, c.errors, c.allocSiteNames
 }
 
 func (c *Compiler) initBuiltinTypes() {
@@ -360,8 +427,49 @@ func (c *Compiler) initBuiltinTypes() {
 	c.typeIDs["bool"] = 3
 	c.ifaceMethods["interface{}"] = []string{}
 	c.ifaceMethods["error"] = []string{"Error"}
-	c.ifaceMethodRets["error\x00Error"] = 1
-	c.ifaceMethodRetLists["error\x00Error"] = []string{"string"}
+	c.setIfaceMethodRet("error", "Error", 1)
+	c.setIfaceMethodRetList("error", "Error", []string{"string"})
+}
+
+func (c *Compiler) setIfaceMethodRet(ifaceType string, methodName string, retCount int) {
+	methods := c.ifaceMethodRets[ifaceType]
+	if methods == nil {
+		methods = make(map[string]int)
+		c.ifaceMethodRets[ifaceType] = methods
+	}
+	methods[methodName] = retCount
+}
+
+func (c *Compiler) setIfaceMethodFirstRetType(ifaceType string, methodName string, retType string) {
+	methods := c.ifaceMethodRetTypes[ifaceType]
+	if methods == nil {
+		methods = make(map[string]string)
+		c.ifaceMethodRetTypes[ifaceType] = methods
+	}
+	methods[methodName] = retType
+}
+
+func (c *Compiler) setIfaceMethodRetList(ifaceType string, methodName string, retTypes []string) {
+	methods := c.ifaceMethodRetLists[ifaceType]
+	if methods == nil {
+		methods = make(map[string][]string)
+		c.ifaceMethodRetLists[ifaceType] = methods
+	}
+	methods[methodName] = retTypes
+}
+
+func (c *Compiler) flattenIfaceMethodRets() map[string]int {
+	total := 0
+	for _, methods := range c.ifaceMethodRets {
+		total = total + len(methods)
+	}
+	flat := make(map[string]int, total)
+	for ifaceType, methods := range c.ifaceMethodRets {
+		for methodName, retCount := range methods {
+			flat[ifaceType+"\x00"+methodName] = retCount
+		}
+	}
+	return flat
 }
 
 func (c *Compiler) errorf(format string, args ...interface{}) {
@@ -391,6 +499,7 @@ func (c *Compiler) registerLocalTypeDecl(node *Node) {
 		c.localTypeDecls = make(map[string]*Node)
 	}
 	c.localTypeDecls[node.Name] = node
+	c.storageTypeCache = nil
 }
 
 func isBuiltinName(name string) bool {
@@ -433,9 +542,27 @@ func isBuiltinName(name string) bool {
 }
 
 func (c *Compiler) resolvePackage(pkgName string) *Package {
+	if c.curPkg != nil {
+		if c.curPkg.resolvedPkgs != nil {
+			if pkg, ok := c.curPkg.resolvedPkgs[pkgName]; ok {
+				return pkg
+			}
+		} else {
+			arena.UseParent()
+			c.curPkg.resolvedPkgs = make(map[string]*Package)
+			c.curPkg.missingPkgs = make(map[string]bool)
+			arena.Restore()
+		}
+		if c.curPkg.missingPkgs[pkgName] {
+			return nil
+		}
+	}
 	if c.curPkg != nil && c.curPkg.ImportAliases != nil {
 		if path, ok := c.curPkg.ImportAliases[pkgName]; ok {
 			if pkg, ok := c.mod.Packages[path]; ok {
+				arena.UseParent()
+				c.curPkg.resolvedPkgs[pkgName] = pkg
+				arena.Restore()
 				return pkg
 			}
 		}
@@ -443,8 +570,16 @@ func (c *Compiler) resolvePackage(pkgName string) *Package {
 	for _, imp := range c.curPkg.Imports {
 		pkg, ok := c.mod.Packages[imp]
 		if ok && pkg.Name == pkgName {
+			arena.UseParent()
+			c.curPkg.resolvedPkgs[pkgName] = pkg
+			arena.Restore()
 			return pkg
 		}
+	}
+	if c.curPkg != nil && c.curPkg.missingPkgs != nil {
+		arena.UseParent()
+		c.curPkg.missingPkgs[pkgName] = true
+		arena.Restore()
 	}
 	return nil
 }
@@ -511,15 +646,61 @@ func (c *Compiler) lookupStructTypeNode(qualifiedType string) (*Node, string) {
 // lookupStructField parses a qualified type name and returns the matching field node
 // and the package path. Returns nil, "" if not found.
 func (c *Compiler) lookupStructField(qualifiedType string, fieldName string) (*Node, string) {
+	cacheBucket := c.structFieldLookup[qualifiedType]
+	if cacheBucket != nil {
+		if cached, ok := cacheBucket[fieldName]; ok {
+			if cached.ok {
+				return cached.field, cached.pkgPath
+			}
+			return nil, ""
+		}
+	}
 	typeNode, pkgPath := c.lookupStructTypeNode(qualifiedType)
 	if typeNode == nil {
+		if c.structFieldLookupSize >= structFieldLookupMaxEntries {
+			c.structFieldLookup = make(map[string]map[string]structFieldLookupResult)
+			c.structFieldLookupSize = 0
+		}
+		cacheBucket = c.structFieldLookup[qualifiedType]
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]structFieldLookupResult)
+			c.structFieldLookup[qualifiedType] = cacheBucket
+		}
+		cacheBucket[fieldName] = structFieldLookupResult{}
+		c.structFieldLookupSize++
 		return nil, ""
 	}
 	for _, field := range typeNode.Nodes {
 		if field.Kind == NField && field.Name == fieldName {
+			if c.structFieldLookupSize >= structFieldLookupMaxEntries {
+				c.structFieldLookup = make(map[string]map[string]structFieldLookupResult)
+				c.structFieldLookupSize = 0
+			}
+			cacheBucket = c.structFieldLookup[qualifiedType]
+			if cacheBucket == nil {
+				cacheBucket = make(map[string]structFieldLookupResult)
+				c.structFieldLookup[qualifiedType] = cacheBucket
+			}
+			cacheBucket[fieldName] = structFieldLookupResult{
+				field:   field,
+				pkgPath: pkgPath,
+				ok:      true,
+			}
+			c.structFieldLookupSize++
 			return field, pkgPath
 		}
 	}
+	if c.structFieldLookupSize >= structFieldLookupMaxEntries {
+		c.structFieldLookup = make(map[string]map[string]structFieldLookupResult)
+		c.structFieldLookupSize = 0
+	}
+	cacheBucket = c.structFieldLookup[qualifiedType]
+	if cacheBucket == nil {
+		cacheBucket = make(map[string]structFieldLookupResult)
+		c.structFieldLookup[qualifiedType] = cacheBucket
+	}
+	cacheBucket[fieldName] = structFieldLookupResult{}
+	c.structFieldLookupSize++
 	return nil, ""
 }
 
@@ -609,12 +790,44 @@ func (c *Compiler) resolveFieldPath(qualifiedType string, fieldName string) ([]i
 // resolveFieldType looks up the type of a struct field given a qualified type name and field name.
 func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) string {
 	qualifiedType = c.qualifyTypeName(qualifiedType, "")
+	cacheBucket := c.fieldTypeLookup[qualifiedType]
+	if cacheBucket != nil {
+		if cached, ok := cacheBucket[fieldName]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
+	}
 	field, pkgPath := c.lookupStructField(qualifiedType, fieldName)
 	if field != nil && field.Type != nil {
-		return c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
+		resolved := c.qualifyTypeName(nodeTypeName(field.Type), pkgPath)
+		if c.fieldTypeLookupSize >= fieldTypeLookupMaxEntries {
+			c.fieldTypeLookup = make(map[string]map[string]cachedStringResult)
+			c.fieldTypeLookupSize = 0
+		}
+		cacheBucket = c.fieldTypeLookup[qualifiedType]
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]cachedStringResult)
+			c.fieldTypeLookup[qualifiedType] = cacheBucket
+		}
+		cacheBucket[fieldName] = cachedStringResult{value: resolved, ok: true}
+		c.fieldTypeLookupSize++
+		return resolved
 	}
 	typeNode, ownerPkg := c.lookupStructTypeNode(qualifiedType)
 	if typeNode == nil {
+		if c.fieldTypeLookupSize >= fieldTypeLookupMaxEntries {
+			c.fieldTypeLookup = make(map[string]map[string]cachedStringResult)
+			c.fieldTypeLookupSize = 0
+		}
+		cacheBucket = c.fieldTypeLookup[qualifiedType]
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]cachedStringResult)
+			c.fieldTypeLookup[qualifiedType] = cacheBucket
+		}
+		cacheBucket[fieldName] = cachedStringResult{}
+		c.fieldTypeLookupSize++
 		return ""
 	}
 	for _, embedded := range typeNode.Nodes {
@@ -623,9 +836,31 @@ func (c *Compiler) resolveFieldType(qualifiedType string, fieldName string) stri
 		}
 		embeddedType := c.qualifyTypeName(nodeTypeName(embedded.Type), ownerPkg)
 		if t := c.resolveFieldType(embeddedType, fieldName); t != "" {
+			if c.fieldTypeLookupSize >= fieldTypeLookupMaxEntries {
+				c.fieldTypeLookup = make(map[string]map[string]cachedStringResult)
+				c.fieldTypeLookupSize = 0
+			}
+			cacheBucket = c.fieldTypeLookup[qualifiedType]
+			if cacheBucket == nil {
+				cacheBucket = make(map[string]cachedStringResult)
+				c.fieldTypeLookup[qualifiedType] = cacheBucket
+			}
+			cacheBucket[fieldName] = cachedStringResult{value: t, ok: true}
+			c.fieldTypeLookupSize++
 			return t
 		}
 	}
+	if c.fieldTypeLookupSize >= fieldTypeLookupMaxEntries {
+		c.fieldTypeLookup = make(map[string]map[string]cachedStringResult)
+		c.fieldTypeLookupSize = 0
+	}
+	cacheBucket = c.fieldTypeLookup[qualifiedType]
+	if cacheBucket == nil {
+		cacheBucket = make(map[string]cachedStringResult)
+		c.fieldTypeLookup[qualifiedType] = cacheBucket
+	}
+	cacheBucket[fieldName] = cachedStringResult{}
+	c.fieldTypeLookupSize++
 	return ""
 }
 
@@ -898,6 +1133,25 @@ func arrayTypeNestingDepth(typeName string) int {
 
 // resolveExprType returns the concrete qualified type of an expression, or "" if unknown.
 func (c *Compiler) resolveExprType(node *Node) string {
+	if node == nil {
+		return ""
+	}
+	if c.resolveExprTypeCache != nil {
+		if cached, ok := c.resolveExprTypeCache[node]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
+	}
+	result := c.resolveExprTypeInner(node)
+	if c.resolveExprTypeCache != nil {
+		c.resolveExprTypeCache[node] = cachedStringResult{value: result, ok: result != ""}
+	}
+	return result
+}
+
+func (c *Compiler) resolveExprTypeInner(node *Node) string {
 	if node == nil {
 		return ""
 	}
@@ -1197,13 +1451,31 @@ func (c *Compiler) setLocalTypeFlags(idx int, typeName string) {
 }
 
 func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
+	cacheable := depth == 0 && c.storageTypeCache != nil
+	if cacheable {
+		if cached, ok := c.storageTypeCache[typeName]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
+	}
 	if typeName == "" || depth > 16 {
+		if cacheable {
+			c.storageTypeCache[typeName] = cachedStringResult{value: typeName, ok: typeName != ""}
+		}
 		return typeName
 	}
 	if isBuiltinTypeName(typeName) || c.isInterfaceTypeName(typeName) {
+		if cacheable {
+			c.storageTypeCache[typeName] = cachedStringResult{value: typeName, ok: true}
+		}
 		return typeName
 	}
 	if len(typeName) > 0 && (typeName[0] == '*' || strings.HasPrefix(typeName, "[]") || strings.HasPrefix(typeName, "map[")) {
+		if cacheable {
+			c.storageTypeCache[typeName] = cachedStringResult{value: typeName, ok: true}
+		}
 		return typeName
 	}
 	dot := len(typeName) - 1
@@ -1216,6 +1488,9 @@ func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
 	if dot > 0 {
 		typeShort := typeName[dot+1:]
 		if isBuiltinTypeName(typeShort) || c.isInterfaceTypeName(typeShort) {
+			if cacheable {
+				c.storageTypeCache[typeName] = cachedStringResult{value: typeShort, ok: true}
+			}
 			return typeShort
 		}
 	}
@@ -1225,7 +1500,11 @@ func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
 			next = nodeTypeName(decl.Type)
 		}
 		if next != "" && next != typeName {
-			return c.resolveStorageTypeName(next, depth+1)
+			result := c.resolveStorageTypeName(next, depth+1)
+			if cacheable {
+				c.storageTypeCache[typeName] = cachedStringResult{value: result, ok: result != ""}
+			}
+			return result
 		}
 	}
 	dot = len(typeName) - 1
@@ -1245,10 +1524,17 @@ func (c *Compiler) resolveStorageTypeName(typeName string, depth int) string {
 					next = nodeTypeName(sym.Node.Type)
 				}
 				if next != "" && next != typeName {
-					return c.resolveStorageTypeName(next, depth+1)
+					result := c.resolveStorageTypeName(next, depth+1)
+					if cacheable {
+						c.storageTypeCache[typeName] = cachedStringResult{value: result, ok: result != ""}
+					}
+					return result
 				}
 			}
 		}
+	}
+	if cacheable {
+		c.storageTypeCache[typeName] = cachedStringResult{value: typeName, ok: true}
 	}
 	return typeName
 }
@@ -1765,8 +2051,6 @@ func (c *Compiler) compilePackage(pkg *Package) {
 	c.checkTopLevelRedeclarations(pkg)
 	// Build interface and method tables for this package
 	c.buildInterfaceTable(pkg)
-	// Pre-pass: collect function return types so they're available during compilation
-	c.collectFuncRetTypes(pkg)
 	// First, generate init code for global variables with initializers
 	c.compileGlobalInits(pkg)
 	// Then compile all functions
@@ -2152,6 +2436,8 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 			}
 			c.funcRetTypes[qname] = retTypeNames
 			c.funcRets[qname] = len(retTypeNames)
+			c.funcNodes[qname] = fn
+			c.funcNodePkgPath[qname] = pkg.Path
 			var firstRet *Node
 			if fn.Type != nil {
 				if fn.Type.Kind == NFuncType && len(fn.Type.Nodes) > 0 {
@@ -2306,6 +2592,459 @@ func (c *Compiler) collectFuncRetTypes(pkg *Package) {
 	}
 }
 
+func escapeParamBit(idx int) uint64 {
+	if idx < 0 || idx >= 64 {
+		return 0
+	}
+	return uint64(1) << uint(idx)
+}
+
+func escapeMaskHas(mask uint64, idx int) bool {
+	return mask&escapeParamBit(idx) != 0
+}
+
+func (c *Compiler) typeNameMayReferenceMemory(typeName string) bool {
+	if typeName == "" {
+		return false
+	}
+	q := c.qualifyTypeName(typeName, "")
+	if q == "" {
+		q = typeName
+	}
+	switch q {
+	case "bool", "byte", "int8", "uint8", "int16", "uint16", "int32", "uint32",
+		"int64", "uint64", "int", "uint", "uintptr", "float32", "float64":
+		return false
+	}
+	if q == "string" || q == "error" || q == "interface{}" {
+		return true
+	}
+	if strings.HasPrefix(q, "*") || strings.HasPrefix(q, "[]") || strings.HasPrefix(q, "[") ||
+		strings.HasPrefix(q, "map[") || strings.HasPrefix(q, "func(") {
+		return true
+	}
+	if c.isInterfaceTypeName(q) {
+		return true
+	}
+	return true
+}
+
+func (c *Compiler) exprMayReferenceMemory(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if c.isStringTypedExpr(node) || c.isMapExpr(node) {
+		return true
+	}
+	if ct := c.exprConcreteType(node); ct != "" {
+		return c.typeNameMayReferenceMemory(ct)
+	}
+	if rt := c.resolveExprType(node); rt != "" {
+		return c.typeNameMayReferenceMemory(rt)
+	}
+	switch node.Kind {
+	case NCompositeLit, NSliceExpr, NCallExpr, NSelectorExpr, NIndexExpr:
+		return true
+	}
+	return false
+}
+
+func (s *escapeAliasState) get(name string) uint64 {
+	if s.index != nil {
+		return s.index[name]
+	}
+	i := 0
+	for i < len(s.entries) {
+		if s.entries[i].name == name {
+			return s.entries[i].mask
+		}
+		i++
+	}
+	return 0
+}
+
+func (s *escapeAliasState) set(name string, mask uint64) {
+	if s.index != nil {
+		s.index[name] = mask
+		return
+	}
+	i := 0
+	for i < len(s.entries) {
+		if s.entries[i].name == name {
+			s.entries[i].mask = mask
+			return
+		}
+		i++
+	}
+	s.entries = append(s.entries, escapeAliasEntry{name: name, mask: mask})
+	if len(s.entries) > escapeLinearScanLimit {
+		s.index = make(map[string]uint64, len(s.entries)*2)
+		for _, entry := range s.entries {
+			s.index[entry.name] = entry.mask
+		}
+	}
+}
+
+func (s *escapeNameSet) has(name string) bool {
+	if s.index != nil {
+		return s.index[name]
+	}
+	i := 0
+	for i < len(s.names) {
+		if s.names[i] == name {
+			return true
+		}
+		i++
+	}
+	return false
+}
+
+func (s *escapeNameSet) add(name string) {
+	if name == "" || s.has(name) {
+		return
+	}
+	if s.index != nil {
+		s.index[name] = true
+		return
+	}
+	s.names = append(s.names, name)
+	if len(s.names) > escapeLinearScanLimit {
+		s.index = make(map[string]bool, len(s.names)*2)
+		for _, existing := range s.names {
+			s.index[existing] = true
+		}
+	}
+}
+
+func (c *Compiler) escapeLValueMayLeak(node *Node, paramLocals *escapeNameSet) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case NIdent:
+		if paramLocals.has(node.Name) {
+			return false
+		}
+		if _, ok := c.lookupLocal(node.Name); ok {
+			return false
+		}
+		return true
+	case NSelectorExpr, NIndexExpr:
+		return true
+	case NUnaryExpr:
+		return node.Name == "*"
+	default:
+		return true
+	}
+}
+
+func (c *Compiler) callArgsMayEscape(node *Node, callName string, aliases *escapeAliasState) uint64 {
+	if node == nil {
+		return 0
+	}
+	summary, known := c.funcParamEscapes[callName]
+	if !known {
+		escapeMask := uint64(0)
+		for _, arg := range node.Nodes {
+			escapeMask |= c.escapeAliasMaskForExpr(arg, aliases)
+		}
+		return escapeMask
+	}
+	escapeMask := uint64(0)
+	for i, arg := range node.Nodes {
+		if i >= len(summary) || !summary[i] {
+			continue
+		}
+		escapeMask |= c.escapeAliasMaskForExpr(arg, aliases)
+	}
+	return escapeMask
+}
+
+func (c *Compiler) resolveStaticCallNameForEscape(node *Node) string {
+	if node == nil || c.curPkg == nil {
+		return ""
+	}
+	if node.Kind == NIdent {
+		qname := qualNameInParentArena(c.curPkg, node.Name)
+		if _, ok := c.funcRets[qname]; ok {
+			return qname
+		}
+		if _, ok := c.funcRets[node.Name]; ok {
+			return node.Name
+		}
+		return ""
+	}
+	if node.Kind == NSelectorExpr && node.X != nil && node.X.Kind == NIdent {
+		if pkg := c.resolvePackage(node.X.Name); pkg != nil {
+			qname := qualNameInParentArena(pkg, node.Name)
+			if _, ok := c.funcRets[qname]; ok {
+				return qname
+			}
+		}
+	}
+	return ""
+}
+
+func qualNameInParentArena(pkg *Package, name string) string {
+	if pkg == nil {
+		return ""
+	}
+	if q, ok := pkg.qualNames[name]; ok {
+		return q
+	}
+	arena.UseParent()
+	defer arena.Restore()
+	return pkg.QualName(name)
+}
+
+func (c *Compiler) escapeAliasMaskForExpr(node *Node, aliases *escapeAliasState) uint64 {
+	if node == nil {
+		return 0
+	}
+	switch node.Kind {
+	case NIdent:
+		return aliases.get(node.Name)
+	case NSelectorExpr, NIndexExpr, NSliceExpr, NTypeAssertExpr:
+		return c.escapeAliasMaskForExpr(node.X, aliases)
+	case NUnaryExpr:
+		if node.Name == "&" || node.Name == "*" {
+			return c.escapeAliasMaskForExpr(node.X, aliases)
+		}
+		return 0
+	case NCallExpr:
+		callName := c.resolveStaticCallNameForEscape(node.X)
+		if callName == "" {
+			mask := uint64(0)
+			for _, arg := range node.Nodes {
+				mask |= c.escapeAliasMaskForExpr(arg, aliases)
+			}
+			return mask
+		}
+		return c.callArgsMayEscape(node, callName, aliases)
+	}
+	return 0
+}
+
+func (c *Compiler) escapeVisitNode(node *Node, aliases *escapeAliasState, paramLocals *escapeNameSet, escapes *uint64) {
+	if node == nil {
+		return
+	}
+	switch node.Kind {
+	case NBlock:
+		for _, child := range node.Nodes {
+			c.escapeVisitNode(child, aliases, paramLocals, escapes)
+		}
+	case NIf:
+		if node.X != nil {
+			c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+		}
+		if node.Y != nil {
+			c.escapeVisitNode(node.Y, aliases, paramLocals, escapes)
+		}
+		if node.Body != nil {
+			c.escapeVisitNode(node.Body, aliases, paramLocals, escapes)
+		}
+	case NFor, NSwitch, NCase:
+		if node.X != nil {
+			c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+		}
+		if node.Y != nil {
+			c.escapeVisitNode(node.Y, aliases, paramLocals, escapes)
+		}
+		if node.Body != nil {
+			c.escapeVisitNode(node.Body, aliases, paramLocals, escapes)
+		}
+		for _, child := range node.Nodes {
+			c.escapeVisitNode(child, aliases, paramLocals, escapes)
+		}
+	case NExprStmt, NDeferStmt:
+		c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+	case NReturn:
+		if node.X != nil {
+			*escapes = *escapes | c.escapeAliasMaskForExpr(node.X, aliases)
+		}
+		for _, extra := range node.Nodes {
+			*escapes = *escapes | c.escapeAliasMaskForExpr(extra, aliases)
+		}
+	case NVarDecl:
+		if len(node.Nodes) > 0 {
+			for _, child := range node.Nodes {
+				c.escapeVisitNode(child, aliases, paramLocals, escapes)
+			}
+			return
+		}
+		mask := c.escapeAliasMaskForExpr(node.X, aliases)
+		if node.Name != "" {
+			aliases.set(node.Name, mask)
+		}
+	case NAssign:
+		if node.Y != nil {
+			if len(node.Nodes) > 0 && node.Y.Kind == NCallExpr {
+				callName := c.resolveStaticCallNameForEscape(node.Y.X)
+				callEscape := c.callArgsMayEscape(node.Y, callName, aliases)
+				*escapes = *escapes | callEscape
+				for _, lhs := range node.Nodes {
+					if lhs != nil && lhs.Kind == NIdent {
+						aliases.set(lhs.Name, 0)
+					}
+				}
+			} else if len(node.Nodes) > 0 && node.Y.Kind == NBlock {
+				for i, lhs := range node.Nodes {
+					if lhs == nil || lhs.Kind != NIdent || i >= len(node.Y.Nodes) {
+						continue
+					}
+					aliases.set(lhs.Name, c.escapeAliasMaskForExpr(node.Y.Nodes[i], aliases))
+				}
+			} else if len(node.Nodes) > 0 {
+				mask := c.escapeAliasMaskForExpr(node.Y, aliases)
+				for _, lhs := range node.Nodes {
+					if lhs == nil {
+						continue
+					}
+					if lhs.Kind == NIdent {
+						aliases.set(lhs.Name, mask)
+					} else if c.escapeLValueMayLeak(lhs, paramLocals) {
+						*escapes = *escapes | mask
+					}
+				}
+			} else if node.X != nil {
+				mask := c.escapeAliasMaskForExpr(node.Y, aliases)
+				if node.X.Kind == NIdent {
+					aliases.set(node.X.Name, mask)
+				} else if c.escapeLValueMayLeak(node.X, paramLocals) {
+					*escapes = *escapes | mask
+				}
+			}
+			c.escapeVisitNode(node.Y, aliases, paramLocals, escapes)
+		}
+		if node.X != nil {
+			c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+		}
+		for _, lhs := range node.Nodes {
+			c.escapeVisitNode(lhs, aliases, paramLocals, escapes)
+		}
+	case NCallExpr:
+		callName := c.resolveStaticCallNameForEscape(node.X)
+		*escapes = *escapes | c.callArgsMayEscape(node, callName, aliases)
+		for _, arg := range node.Nodes {
+			c.escapeVisitNode(arg, aliases, paramLocals, escapes)
+		}
+	case NFunc:
+		// Nested function literals are compiled separately; keep the outer
+		// summary conservative by not descending into their bodies here.
+		return
+	default:
+		if node.X != nil {
+			c.escapeVisitNode(node.X, aliases, paramLocals, escapes)
+		}
+		if node.Y != nil {
+			c.escapeVisitNode(node.Y, aliases, paramLocals, escapes)
+		}
+		if node.Body != nil {
+			c.escapeVisitNode(node.Body, aliases, paramLocals, escapes)
+		}
+		for _, child := range node.Nodes {
+			c.escapeVisitNode(child, aliases, paramLocals, escapes)
+		}
+	}
+}
+
+func (c *Compiler) computeFuncParamEscapeMask(pkg *Package, qname string, fn *Node) uint64 {
+	arena.Enter("compiler.computeFuncParamEscapeMask")
+	defer arena.Leave()
+	if fn == nil {
+		return 0
+	}
+	aliases := &escapeAliasState{entries: make([]escapeAliasEntry, 0, 16)}
+	paramLocals := &escapeNameSet{names: make([]string, 0, 16)}
+	paramIdx := 0
+	if fn.X != nil && fn.X.Name != "" {
+		aliases.set(fn.X.Name, escapeParamBit(paramIdx))
+		paramLocals.add(fn.X.Name)
+		paramIdx++
+	}
+	for _, param := range fn.Nodes {
+		if param == nil || param.Name == "" {
+			continue
+		}
+		aliases.set(param.Name, escapeParamBit(paramIdx))
+		paramLocals.add(param.Name)
+		paramIdx++
+	}
+	escapes := uint64(0)
+	savedPkg := c.curPkg
+	c.curPkg = pkg
+	if fn.Body != nil {
+		c.escapeVisitNode(fn.Body, aliases, paramLocals, &escapes)
+	}
+	c.curPkg = savedPkg
+	return escapes
+}
+
+func cloneBoolSliceToParent(src []bool) []bool {
+	if len(src) == 0 {
+		return nil
+	}
+	arena.UseParent()
+	defer arena.Restore()
+	out := make([]bool, len(src))
+	i := 0
+	for i < len(src) {
+		out[i] = src[i]
+		i++
+	}
+	return out
+}
+
+func (c *Compiler) computeEscapeSummaries() {
+	arena.Enter("compiler.computeEscapeSummaries")
+	defer arena.Leave()
+	changed := true
+	for changed {
+		changed = false
+		for qname, fn := range c.funcNodes {
+			pkgPath := c.funcNodePkgPath[qname]
+			pkg, ok := c.mod.Packages[pkgPath]
+			if !ok || fn == nil {
+				continue
+			}
+			mask := c.computeFuncParamEscapeMask(pkg, qname, fn)
+			paramCount := 0
+			if fn.X != nil && fn.X.Name != "" {
+				paramCount++
+			}
+			for _, param := range fn.Nodes {
+				if param != nil && param.Name != "" {
+					paramCount++
+				}
+			}
+			next := make([]bool, paramCount)
+			i := 0
+			for i < paramCount && i < 64 {
+				next[i] = escapeMaskHas(mask, i)
+				i++
+			}
+			prev := c.funcParamEscapes[qname]
+			if len(prev) != len(next) {
+				arena.UseParent()
+				c.funcParamEscapes[qname] = cloneBoolSliceToParent(next)
+				arena.Restore()
+				changed = true
+				continue
+			}
+			for i = 0; i < len(next); i++ {
+				if prev[i] != next[i] {
+					arena.UseParent()
+					c.funcParamEscapes[qname] = cloneBoolSliceToParent(next)
+					arena.Restore()
+					changed = true
+					break
+				}
+			}
+		}
+	}
+}
+
 func (c *Compiler) isComptimeCallAllowed(callName string) bool {
 	if !c.inComptimeFunc {
 		return true
@@ -2368,15 +3107,15 @@ func (c *Compiler) collectInterfaceDecl(pkg *Package, node *Node) {
 						retTypes = append(retTypes, firstRetType)
 					}
 				}
-				c.ifaceMethodRets[node.Name+"\x00"+meth.Name] = retCount
-				c.ifaceMethodRets[qname+"\x00"+meth.Name] = retCount
+				c.setIfaceMethodRet(node.Name, meth.Name, retCount)
+				c.setIfaceMethodRet(qname, meth.Name, retCount)
 				if firstRetType != "" {
-					c.ifaceMethodRetTypes[node.Name+"\x00"+meth.Name] = firstRetType
-					c.ifaceMethodRetTypes[qname+"\x00"+meth.Name] = firstRetType
+					c.setIfaceMethodFirstRetType(node.Name, meth.Name, firstRetType)
+					c.setIfaceMethodFirstRetType(qname, meth.Name, firstRetType)
 				}
 				if len(retTypes) > 0 {
-					c.ifaceMethodRetLists[node.Name+"\x00"+meth.Name] = retTypes
-					c.ifaceMethodRetLists[qname+"\x00"+meth.Name] = retTypes
+					c.setIfaceMethodRetList(node.Name, meth.Name, retTypes)
+					c.setIfaceMethodRetList(qname, meth.Name, retTypes)
 				}
 			}
 		}
@@ -2394,9 +3133,10 @@ func (c *Compiler) ifaceMethodReturnCount(ifaceType string, methodName string) (
 	if ifaceType == "" || methodName == "" {
 		return 0, false
 	}
-	key := ifaceType + "\x00" + methodName
-	if ret, ok := c.ifaceMethodRets[key]; ok {
-		return ret, true
+	if methods, ok := c.ifaceMethodRets[ifaceType]; ok {
+		if ret, ok := methods[methodName]; ok {
+			return ret, true
+		}
 	}
 	return 0, false
 }
@@ -2405,9 +3145,10 @@ func (c *Compiler) ifaceMethodFirstReturnType(ifaceType string, methodName strin
 	if ifaceType == "" || methodName == "" {
 		return "", false
 	}
-	key := ifaceType + "\x00" + methodName
-	if retType, ok := c.ifaceMethodRetTypes[key]; ok && retType != "" {
-		return retType, true
+	if methods, ok := c.ifaceMethodRetTypes[ifaceType]; ok {
+		if retType, ok := methods[methodName]; ok && retType != "" {
+			return retType, true
+		}
 	}
 	return "", false
 }
@@ -2416,9 +3157,10 @@ func (c *Compiler) ifaceMethodReturnTypes(ifaceType string, methodName string) (
 	if ifaceType == "" || methodName == "" {
 		return nil, false
 	}
-	key := ifaceType + "\x00" + methodName
-	if retTypes, ok := c.ifaceMethodRetLists[key]; ok && len(retTypes) > 0 {
-		return retTypes, true
+	if methods, ok := c.ifaceMethodRetLists[ifaceType]; ok {
+		if retTypes, ok := methods[methodName]; ok && len(retTypes) > 0 {
+			return retTypes, true
+		}
 	}
 	return nil, false
 }
@@ -2484,12 +3226,12 @@ func (c *Compiler) registerAnonInterfaceType(typeNode *Node) string {
 	}
 	i = 0
 	for i < len(methodNames) {
-		c.ifaceMethodRets[key+"\x00"+methodNames[i]] = retCounts[i]
+		c.setIfaceMethodRet(key, methodNames[i], retCounts[i])
 		if firstRetTypes[i] != "" {
-			c.ifaceMethodRetTypes[key+"\x00"+methodNames[i]] = firstRetTypes[i]
+			c.setIfaceMethodFirstRetType(key, methodNames[i], firstRetTypes[i])
 		}
 		if len(allRetTypes[i]) > 0 {
-			c.ifaceMethodRetLists[key+"\x00"+methodNames[i]] = allRetTypes[i]
+			c.setIfaceMethodRetList(key, methodNames[i], allRetTypes[i])
 		}
 		i = i + 1
 	}
@@ -2834,11 +3576,23 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		return
 	}
 	// Create a synthetic init function for global var initialization
-	f := &ir.IRFunc{Name: pkg.Path + ".init$globals"}
+	codeCap := 64 + len(inits)*8 + len(embeds)*6 + len(targetInits)*4 + len(abiInits)*5 + len(asmInits)*5 + len(fmtInits)*5 + len(artifactInits)*4
+	f := &ir.IRFunc{Name: pkg.Path + ".init$globals", Code: make([]ir.Inst, 0, codeCap)}
 	savedPanicUnwindLabel := c.panicUnwindLabel
 	savedPanicCheckSlowLabels := c.panicCheckSlowLabels
 	savedPanicCheckSlowDepths := c.panicCheckSlowDepths
 	savedNamedResultNames := c.namedResultNames
+	savedStorageTypeCache := c.storageTypeCache
+	savedResolveCallNameCache := c.resolveCallNameCache
+	savedResolveExprTypeCache := c.resolveExprTypeCache
+	savedExprConcreteTypeCache := c.exprConcreteTypeCache
+	savedCurrentMethodHash := c.currentMethodHash
+	savedProfileMethodHash := c.profileMethodHash
+	savedProfileStartLocal := c.profileStartLocal
+	savedProfileParentLocal := c.profileParentLocal
+	savedProfileFlushOnExit := c.profileFlushOnExit
+	savedCurrentSourceLine := c.currentSourceLine
+	savedArenaEntered := c.arenaEntered
 	c.curFunc = f
 	c.scopes = nil
 	c.localElemSizes = make(map[string]int)
@@ -2847,10 +3601,24 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.localConcreteTypes = make(map[string]string)
 	c.localMapVars = make(map[string]int)
 	c.localMapValueTypes = make(map[string]string)
+	c.storageTypeCache = make(map[string]cachedStringResult)
+	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
+	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
+	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
 	c.stackDepth = 0
 	c.namedResultNames = nil
 	c.panicUnwindLabel = c.newLabel()
 	c.resetPanicPropagationOutlineState()
+	c.currentMethodHash = profileHash32FNV(f.Name)
+	c.profileMethodHash = 0
+	c.profileStartLocal = -1
+	c.profileParentLocal = -1
+	c.profileFlushOnExit = false
+	c.currentSourceLine = 0
+	c.arenaEntered = false
+	if c.shouldInstrumentArena(f.Name) {
+		c.emitArenaEnter(f.Name)
+	}
 	c.pushScope()
 	for _, node := range inits {
 		qname := pkg.QualName(node.Name)
@@ -2860,6 +3628,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		}
 		if defineValue, ok := c.lookupDefineValue(qname, node.Name); ok {
 			c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, encodeStringLiteral(defineValue)))
+			if c.typeNameMayReferenceMemory("string") {
+				c.emitArenaRetainCurrent()
+			}
 			c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 			continue
 		}
@@ -2868,6 +3639,9 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 			c.maybeCloneArrayForTypeName(nodeTypeName(node.Type))
 		} else {
 			c.maybeCloneArrayForTypeName(c.exprConcreteType(node.X))
+		}
+		if c.exprMayReferenceMemory(node.X) {
+			c.emitArenaRetainCurrent()
 		}
 		c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 	}
@@ -2894,6 +3668,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 			}
 			c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, encodeStringLiteral(payload)))
 			c.emit(makeInst(ir.OP_CONVERT, 0, 0, 0, "[]byte"))
+			c.emitArenaRetainCurrent()
 			c.emit(ir.Inst{Op: ir.OP_GLOBAL_SET, Arg: gidx})
 		}
 	}
@@ -2921,6 +3696,7 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 		c.emit(makeInst(ir.OP_CALL, 0, 0, 0, reg.qname))
 		c.emitKnownCall(targetRegisterFmt, 2, 0)
 	}
+	c.emitProfileExit()
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: 0})
 	if c.panicUnwindLabel >= 0 {
 		c.emitPanicPropagationSlowPaths()
@@ -2943,6 +3719,17 @@ func (c *Compiler) compileGlobalInits(pkg *Package) {
 	c.panicCheckSlowLabels = savedPanicCheckSlowLabels
 	c.panicCheckSlowDepths = savedPanicCheckSlowDepths
 	c.namedResultNames = savedNamedResultNames
+	c.storageTypeCache = savedStorageTypeCache
+	c.resolveCallNameCache = savedResolveCallNameCache
+	c.resolveExprTypeCache = savedResolveExprTypeCache
+	c.exprConcreteTypeCache = savedExprConcreteTypeCache
+	c.currentMethodHash = savedCurrentMethodHash
+	c.profileMethodHash = savedProfileMethodHash
+	c.profileStartLocal = savedProfileStartLocal
+	c.profileParentLocal = savedProfileParentLocal
+	c.profileFlushOnExit = savedProfileFlushOnExit
+	c.currentSourceLine = savedCurrentSourceLine
+	c.arenaEntered = savedArenaEntered
 }
 
 func (c *Compiler) lookupDefineValue(qualifiedName string, shortName string) (string, bool) {
@@ -3195,46 +3982,117 @@ func (c *Compiler) compileTopDecl(node *Node) {
 	}
 }
 
-func containsDeferStmt(node *Node) bool {
+func countFuncBodyNodes(node *Node) int {
+	arena.Enter("compiler.countFuncBodyNodes")
+	defer arena.Leave()
 	if node == nil {
-		return false
+		return 0
 	}
 	stack := make([]*Node, 0, 64)
+	stackTop := 0
 	stack = append(stack, node)
-	for len(stack) > 0 {
-		n := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+	stackTop = 1
+	count := 0
+	for stackTop > 0 {
+		stackTop--
+		n := stack[stackTop]
 		if n == nil {
 			continue
 		}
-		// Defer statements inside nested function literals belong to the nested
-		// function, not the current one.
+		count++
+		// Nested function literals compile into separate IR functions.
 		if n.Kind == NFuncType && n.Body != nil {
+			if n.X != nil {
+				if stackTop < len(stack) {
+					stack[stackTop] = n.X
+				} else {
+					stack = append(stack, n.X)
+				}
+				stackTop++
+			}
+			if n.Y != nil {
+				if stackTop < len(stack) {
+					stack[stackTop] = n.Y
+				} else {
+					stack = append(stack, n.Y)
+				}
+				stackTop++
+			}
+			if n.Type != nil {
+				if stackTop < len(stack) {
+					stack[stackTop] = n.Type
+				} else {
+					stack = append(stack, n.Type)
+				}
+				stackTop++
+			}
+			for i := len(n.Nodes) - 1; i >= 0; i-- {
+				child := n.Nodes[i]
+				if child != nil {
+					if stackTop < len(stack) {
+						stack[stackTop] = child
+					} else {
+						stack = append(stack, child)
+					}
+					stackTop++
+				}
+			}
 			continue
 		}
-		if n.Kind == NDeferStmt {
-			return true
-		}
 		if n.X != nil {
-			stack = append(stack, n.X)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.X
+			} else {
+				stack = append(stack, n.X)
+			}
+			stackTop++
 		}
 		if n.Y != nil {
-			stack = append(stack, n.Y)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Y
+			} else {
+				stack = append(stack, n.Y)
+			}
+			stackTop++
 		}
 		if n.Body != nil {
-			stack = append(stack, n.Body)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Body
+			} else {
+				stack = append(stack, n.Body)
+			}
+			stackTop++
 		}
 		if n.Type != nil {
-			stack = append(stack, n.Type)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Type
+			} else {
+				stack = append(stack, n.Type)
+			}
+			stackTop++
 		}
 		for i := len(n.Nodes) - 1; i >= 0; i-- {
 			child := n.Nodes[i]
 			if child != nil {
-				stack = append(stack, child)
+				if stackTop < len(stack) {
+					stack[stackTop] = child
+				} else {
+					stack = append(stack, child)
+				}
+				stackTop++
 			}
 		}
 	}
-	return false
+	return count
+}
+
+func estimateCodeCap(node *Node, topLevelCount int) int {
+	capHint := 64 + topLevelCount*12
+	capHint = capHint + countFuncBodyNodes(node)*3
+	if capHint < 128 {
+		return 128
+	}
+	return capHint
 }
 
 func (c *Compiler) compileFunc(node *Node) {
@@ -3244,10 +4102,11 @@ func (c *Compiler) compileFunc(node *Node) {
 		recvType := nodeTypeName(node.X.Type)
 		qname = c.dotJoin(c.curPkg.QualName(recvType), node.Name)
 	}
-	codeCap := 64
+	topLevelCount := 0
 	if node.Body != nil {
-		codeCap += len(node.Body.Nodes) * 12
+		topLevelCount = len(node.Body.Nodes)
 	}
+	codeCap := estimateCodeCap(node.Body, topLevelCount)
 	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, codeCap)}
 	savedInComptimeFunc := c.inComptimeFunc
 	if savedInComptimeFunc || c.comptimeFuncs[qname] {
@@ -3278,11 +4137,17 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.storageTypeCache = make(map[string]cachedStringResult)
+	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
+	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
+	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
 	c.profileStartLocal = -1
 	c.profileParentLocal = -1
 	c.profileMethodHash = 0
 	c.profileFlushOnExit = false
-	c.currentMethodHash = 0
+	c.currentMethodHash = profileHash32FNV(qname)
+	c.currentSourceLine = 0
+	c.arenaEntered = false
 	c.inIfInit = false
 	c.ifInitLeakedNames = make(map[string]bool)
 	for name, concreteType := range c.captureConcreteTypes {
@@ -3294,9 +4159,6 @@ func (c *Compiler) compileFunc(node *Node) {
 	c.pushScope()
 
 	profileParentABI := c.target != nil && c.target.Profile && c.funcProfileParentABI[qname]
-	if c.target != nil && c.target.Profile {
-		c.currentMethodHash = profileHash32FNV(qname)
-	}
 
 	// Extract return type names for interface boxing
 	var retTypeNames []string
@@ -3463,6 +4325,9 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.panicUnwindLabel = c.newLabel()
 	}
 	c.resetPanicPropagationOutlineState()
+	if c.shouldInstrumentArena(f.Name) {
+		c.emitArenaEnter(qname)
+	}
 	if c.funcIsProfiled[f.Name] {
 		c.profileMethodHash = c.currentMethodHash
 		if c.profileMethodHash == 0 {
@@ -3471,20 +4336,8 @@ func (c *Compiler) compileFunc(node *Node) {
 		c.profileStartLocal = c.addLocal("$profile_start")
 		c.emitKnownCall("runtime.Now", 0, 1)
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.profileStartLocal})
-		arenaMethodHash := c.currentMethodHash
-		if arenaMethodHash == 0 {
-			arenaMethodHash = profileHash32FNV(f.Name)
-		}
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(arenaMethodHash)})
-		if c.profileParentLocal >= 0 {
-			c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileParentLocal})
-		} else {
-			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
-		}
-		c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, qname))
-		c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ArenaEnter"))
 	}
-	if c.target != nil && c.target.Profile && f.Name == c.entryFunc {
+	if c.target != nil && (c.target.Profile || c.target.ArenaReport || c.target.AllocSiteReport || c.target.SliceResliceReport || c.target.StringConcatReport) && f.Name == c.entryFunc {
 		c.profileFlushOnExit = true
 	}
 
@@ -3497,12 +4350,6 @@ func (c *Compiler) compileFunc(node *Node) {
 			c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
 			c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: idx, Width: w})
 		}
-	}
-
-	if featureDeferEnabled && containsDeferStmt(node.Body) {
-		c.deferHeadLocal = c.addLocal("$defer_head")
-		c.emit(ir.Inst{Op: ir.OP_CONST_NIL})
-		c.emit(ir.Inst{Op: ir.OP_LOCAL_SET, Arg: c.deferHeadLocal})
 	}
 
 	// Compile body
@@ -3616,8 +4463,9 @@ func (c *Compiler) compileAssembleFunc(node *Node, arch string) {
 func (c *Compiler) compileIntrinsicFunc(node *Node, intern string) {
 	qname := c.curPkg.QualName(node.Name)
 
-	f := &ir.IRFunc{Name: qname}
+	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, 4)}
 	c.curFunc = f
+	c.currentSourceLine = 0
 
 	// Count params and detect variadic
 	paramCount := len(node.Nodes)
@@ -3691,8 +4539,9 @@ func (c *Compiler) compileLinkStaticFunc(node *Node, spec LinkStaticDirective) {
 	qname := c.curPkg.QualName(node.Name)
 	intrinsicName := qname
 
-	f := &ir.IRFunc{Name: qname}
+	f := &ir.IRFunc{Name: qname, Code: make([]ir.Inst, 0, 8)}
 	c.curFunc = f
+	c.currentSourceLine = 0
 
 	// Count params and detect variadic
 	paramCount := len(node.Nodes)
@@ -3770,7 +4619,7 @@ func (c *Compiler) compileLinkStaticFunc(node *Node, spec LinkStaticDirective) {
 // === Scope management ===
 
 func (c *Compiler) pushScope() {
-	c.scopes = append(c.scopes, make(map[string]int))
+	c.scopes = append(c.scopes, nil)
 }
 
 func (c *Compiler) popScope() {
@@ -3783,7 +4632,13 @@ func (c *Compiler) addLocal(name string) int {
 	idx := len(c.curFunc.Locals)
 	c.curFunc.Locals = append(c.curFunc.Locals, ir.IRLocal{Name: name, Index: idx})
 	if len(c.scopes) > 0 {
-		c.scopes[len(c.scopes)-1][name] = idx
+		scopeIdx := len(c.scopes) - 1
+		scope := c.scopes[scopeIdx]
+		if scope == nil {
+			scope = make(map[string]int)
+			c.scopes[scopeIdx] = scope
+		}
+		scope[name] = idx
 	}
 	if c.inIfInit {
 		if c.ifInitLeakedNames == nil {
@@ -3871,7 +4726,11 @@ func knownCallRetCount(name string) (int, bool) {
 		"runtime.RuneToString",
 		"runtime.Alloc",
 		"runtime.MapMake",
+		"runtime.MapMakeInt",
+		"runtime.MapMakeString",
 		"runtime.MapSet",
+		"runtime.MapSetInt",
+		"runtime.MapSetString",
 		"runtime.MapLen",
 		"runtime.MapEntryKey",
 		"runtime.MapEntryValue",
@@ -3882,20 +4741,27 @@ func knownCallRetCount(name string) (int, bool) {
 		"runtime.Recover":
 		return 1, true
 	case "runtime.MapGet",
+		"runtime.MapGetInt",
+		"runtime.MapGetString",
 		"runtime.StringDecodeRune":
 		return 2, true
 	case "runtime.SysWrite":
 		return 3, true
 	case "runtime.ArenaEnter",
+		"runtime.ArenaRetainCurrent",
+		"runtime.ArenaUseParent",
 		"runtime.Memzero",
 		"runtime.DeferRecoverEnter",
 		"runtime.DeferRecoverExit",
 		"runtime.ProfileAllocHash",
 		"runtime.PanicBegin",
 		"runtime.MapDelete",
+		"runtime.MapDeleteInt",
+		"runtime.MapDeleteString",
 		"runtime.ProfileHashNow",
 		"runtime.ProfileFlush",
 		"runtime.ArenaFlush",
+		"runtime.ArenaRestore",
 		"runtime.ArenaLeave",
 		"runtime.PanicReset",
 		"runtime.PanicShouldUnwind":
@@ -4074,6 +4940,18 @@ func (c *Compiler) compileStmt(node *Node) {
 	if node == nil {
 		return
 	}
+	savedSourceLine := c.currentSourceLine
+	if node.Pos > 0 {
+		c.currentSourceLine = node.Pos
+	}
+	c.compileStmtBody(node)
+	c.currentSourceLine = savedSourceLine
+}
+
+func (c *Compiler) compileStmtBody(node *Node) {
+	if node == nil {
+		return
+	}
 	stmtLabels := c.pendingStmtLabels
 	if node.Kind != NBranch || node.Name != "label" {
 		c.pendingStmtLabels = nil
@@ -4161,6 +5039,9 @@ func (c *Compiler) compileDeferStmt(node *Node) {
 		callOp:         ir.OP_CALL,
 		callName:       c.resolveCallName(call.X),
 		variadicElemSz: c.target.PtrSize,
+	}
+	if runtimeName := compilerArenaRuntimeCallName(site.callName); runtimeName != "" {
+		site.callName = runtimeName
 	}
 	calleeName := ""
 	localFuncTarget := ""
@@ -4491,8 +5372,11 @@ func (c *Compiler) setLocalMapMetadataFromMapType(name string, mapType *Node) {
 }
 
 func (c *Compiler) isShortDeclNameNew(scope map[string]int, name string) bool {
-	if scope == nil || name == "" {
+	if name == "" {
 		return false
+	}
+	if scope == nil {
+		return true
 	}
 	if _, exists := scope[name]; !exists {
 		return true
@@ -4703,7 +5587,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		if node.Y != nil && node.Y.Kind == NIndexExpr && c.isMapExpr(node.Y.X) {
 			c.compileExpr(node.Y.X) // push map
 			c.compileExpr(node.Y.Y) // push key
-			c.emitKnownCall("runtime.MapGet", 2, 2)
+			c.emitKnownCall(c.mapGetRuntimeName(node.Y.X), 2, 2)
 			// MapGet returns (value, ok) — both on stack
 			// Assign in reverse order: ok first (top of stack), then value
 			c.assignStackValuesToLHS(node.Nodes, isDefine)
@@ -4971,6 +5855,9 @@ func (c *Compiler) compileAssign(node *Node) {
 		mapValueType := c.resolveMapValueType(node.X.X)
 		mapValueTypeQualified := c.qualifyTypeName(mapValueType, "")
 		mapValueIsInterface := c.isInterfaceTypeName(mapValueType) || c.isInterfaceTypeName(mapValueTypeQualified)
+		if c.exprMayReferenceMemory(node.Y) {
+			c.emitArenaRetainCurrent()
+		}
 		c.compileExpr(node.X.X) // push map
 		c.compileExpr(node.X.Y) // push key
 		c.compileExpr(node.Y)   // push value
@@ -4980,7 +5867,7 @@ func (c *Compiler) compileAssign(node *Node) {
 		if mapValueIsInterface {
 			c.maybeBoxValueForInterface(node.Y)
 		}
-		c.emitKnownCall("runtime.MapSet", 3, 1)
+		c.emitKnownCall(c.mapSetRuntimeName(node.X.X), 3, 1)
 		c.emit(ir.Inst{Op: ir.OP_DROP}) // discard returned header (unchanged)
 		return
 	}
@@ -4991,6 +5878,9 @@ func (c *Compiler) compileAssign(node *Node) {
 		return
 	}
 	c.compileExpr(node.Y)
+	if c.lvalueMayEscapeCurrentArena(node.X) && c.exprMayReferenceMemory(node.Y) {
+		c.emitArenaRetainCurrent()
+	}
 	if lhsType := c.resolveExprType(node.X); isFloatTypeName(lhsType) {
 		c.maybeConvertArgForParamType(node.Y, lhsType)
 	}
@@ -5133,6 +6023,8 @@ func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureC
 	savedProfileMethodHash := c.profileMethodHash
 	savedProfileFlushOnExit := c.profileFlushOnExit
 	savedCurrentMethodHash := c.currentMethodHash
+	savedCurrentSourceLine := c.currentSourceLine
+	savedArenaEntered := c.arenaEntered
 	savedInIfInit := c.inIfInit
 	savedIfInitLeakedNames := c.ifInitLeakedNames
 
@@ -5175,6 +6067,8 @@ func (c *Compiler) compileFuncLiteralWithCaptures(lit *Node, captures []closureC
 	c.profileMethodHash = savedProfileMethodHash
 	c.profileFlushOnExit = savedProfileFlushOnExit
 	c.currentMethodHash = savedCurrentMethodHash
+	c.currentSourceLine = savedCurrentSourceLine
+	c.arenaEntered = savedArenaEntered
 	c.inIfInit = savedInIfInit
 	c.ifInitLeakedNames = savedIfInitLeakedNames
 	target := c.curPkg.QualName(name)
@@ -5262,6 +6156,25 @@ func (c *Compiler) lvalueInterfaceType(node *Node) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func (c *Compiler) lvalueMayEscapeCurrentArena(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case NIdent:
+		if _, ok := c.lookupLocal(node.Name); ok {
+			return false
+		}
+		return true
+	case NSelectorExpr, NIndexExpr:
+		return true
+	case NUnaryExpr:
+		return node.Name == "*"
+	default:
+		return true
+	}
 }
 
 func (c *Compiler) compileLValueSet(node *Node) {
@@ -5529,10 +6442,8 @@ func (c *Compiler) emitProfileExit() {
 		}
 		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileStartLocal})
 		c.emitKnownCall("runtime.ProfileHashNow", 3, 0)
-		if c.target != nil && c.target.Profile {
-			c.emitKnownCall("runtime.ArenaLeave", 0, 0)
-		}
 	}
+	c.emitArenaExit()
 }
 
 func (c *Compiler) emitProfileAllocSample() {
@@ -5558,9 +6469,230 @@ func (c *Compiler) emitProfileAllocSample() {
 	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
 }
 
+func (c *Compiler) allocSiteReportingEnabled() bool {
+	return c != nil && c.target != nil && c.target.AllocSiteReport
+}
+
+func (c *Compiler) sliceResliceReportingEnabled() bool {
+	return c != nil && c.target != nil && c.target.SliceResliceReport
+}
+
+func (c *Compiler) stringConcatReportingEnabled() bool {
+	return c != nil && c.target != nil && c.target.StringConcatReport
+}
+
+func (c *Compiler) mapMakeReportingEnabled() bool {
+	return c != nil && c.target != nil && c.target.MapMakeReport
+}
+
+func (c *Compiler) currentAllocSiteName() string {
+	if c == nil || c.curFunc == nil || c.curFunc.Name == "" {
+		return ""
+	}
+	if c.currentSourceLine > 0 {
+		return fmt.Sprintf("%s:%d", c.curFunc.Name, c.currentSourceLine)
+	}
+	return c.curFunc.Name
+}
+
+func (c *Compiler) recordAllocSiteName(siteHash uint32, siteName string) {
+	if siteHash == 0 || siteName == "" || c.allocSiteNames == nil {
+		return
+	}
+	if _, ok := c.allocSiteNames[siteHash]; !ok {
+		c.allocSiteNames[siteHash] = siteName
+	}
+}
+
+func (c *Compiler) emitAllocSiteSample() {
+	if !c.allocSiteReportingEnabled() {
+		return
+	}
+	siteName := c.currentAllocSiteName()
+	if siteName == "" {
+		return
+	}
+	siteHash := profileHash32FNV(siteName)
+	c.recordAllocSiteName(siteHash, siteName)
+	c.emit(ir.Inst{Op: ir.OP_DUP})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
+}
+
+func (c *Compiler) emitSliceResliceSample() {
+	if !c.sliceResliceReportingEnabled() {
+		return
+	}
+	siteName := c.currentAllocSiteName()
+	if siteName == "" {
+		return
+	}
+	siteHash := profileHash32FNV(siteName)
+	c.recordAllocSiteName(siteHash, siteName)
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
+}
+
+func (c *Compiler) emitStringConcatSample() {
+	if !c.stringConcatReportingEnabled() {
+		return
+	}
+	siteName := c.currentAllocSiteName()
+	if siteName == "" {
+		return
+	}
+	siteHash := profileHash32FNV(siteName)
+	c.recordAllocSiteName(siteHash, siteName)
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
+}
+
+func (c *Compiler) emitMapMakeSample() {
+	if !c.mapMakeReportingEnabled() {
+		return
+	}
+	siteName := c.currentAllocSiteName()
+	if siteName == "" {
+		return
+	}
+	siteHash := profileHash32FNV(siteName)
+	c.recordAllocSiteName(siteHash, siteName)
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 1})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(siteHash)})
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ProfileAllocHash"))
+}
+
 func (c *Compiler) emitRuntimeAllocCall() {
+	c.emitAllocSiteSample()
 	c.emitProfileAllocSample()
 	c.emitKnownCall("runtime.Alloc", 1, 1)
+}
+
+func (c *Compiler) emitArenaEnter(methodName string) {
+	if c.currentMethodHash == 0 {
+		return
+	}
+	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(c.currentMethodHash)})
+	if c.profileParentLocal >= 0 {
+		c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: c.profileParentLocal})
+	} else {
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+	}
+	c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, methodName))
+	c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ArenaEnter"))
+	c.arenaEntered = true
+}
+
+func (c *Compiler) emitArenaExit() {
+	if !c.arenaEntered {
+		return
+	}
+	c.emitKnownCall("runtime.ArenaLeave", 0, 0)
+}
+
+func (c *Compiler) emitArenaRetainCurrent() {
+	if !c.arenaEntered {
+		return
+	}
+	c.emitKnownCall("runtime.ArenaRetainCurrent", 0, 0)
+}
+
+func compilerArenaRuntimeCallName(callName string) string {
+	if !strings.HasPrefix(callName, compilerArenaPkgPrefix) {
+		return ""
+	}
+	switch callName[len(compilerArenaPkgPrefix):] {
+	case "Leave":
+		return "runtime.ArenaLeave"
+	case "RetainCurrent":
+		return "runtime.ArenaRetainCurrent"
+	case "UseParent":
+		return "runtime.ArenaUseParent"
+	case "Restore":
+		return "runtime.ArenaRestore"
+	}
+	return ""
+}
+
+func (c *Compiler) tryCompileCompilerArenaCall(node *Node, callName string) bool {
+	if c.target != nil && c.target.GOOS == "wasi" && c.target.GOARCH == "wasm32" {
+		return false
+	}
+	if runtimeName := compilerArenaRuntimeCallName(callName); runtimeName != "" {
+		c.emitKnownCall(runtimeName, 0, 0)
+		return true
+	}
+	if !strings.HasPrefix(callName, compilerArenaPkgPrefix) {
+		return false
+	}
+	switch callName[len(compilerArenaPkgPrefix):] {
+	case "Enter":
+		if len(node.Nodes) != 1 || node.Nodes[0] == nil || node.Nodes[0].Kind != NStringLit {
+			c.errorf("%s: arena.Enter requires a string literal argument", c.curFunc.Name)
+			return true
+		}
+		scopeName := node.Nodes[0].Name
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(profileHash32FNV(scopeName))})
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: 0})
+		c.emit(makeInst(ir.OP_CONST_STR, 0, 0, 0, scopeName))
+		c.emit(makeInst(ir.OP_CALL, 3, 0, 0, "runtime.ArenaEnter"))
+		return true
+	}
+	return false
+}
+
+func (c *Compiler) shouldInstrumentArena(qname string) bool {
+	_ = qname
+	return false
+}
+
+func (c *Compiler) resolvedCallArgMayEscape(callName string, argIdx int) bool {
+	summary, ok := c.funcParamEscapes[callName]
+	if !ok {
+		return true
+	}
+	if argIdx < 0 || argIdx >= len(summary) {
+		return false
+	}
+	return summary[argIdx]
+}
+
+func (c *Compiler) callNeedsArenaRetain(callName string, args []*Node, argOffset int) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if callName == "" {
+		for _, arg := range args {
+			if c.exprMayReferenceMemory(arg) {
+				return true
+			}
+		}
+		return false
+	}
+	for i, arg := range args {
+		if !c.exprMayReferenceMemory(arg) {
+			continue
+		}
+		if c.resolvedCallArgMayEscape(callName, i+argOffset) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Compiler) returnNeedsArenaRetain(retTypes []string) bool {
+	for _, retType := range retTypes {
+		if c.typeNameMayReferenceMemory(retType) {
+			return true
+		}
+	}
+	return false
 }
 
 func profileHash32FNV(name string) uint32 {
@@ -5635,6 +6767,9 @@ func (c *Compiler) emitRecoveredPanicReturn() {
 			i++
 		}
 	}
+	if c.returnNeedsArenaRetain(retTypes) {
+		c.emitArenaRetainCurrent()
+	}
 	c.emitProfileExit()
 	c.emitProfileFinalize()
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
@@ -5673,7 +6808,10 @@ func (c *Compiler) emitPanicPropagationCheck(_ int) {
 
 func (c *Compiler) emitCallWithPanicCheck(callName string, argCount int) {
 	if callName == "runtime.Alloc" && argCount == 1 {
+		c.emitAllocSiteSample()
 		c.emitProfileAllocSample()
+		c.emitKnownCall("runtime.Alloc", 1, 1)
+		return
 	}
 	retCount := c.resolvedCallRetCount(callName)
 	c.curFunc.Code = append(c.curFunc.Code, makeInst(ir.OP_CALL, argCount, 0, 0, callName))
@@ -5754,6 +6892,9 @@ func (c *Compiler) compileReturn(node *Node) {
 					c.maybeBoxInterface(extra, retTypes, retIdx)
 					count++
 				}
+				if c.returnNeedsArenaRetain(retTypes) {
+					c.emitArenaRetainCurrent()
+				}
 				if len(c.deferSites) > 0 {
 					c.emitDeferredCalls()
 				}
@@ -5762,6 +6903,9 @@ func (c *Compiler) compileReturn(node *Node) {
 				c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: count})
 				return
 			}
+		}
+		if c.returnNeedsArenaRetain(retTypes) {
+			c.emitArenaRetainCurrent()
 		}
 		if len(c.deferSites) > 0 {
 			c.emitDeferredCalls()
@@ -5790,6 +6934,9 @@ func (c *Compiler) compileReturn(node *Node) {
 		}
 		c.maybeBoxInterface(extra, retTypes, retIdx)
 		count++
+	}
+	if c.returnNeedsArenaRetain(retTypes) {
+		c.emitArenaRetainCurrent()
 	}
 	if len(c.deferSites) > 0 {
 		c.emitDeferredCalls()
@@ -5951,6 +7098,25 @@ func (c *Compiler) resolveConcreteTypeID(expr *Node) int {
 
 // exprConcreteType returns the qualified concrete type name for an expression, or "".
 func (c *Compiler) exprConcreteType(expr *Node) string {
+	if expr == nil {
+		return ""
+	}
+	if c.exprConcreteTypeCache != nil {
+		if cached, ok := c.exprConcreteTypeCache[expr]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
+	}
+	result := c.exprConcreteTypeInner(expr)
+	if c.exprConcreteTypeCache != nil {
+		c.exprConcreteTypeCache[expr] = cachedStringResult{value: result, ok: result != ""}
+	}
+	return result
+}
+
+func (c *Compiler) exprConcreteTypeInner(expr *Node) string {
 	if expr == nil {
 		return ""
 	}
@@ -7013,6 +8179,18 @@ func (c *Compiler) compileExpr(node *Node) {
 	if node == nil {
 		return
 	}
+	savedSourceLine := c.currentSourceLine
+	if node.Pos > 0 {
+		c.currentSourceLine = node.Pos
+	}
+	c.compileExprBody(node)
+	c.currentSourceLine = savedSourceLine
+}
+
+func (c *Compiler) compileExprBody(node *Node) {
+	if node == nil {
+		return
+	}
 	switch node.Kind {
 	case NIntLit:
 		c.compileIntLit(node)
@@ -7050,7 +8228,7 @@ func (c *Compiler) compileExpr(node *Node) {
 			panic("ICE: bare function type in compileExpr")
 		}
 	default:
-		panic("ICE: unhandled expression kind in compileExpr")
+		panic(fmt.Sprintf("ICE: unhandled expression kind in compileExpr: func=%s kind=%d name=%q", c.curFunc.Name, node.Kind, node.Name))
 	}
 }
 
@@ -7527,6 +8705,7 @@ func (c *Compiler) compileBinaryExpr(node *Node) {
 	if isStr && node.Name == "+" {
 		c.compileExpr(node.X)
 		c.compileExpr(node.Y)
+		c.emitStringConcatSample()
 		c.emitKnownCall("runtime.StringConcat", 2, 1)
 		return
 	}
@@ -8352,6 +9531,10 @@ func (c *Compiler) methodCallNeedsProfileParent(callName string) bool {
 
 func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName string) {
 	paramTypes := c.funcParamTypes[callName]
+	if (c.exprMayReferenceMemory(receiver) && c.resolvedCallArgMayEscape(callName, 0)) ||
+		c.callNeedsArenaRetain(callName, args, 1) {
+		c.emitArenaRetainCurrent()
+	}
 	c.compileExpr(receiver)
 	if len(paramTypes) > 0 {
 		c.maybeCloneArrayForTypeName(paramTypes[0])
@@ -8375,6 +9558,10 @@ func (c *Compiler) emitCallWithReceiver(receiver *Node, args []*Node, callName s
 }
 
 func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType string, methodName string) {
+	callName := c.dotJoin(ifaceType, methodName)
+	if c.exprMayReferenceMemory(recvExpr) || c.callNeedsArenaRetain(callName, args, 0) {
+		c.emitArenaRetainCurrent()
+	}
 	paramTypes := c.funcParamTypes[c.dotJoin(ifaceType, methodName)]
 	c.compileExpr(recvExpr)
 	argCount := len(args)
@@ -8393,10 +9580,13 @@ func (c *Compiler) emitIfaceMethodCall(recvExpr *Node, args []*Node, ifaceType s
 		}
 	}
 	retCount, _ := c.ifaceMethodReturnCount(ifaceType, methodName)
-	c.emitIfaceCallWithPanicCheck(c.dotJoin(ifaceType, methodName), argCount, retCount)
+	c.emitIfaceCallWithPanicCheck(callName, argCount, retCount)
 }
 
 func (c *Compiler) emitPromotedMethodCall(recvExpr *Node, args []*Node, pm promotedMethodMatch) {
+	if c.exprMayReferenceMemory(recvExpr) || c.callNeedsArenaRetain(pm.Target, args, 1) {
+		c.emitArenaRetainCurrent()
+	}
 	c.compileExpr(recvExpr)
 	i := 0
 	for i < len(pm.Offsets) {
@@ -8430,6 +9620,9 @@ func (c *Compiler) emitResolvedMethodCall(node *Node, recvExpr *Node, resolvedNa
 	fixedCount, isVariadic := c.funcVariadic[resolvedName]
 	isSpread := node.Name == "spread"
 	if isVariadic && !isSpread {
+		if c.exprMayReferenceMemory(recvExpr) || c.callNeedsArenaRetain(resolvedName, node.Nodes, 1) {
+			c.emitArenaRetainCurrent()
+		}
 		c.compileExpr(recvExpr)
 		paramTypes := c.funcParamTypes[resolvedName]
 		if len(paramTypes) > 0 {
@@ -8576,7 +9769,7 @@ func (c *Compiler) compileNewBuiltin(node *Node) bool {
 		size = c.target.PtrSize
 	}
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
-	c.emitKnownCall("runtime.Alloc", 1, 1)
+	c.emitRuntimeAllocCall()
 	c.emit(ir.Inst{Op: ir.OP_DUP})
 	c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(size)})
 	c.emit(makeInst(ir.OP_CALL, 2, 0, 0, "runtime.Memzero"))
@@ -8813,6 +10006,19 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if node.X != nil && node.X.Kind == NIdent {
 		if target, ok := c.localFuncTargets[node.X.Name]; ok {
 			captureArgs := c.localFuncCaptures[node.X.Name]
+			needRetain := false
+			for i := 0; i < len(captureArgs); i++ {
+				if c.resolvedCallArgMayEscape(target, i) {
+					needRetain = true
+					break
+				}
+			}
+			if !needRetain && c.callNeedsArenaRetain(target, node.Nodes, len(captureArgs)) {
+				needRetain = true
+			}
+			if needRetain {
+				c.emitArenaRetainCurrent()
+			}
 			for _, capture := range captureArgs {
 				if capture.IsPtr {
 					c.emit(ir.Inst{Op: ir.OP_LOCAL_GET, Arg: capture.LocalIdx})
@@ -8904,7 +10110,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 			if len(node.Nodes) >= 2 {
 				c.compileExpr(node.Nodes[0])
 				c.compileExpr(node.Nodes[1])
-				c.emit(makeInst(ir.OP_CALL, 2, 0, 0, "runtime.MapDelete"))
+				c.emit(makeInst(ir.OP_CALL, 2, 0, 0, c.mapDeleteRuntimeName(node.Nodes[0])))
 			}
 			return
 		}
@@ -8921,8 +10127,7 @@ func (c *Compiler) compileCallExpr(node *Node) {
 							keyKind = k
 						}
 					}
-					c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
-					c.emitKnownCall("runtime.MapMake", 1, 1)
+					c.emitMapMakeCall(keyKind)
 					c.compileLValueSet(target)
 					return
 				}
@@ -9201,6 +10406,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	if c.tryCompileTestingRunCall(node, callName) {
 		return
 	}
+	if c.tryCompileCompilerArenaCall(node, callName) {
+		return
+	}
 
 	paramTypes := c.funcParamTypes[callName]
 	profileParentOffset := 0
@@ -9238,6 +10446,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 	}
 
 	if isVariadic && !isSpread {
+		if c.callNeedsArenaRetain(callName, node.Nodes, 0) {
+			c.emitArenaRetainCurrent()
+		}
 		// Compile fixed args normally
 		i := 0
 		for i < callFixedCount && i < len(node.Nodes) {
@@ -9270,6 +10481,9 @@ func (c *Compiler) compileCallExpr(node *Node) {
 		// Call with fixedCount + 1 args (fixed params + one slice)
 		c.emitCallWithPanicCheck(callName, callFixedCount+1)
 	} else {
+		if c.callNeedsArenaRetain(callName, node.Nodes, 0) {
+			c.emitArenaRetainCurrent()
+		}
 		// Non-variadic call, or spread call — compile all args normally.
 		for i, arg := range node.Nodes {
 			c.compileExpr(arg)
@@ -9324,7 +10538,7 @@ func (c *Compiler) tryCompileComptimeCall(node *Node, callName string) bool {
 	c.irmod.TypeIDs = c.typeIDs
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
-	c.irmod.IfaceMethodRets = c.ifaceMethodRets
+	c.irmod.IfaceMethodRets = c.flattenIfaceMethodRets()
 	eval, err := vm.NewEvalState(c.target, c.irmod)
 	c.irmod.Funcs = c.irmod.Funcs[0 : len(c.irmod.Funcs)-1]
 	if err != nil {
@@ -9385,6 +10599,11 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	savedComptimeDisabled := c.comptimeDisabled
 	savedInIfInit := c.inIfInit
 	savedIfInitLeakedNames := c.ifInitLeakedNames
+	savedStorageTypeCache := c.storageTypeCache
+	savedResolveCallNameCache := c.resolveCallNameCache
+	savedResolveExprTypeCache := c.resolveExprTypeCache
+	savedExprConcreteTypeCache := c.exprConcreteTypeCache
+	savedCurrentSourceLine := c.currentSourceLine
 
 	c.curFunc = f
 	c.scopes = nil
@@ -9411,10 +10630,15 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localMethodTargets = make(map[string]string)
 	c.localMethodRecv = make(map[string]int)
 	c.localFuncCaptures = make(map[string][]closureCaptureBinding)
+	c.storageTypeCache = make(map[string]cachedStringResult)
+	c.resolveCallNameCache = make(map[*Node]cachedStringResult)
+	c.resolveExprTypeCache = make(map[*Node]cachedStringResult)
+	c.exprConcreteTypeCache = make(map[*Node]cachedStringResult)
 	c.activeCaptures = nil
 	c.comptimeDisabled = true
 	c.inIfInit = false
 	c.ifInitLeakedNames = make(map[string]bool)
+	c.currentSourceLine = 0
 	c.pushScope()
 	c.compileExpr(call)
 	c.emit(ir.Inst{Op: ir.OP_RETURN, Arg: retCount})
@@ -9445,6 +10669,11 @@ func (c *Compiler) buildComptimeWrapper(call *Node, retCount int) (string, *ir.I
 	c.localMethodTargets = savedLocalMethodTargets
 	c.localMethodRecv = savedLocalMethodRecv
 	c.localFuncCaptures = savedLocalFuncCaptures
+	c.storageTypeCache = savedStorageTypeCache
+	c.resolveCallNameCache = savedResolveCallNameCache
+	c.resolveExprTypeCache = savedResolveExprTypeCache
+	c.exprConcreteTypeCache = savedExprConcreteTypeCache
+	c.currentSourceLine = savedCurrentSourceLine
 	c.activeCaptures = savedActiveCaptures
 	c.comptimeDisabled = savedComptimeDisabled
 	c.inIfInit = savedInIfInit
@@ -9556,7 +10785,7 @@ func (c *Compiler) compileAssembledFunctions() {
 	c.irmod.TypeIDs = c.typeIDs
 	c.irmod.MethodTable = c.methodTable
 	c.irmod.IfaceMethods = c.ifaceMethods
-	c.irmod.IfaceMethodRets = c.ifaceMethodRets
+	c.irmod.IfaceMethodRets = c.flattenIfaceMethodRets()
 
 	for qname, info := range c.assembleFuncs {
 		if info.Arch != c.target.GOARCH {
@@ -9967,12 +11196,18 @@ func (c *Compiler) qualifyTypeName(typeName string, pkgPath string) string {
 	if cachePkg == "" && c.curPkg != nil {
 		cachePkg = c.curPkg.Path
 	}
-	cacheKey := typeName + "\x00" + cachePkg
-	if cached, ok := c.qualifyTypeCache[cacheKey]; ok {
-		return cached
+	cacheBucket := c.qualifyTypeCache[cachePkg]
+	if cacheBucket != nil {
+		if cached, ok := cacheBucket[typeName]; ok {
+			return cached
+		}
 	}
 	result := c.qualifyTypeNameInner(typeName, pkgPath)
-	c.qualifyTypeCache[cacheKey] = result
+	if cacheBucket == nil {
+		cacheBucket = make(map[string]string)
+		c.qualifyTypeCache[cachePkg] = cacheBucket
+	}
+	cacheBucket[typeName] = result
 	return result
 }
 
@@ -10099,12 +11334,39 @@ func pointerMethodTypeName(typeName string) string {
 }
 
 func (c *Compiler) resolveMethodByConcreteType(concreteType string, methodName string) (string, bool) {
+	cacheBucket := c.methodResolutionCache[concreteType]
+	if cacheBucket != nil {
+		if cached, ok := cacheBucket[methodName]; ok {
+			if cached.ok {
+				return cached.value, true
+			}
+			return "", false
+		}
+	}
 	candidate := c.dotJoin(concreteType, methodName)
 	if resolved, ok := c.methodTable[candidate]; ok {
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]cachedStringResult)
+			c.methodResolutionCache[concreteType] = cacheBucket
+		}
+		cacheBucket[methodName] = cachedStringResult{value: resolved, ok: true}
 		return resolved, true
 	}
 	ptrCandidate := c.dotJoin(pointerMethodTypeName(concreteType), methodName)
 	resolved, ok := c.methodTable[ptrCandidate]
+	if ok {
+		if cacheBucket == nil {
+			cacheBucket = make(map[string]cachedStringResult)
+			c.methodResolutionCache[concreteType] = cacheBucket
+		}
+		cacheBucket[methodName] = cachedStringResult{value: resolved, ok: true}
+		return resolved, true
+	}
+	if cacheBucket == nil {
+		cacheBucket = make(map[string]cachedStringResult)
+		c.methodResolutionCache[concreteType] = cacheBucket
+	}
+	cacheBucket[methodName] = cachedStringResult{}
 	return resolved, ok
 }
 
@@ -10166,6 +11428,25 @@ func isRuntimeMemBuiltinName(name string) bool {
 }
 
 func (c *Compiler) resolveCallName(node *Node) string {
+	if node == nil {
+		return ""
+	}
+	if c.resolveCallNameCache != nil {
+		if cached, ok := c.resolveCallNameCache[node]; ok {
+			if cached.ok {
+				return cached.value
+			}
+			return ""
+		}
+	}
+	result := c.resolveCallNameInner(node)
+	if c.resolveCallNameCache != nil {
+		c.resolveCallNameCache[node] = cachedStringResult{value: result, ok: result != ""}
+	}
+	return result
+}
+
+func (c *Compiler) resolveCallNameInner(node *Node) string {
 	if node == nil {
 		return ""
 	}
@@ -10349,8 +11630,7 @@ func (c *Compiler) compileMake(node *Node) {
 	if node.Nodes[0].Kind == NMapType {
 		// Map creation: make(map[K]V)
 		keyKind := c.mapKeyKind(node.Nodes[0].X)
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
-		c.emitKnownCall("runtime.MapMake", 1, 1)
+		c.emitMapMakeCall(keyKind)
 		return
 	}
 	// Slice creation: make([]T, len) or make([]T, len, cap)
@@ -10376,6 +11656,58 @@ func (c *Compiler) mapKeyKind(keyTypeNode *Node) int {
 		return 1
 	}
 	return 0
+}
+
+func (c *Compiler) mapMakeRuntimeName(keyKind int) string {
+	if keyKind == 1 {
+		return "runtime.MapMakeString"
+	}
+	return "runtime.MapMakeInt"
+}
+
+func (c *Compiler) emitMapMakeCall(keyKind int) {
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		c.emitMapMakeSample()
+		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
+		c.emitKnownCall("runtime.MapMake", 1, 1)
+		return
+	}
+	c.emitMapMakeSample()
+	c.emitKnownCall(c.mapMakeRuntimeName(keyKind), 0, 1)
+}
+
+func (c *Compiler) mapGetRuntimeName(node *Node) string {
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		return "runtime.MapGet"
+	}
+	if c.mapExprKeyKind(node) == 1 {
+		return "runtime.MapGetString"
+	}
+	return "runtime.MapGetInt"
+}
+
+func (c *Compiler) mapSetRuntimeName(node *Node) string {
+	return c.mapSetRuntimeNameByKeyKind(c.mapExprKeyKind(node))
+}
+
+func (c *Compiler) mapSetRuntimeNameByKeyKind(keyKind int) string {
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		return "runtime.MapSet"
+	}
+	if keyKind == 1 {
+		return "runtime.MapSetString"
+	}
+	return "runtime.MapSetInt"
+}
+
+func (c *Compiler) mapDeleteRuntimeName(node *Node) string {
+	if c.target != nil && c.target.GOARCH == "wasm32" {
+		return "runtime.MapDelete"
+	}
+	if c.mapExprKeyKind(node) == 1 {
+		return "runtime.MapDeleteString"
+	}
+	return "runtime.MapDeleteInt"
 }
 
 // exprReturnCount returns how many values an expression pushes onto the operand stack.
@@ -10657,7 +11989,7 @@ func (c *Compiler) compileIndexExpr(node *Node) {
 	if c.isMapExpr(node.X) {
 		c.compileExpr(node.X)
 		c.compileExpr(node.Y)
-		c.emitKnownCall("runtime.MapGet", 2, 2)
+		c.emitKnownCall(c.mapGetRuntimeName(node.X), 2, 2)
 		// MapGet returns (value, ok) — drop ok for single-value context
 		// (multi-value context is handled in compileAssign)
 		c.emit(ir.Inst{Op: ir.OP_DROP})
@@ -10908,9 +12240,11 @@ func (c *Compiler) compileSliceExpr(node *Node) {
 	if c.isStringTypedExpr(node.X) {
 		c.emitKnownCall("runtime.StringSlice", 3, 1)
 	} else if node.Type != nil {
+		c.emitSliceResliceSample()
 		c.compileExpr(node.Type)
 		c.emitKnownCall("runtime.SliceResliceFull", 4, 1)
 	} else {
+		c.emitSliceResliceSample()
 		c.emitKnownCall("runtime.SliceReslice", 3, 1)
 	}
 }
@@ -10925,8 +12259,7 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 		}
 		valueTypeQualified := c.qualifyTypeName(valueTypeName, "")
 		valueIsInterface := c.isInterfaceTypeName(valueTypeName) || c.isInterfaceTypeName(valueTypeQualified)
-		c.emit(ir.Inst{Op: ir.OP_CONST_I64, Val: int64(keyKind)})
-		c.emitKnownCall("runtime.MapMake", 1, 1)
+		c.emitMapMakeCall(keyKind)
 		// For each key-value pair, call MapSet
 		for _, elem := range node.Nodes {
 			if elem.Kind == NKeyValue {
@@ -10938,7 +12271,7 @@ func (c *Compiler) compileCompositeLit(node *Node) {
 				if valueIsInterface {
 					c.maybeBoxValueForInterface(elem.Y)
 				}
-				c.emitKnownCall("runtime.MapSet", 3, 1)
+				c.emitKnownCall(c.mapSetRuntimeNameByKeyKind(keyKind), 3, 1)
 				c.emit(ir.Inst{Op: ir.OP_DROP}) // drop the returned header (same as input)
 				// Original map_hdr still on stack
 			}
@@ -11105,17 +12438,37 @@ func nodeTypeName(node *Node) string {
 		return ""
 	}
 	switch node.Kind {
+	case NPointerType, NSliceType, NMapType:
+		if nodeTypeNameCache != nil {
+			if cached, ok := nodeTypeNameCache[node]; ok {
+				return cached
+			}
+		}
+	}
+	switch node.Kind {
 	case NIdent:
 		return node.Name
+	case NInterfaceType:
+		return "interface{}"
 	case NSelectorExpr:
 		if node.X != nil {
 			return nodeTypeName(node.X) + "." + node.Name
 		}
 		return node.Name
 	case NPointerType:
-		return "*" + nodeTypeName(node.X)
+		result := "*" + nodeTypeName(node.X)
+		if nodeTypeNameCache == nil {
+			nodeTypeNameCache = make(map[*Node]string)
+		}
+		nodeTypeNameCache[node] = result
+		return result
 	case NSliceType:
-		return "[]" + nodeTypeName(node.X)
+		result := "[]" + nodeTypeName(node.X)
+		if nodeTypeNameCache == nil {
+			nodeTypeNameCache = make(map[*Node]string)
+		}
+		nodeTypeNameCache[node] = result
+		return result
 	case NArrayType:
 		lenExpr := "0"
 		if node.Name == "..." {
@@ -11132,9 +12485,12 @@ func nodeTypeName(node *Node) string {
 		}
 		return "[" + lenExpr + "]" + nodeTypeName(node.X)
 	case NMapType:
-		return "map[" + nodeTypeName(node.X) + "]" + nodeTypeName(node.Y)
-	case NInterfaceType:
-		return "interface{}"
+		result := "map[" + nodeTypeName(node.X) + "]" + nodeTypeName(node.Y)
+		if nodeTypeNameCache == nil {
+			nodeTypeNameCache = make(map[*Node]string)
+		}
+		nodeTypeNameCache[node] = result
+		return result
 	}
 	return ""
 }

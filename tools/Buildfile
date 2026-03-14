@@ -206,6 +206,83 @@ test-fullcompiler-c: build
 test-fullcompiler-wasm: build
   fullcompiler wasm
 
+test-arena: build
+  sh ./build/rtg tests/arena_retain_current.go -o build/test_arena_retain_current
+  sh ./build/test_arena_retain_current
+  sh ./build/rtg tests/arena_use_parent.go -o build/test_arena_use_parent
+  sh ./build/test_arena_use_parent
+  sh ./build/rtg tests/arena_nested_scopes.go -o build/test_arena_nested_scopes
+  sh ./build/test_arena_nested_scopes
+  sh ./build/rtg tests/arena_parent_string.go -o build/test_arena_parent_string
+  sh ./build/test_arena_parent_string
+  sh ./build/rtg tests/arena_parser_ast_strings.go -o build/test_arena_parser_ast_strings
+  sh ./build/test_arena_parser_ast_strings
+  sh ./build/rtg tests/arena_parser_file_strings.go -o build/test_arena_parser_file_strings
+  sh ./build/test_arena_parser_file_strings
+  sh ./build/rtg tests/arena_parser_compiler_stress.go -o build/test_arena_parser_compiler_stress
+  sh ./build/test_arena_parser_compiler_stress
+  sh ./build/rtg tests/arena_parser_profile_flush_buffer.go -o build/test_arena_parser_profile_flush_buffer
+  sh ./build/test_arena_parser_profile_flush_buffer
+  sh rm -f build/test_arena_report.txt
+  sh ./build/rtg tests/arena_report.go -o build/test_arena_report
+  sh RTG_ARENA_REPORT=build/test_arena_report.txt ./build/test_arena_report
+  sh python3 tools/check_arena_report.py build/test_arena_report.txt tests.arena.report.outer tests.arena.report.inner tests.arena.report.churn
+  sh echo "PASS: arena tests OK"
+
+test-arena-accounting: build
+  sh rm -f build/test_arena_accounting.txt
+  sh ./build/rtg tests/arena_accounting.go -o build/test_arena_accounting
+  sh RTG_ARENA_REPORT=build/test_arena_accounting.txt ./build/test_arena_accounting
+  sh python3 tools/check_arena_accounting.py build/test_arena_accounting.txt
+  sh rm -f build/test_arena_defer_restore_order.txt
+  sh ./build/rtg tests/arena_defer_restore_order.go -o build/test_arena_defer_restore_order
+  sh RTG_ARENA_REPORT=build/test_arena_defer_restore_order.txt ./build/test_arena_defer_restore_order
+  sh python3 tools/check_arena_defer_restore_order.py build/test_arena_defer_restore_order.txt
+
+arena-selfhost-gains: build
+  sh ./build/rtg -strict -arena-report -o build/stage1_arena ./std/compiler/
+  sh ./build/stage1_arena -strict -arena-report -o build/stage2_arena ./std/compiler/
+  sh rm -f build/stage2.arena_report.txt build/stage2.arena_gains.md build/stage2.arena_gains.tsv
+  sh RTG_ARENA_REPORT=build/stage2.arena_report.txt ./build/stage2_arena -strict -arena-report -o build/stage_out ./std/compiler/
+  sh python3 tools/arena_gain_report.py build/stage2.arena_report.txt --md-out build/stage2.arena_gains.md --tsv-out build/stage2.arena_gains.tsv
+  sh echo "PASS: wrote build/stage2.arena_gains.md and build/stage2.arena_gains.tsv"
+
+selfhost-memory-rank: arena-selfhost-gains profile-stage2-flamechart
+  sh python3 tools/selfhost_memory_rank.py --arena-tsv build/stage2.arena_gains.tsv --profile-report build/stage2.profile.report.txt --out build/stage2.memory_rank.md
+  sh echo "PASS: wrote build/stage2.memory_rank.md"
+
+selfhost-alloc-site-report: build
+  sh ./build/rtg -strict -alloc-site-report -alloc-site-map build/stage1.alloc_site.map -o build/stage1_allocsite ./std/compiler/
+  sh ./build/stage1_allocsite -strict -alloc-site-report -alloc-site-map build/stage2.alloc_site.map -o build/stage2_allocsite ./std/compiler/
+  sh rm -f build/stage2.alloc_site.profile build/stage2.alloc_site.md build/stage2.alloc_site.tsv
+  sh RTG_PROFILE=build/stage2.alloc_site.profile ./build/stage2_allocsite -strict -alloc-site-report -o build/stage_out ./std/compiler/
+  sh python3 tools/alloc_site_profile_report.py --map build/stage2.alloc_site.map --profile build/stage2.alloc_site.profile --md-out build/stage2.alloc_site.md --tsv-out build/stage2.alloc_site.tsv
+  sh echo "PASS: wrote build/stage2.alloc_site.md and build/stage2.alloc_site.tsv"
+
+selfhost-slice-reslice-report: build
+  sh ./build/rtg -strict -slice-reslice-report -slice-reslice-map build/stage1.slice_reslice.map -o build/stage1_sres ./std/compiler/
+  sh ./build/stage1_sres -strict -slice-reslice-report -slice-reslice-map build/stage2.slice_reslice.map -o build/stage2_sres ./std/compiler/
+  sh rm -f build/stage2.slice_reslice.profile build/stage2.slice_reslice.md build/stage2.slice_reslice.tsv
+  sh RTG_PROFILE=build/stage2.slice_reslice.profile ./build/stage2_sres -strict -slice-reslice-report -o build/stage_out ./std/compiler/
+  sh python3 tools/slice_reslice_profile_report.py --map build/stage2.slice_reslice.map --profile build/stage2.slice_reslice.profile --md-out build/stage2.slice_reslice.md --tsv-out build/stage2.slice_reslice.tsv
+  sh echo "PASS: wrote build/stage2.slice_reslice.md and build/stage2.slice_reslice.tsv"
+
+selfhost-string-concat-report: build
+  sh ./build/rtg -strict -string-concat-report -string-concat-map build/stage1.string_concat.map -o build/stage1_sconcat ./std/compiler/
+  sh ./build/stage1_sconcat -strict -string-concat-report -string-concat-map build/stage2.string_concat.map -o build/stage2_sconcat ./std/compiler/
+  sh rm -f build/stage2.string_concat.profile build/stage2.string_concat.md build/stage2.string_concat.tsv
+  sh RTG_PROFILE=build/stage2.string_concat.profile ./build/stage2_sconcat -strict -string-concat-report -o build/stage_out ./std/compiler/
+  sh python3 tools/string_concat_profile_report.py --map build/stage2.string_concat.map --profile build/stage2.string_concat.profile --md-out build/stage2.string_concat.md --tsv-out build/stage2.string_concat.tsv
+  sh echo "PASS: wrote build/stage2.string_concat.md and build/stage2.string_concat.tsv"
+
+selfhost-map-make-report: build
+  sh ./build/rtg -strict -map-make-report -map-make-map build/stage1.map_make.map -o build/stage1_mapmake ./std/compiler/
+  sh ./build/stage1_mapmake -strict -map-make-report -map-make-map build/stage2.map_make.map -o build/stage2_mapmake ./std/compiler/
+  sh rm -f build/stage2.map_make.profile build/stage2.map_make.md build/stage2.map_make.tsv
+  sh RTG_PROFILE=build/stage2.map_make.profile ./build/stage2_mapmake -strict -map-make-report -o build/stage_out ./std/compiler/
+  sh python3 tools/map_make_profile_report.py --map build/stage2.map_make.map --profile build/stage2.map_make.profile --md-out build/stage2.map_make.md --tsv-out build/stage2.map_make.tsv
+  sh echo "PASS: wrote build/stage2.map_make.md and build/stage2.map_make.tsv"
+
 test-fullcompiler-armv8m-renode: build
   sh : "${RENODE_PATH:?set RENODE_PATH to the renode executable path or install directory}"
   fullcompiler rtg semihost/armv8m
@@ -250,6 +327,12 @@ playground: build
 
 bench-alloc-micro:
   sh sh tools/run_alloc_microbench.sh
+
+bench-alloc-micro-compare:
+  sh sh tools/run_alloc_microbench_compare.sh
+
+experiment-parser-hot: build
+  sh bash tools/run_parser_hot_experiment.sh
 
 clean:
   sh rm -f build/stage* build/stage*_c.c build/stage*_c build/stage2.size*.json build/sizecheck_* build/rtg build/rtg-build build/rtg_from_i386 build/rtg.stage2.* build/tagcheck_* build/*_386 build/build build/cross_stage* build/*.wasm build/*.exe build/fullcompiler_* build/fullcompiler_c_*

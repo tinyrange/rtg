@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"j5.nz/rtg/std/compiler/arena"
 	"j5.nz/rtg/std/compiler/common"
 	"j5.nz/rtg/std/compiler/stdlib"
 )
@@ -42,6 +43,8 @@ type Package struct {
 	Inits         []*Node
 	qualNames     map[string]string // name → "Path.name"
 	qualPtrNames  map[string]string // name → "Path.*name"
+	resolvedPkgs  map[string]*Package
+	missingPkgs   map[string]bool
 }
 
 func (pkg *Package) QualName(name string) string {
@@ -105,7 +108,9 @@ func addDiscoveredBuildTag(tag string) {
 			return
 		}
 	}
-	discoveredBuildTags = append(discoveredBuildTags, tag)
+	arena.UseParent()
+	defer arena.Restore()
+	discoveredBuildTags = append(discoveredBuildTags, cloneStringBytes(tag))
 }
 
 func GetDiscoveredBuildTags() []string {
@@ -156,7 +161,7 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 		// Bare package name: try embedded std first, then directory scan
 		mainPkg = p.parsePackageFromStdlibSources(baseDir, arg)
 		if mainPkg == nil {
-			mainPkg = p.parsePackageDir(entryDir, "main")
+			mainPkg = p.parsePackageDir(arg, "main")
 		}
 	} else {
 		// "." or directory: scan the directory for all .go files
@@ -175,8 +180,12 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 
 	// Worklist loop: resolve imports recursively
 	var worklist []string
+	queued := make(map[string]bool)
 	for _, imp := range mainPkg.Imports {
-		worklist = append(worklist, imp)
+		if !queued[imp] {
+			worklist = append(worklist, imp)
+			queued[imp] = true
+		}
 	}
 	// Runtime is required by compiler-emitted helpers (alloc/map/string/etc),
 	// even for programs that do not explicitly import it.
@@ -190,13 +199,17 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 		}
 		if !hasRuntime {
 			mainPkg.Imports = append(mainPkg.Imports, "runtime")
-			worklist = append(worklist, "runtime")
+			if !queued["runtime"] {
+				worklist = append(worklist, "runtime")
+				queued["runtime"] = true
+			}
 		}
 	}
 
 	for len(worklist) > 0 {
 		importPath := worklist[0]
 		worklist = worklist[1:len(worklist)]
+		queued[importPath] = false
 
 		_, already := mod.Packages[importPath]
 		if already {
@@ -217,8 +230,9 @@ func ResolveModule(target *common.Target, baseDir string, entryFiles []string) *
 
 		for _, imp := range pkg.Imports {
 			_, seen := mod.Packages[imp]
-			if !seen {
+			if !seen && !queued[imp] {
 				worklist = append(worklist, imp)
+				queued[imp] = true
 			}
 		}
 	}
@@ -340,18 +354,46 @@ func stringLess(a string, b string) bool {
 	return la < lb
 }
 
-// sortStrings sorts a string slice in-place using insertion sort.
+// sortStrings sorts a string slice in-place.
 func sortStrings(s []string) {
-	i := 1
-	for i < len(s) {
-		j := i
-		for j > 0 && stringLess(s[j], s[j-1]) {
-			tmp := s[j]
-			s[j] = s[j-1]
-			s[j-1] = tmp
-			j = j - 1
+	if len(s) < 2 {
+		return
+	}
+	stack := make([]int, 0, 32)
+	stack = append(stack, 0, len(s)-1)
+	for len(stack) > 0 {
+		hi := stack[len(stack)-1]
+		lo := stack[len(stack)-2]
+		stack = stack[:len(stack)-2]
+		for lo < hi {
+			i := lo
+			j := hi
+			pivot := s[lo+(hi-lo)/2]
+			for i <= j {
+				for stringLess(s[i], pivot) {
+					i++
+				}
+				for stringLess(pivot, s[j]) {
+					j--
+				}
+				if i <= j {
+					s[i], s[j] = s[j], s[i]
+					i++
+					j--
+				}
+			}
+			if j-lo < hi-i {
+				if i < hi {
+					stack = append(stack, i, hi)
+				}
+				hi = j
+			} else {
+				if lo < j {
+					stack = append(stack, lo, j)
+				}
+				lo = i
+			}
 		}
-		i = i + 1
 	}
 }
 
@@ -359,78 +401,11 @@ func sortStrings(s []string) {
 // If a //go:build directive exists, it takes precedence over filename-based filtering.
 // Otherwise, filename-based GOOS/GOARCH conventions are used.
 func (c *Preprocessor) shouldIncludeFile(path string, name string) bool {
-	// 1. Check //go:build directive in file content (takes precedence)
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return true // if can't read, include by default
 	}
-	content := string(src)
-	collectBuildTagsFromContent(content)
-	collectBuildTagsFromFilename(name)
-
-	// Scan first few lines for //go:build
-	pos := 0
-	for pos < len(content) {
-		// Find end of line
-		eol := pos
-		for eol < len(content) && content[eol] != '\n' {
-			eol++
-		}
-		line := content[pos:eol]
-
-		// Skip blank lines and comments at top of file
-		trimmed := trimLeftSpace(line)
-		if len(trimmed) == 0 {
-			pos = eol + 1
-			continue
-		}
-
-		// Check for //go:build
-		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
-			expr := trimmed[11:len(trimmed)]
-			return c.evalBuildExpr(expr)
-		}
-
-		// Check for regular comments (skip them)
-		if len(trimmed) >= 2 && trimmed[0:2] == "//" {
-			pos = eol + 1
-			continue
-		}
-
-		// First non-comment, non-blank line — stop looking
-		break
-	}
-
-	// 2. Filename-based tag filtering (only if no //go:build directive)
-	// Strip .go suffix
-	base := name[0 : len(name)-3]
-
-	// Check for _GOOS_GOARCH.go, _GOOS.go, _GOARCH.go patterns
-	// Find last underscore segment(s)
-	parts := splitString(base, '_')
-	if len(parts) >= 3 {
-		// Could be name_GOOS_GOARCH.go
-		maybearch := parts[len(parts)-1]
-		maybeos := parts[len(parts)-2]
-		if isKnownOS(maybeos) && isKnownArch(maybearch) {
-			if !c.hasTag(maybeos) || !c.hasTag(maybearch) {
-				return false
-			}
-		} else if isKnownOS(maybearch) || isKnownArch(maybearch) {
-			if !c.hasTag(maybearch) {
-				return false
-			}
-		}
-	} else if len(parts) >= 2 {
-		last := parts[len(parts)-1]
-		if isKnownOS(last) || isKnownArch(last) {
-			if !c.hasTag(last) {
-				return false
-			}
-		}
-	}
-
-	return true
+	return c.shouldIncludeContent(string(src), name)
 }
 
 // splitString splits a string by a separator byte.
@@ -449,8 +424,7 @@ func splitString(s string, sep byte) []string {
 	return result
 }
 
-func collectBuildTagsFromContent(content string) {
-	// Scan first few lines for //go:build expression.
+func leadingBuildExpr(content string) (string, bool) {
 	pos := 0
 	for pos < len(content) {
 		eol := pos
@@ -464,14 +438,21 @@ func collectBuildTagsFromContent(content string) {
 			continue
 		}
 		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
-			collectBuildTagsFromExpr(trimmed[11:len(trimmed)])
-			return
+			return trimmed[11:len(trimmed)], true
 		}
 		if len(trimmed) >= 2 && trimmed[0:2] == "//" {
 			pos = eol + 1
 			continue
 		}
-		return
+		return "", false
+	}
+	return "", false
+}
+
+func collectBuildTagsFromContent(content string) {
+	expr, ok := leadingBuildExpr(content)
+	if ok {
+		collectBuildTagsFromExpr(expr)
 	}
 }
 
@@ -510,6 +491,50 @@ func collectBuildTagsFromFilename(name string) {
 		if isKnownOS(last) || isKnownArch(last) {
 			addDiscoveredBuildTag(last)
 		}
+	}
+}
+
+func (c *Preprocessor) shouldIncludeFilename(name string) bool {
+	base := name[0 : len(name)-3]
+	parts := splitString(base, '_')
+	if len(parts) >= 3 {
+		maybearch := parts[len(parts)-1]
+		maybeos := parts[len(parts)-2]
+		if isKnownOS(maybeos) && isKnownArch(maybearch) {
+			if !c.hasTag(maybeos) || !c.hasTag(maybearch) {
+				return false
+			}
+		} else if isKnownOS(maybearch) || isKnownArch(maybearch) {
+			if !c.hasTag(maybearch) {
+				return false
+			}
+		}
+	} else if len(parts) >= 2 {
+		last := parts[len(parts)-1]
+		if isKnownOS(last) || isKnownArch(last) {
+			if !c.hasTag(last) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+type packageSourceFile struct {
+	name    string
+	path    string
+	content string
+}
+
+func sortPackageSourceFiles(files []packageSourceFile) {
+	i := 1
+	for i < len(files) {
+		j := i
+		for j > 0 && files[j-1].name > files[j].name {
+			files[j-1], files[j] = files[j], files[j-1]
+			j--
+		}
+		i++
 	}
 }
 
@@ -628,6 +653,8 @@ func isAlphaNum(c byte) bool {
 
 // parsePackageDir lists .go files in a directory, parses each, and merges into one Package.
 func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
+	arena.Enter("frontend.parsePackageDir")
+	defer arena.Leave()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -635,7 +662,7 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 
 	// Collect .go file names and sort for deterministic order.
 	// Go's os.ReadDir sorts by name, but RTG's ReadDir returns filesystem order.
-	var goFiles []string
+	var goFiles []packageSourceFile
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -646,23 +673,28 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 		if !c.target.TestMode && isGoTestFile(entry.Name()) {
 			continue
 		}
-		// Check build tags before including
-		if !c.shouldIncludeFile(dir+"/"+entry.Name(), entry.Name()) {
+		path := dir + "/" + entry.Name()
+		src, err := os.ReadFile(path)
+		if err != nil {
 			continue
 		}
-		goFiles = append(goFiles, entry.Name())
+		content := string(src)
+		if !c.shouldIncludeContent(content, entry.Name()) {
+			continue
+		}
+		goFiles = append(goFiles, packageSourceFile{name: entry.Name(), path: path, content: content})
 	}
-	sortStrings(goFiles)
+	sortPackageSourceFiles(goFiles)
 
+	arena.UseParent()
 	pkg := &Package{
 		Path:    importPath,
 		Dir:     dir,
 		Symbols: make(map[string]*Symbol),
 	}
 
-	for _, name := range goFiles {
-		path := dir + "/" + name
-		node := parseFile(path)
+	for _, file := range goFiles {
+		node := parseSource(file.path, file.content)
 		if node != nil {
 			if pkg.Name == "" {
 				pkg.Name = node.Name
@@ -672,10 +704,12 @@ func (c *Preprocessor) parsePackageDir(dir string, importPath string) *Package {
 	}
 
 	if len(pkg.Files) == 0 {
+		arena.Restore()
 		return nil
 	}
 
 	pkg.Imports = collectImports(pkg)
+	arena.Restore()
 	return pkg
 }
 
@@ -947,18 +981,19 @@ func injectSyntheticTestRunner(pkg *Package) {
 
 // parseFile reads, lexes, and parses a single Go source file.
 func parseFile(path string) *Node {
+	arena.Enter("frontend.parseFile.tokens")
+	defer arena.Leave()
 	src, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", path, err)
 		return nil
 	}
 
-	// fmt.Fprintf(os.Stderr, "  parsing %s (%d bytes, %d tokens)...\n", path, len(src), 0)
 	lexer := NewLexer(string(src))
-	tokens := lexer.Tokenize()
-	// fmt.Fprintf(os.Stderr, "  tokenized %s: %d tokens\n", path, len(tokens))
 
-	parser := NewParser(tokens)
+	arena.UseParent()
+	defer arena.Restore()
+	parser := NewPullParser(lexer)
 	file := parser.ParseFile()
 
 	if len(parser.errors) > 0 {
@@ -980,9 +1015,12 @@ func ParseFile(path string) *Node {
 
 // parseSource lexes and parses source code from a string.
 func parseSource(name string, src string) *Node {
+	arena.Enter("frontend.parseSource.tokens")
+	defer arena.Leave()
 	lexer := NewLexer(src)
-	tokens := lexer.Tokenize()
-	parser := NewParser(tokens)
+	arena.UseParent()
+	defer arena.Restore()
+	parser := NewPullParser(lexer)
 	file := parser.ParseFile()
 
 	if len(parser.errors) > 0 {
@@ -1004,63 +1042,25 @@ func ParseSource(name string, src string) *Node {
 // shouldIncludeContent checks if source content should be included based on build tags.
 // This is like shouldIncludeFile but takes content directly instead of reading from disk.
 func (c *Preprocessor) shouldIncludeContent(content string, name string) bool {
-	collectBuildTagsFromContent(content)
 	collectBuildTagsFromFilename(name)
-
-	// 1. Check //go:build directive in content (takes precedence)
-	pos := 0
-	for pos < len(content) {
-		eol := pos
-		for eol < len(content) && content[eol] != '\n' {
-			eol++
-		}
-		line := content[pos:eol]
-		trimmed := trimLeftSpace(line)
-		if len(trimmed) == 0 {
-			pos = eol + 1
-			continue
-		}
-		if len(trimmed) >= 11 && trimmed[0:11] == "//go:build " {
-			expr := trimmed[11:len(trimmed)]
-			return c.evalBuildExpr(expr)
-		}
-		if len(trimmed) >= 2 && trimmed[0:2] == "//" {
-			pos = eol + 1
-			continue
-		}
-		break
+	if expr, ok := leadingBuildExpr(content); ok {
+		collectBuildTagsFromExpr(expr)
+		return c.evalBuildExpr(expr)
 	}
-
-	// 2. Filename-based tag filtering
-	base := name[0 : len(name)-3]
-	parts := splitString(base, '_')
-	if len(parts) >= 3 {
-		maybearch := parts[len(parts)-1]
-		maybeos := parts[len(parts)-2]
-		if isKnownOS(maybeos) && isKnownArch(maybearch) {
-			if !c.hasTag(maybeos) || !c.hasTag(maybearch) {
-				return false
-			}
-		} else if isKnownOS(maybearch) || isKnownArch(maybearch) {
-			if !c.hasTag(maybearch) {
-				return false
-			}
-		}
-	} else if len(parts) >= 2 {
-		last := parts[len(parts)-1]
-		if isKnownOS(last) || isKnownArch(last) {
-			if !c.hasTag(last) {
-				return false
-			}
-		}
-	}
-	return true
+	return c.shouldIncludeFilename(name)
 }
 
 // collectImports walks NFile.Nodes for NImport nodes and returns deduplicated import paths.
+type importAliasEntry struct {
+	alias string
+	path  string
+}
+
 func collectImports(pkg *Package) []string {
+	arena.Enter("frontend.collectImports")
+	defer arena.Leave()
 	seen := make(map[string]bool)
-	aliases := make(map[string]string)
+	var aliases []importAliasEntry
 	var result []string
 	for _, file := range pkg.Files {
 		for _, node := range file.Nodes {
@@ -1073,14 +1073,25 @@ func collectImports(pkg *Package) []string {
 				if node.X != nil && node.X.Kind == NIdent {
 					alias := node.X.Name
 					if alias != "" && alias != "_" && alias != "." {
-						aliases[alias] = path
+						aliases = append(aliases, importAliasEntry{alias: alias, path: path})
 					}
 				}
 			}
 		}
 	}
-	pkg.ImportAliases = aliases
-	return result
+	arena.UseParent()
+	defer arena.Restore()
+	if len(aliases) > 0 {
+		pkg.ImportAliases = make(map[string]string, len(aliases))
+		for _, entry := range aliases {
+			pkg.ImportAliases[entry.alias] = entry.path
+		}
+	} else {
+		pkg.ImportAliases = make(map[string]string)
+	}
+	var cloned []string
+	cloned = append(cloned, result...)
+	return cloned
 }
 
 // topologicalSort performs a DFS-based topological sort on the import graph.
@@ -1105,6 +1116,8 @@ func (ts *topoState) visit(path string) {
 }
 
 func topologicalSort(pkgs map[string]*Package) []string {
+	arena.Enter("frontend.topologicalSort")
+	defer arena.Leave()
 	ts := &topoState{
 		pkgs:    pkgs,
 		visited: make(map[string]bool),
@@ -1118,7 +1131,11 @@ func topologicalSort(pkgs map[string]*Package) []string {
 	for _, path := range paths {
 		ts.visit(path)
 	}
-	return ts.order
+	arena.UseParent()
+	defer arena.Restore()
+	var cloned []string
+	cloned = append(cloned, ts.order...)
+	return cloned
 }
 
 // collectSymbols walks top-level declarations and populates pkg.Symbols.
@@ -1207,8 +1224,10 @@ func collectDeclSymbol(pkg *Package, node *Node) {
 func ValidateModule(mod *Module) []string {
 	var errors []string
 	for _, path := range mod.Order {
+		arena.Enter("frontend.ValidateModule.package")
 		pkg, ok := mod.Packages[path]
 		if !ok {
+			arena.Leave()
 			continue
 		}
 		// Build import map: package name → *Package
@@ -1230,19 +1249,30 @@ func ValidateModule(mod *Module) []string {
 				validateNode(pkg, importMap, node, &errors)
 			}
 		}
+		arena.Leave()
 	}
 	return errors
 }
 
+func appendValidationError(errors *[]string, msg string) {
+	arena.UseParent()
+	defer arena.Restore()
+	*errors = append(*errors, msg)
+}
+
 func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors *[]string) {
+	arena.Enter("frontend.validateNode")
+	defer arena.Leave()
 	if node == nil {
 		return
 	}
 	stack := make([]*Node, 0, 64)
+	stackTop := 0
 	stack = append(stack, node)
-	for len(stack) > 0 {
-		n := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+	stackTop = 1
+	for stackTop > 0 {
+		stackTop--
+		n := stack[stackTop]
 		if n == nil {
 			continue
 		}
@@ -1254,7 +1284,7 @@ func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors 
 				_, hasSym := target.Symbols[n.Name]
 				allowRuntimeMemBuiltin := target.Path == "runtime" && isRuntimeMemBuiltinName(n.Name)
 				if !hasSym && !allowRuntimeMemBuiltin {
-					*errors = append(*errors, fmt.Sprintf("%s: %s.%s undefined (package %s has no symbol %s)", pkg.Path, n.X.Name, n.Name, target.Path, n.Name))
+					appendValidationError(errors, fmt.Sprintf("%s: %s.%s undefined (package %s has no symbol %s)", pkg.Path, n.X.Name, n.Name, target.Path, n.Name))
 				}
 			}
 		}
@@ -1265,26 +1295,51 @@ func validateNode(pkg *Package, imports map[string]*Package, node *Node, errors 
 			// If calling an identifier that matches an import name, that's wrong
 			_, isImport := imports[name]
 			if isImport {
-				*errors = append(*errors, fmt.Sprintf("%s: %s used as function (is a package name)", pkg.Path, name))
+				appendValidationError(errors, fmt.Sprintf("%s: %s used as function (is a package name)", pkg.Path, name))
 			}
 		}
 
 		if n.X != nil {
-			stack = append(stack, n.X)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.X
+			} else {
+				stack = append(stack, n.X)
+			}
+			stackTop++
 		}
 		if n.Y != nil {
-			stack = append(stack, n.Y)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Y
+			} else {
+				stack = append(stack, n.Y)
+			}
+			stackTop++
 		}
 		if n.Body != nil {
-			stack = append(stack, n.Body)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Body
+			} else {
+				stack = append(stack, n.Body)
+			}
+			stackTop++
 		}
 		if n.Type != nil {
-			stack = append(stack, n.Type)
+			if stackTop < len(stack) {
+				stack[stackTop] = n.Type
+			} else {
+				stack = append(stack, n.Type)
+			}
+			stackTop++
 		}
 		for i := len(n.Nodes) - 1; i >= 0; i-- {
 			child := n.Nodes[i]
 			if child != nil {
-				stack = append(stack, child)
+				if stackTop < len(stack) {
+					stack[stackTop] = child
+				} else {
+					stack = append(stack, child)
+				}
+				stackTop++
 			}
 		}
 	}

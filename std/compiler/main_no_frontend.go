@@ -318,6 +318,7 @@ func printHelp(program string, out *os.File) {
 	fmt.Fprintf(out, "  -tags <a,b,c>          Extra build tags\n")
 	fmt.Fprintf(out, "  -strict                Preserve strict-mode metadata in target config\n")
 	fmt.Fprintf(out, "  -profile               Preserve profile metadata in target config\n")
+	fmt.Fprintf(out, "  -arena-report          Preserve arena-report metadata in target config\n")
 	fmt.Fprintf(out, "  -size-analysis <path>  Write per-function size analysis JSON\n")
 	fmt.Fprintf(out, "  -debug                 Enable compiler debug logging\n")
 	fmt.Fprintf(out, "  -strip, -s             Strip symbol/debug metadata from native binaries\n")

@@ -1782,7 +1782,7 @@ func ReadIRText(path string) (*ir.IRModule, error) {
 		closeInput = true
 	}
 
-	mod, err := decodeIRTextStream(in)
+	mod, err := ReadIRTextReader(in)
 	if closeInput {
 		_ = in.Close()
 	}
@@ -1795,7 +1795,36 @@ func ReadIRText(path string) (*ir.IRModule, error) {
 	return mod, nil
 }
 
-func decodeIRTextStream(r *os.File) (*ir.IRModule, error) {
+func ReadIRTextData(name string, data string) (*ir.IRModule, error) {
+	mod, err := ReadIRTextReader(&stringIRTextReader{data: data})
+	if err != nil {
+		if name == "" {
+			name = "data"
+		}
+		return nil, fmt.Errorf("read %s: %w", name, err)
+	}
+	return mod, nil
+}
+
+func ReadIRTextReader(r io.Reader) (*ir.IRModule, error) {
+	return decodeIRTextStream(r)
+}
+
+type stringIRTextReader struct {
+	data string
+	pos  int
+}
+
+func (r *stringIRTextReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func decodeIRTextStream(r io.Reader) (*ir.IRModule, error) {
 	dec := &textDecoder{
 		attrsTmp: make(map[string]string),
 	}

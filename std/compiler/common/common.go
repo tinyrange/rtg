@@ -14,6 +14,15 @@ type Target struct {
 	Defines               map[string]string
 	Strict                bool
 	Profile               bool
+	ArenaReport           bool
+	AllocSiteReport       bool
+	AllocSiteMapPath      string
+	SliceResliceReport    bool
+	SliceResliceMapPath   string
+	StringConcatReport    bool
+	StringConcatMapPath   string
+	MapMakeReport         bool
+	MapMakeMapPath        string
 	CompilerDebug         bool
 	EmitIRAndBinaryPath   string
 	StripBinary           bool
